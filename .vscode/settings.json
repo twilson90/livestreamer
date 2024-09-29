@@ -1,0 +1,15 @@
+{
+    "git.repositoryScanMaxDepth": 2,
+    "files.exclude": {
+        "**/dist/": true,
+        "**/utils/": true,
+    },
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/bower_components": true,
+        "**/*.code-search": true
+    },
+    "explorer.excludeGitIgnore": false,
+    "search.useParentIgnoreFiles": false,
+    "search.useIgnoreFiles": false
+}

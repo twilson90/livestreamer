@@ -1,0 +1,31 @@
+{
+  "name": "@livestreamer/electron",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "author": "Tom Wilson",
+  "license": "ISC",
+  "description": "Live Streamer electron wrapper",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "set NODE_OPTIONS=--disable-warning=DEP0174 && electron-forge package",
+    "make": "set NODE_OPTIONS=--disable-warning=DEP0174 && electron-forge make",
+    "publish": "electron-forge publish",
+    "lint": "echo \"No linting configured\""
+  },
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.1"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.5.0",
+    "@electron-forge/maker-deb": "^7.5.0",
+    "@electron-forge/maker-rpm": "^7.5.0",
+    "@electron-forge/maker-squirrel": "^7.5.0",
+    "@electron-forge/maker-zip": "^7.5.0",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.5.0",
+    "@electron-forge/plugin-fuses": "^7.5.0",
+    "@electron/fuses": "^1.8.0",
+    "create-electron-app": "^7.5.0",
+    "electron": "32.2.0"
+  }
+}

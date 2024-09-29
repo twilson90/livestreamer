@@ -1,0 +1,101 @@
+import os from "node:os";
+import events from "node:events";
+import readline from "node:readline";
+import child_process from "node:child_process";
+import { utils, Logger, core } from "./internal.js";
+
+class FFMPEGWrapper extends events.EventEmitter {
+    /** @type {import("child_process").ChildProcessWithoutNullStreams} */
+    #process;
+    #logger;
+    #closed;
+
+    get process() { return this.#process; }
+    get logger() { return this.#logger; }
+
+    constructor(opts) {
+        super();
+        this.opts = {
+            info_interval: 1000,
+            ...opts
+        }
+        this.#logger = new Logger("ffmpeg");
+    }
+
+    /** @param {string[]} args @param {child_process.SpawnOptionsWithoutStdio} opts */
+    start(args, opts) {
+        this.#closed = false;
+        
+        this.#logger.info("Starting FFMPEG...");
+        this.#logger.debug("FFMPEG args:", args);
+        
+        this.#process = child_process.spawn(core.conf["core.ffmpeg_executable"], args, {windowsHide: true, ...opts});
+
+        core.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
+
+        this.#process.on("error", (e) => {
+            // must consume errors! om nom nom
+            if (this.#closed) return;
+            this.#logger.error(e);
+            this.stop();
+        });
+        this.#process.on("close", (code) => {
+            this.#closed = true;
+            this.emit("end");
+        });
+        // this.#process.on("exit", () => {});
+        // this.#process.stderr.on("error", (e)=>console.error("ffmpeg stderr error", e));
+        // this.#process.stdin.on("error",  (e)=>console.error("ffmpeg stdin error", e));
+        // this.#process.stdout.on("error", (e)=>console.error("ffmpeg stdout error", e));
+        // this.#process.stderr.on("close", (e)=>{});
+        // this.#process.stdin.on("close",  (e)=>{});
+        // this.#process.stdout.on("close", (e)=>{});
+
+        let last_info, last_ts, last_emitted_info;
+        let listener = readline.createInterface(this.#process.stderr);
+        listener.on("line", line=>{
+            this.#logger.debug(line);
+            this.emit("line", line);
+            var m = line.match(/^(?:frame=\s*(.+?) )?(?:fps=\s*(.+?) )?(?:q=\s*(.+?) )?size=\s*(.+?) time=\s*(.+?) bitrate=\s*(.+?) speed=(.+?)x/);
+            if (m) {
+                var ts = Date.now();
+                var info = {
+                    frame: parseInt(m[1]),
+                    fps: parseInt(m[2]),
+                    q: parseInt(m[3]),
+                    size: utils.string_to_bytes(m[4]),
+                    size_str: m[4],
+                    time: utils.timespan_str_to_ms(m[5], "hh:mm:ss"),
+                    bitrate: utils.string_to_bytes(m[6]),
+                    bitrate_str: m[6],
+                    speed: parseFloat(m[7]),
+                    speed_alt: 1,
+                }
+                if (last_info) {
+                    info.speed_alt = (info.time - last_info.time) / (ts - last_ts);
+                }
+                if (!this.opts.info_interval) this.emit("info", last_info);
+                last_info = info;
+                last_ts = ts;
+            }
+        });
+        if (this.opts.info_interval) {
+            setInterval(()=>{
+                if (last_info == last_emitted_info) return;
+                this.emit("info", last_info);
+                last_emitted_info = last_info
+            },this.opts.info_interval)
+        }
+    }
+
+    stop() {
+        if (!this.#closed) this.#process.kill("SIGKILL");
+    }
+
+    destroy() {
+        this.stop();
+        this.#logger.destroy();
+    }
+}
+
+export default FFMPEGWrapper;

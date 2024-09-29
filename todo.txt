@@ -1,0 +1,43 @@
+[x] when uploading playlist flickers, weird thing with header and rebuild, next frame crap
+[x] unseekable files are seekable in UI
+[ ] after stopping the seekbar was stuck at 4.999 seconds, starting new file (although not running) the time would remain (session.$.current_time)
+[ ] all empties and intertitles stopped working (linux) after something like a weird start, starting with an item with replaced video or something (edl). Very speicifc, cannot figure out what was triggering it. Probably evident in all versions of mpv. Got an mpv log in Downloads. Another time it just went crazy and cycled through the playlist:
+    2024-09-23 00:27:06 [23:27:06.126][e][main][session-1][stream][mpv] [mpv] mov,mp4,m4a,3gp,3g2,mj2: error reading header
+    2024-09-23 00:27:06 [23:27:06.126][e][main][session-1][stream][mpv] [mpv] avformat_open_input() failed
+    2024-09-23 00:27:06 [23:27:06.233][e][main][session-1][stream][mpv] [mpv] Ignoring mid-stream parameter changes!
+    2024-09-23 00:27:06 [23:27:06.234][e][main][session-1][stream][mpv] [mpv] Writing packet failed.
+    2024-09-23 00:27:06 [23:27:06.252][d][main][session-1][stream][mpv] /downloads/glastonbury-2024-danny-brown/Glastonbury_2024_-_Danny_Brown_p0j2cnxp_original.mp4
+    2024-09-23 00:27:06 [23:27:06.254][e][main][session-1][stream][mpv] [mpv] Pad vid3 is not connected to anything.
+    2024-09-23 00:27:06 [23:27:06.257][d][main][session-1][stream][mpv] color=c=#000000:s=854x480:r=30[bg1];[vid3]scale=854x480:force_original_aspect_ratio=decrease[img1];[bg1][img1]overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2[vo]
+[x] uncatchable exception when force quitting + using tree_kill on mpv. No idea. Tried swallowing all errors but no effect.
+
+[x] substitute all ipc stuff with something besides pm2. I want to make pm2 optional, only for managing starting/stopping/restarting processes if they fail.
+
+[x] update_process_infos look into. core.ppid not reliable?
+[x] check that streams on termination (stopped by user) are properly handled by nms (no zombies)
+[-] fix playlist show scheduled times toggle work with playlists (confusing)
+[~] doublclick event playlist item interrupted if first+second click interrupted by rebuild
+[x] encoder panel info not showing if empty and loads of 00:00:00 labels 
+[~] do init() on page load
+[x] switching sessions, the toggle streaming b utton 'disabled' doesnt update very quick, waits until next update from interval. why?
+[~] encode crop detect into stream
+[x] playlist selection not highlighting newly added files.
+[x] update docker config so each module is its own docker thing. FUCK pm2 it's shit.
+[?] undefined owner on main
+[~] seek flicker every time now :/
+[~] file with chapters chapters label abover seekbar disappears when seeking right to end of file (not running) : Making of Hidden.mkv
+[~] Access Control interface not updating.
+[~] playlist_move from session to session is weird. Just copy?
+[x] starting playlist with playlist child first hangs. It loads a null. See The Blue Angel in Session 1, target the top one and observe.
+[x] aid evail vid sid extra prop values set after load
+[~] detect any props changed by user in GUI. useful (vid, sid, aid, volume, time-pos etc)
+[x] show bitrate in stream info (for both session types)
+[x] finish up chart update with zoom and bitrate and never clearing etc.
+[ ] weird, links to external site chrome is still requesting app.css.map and stuff which triggers an auth callback but no cookie present and it shows login! public html stuff really shouldnt be denied, only reason for this is to tirgger a password prompt. figure out a better way.
+[ ] [18:40:47.271][w][main][session-1][stream][mpv] [mpv] Source stream 1 (audio) unused and hidden.
+    [18:40:47.272][w][main][session-1][stream][mpv] [mpv] Source stream 0 (video) unused and hidden.
+    [18:40:47.272][w][main][session-1][stream][mpv] [mpv] Source stream 2 (sub) unused and hidden.
+[ ] aid sid vid mpv test thoroughly
+[ ] AUTO values for nms player label text show selected value
+[ ] fix_2_track_playlist (when creating a 2 track playlist automatically put audio in one column, video in another)
+[ ] vid generated from loop file, why isnt it cutting the beginning after seek? restarts. Must be a reason, figure  out why I did it that way or fix it.

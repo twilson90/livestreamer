@@ -1,0 +1,7 @@
+{
+  "type": "module",
+  "dependencies": {
+	  "@livestreamer/cabtv":"file:cabtv",
+	  "@livestreamer/discord":"file:discord"
+  }
+}

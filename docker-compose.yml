@@ -1,0 +1,38 @@
+services:
+  app:
+    container_name: livestreamer
+    build: .
+    volumes:
+      - .:/opt/livestreamer
+      - ../@hedgehog90/utils:/opt/livestreamer/utils
+      - //c/Users/hedge/Downloads:/downloads
+      - node_modules:/opt/livestreamer/node_modules
+      - appdata:/var/opt/livestreamer
+    restart: on-failure
+    ports:
+      - 8120:8120 # http
+      - 8121:8121 # https
+      - 9229:9229 # node debug root
+      - 9230:9230 # node debug media-server
+      - 9231:9231 # node debug file-manager
+      - 9232:9232 # node debug main
+      - 9233:9233 # node debug cabtv
+    environment:
+      LIVESTREAMER_APPSPACE: "livestreamer"
+      LIVESTREAMER_DEBUG: 1
+      LIVESTREAMER_CONF_PATH: "conf/config.docker.js"
+      LIVESTREAMER_ARGS: >
+        -m modules/media-server
+        -m modules/file-manager
+        -m modules/main
+        -m extra/cabtv
+    # command: ["node", "index.js", "-m", "modules/media-server", "-m", "modules/file-manager", "-m", "modules/main", "-m", "extra/cabtv"]
+    networks:
+      - livestreamer
+
+networks:
+  livestreamer:
+
+volumes:
+  appdata:
+  node_modules:

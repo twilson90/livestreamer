@@ -1,0 +1,119 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach by Process ID",
+            "processId": "${command:PickProcess}",
+            "request": "attach",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "type": "node",
+        },
+        {
+            "type": "node",
+            "request": "attach",
+            "name": "PM2 Attach",
+            "port": 9232
+        },
+        {
+            "name": "Launch Currently Open Script (JS)",
+            "type": "node",
+            "request": "launch",
+            "program": "${file}",
+            "cwd": "${fileDirname}",
+            "skipFiles": [
+                "<node_internals>/**"
+            ]
+        },
+        {
+            "name": "livestreamer-electron",
+            "type": "node",
+            "request": "launch",
+            "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd",
+            "program": "${workspaceFolder}/electron/index.js",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "LIVESTREAMER_CONF_PATH": "${workspaceFolder}/conf/config.electron.js",
+            },
+            "runtimeArgs": [
+                "--unhandled-rejections=strict",
+            ],
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+        },
+        {
+            "name": "livestreamer",
+            "type": "node",
+            "request": "launch",
+            "program": "index.js",
+            "env": {
+                "LIVESTREAMER_CONF_PATH": "conf/config.debugger.js",
+            },
+            "runtimeArgs": [
+                "--unhandled-rejections=strict",
+            ],
+            "args": [
+                "-m", "modules/file-manager",
+                "-m", "modules/media-server",
+                "-m", "extra/cabtv",
+                "-m", "modules/main",
+            ],
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            // "trace":true
+        },
+        {
+            "name": "docker-root",
+            "type": "node",
+            "request": "attach",
+            "localRoot": "${workspaceFolder}",
+            "remoteRoot": "/opt/livestreamer",
+            "port": 9229,
+        },
+        {
+            "name": "docker-media-server",
+            "type": "node",
+            "request": "attach",
+            "localRoot": "${workspaceFolder}",
+            "remoteRoot": "/opt/livestreamer",
+            "port": 9230,
+        },
+        {
+            "name": "docker-file-manager",
+            "type": "node",
+            "request": "attach",
+            "localRoot": "${workspaceFolder}",
+            "remoteRoot": "/opt/livestreamer",
+            "port": 9231,
+        },
+        {
+            "name": "docker-main",
+            "type": "node",
+            "request": "attach",
+            "localRoot": "${workspaceFolder}",
+            "remoteRoot": "/opt/livestreamer",
+            "port": 9232,
+        },
+        {
+            "name": "docker-cabtv",
+            "type": "node",
+            "request": "attach",
+            "localRoot": "${workspaceFolder}",
+            "remoteRoot": "/opt/livestreamer",
+            "port": 9233,
+        },
+    ],
+    "compounds": [
+        {
+          "name": "docker",
+          "configurations": ["docker-root", "docker-main", "docker-media-server", "docker-file-manager", "docker-cabtv"],
+          "stopAll": true,
+        }
+    ]
+}
