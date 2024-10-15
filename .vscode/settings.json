@@ -11,5 +11,6 @@
     },
     "explorer.excludeGitIgnore": false,
     "search.useParentIgnoreFiles": false,
-    "search.useIgnoreFiles": false
+    "search.useIgnoreFiles": false,
+    "git.detectSubmodules": false
 }
