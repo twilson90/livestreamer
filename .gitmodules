@@ -1,0 +1,11 @@
+[submodule "livestreamer/media-server"]
+	path = modules/media-server
+	url = https://github.com/twilson90/livestreamer-media-server.git
+
+[submodule "livestreamer/main"]
+	path = modules/main
+	url = https://github.com/twilson90/livestreamer-main.git
+
+[submodule "livestreamer/file-manager"]
+	path = modules/file-manager
+	url = https://github.com/twilson90/livestreamer-file-manager.git
