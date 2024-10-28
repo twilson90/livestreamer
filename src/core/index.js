@@ -1,4 +1,3 @@
-import pm2 from "pm2";
 import path from "node:path";
 import fs from "fs-extra";
 import events from "node:events";
@@ -10,18 +9,31 @@ import { glob } from "glob";
 import http_proxy from "http-proxy";
 import http from "node:http";
 import https from "node:https";
-import { Logger, utils, IPC } from "./internal.js";
 import child_process, { ChildProcess } from "node:child_process";
-import { program, Option } from 'commander';
+import { program } from 'commander';
 import chokidar from "chokidar";
-import pkg from "../package.json" with {type:"json"};
+import { fileURLToPath } from "node:url";
+import Logger from "./Logger.js";
+import IPC from "./IPC.js";
+import * as utils from "./utils.js";
+import globals from "./globals.js";
+import config_default from "./config.default.js";
+import {minimatch} from "minimatch";
+/** @typedef {typeof import("./config.default.js").default & typeof import("../file-manager/config.default.js").default & typeof import("../media-server/config.default.js").default & typeof import("../main/config.default.js").default} Conf */
 
-const __dirname = import.meta.dirname;
+const pm2 = async (func, ...args)=>{
+    var _pm2 = (await import("pm2")).default;
+    return utils.promisify(_pm2[func].apply(_pm2, args));
+};
+
+const dirname = import.meta.dirname;
+const root = (path.basename(dirname) === "core") ? path.dirname(dirname) : dirname;
+console.log("root:", root);
 
 program
     .name('Live Streamer')
     .description('Live Streamer CLI')
-    .version(pkg.version);
+    // .version(pkg.version);
 
 program
     .option(`-m --modules --module [string...]`, "Module paths", [])
@@ -31,11 +43,7 @@ program.parse();
 
 // import pkg from "./package.json" with { type: "json" };
 
-/** @typedef {typeof import("./config.default.js").default & typeof import("../file-manager/config.default.js").default & typeof import("../media-server/config.default.js").default & typeof import("../main/config.default.js").default} Conf */
-
-const core = new class Core extends events.EventEmitter {
-    /** @type {Conf} */
-    conf = {};
+export class Core extends events.EventEmitter {
     modules = {}; // just a map of name:path to dir
     ppid = process.ppid;
     /** @type {Logger} */
@@ -43,6 +51,7 @@ const core = new class Core extends events.EventEmitter {
     #app;
     #auth;
     #is_master = false;
+    #shutdown = false;
     /** @type {cron.ScheduledTask} */
     #compress_logs_cron;
     /** @type {http.Server} */
@@ -53,8 +62,12 @@ const core = new class Core extends events.EventEmitter {
     #servers = [];
     /** @type {Record<PropertyKey,ChildProcess>} */
     #subprocesses = {};
+    /** @type {{modules:string[],configs:{string}[],config:{Conf}[]}} */
+    #opts = {};
+    /** @type {string[]} */
     #conf_paths = [];
-    #opts = [];
+    /** @type {Conf} */
+    conf = {};
     
     #portable = fs.existsSync("portable");
     get portable() { return !!(process.env.LIVESTREAMER_PORTABLE ?? this.#portable ?? false) };
@@ -68,46 +81,59 @@ const core = new class Core extends events.EventEmitter {
         this.#app = app;
         this.#is_master = !!master_opts;
         this.#opts = Object.assign({}, program.opts(), typeof master_opts === "object" ? master_opts : null);
-        this.logger = new Logger(this.name, {stdout:true, file:true, prefix:this.#is_master?"":this.name});
-        this.logger.console_adapter();
-        this.appspace = process.env.LIVESTREAMER_APPSPACE || "livestreamer";
-        this.cwd = process.cwd();
         return this.ready = this.#init();
+    }
+    
+    resolve_module(m) {
+        var _resolve = (m)=>{
+            if (!fs.existsSync(m)) return;
+            if (fs.statSync(m).isDirectory()) m = glob.sync(`${m}/index.{js,ts,cjs,mjs}`)[0];
+            if (minimatch(path.basename(m), `*.{js,ts,cjs,mjs,cts,mts}`)) return path.resolve(m);
+        };
+        return _resolve(m) ?? _resolve(path.join(root, m));
     }
 
     async #init() {
+        this.logger = new Logger(this.name, {stdout:true, file:true, prefix:this.#is_master?"":this.name});
+        this.logger.console_adapter();
+        this.appspace = process.env.LIVESTREAMER_APPSPACE || "livestreamer";
+        
+        this.assets_dir = path.resolve(root, "assets");
+        this.cwd = process.cwd();
+
         let modules = [
-            ...new Set([
-                ...(process.env.LIVESTREAMER_MODULES ? [process.env.LIVESTREAMER_MODULES] : []),
-                ...this.#opts.modules
-            ].map(p=>p.split(path.delimiter))
-                .flat()
-                .map(p=>path.resolve(p))
+            ...new Set(
+                [
+                    ...(process.env.LIVESTREAMER_MODULES ? [process.env.LIVESTREAMER_MODULES] : []),
+                    ...this.#opts.modules
+                ]
+                    .flatMap(p=>p.split(path.delimiter))
+                    .map(p=>this.resolve_module(p))
             )
         ];
+        console.info(modules);
+
         process.env.LIVESTREAMER_MODULES = modules.join(path.delimiter); // necessary for child processes.
-        this.modules = Object.fromEntries(modules.map(p=>[path.basename(p), p]));
+        this.modules = Object.fromEntries(modules.map(p=>[path.basename(path.dirname(p)), p]));
+        console.info(this.modules);
         
         var exit_handler = async ()=>{
-            console.log("SIGINT");
-            await this.#destroy();
+            await this.shutdown();
             process.exit(0);
         };
+        process.on('beforeExit', exit_handler);
         process.on('SIGINT', exit_handler);
         process.on('SIGTERM', exit_handler);
         process.on('unhandledRejection', (e) => {
             // is this a good idea?
             this.logger.error(`Unhandled Rejection:`, e);
         });
-        if (this.use_pm2) {
-            process.on('message', async (packet)=>{
-                if (typeof packet === "string") {
-                    if (packet === "shutdown") {
-                        await this.#destroy();
-                    }
-                }
-            });
-        }
+        process.on('message', async (packet)=>{
+            if (packet === "shutdown") {
+                await this.shutdown();
+                process.exit(0);
+            }
+        });
 
         var appdata_dir;
         if (process.env.LIVESTREAMER_APPDATA_DIR) {
@@ -118,30 +144,16 @@ const core = new class Core extends events.EventEmitter {
             appdata_dir = path.join(utils.is_windows() ? process.env.PROGRAMDATA : "/var/opt/", this.appspace);
         }
         this.appdata_dir = path.resolve(appdata_dir);
-        
-        this.tmp_dir = path.resolve(this.appdata_dir, "tmp");
-        this.logs_dir = path.resolve(this.appdata_dir, "logs");
-        this.cache_dir = path.resolve(this.appdata_dir, "cache");
-        this.clients_dir = path.resolve(this.appdata_dir, "clients");
-        this.conf_path = path.resolve(this.appdata_dir, "config.json");
-        this.files_dir = path.resolve(this.appdata_dir, "files");
-        this.saves_dir = path.resolve(this.appdata_dir, "saves");
-        this.targets_dir = path.resolve(this.appdata_dir, "targets");
-        this.screenshots_dir = path.resolve(this.appdata_dir, "screenshots");
-        // this.tmp_dir = path.join(os.tmpdir(), this.appspace);
+        this.tmp_dir = path.resolve(appdata_dir, "tmp");
+        this.logs_dir = path.resolve(appdata_dir, "logs");
+        this.cache_dir = path.resolve(appdata_dir, "cache");
+        this.clients_dir = path.resolve(appdata_dir, "clients");
+        this.conf_path = path.resolve(appdata_dir, "config.json");
+        this.files_dir = path.resolve(appdata_dir, "files");
+        this.saves_dir = path.resolve(appdata_dir, "saves");
+        this.targets_dir = path.resolve(appdata_dir, "targets");
+        this.screenshots_dir = path.resolve(appdata_dir, "screenshots");
         this.socket_dir = path.join(this.tmp_dir, "socks");
-
-        if (this.#is_master) await this.#cleanup_sockets();
-        this.ipc_socket_path = this.get_socket_path(`ipc`);
-        this.ipc = new IPC(this.#is_master, this.ipc_socket_path);
-
-        if (process.env.LIVESTREAMER_DOCKER) {
-            if (this.#is_master) {
-                this.ipc.on("internal:log", (log)=>this.logger.log_to_stdout(log));
-            } else {
-                this.logger.on("log", (log)=>this.ipc.emit("internal:log", log));
-            }
-        }
 
         if (this.#is_master) {
             await fs.mkdir(this.appdata_dir, { recursive: true });
@@ -154,14 +166,26 @@ const core = new class Core extends events.EventEmitter {
             await fs.mkdir(this.targets_dir, { recursive:true });
             await fs.mkdir(this.screenshots_dir, { recursive:true });
             await fs.mkdir(this.socket_dir, { recursive:true });
-            
+            await this.#cleanup_sockets();
+        }
+        this.ipc_socket_path = this.get_socket_path(`ipc`);
+        this.ipc = new IPC(this.#is_master, this.name, this.ipc_socket_path);
+
+        /* if (process.env.LIVESTREAMER_DOCKER) {
+            if (this.#is_master) {
+                this.ipc.on("internal:log", (log)=>this.logger.log_to_stdout(log));
+            } else {
+                this.logger.on("log", (log)=>this.ipc.emit("internal:log", log));
+            }
+        } */
+
+        if (this.#is_master) {
             this.ipc.on("core:module_restart", (m)=>this.module_restart(m));
             this.ipc.on("core:module_start", (m)=>this.module_start(m));
             this.ipc.on("core:module_stop", (m)=>this.module_stop(m));
             
-            this.#conf_paths.push(path.join(__dirname, "config.default.js"));
             for (let m of Object.values(this.modules)) {
-                let conf_path = path.join(m, "config.default.js");
+                let conf_path = path.join(m, "..", "config.default.js");
                 if (await fs.exists(conf_path)) {
                     this.#conf_paths.push(conf_path);
                 } else {
@@ -169,7 +193,9 @@ const core = new class Core extends events.EventEmitter {
                 }
             }
             if (process.env.LIVESTREAMER_CONF_PATH) this.#conf_paths.push(process.env.LIVESTREAMER_CONF_PATH);
-            if (this.#opts.config) this.#conf_paths.push(this.#opts.config);
+            if (this.#opts.configs) {
+                this.#conf_paths.push(...this.#opts.configs);
+            }
 
             this.#conf_paths.push(...await glob("config.*"));
             let conf_watcher = chokidar.watch([...this.#conf_paths], {awaitWriteFinish:true});
@@ -185,7 +211,7 @@ const core = new class Core extends events.EventEmitter {
 
         await this.#load_conf();
         
-        this.logger.info(`Initializing ${this.name}...`);
+        this.logger.info(`Initializing ${this.name} [${this.#is_master?"MASTER":"FORK"}]...`);
         this.logger.info(`  cwd: ${this.cwd}`);
         this.logger.info(`  appdata: ${this.appdata_dir}`);
         if (utils.has_root_privileges()) {
@@ -205,7 +231,7 @@ const core = new class Core extends events.EventEmitter {
             await this.#compress_logs();
             this.#compress_logs_cron = cron.schedule(this.conf["core.compress_logs_schedule"], ()=>this.#compress_logs());
             if (this.use_pm2) {
-                await utils.promisify(pm2.connect.bind(pm2))(true);
+                await pm2("connect", true);
             }
             for (let m in this.modules) {
                 this.module_start(m);
@@ -218,7 +244,7 @@ const core = new class Core extends events.EventEmitter {
     async module_start(m) {
         if (this.#is_master) {
             this.logger.info(`Starting ${m}...`);
-            var script_path = path.resolve(this.modules[m], "index.js");
+            var script_path = this.modules[m];
             var node_args = [];
             if (this.debug && this.conf[`${m}.inspect`]) {
                 node_args.push(`--inspect=${this.conf[`${m}.inspect`]}`);
@@ -234,19 +260,15 @@ const core = new class Core extends events.EventEmitter {
                     "node_args": node_args,
                     // "cron_restart" : null // prevent inheriting
                 };
-                if (m == "electron") {
-                    p.interpreter = (await import("electron")).default;
-                }
-                return utils.promisify(pm2.start.bind(pm2))(p);
+                return pm2("start", p);
             } else {
                 if (!this.#subprocesses[m]) {
                     let p;
-                    if (m == "electron") {
-                        p = child_process.spawn((await import("electron")).default, [...node_args, script_path]);
-                    } else {
-                        // p = child_process.spawn("node", [...node_args, script_path]);
-                        p = child_process.fork(script_path, {execArgv: node_args, stdio:"ignore"})
-                    }
+                    // p = child_process.spawn("node", [...node_args, script_path]);
+                    p = child_process.fork(script_path, {execArgv: node_args, stdio: ["ignore", "inherit", "inherit", "ipc"] });
+                    p.on("error", (err)=>{
+                        console.error(err);
+                    });
                     this.#subprocesses[m] = p;
                 }
             }
@@ -258,7 +280,7 @@ const core = new class Core extends events.EventEmitter {
     async module_restart(m) {
         if (this.#is_master) {
             if (core.use_pm2) {
-                return utils.promisify(pm2.restart.bind(pm2))(`${this.appspace}.${m}`);
+                returnpm2("restart", `${this.appspace}.${m}`);
             } else {
                 await this.module_stop(m);
                 await this.module_start(m);
@@ -272,7 +294,7 @@ const core = new class Core extends events.EventEmitter {
         if (this.#is_master) {
             this.logger.info(`Stopping ${m}...`);
             if (core.use_pm2) {
-                return utils.promisify(pm2.stop.bind(pm2))(`${this.appspace}.${m}`);
+                return pm2("stop", `${this.appspace}.${m}`);
             } else {
                 if (this.#subprocesses[m]) {
                     var p = this.#subprocesses[m];
@@ -342,7 +364,7 @@ const core = new class Core extends events.EventEmitter {
             //   res.redirect("https://" + req.headers.host + req.path);
             // }
             if (req.url == "/favicon.ico") {
-                let f = path.join(this.cwd, "favicon.ico");
+                let f = path.join(this.assets_dir, "icon.ico");
                 res.writeHead(200, { 'Content-Type': "image/x-icon" });
                 res.end(await fs.readFile(f));
                 return;
@@ -392,8 +414,9 @@ const core = new class Core extends events.EventEmitter {
     }
 
     async #load_conf() {
+        utils.clear(this.conf);
         if (this.#is_master) {
-            this.conf = {};
+            Object.assign(this.conf, config_default);
             for (let conf_path of this.#conf_paths) {
                 if (await fs.exists(conf_path)) {
                     let conf_json = (await utils.import(conf_path)).default;
@@ -402,13 +425,15 @@ const core = new class Core extends events.EventEmitter {
                     }
                 }
             }
+            if (this.#opts.config) {
+                Object.assign(this.conf, this.#opts.config);
+            }
         } else {
-            this.conf = JSON.parse(await fs.readFile(this.conf_path, "utf-8"))
+            Object.assign(this.conf, JSON.parse(await fs.readFile(this.conf_path, "utf-8")));
         }
         this.use_https = !!(this.conf["core.https_port"] && (await this.#get_certs()));
-        this.host = `${this.conf["core.hostname"]}:${this.conf["core.http_port"]}`;
-        this.http_url = `http://${this.host}`;
-        this.https_url = `https://${this.host}`;
+        this.http_url = `http://${this.conf["core.hostname"]}:${this.conf["core.http_port"]}`;
+        this.https_url = `https://${this.conf["core.hostname"]}:${this.conf["core.https_port"]}`;
         this.url = this.use_https ? this.https_url : this.http_url;
         this.#auth = this.conf["core.auth"] ? (await utils.import(this.conf["core.auth"])) : null;
         if (this.#is_master) {
@@ -472,13 +497,23 @@ const core = new class Core extends events.EventEmitter {
     //     return [inspect_hostname, +inspect_port];
     // }
 
-    async #destroy() {
+    async shutdown() {
+        if (this.#shutdown) return;
+        this.#shutdown = true;
         console.info("Handling shutdown...");
         this.emit("destroy");
         if (this.#app && this.#app.destroy) await this.#app.destroy();
+        if (this.#is_master) {
+            console.log("Signalling child processes to shutdown.");
+            for (var p of Object.values(this.#subprocesses)) {
+                p.send("shutdown");
+            }
+            await Promise.all(Object.values(this.#subprocesses).map(p=>new Promise(r=>p.on("exit", r))));
+            console.log("Done.");
+        }
         await this.ipc.destroy();
     }
 }
 
+export const core = globals.core = new Core();
 export default core;
-export * from "./internal.js";
