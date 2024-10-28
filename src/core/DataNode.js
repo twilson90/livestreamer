@@ -1,7 +1,7 @@
 import events from "node:events";
-import { utils } from "./internal.js";
+import * as utils from "./utils.js";
 
-class DataNode extends events.EventEmitter {
+export class DataNode extends events.EventEmitter {
     $ = new utils.Observer();
     get id() { return this.$.id; } // always a string
 
@@ -32,4 +32,5 @@ class DataNode extends events.EventEmitter {
         return `[${this.constructor.name}:${this.id}]`;
     }
 }
+
 export default DataNode;

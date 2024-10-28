@@ -1,10 +1,13 @@
 import WebSocket from "ws";
 import path from "node:path";
 import fs from "fs-extra";
-import { utils, ClientBase, Logger, core } from "./internal.js";
+import core from "./index.js";
+import Logger from "./Logger.js";
+import * as utils from "./utils.js";
+/** @import { ClientBase } from './index.js' */
 
-/** @template {ClientBase} T  */
-class ClientServer {
+/** @template { ClientBase } T  */
+export class ClientServer {
     #$_changes = [];
     /** @type {Record<PropertyKey,T>} */
     clients = {};
@@ -35,7 +38,6 @@ class ClientServer {
             }
             var alive = true;
             var client = new ClientClass(++this.#cid, this, ws, request, user);
-            client.init();
 
             this.clients[client.id] = client;
             this.#client_history[client.id] = client.$;

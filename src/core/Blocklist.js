@@ -1,15 +1,8 @@
 import fs from "node:fs";
 import chokidar from "chokidar";
-import { utils } from "./internal.js";
+import * as utils from "./utils.js";
 
-/* function handle_input(c) {
-    if (typeof c === "string") {
-        if (utils.is_valid_ip(c)) c = {ip:c};
-        else c = {username:c};
-    }
-    return c;
-} */
-class Blocklist {
+export class Blocklist {
     $;
     #path;
     #expire_timeouts = {};

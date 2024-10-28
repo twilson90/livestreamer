@@ -1,8 +1,8 @@
 import path from "node:path";
 import fs from "fs-extra";
-import { core } from "./internal.js";
+import core from "./index.js";
 
-class Cache {
+export class Cache {
     #cache = {};
     #default_expire = 0;
     #dir;

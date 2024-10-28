@@ -1,5 +1,6 @@
-import { utils } from "./internal.js";
-class PropertyCollection {
+import * as utils from "./utils.js";
+
+export class PropertyCollection {
     __get_defaults() {
         return Object.fromEntries(
             Object.entries(this)

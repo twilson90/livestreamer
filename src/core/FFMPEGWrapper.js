@@ -2,9 +2,11 @@ import os from "node:os";
 import events from "node:events";
 import readline from "node:readline";
 import child_process from "node:child_process";
-import { utils, Logger, core } from "./internal.js";
+import core from "./index.js";
+import Logger from "./Logger.js";
+import * as utils from "./utils.js";
 
-class FFMPEGWrapper extends events.EventEmitter {
+export class FFMPEGWrapper extends events.EventEmitter {
     /** @type {import("child_process").ChildProcessWithoutNullStreams} */
     #process;
     #logger;

@@ -1,6 +1,4 @@
 /node_modules/
-/mpv/
-/conf/
-/utils/
-/docker-compose.yml
-/extra/
+/bin/
+/out/
+/dist/

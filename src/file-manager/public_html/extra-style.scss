@@ -1,0 +1,131 @@
+body, html {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+	overflow: hidden;
+}
+.elfinder-button-icon-downloadtree {
+	background-position: 0 -384px;
+}
+.elfinder-file-edit {
+	padding:5px !important;
+	box-sizing: border-box !important;
+}
+
+.elfinder {
+	border-radius: 0px;
+	border: none !important;
+    height: 100%;
+	.ui-dialog-titlebar {
+		/* .ui-icon {
+			margin:0 0 2px 0 !important;
+		} */
+	}
+	.elfinder-quicklook{
+		&.elfinder-quicklook-fullscreen {
+			z-index:1000 !important;
+		}
+		// padding-bottom: 0 !important;
+		.elfinder-quicklook-title {
+			line-height: 18px;
+		}
+		/* display: flex !important;
+		flex-direction: column !important;
+		padding:0 !important;
+		.ui-dialog-titlebar {
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			height: 25px !important;
+			position: relative !important;
+			box-sizing: border-box !important;
+			.ui-dialog-titlebar-close {
+				display: flex !important;
+				align-items: center !important;
+				background: none !important;
+				height: 100% !important;
+				margin: 0 2px 0 0 !important;
+				inset: 0 0 0 auto !important;
+				&>* {
+					margin: 0 0 0 2px !important;
+				}
+			}
+		}
+		.elfinder-quicklook-preview {
+			height: calc(100% - 25px);
+		} */
+		/* .elfinder-quicklook-navbar {
+			opacity: 0;
+			visibility: hidden;
+			transition: opacity 0.2s;
+			padding: 5px 0 !important;
+			background: linear-gradient(0deg, rgba(0,0,0,1) 0%, rgba(0,0,0,0) 100%) !important;
+			inset: auto 0 0 0 !important;
+			margin: 0 !important;
+			width: 100% !important;
+			border-radius: 0 !important;
+			border: none !important;
+			display:flex !important;
+			justify-content: center;
+		} */
+		/* &:hover {
+			.elfinder-quicklook-navbar {
+				opacity: 1;
+				visibility: visible;
+			}
+		} */
+	}
+	.elfinder-cwd-wrapper {
+		padding:0 !important;
+	}
+	.elfinder-navbar {
+		max-width:33.333%;
+	}
+	.elfinder-cwd {
+		&.elfinder-cwd-view-icons {
+			.elfinder-cwd-file {
+				margin: 0 !important;
+			}
+		}
+		&.elfinder-table-header-sticky table {
+			padding:0;
+			border: 0;
+		}
+		.elfinder-cwd-file {
+			border-radius: 0 !important;
+			&>* {
+				color: #212121 !important;
+			}
+			&.ui-state-hover {
+				background:rgba(158, 203, 255, 0.5);
+			}
+			&.ui-selected {
+				background:rgba(118, 182, 255, 0.5);
+				outline-offset: -1px;
+				outline: 1px solid #0071a1;
+			}
+			.elfinder-cwd-file-wrapper {
+				background: none !important;
+			}
+			.elfinder-cwd-filename {
+				background: none !important;
+			}
+			.ui-state-hover, .ui-selected {
+				background: none !important;
+			}
+		}
+		&>table {
+			padding:0 !important;
+			tbody td:first-child {
+				position: static;
+			}
+		}
+	}
+	.elfinder-statusbar {
+		border-radius: 0 !important;
+	}
+	
+	.elfinder-quicklook, .ui-dialog {
+		box-shadow: 0px 0px 5px 0px rgba(0,0,0,0.75);
+	}
+}

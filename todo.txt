@@ -41,3 +41,4 @@
 [ ] AUTO values for nms player label text show selected value
 [ ] fix_2_track_playlist (when creating a 2 track playlist automatically put audio in one column, video in another)
 [ ] vid generated from loop file, why isnt it cutting the beginning after seek? restarts. Must be a reason, figure  out why I did it that way or fix it.
+[ ] slice at timeline cursor delestt the item apparently if cursor not over the item

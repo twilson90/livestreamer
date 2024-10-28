@@ -1,13 +1,12 @@
 import events from "node:events";
 import net from "node:net";
 import readline from "node:readline";
-import {core, utils} from "./internal.js";
-import fs from "fs-extra";
+import * as utils from "./utils.js";
 
 var _ignore_data_changes = false;
 
 /** @typedef {{name:string,pid:number,ppid:number,sock:net.Socket}} Process */
-export default class IPC extends events.EventEmitter {
+export class IPC extends events.EventEmitter {
     /** @type {Record<any,Process>} */
     processes = {};
     /** @type {Record<PropertyKey,net.Socket>} */
@@ -24,7 +23,7 @@ export default class IPC extends events.EventEmitter {
     #server;
     $ = new utils.Observer();
 
-    constructor(is_master, socket_path) {
+    constructor(is_master, name, socket_path) {
         super();
         this.is_master = is_master;
         this.socket_path = socket_path;
@@ -32,7 +31,7 @@ export default class IPC extends events.EventEmitter {
         this.ppid = process.ppid;
         /** @type {Process} */
         this.process = {
-            name: core.name,
+            name,
             pid: this.pid,
             ppid: this.ppid,
             sock: null
@@ -164,7 +163,7 @@ export default class IPC extends events.EventEmitter {
             for (var id of Object.keys(this.#socks)) {
                 this.#socks[id].destroy();
             }
-            await fs.rm(this.socket_path);
+            // await fs.rm(this.socket_path);
         }
     }
 }
@@ -185,3 +184,5 @@ function write(sock, event, data) {
         });
     });
 }
+
+export default IPC;

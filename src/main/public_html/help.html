@@ -1,0 +1,151 @@
+<div class="help">
+    <button class="close"><i class="fas fa-times"></i></button>
+    <div class="inner">
+        <h2 style="text-align: center;">Live Streamer Help</h2>
+        <div style="text-align: center; color:grey;">[Last updated 01/09/21]</div>
+        <hr>
+        <div class="section" id="help-general">
+            <p>Live Streamer provides a simple interface for streaming media playlists.</p>
+        </div>
+        <hr>
+        <div class="section" id="help-sessions">
+            <h3>Session Manager</h3>
+            <p>First you need to open a session tab. You can create one by clicking the + button at the top of the page, or open a pre-existing one by clicking on a session tab.</p>
+            <ul>
+                <li><i class="fas fa-edit"></i> Renames the current session.</li>
+                <li><i class="fas fa-lock-open"></i> Toggles the lock on the current session. With the lock enabled no other users can interact with your session.</li>
+                <li><i class="fas fa-trash"></i> Closes the session.</li>
+                <li><b>Load / Save</b> : Allows you to download / upload your session data. Loading a session will overwrite all the existing session data.</li>
+            </ul>
+            <p class="note">Note 1 - You can also rearrange sessions dragging and dropping them.</p>
+            <p class="note">Note 2 - To the right of the session manager interface is a display of all the active users in the current session.</p>
+        </div>
+        <hr>
+        <div class="section" id="help-stream-settings">
+            <h3>Stream Settings</h3>
+            <p>At the top of the session interface are a series of inputs for configuring the stream settings. These cannot be changes after you've started streaming.</p>
+            <ul>
+                <li><p><b>RTMP</b> : Manually set the livestream service endpoint. This option comes with additional parameters:</p>
+                    <ul>
+                        <li><b>Stream Host</b> : The url supplied by your streaming service (should start with rtmp://).</li>
+                        <li><b>Stream Key</b> : The key supplied by your streaming service (usually alphanumeric text).</li>
+                        <li><b>Stream URL</b> : The url to your channel where you can view the stream (ie, your fc2 channel url).</li>
+                        <li><b>Backup Service</b> : We also provide some backup streaming services where your livestream will appear.<br><b style="color: red">Warning</b> - If the server's network is under load or the backup service has limited bandwidth, latency (buffering) will be apparent on both output streams.</li>
+                    </ul>
+                </li>
+                <li><b>Resolution</b> : Choose from a list of standard resolutions. 1280x720 is recommended. Anything higher may be too much work for the server to transcode in realtime.</li>
+                <li><b>Preset</b> : A list of presets for the encoder. Not much difference between "ultrafast", "superfast" and "veryfast". The preset "veryfast" is generally considered the best for streaming, anything slower may be too much work for the server.</li>
+                <li><b>Video Bitrate</b> : 4000-5000 kbps is the ideal bitrate for 720p/1080p video. Only lower if for some reason the server's network speed is particularly slow.</li>
+            </ul>
+            <p class="note">Note - Audio bitrate is permanently set to 160 kbps.</p>
+        </div>
+        <hr>
+        <div class="section" id="help-stop-start">
+            <h3>Starting, Scheduling and Stopping</h3>
+            <p>After editing your playlist and you're ready, click <b>"START"</b> to start streaming.</p>
+            <p></p>
+            <p>Alternatively, you can schedule your stream to start at a specific time and date by clicking "Schedule", which will show a dialog with the following options:</p>
+            <ul>
+                <li><b>Start Time & Date</b> : Set the exact time and date that the stream will begin.</li>
+            </ul>
+            <p class="note">Note - Make sure the playlist position is set to the beginning if that's what you intend to start.</p>
+        </div>
+        <hr>
+        <div class="section" id="help-playlist">
+            <h3>Playlist</h3>
+            <p>Add files or <a href="https://github.com/ytdl-org/youtube-dl/blob/master/docs/supportedsites.md" target="_blank">YouTube-DL compatible video URLs</a> with the buttons below the playlist.</p>
+            <p>You can also upload files with the filemanager interface or via FTP (see FTP Details below).</p>
+            <p>New items are added after the currently selected item or at the bottom of the playlist.</p>
+            <p>Double clicking an item immediately plays it if the stream is running, or sets the playlist to begin from there when you do start streaming.</p>
+            <p>Right clicking an item brings up a context menu with additional options for configuring each media file:</p>
+            <ul>
+                <li><b>Play Now</b> : Same as double click [Enter].</li>
+                <li><b>Information</b> : Technical information.</li>
+                <li><b>Rescan</b> : If the file has been moved or updated, rescanning them will reflect these changes back in the playlist. If no files are selected it will rescan every file in the playlist.</li>
+                <li><b>Modify</b> : Opens a new dialog for configuring many properties (Aspect Ratio, Subtitle settings, etc.). See the "Modify" section below for additional details.</li>
+                <li><b>Delete</b> : Removes the file from the playlist.</li>
+                <li><b>Copy</b> : Copies the selected items to the clipboard [Ctrl+C].</li>
+                <li><b>Paste</b> : Pastes the clipboard items to the playlist after the currently selected item or at the bottom [Ctrl+V].</li>
+                <li><b>Add Logo</b> : Creates a media item of just the logo that loops infinitely. The new item is added after the currently selected item or at the bottom.</li>
+                <li><b>Generate Schedule</b> : A useful tool for calculating the approximate time of day that each programme starts.</li>
+            </ul>
+            <p>You can select multiple playlist items at once with the Shift key, or cherry pick them by holding the Ctrl key. You can also rearrange selected playlist items by dragging and dropping them. You can also use the up and down arrow keys to select adjacent playlist items.</p>
+            <p>To the right of each item is the  media's duration and a list of the media's codecs and video dimensions. A red codec is one that potentially poses issues with the video decoder. Hovering over a playlist item will show a list of potential issues if any are found.</p>
+            <p class="note">Note 1 - When the playlist has finished playing, it will generate a new entry titled "livestreamer://empty", which will play indefinitely, unless you manually play a file or stop the stream. This allows the stream to end gracefully, otherwise for viewers who are generally 10-15 seconds behind the player, it would immediately stop.</p>
+            <p class="note">Note 2 - Subtitles in the same directory as a media file with the same base name are added automatically. Similarly, any audio file will automatically load any cover art in the same directory named AlbumArt.jpg, cover.jpg, front.jpg, thumb.jpg or Folder.jpg</p>
+        </div>
+        <hr>
+        <div class="section" id="help-player">
+            <h3>Player Interface</h3>
+            <ul>
+                <li>
+                    <b>Seek Bar</b> : Click / drag on the seekbar to move to a specific time in the media file.
+                    <ul>
+                        <li>Chapter markers are represented with vertical lines.</li>
+                        <li>For online videos, loaded segments are portrayed as green horizontal lines. Seeks within these bounds are immediate, however seeking outside of these bounds will result in a delay.</li>
+                    </ul>
+                </li>
+                <li><i class="fas fa-step-backward"></i> Play the previous file in the playlist.</li>
+                <li><i class="fas fa-fast-backward"></i> Previous chaper.</li>
+                <li><i class="fas fa-backward"></i> Go backward 30 seconds.</li>
+                <li><i class="fas fa-pause"></i> Toggle Pause / Play. Pausing this will pause the entire stream output, resulting in buffering for viewers. Pause for too long and the streaming service will likely disconnect the live streamer.</li>
+                <li><i class="fas fa-forward"></i> Go forward 30 seconds.</li>
+                <li><i class="fas fa-fast-forward"></i> Next chaper.</li>
+                <li><i class="fas fa-step-forward"></i> Skip to the next file in the playlist.</li>
+                <li><i class="fas fa-sync"></i> Reload the currently playing file, and return to the current time position. Useful if you have changed settings in the Modify dialog. Reloading the file may also fix some A/V sync issues if they emerge.</li>
+                <li><i class="far fa-clock"></i> Seek to an exact time position of the currently playing media.</li>
+                <li><b>Volume Slider</b> : Click and drag to adjust volume (max 200%). Double click the handle to return to 100%.</li>
+                <li><i class="fas fa-volume-down"></i> / <i class="fas fa-volume-up"></i> Reduce / Increase the volume by 5%.</li>
+                <!-- <li>M : Toggle mute.</li> -->
+            </ul>
+        </div>
+        <hr>
+        <div class="section" id="help-player-interface">
+            <h3>Player Options</h3>
+            <ul>
+                <li><b>Aspect Ratio</b> : Stretches/squashes the video according to the selected aspect ratio. Some media files may display as 4:3 but were recorded in 16:9, this allows you to fix that.</li>
+                <li><b>Deinterlace</b> : Some video files are interlaced and you may notice combing artifacts (horizontal lines), deinterlacing fixes that and doubles the framerate. Correctly encoded interlaced files have an interlaced flag and deinterlacing will be enabled by default. If the interlaced flag is missing you will need to set it manually here. If the encoded file is interlaced and scaled down by the encoder, then the interlacing fields will be corrupted and deinterlacing will not look pretty.</li>
+                <li><b>Loop</b> : Loop the media file indefinitely. Playlist will only progress to the next item when looping is turned off of you skip to another file manually.</li>
+                <li><b>Audio Track / Subtitle Track</b> : Some media files have multiple audio / subtitle tracks and sometimes unwanted subtitles are enabled by default. Select the track to play with the file, or with subtitles you can disable them altogether by selecting <b>None</b>.</li>
+                <li><b>Audio / Subtitle Delay</b> : Only adjust if the audio or subtitles are out of sync with the video. Positive values delay the track, negative values advances them.</li>
+                <li><b>Volume Normalization</b> : Often audio levels vary between separate media files. Enabling volume normalization effectively boosts quiet audio or reduces excessively loud audio. "dynaudnorm1" is the best preset, "dynaudnorm2" is a bit subtler and less effective.</li>
+                <li><b>Frame Rate</b> : Video frame rates usually vary between a set of standard frame rates. By default the option <b>Variable</b> is selected. This adapts the output stream's frame rate to the currently playing media file and delivers the best results, but this is not standard practice and may cause issues with some streaming services. So if you're curious you can try forcing a standard frame rate, of which 30 fps is recommended. This will however lead to repeated frames or frame skipping, so the resulting video will not look as smooth.</li>
+                <li><b>Default Background</b> : What to display as the background image when audio files are playing. If the selected option is not applicable it falls back to the Logo:</li>
+                <ul>
+                    <li><b>Logo</b> : Just display the logo we all know and love.</li>
+                    <li><b>Embedded Album Art</b> : Displays an image that is embedded into the audio file as album art. If no embedded images are detected, fallback to Logo.</li>
+                    <li><b>Embedded or External</b> : Any album art image files that exist in the same directory as the audio file, with standard naming convention (Cover.jpg, Cover.png, AlbumArt.jpg, AlbumArt.png, etc.) If no external artowrk detected fallback to any Embedded Album Art.</li>
+                    <li><b>Custom Image / Video</b> : Sets a custom image or video loop to display while an audio file is playing.</li>
+                </ul>
+                <li><b>Audio Visualization</b> : If you're playing an audio file, put some wibbly wobbly waves ontop of the background image.</li>
+            </ul>
+            <p class="note">Note - Dropdown options with the * suffix indicates the default option and emboldened values indicates a changed value.</p>
+        </div>
+        <hr>
+        <div class="section" id="help-overview">
+            <h3>Overview & Session Logs</h3>
+            <p>These 2 UIs provide some helpful information on the status of the current session and the stream.</p>
+            <p>Each log has a severity level and a category name to describe the origin of the log message. The default category is simply named "log".</p>
+            <p>The graph simply represents the encoding speed value taken from the seesion's frequent FFmpeg logs. After a short period of initialization, the graph should level out at 1.00x speed.</p>
+            <p>If it drops below 1.00 then the transcoder is struggling to encode at realtime and buffering will be evident for viewers.</p>
+            <p>When the speed drops just below 1.00 and hovers around 0.99 this is usually a sign of network congestion on the server side or the streaming service's side, but I'm not 100% sure.</p>
+        </div>
+        <hr>
+        <div class="section" id="help-modify-options">
+            <h3>Modifying Media</h3>
+            <p>With one or more items selected, right click the playlist and click <b>Modify</b> in the context menu.</p>
+            <p>This is a particularly useful feature. If you know a certain file has the wrong aspect ratio or unwanted subtitles, you can pre-emptively change these settings before the file begins playing.</p>
+            <p>This works similarly to the <i>Player Options</i> but it applies changes to playlist items, rather than the currently playing media. You can set all the options covered in the <i>Player Options</i> section and some extras:</p>
+            <ul>
+                <li><b>Start / End Time</b> : Set the media's start time to begin late and the end time to finish early. Useful if you want to show a snippet of something or skip a boring intro.<br>You can also set the end time on an image or a logo item to define the item's duration.</li>
+                <li><b>Label</b> : Changes the name of the item in the playlist UI. Useful if the filename is incomprehensible and you can't be bothered to rename it in the file system.</li>
+                <li><b>Custom Image / Video</b> : Sets an image or video loop to display while the audio track is playing. If cover art is embedded in the audio file this option overrides it.</li>
+                <li><b>Additional Subtitles</b> : Add an additional subtitle track to the media file. If you use this option it overrides any embedded subtitles in the media file. The additional subtitle track will not appear as an option in Modify dialog, but they will appear as an option (and will be selected by default) in the <i>Player Interface</i> when the media file starts playing.</li>
+            </ul>
+            <p class="note">Note 1 - If you make changes to a file that is currently playing you must reload ( <i class="fas fa-sync"></i> ) the file to see the effects.</p>
+            <p class="note">Note 2 - You can select multiple playlist items and modify them at the same time, but be carfeul not to overwrite all your carefully prepared modifications.</p>
+        </div>
+        <hr>
+        <p>If you need any more help just message me (<strong>hedgehog90#9963</strong>) on <a href="https://discord.com/app" target="_blank">Discord</a>.</p>
+    </div>
+</div>

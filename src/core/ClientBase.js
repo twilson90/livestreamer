@@ -1,8 +1,12 @@
 import http from "node:http";
 import WebSocket from "ws";
-import { core, utils, DataNode, Logger, ClientServer } from "./internal.js";
+import core from "./index.js";
+import * as utils from "./utils.js";
+import Logger from "./Logger.js";
+import DataNode from "./DataNode.js";
+/** @import { ClientServer } from './types.d.ts' */
 
-class ClientBase extends DataNode {
+export class ClientBase extends DataNode {
 
     get ip() { return this.$.ip; }
     get ip_hash() { return this.$.ip_hash; }
@@ -37,6 +41,7 @@ class ClientBase extends DataNode {
             Object.assign(this.$, userdata);
         }
         this.logger.info(`${JSON.stringify(this.$)} connected`);
+        this.init();
     }
     _onclose(code) {
         this.logger.info(`disconnected.`);
@@ -100,6 +105,8 @@ class ClientBase extends DataNode {
         super.destroy();
         this.ws.close();
     }
+
+    init() { throw new Error("not implemented"); }
 }
 
 export default ClientBase;

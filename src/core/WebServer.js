@@ -1,11 +1,10 @@
 import http from "node:http";
 import https from "node:https";
 import WebSocket, { WebSocketServer } from "ws";
-import { core } from "./internal.js";
-import fs from "fs-extra";
+import core from "./index.js";
 
 /** @typedef {{http_port:Number, https_port:Number, username:string, password:string, ssl_key:string, ssl_cert:string, socket_path:string, ws:WebSocket.ServerOptions<typeof WebSocket, typeof http.IncomingMessage>}} Config */
-export default class {
+export class WebServer {
     /** @type {http.Server} */
     server;
     /** @type {Record<PropertyKey, import("node:net").Socket>} */
@@ -42,6 +41,8 @@ export default class {
 
         this.socket_path = core.get_socket_path(`${core.name}_http`);
         core.logger.info(`Starting HTTP server on socket ${this.socket_path}...`);
+        console.info(new URL(`/${core.name}/`, core.http_url).toString());
+        
         this.server = http.createServer(http_opts, async (req, res)=>{
             // accesslog(req, res, undefined, (l)=>core.logger.debug(l));
             if (opts.auth) {
@@ -63,7 +64,6 @@ export default class {
             }
             //if (req.headers.referrer || req.headers.referer) {
             // var url = new URL(req.headers.referrer || req.headers.referer);
-            // var url = new URL(core.conf["cabtv.site_url"]);
             var allow_origin = opts.allow_origin;
             // var allow_origin = [...new Set([`${url.protocol}//${url.hostname}:*`, `${url.protocol}//${core.conf["core.hostname"]}:*`])].join(" ");
             res.setHeader('Access-Control-Allow-Origin', allow_origin);
@@ -110,6 +110,7 @@ export default class {
         for (var id of Object.keys(this.#socks)) {
             this.#socks[id].destroy();
         }
-        await fs.rm(this.socket_path);
+        // await fs.rm(this.socket_path);
     }
 }
+export default WebServer;

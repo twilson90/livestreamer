@@ -4,24 +4,25 @@ import * as tar from "tar";
 import * as uuid from "uuid";
 import is_image from "is-image";
 import { execa } from "execa";
-import file_url from "file-url";
 import pidtree from "pidtree";
 import { createRequire } from "module";
-import child_process, { ChildProcess } from "node:child_process";
-import { fileURLToPath } from 'url';
+import child_process from "node:child_process";
+import os from "node:os";
+import { fileURLToPath, pathToFileURL } from 'url';
 
 const node_require = createRequire(import.meta.url);
 
-import * as utils from "@hedgehog90/utils";
-
-export * from "@hedgehog90/utils";
+export * from "../utils/utils.js";
 export * from "node:util";
 
 export { pidtree };
 
 export function is_windows() { return process.platform === "win32"; }
 
-async function _import(p, o) { return import(file_url(p), o); }
+async function _import(p, o) {
+    if (!p.startsWith("file://")) p = pathToFileURL(p);
+    return import(p, o);
+}
 export { _import as import }
 
 export function require(require_path) {
@@ -31,6 +32,9 @@ export function require(require_path) {
 }
 
 export { execa }
+
+/** @template T @param {any} o @param {T} type @return {T} */
+export function cast(o, type) { return o; }
 
 export function is_main(meta) {
     if (!meta || !process.argv[1]) {
@@ -284,4 +288,50 @@ export async function tree_kill(pid, signal) {
 //         return tree;
 //     };
 //     return walk(parent_pid);
-// }
+// }import os from "node:os";
+
+export function cpuAverage() {
+    var totalIdle = 0, totalTick = 0;
+    var cpus = os.cpus();
+    for (var i = 0, len = cpus.length; i < len; i++) {
+        var cpu = cpus[i];
+        for (var type in cpu.times) {
+            totalTick += cpu.times[type];
+        }
+        totalIdle += cpu.times.idle;
+    }
+    return {idle: totalIdle / cpus.length, total: totalTick / cpus.length};
+}
+  
+export const array_avg = function (arr) {
+    if (arr && arr.length >= 1) {
+        const sumArr = arr.reduce((a, b) => a + b, 0)
+        return sumArr / arr.length;
+    }
+}
+  
+// load average for the past 1000 milliseconds calculated every 100
+/** @return {number} */
+export function getCPULoadAVG(avgTime = 1000, delay = 100) {
+    return new Promise((resolve, reject) => {
+        const n = ~~(avgTime / delay);
+        if (n <= 1) {
+            reject('Error: interval to small');
+        }
+        let i = 0;
+        let samples = [];
+        const avg1 = cpuAverage();
+        let interval = setInterval(() => {
+            if (i >= n) {
+                clearInterval(interval);
+                resolve(array_avg(samples));
+            }
+            const avg2 = cpuAverage();
+            const totalDiff = avg2.total - avg1.total;
+            const idleDiff = avg2.idle - avg1.idle;
+            samples[i] = (1 - idleDiff / totalDiff);
+            i++;
+        }, delay);
+    });
+}
+  

@@ -2,9 +2,9 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Watch",
+			"label": "dev",
 			"command": "npm",
-			"args": ["run", "watch"],
+			"args": ["run", "dev"],
 			"type": "shell",
 			"runOptions": {
 				"runOn": "folderOpen"

@@ -3,7 +3,9 @@ import events from "node:events";
 import fs from "fs-extra";
 import path from "node:path";
 import fetch from "node-fetch";
-import { core, utils, Logger } from "./internal.js";
+import core from "./index.js";
+import * as utils from "./utils.js";
+import Logger from "./Logger.js";
 
 const oauth2_path = "/oauth2";
 

@@ -34,7 +34,7 @@
             "type": "node",
             "request": "launch",
             "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd",
-            "program": "${workspaceFolder}/electron/index.js",
+            "program": "${workspaceFolder}/src/index.js",
             "cwd": "${workspaceFolder}",
             "env": {
                 "LIVESTREAMER_CONF_PATH": "${workspaceFolder}/conf/config.electron.js",
@@ -50,23 +50,58 @@
             "name": "livestreamer",
             "type": "node",
             "request": "launch",
-            "program": "index.js",
+            "program": "src/index.js",
             "env": {
                 "LIVESTREAMER_CONF_PATH": "conf/config.debugger.js",
             },
             "runtimeArgs": [
                 "--unhandled-rejections=strict",
             ],
-            "args": [
-                "-m", "modules/file-manager",
-                "-m", "modules/media-server",
-                "-m", "extra/cabtv",
-                "-m", "modules/main",
-            ],
             "skipFiles": [
                 "<node_internals>/**"
             ],
             // "trace":true
+        },
+        {
+            "name": "livestreamer-dist",
+            "type": "node",
+            "request": "launch",
+            "program": "dist/index.js",
+            "env": {
+                "LIVESTREAMER_CONF_PATH": "conf/config.debugger.js",
+            },
+            "runtimeArgs": [
+                "--unhandled-rejections=strict",
+            ],
+            "skipFiles": [
+                "<node_internals>/**"
+            ]
+        },
+        {
+            "name": "build",
+            "type": "node",
+            "request": "launch",
+            "program": "tools.js",
+            "args": ["build"],
+            "runtimeArgs": [
+                "--unhandled-rejections=strict",
+            ],
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+        },
+        {
+            "name": "package",
+            "type": "node",
+            "request": "launch",
+            "program": "tools.js",
+            "args": ["package"],
+            "runtimeArgs": [
+                "--unhandled-rejections=strict",
+            ],
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
         },
         {
             "name": "docker-root",

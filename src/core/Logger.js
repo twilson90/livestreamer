@@ -1,7 +1,8 @@
 import events from "node:events";
 import fs from "fs-extra";
 import path from "node:path";
-import { core, utils } from "./internal.js";
+import * as utils from "./utils.js";
+import globals from "./globals.js";
 
 /** @typedef {{file:boolean, stdout:boolean, prefix:string}} Settings */
 
@@ -10,7 +11,7 @@ const warn = console.warn;
 const error = console.error;
 const debug = console.debug;
 
-class Log {
+export class Log {
 	level;
 	message;
 	prefix;
@@ -33,7 +34,7 @@ class Log {
 					try { m = JSON.stringify(m) } catch {};
 				}
 				if (typeof m !== "string") m = String(m);
-				if (m.length > core.conf["core.logs_max_msg_length"]) m = m.substr(0, core.conf["core.logs_max_msg_length"]);
+				if (m.length > globals.core.conf["core.logs_max_msg_length"]) m = m.substr(0, globals.core.conf["core.logs_max_msg_length"]);
 				return m;
 			}).join(" ");
 		}
@@ -48,7 +49,7 @@ class Log {
 	}
 }
 
-class Logger extends events.EventEmitter {
+export class Logger extends events.EventEmitter {
 	static ERROR = "error";
 	static WARN = "warn";
 	static INFO = "info";
@@ -118,8 +119,8 @@ class Logger extends events.EventEmitter {
 	
 	/** @param {Log} log */
 	#log_to_file(log) {
-		if (!core.logs_dir) return;
-		let filename = path.join(core.logs_dir, `${this.name}-${utils.date_to_string(undefined, {time:false})}.log`);
+		if (!globals.core.logs_dir) return;
+		let filename = path.join(globals.core.logs_dir, `${this.name}-${utils.date_to_string(undefined, {time:false})}.log`);
 		if (this.#filename != filename) {
 			this.#end();
 			this.#filename = filename;
@@ -154,7 +155,7 @@ class Logger extends events.EventEmitter {
 			$[id] = log;
 			if (!logs[log.level]) logs[log.level] = [];
 			logs[log.level].push(id);
-			if (logs[log.level].length > core.conf["core.logs_max_length"]) {
+			if (logs[log.level].length > globals.core.conf["core.logs_max_length"]) {
 				delete $[logs[log.level].shift()];
 			}
 		});
@@ -171,4 +172,3 @@ async function write_header_line(stream, str, len=64) {
 }
 
 export default Logger;
-export { Log };

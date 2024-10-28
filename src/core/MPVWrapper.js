@@ -5,7 +5,9 @@ import path from "node:path";
 import fs from "fs-extra";
 import readline from "node:readline";
 import child_process from "node:child_process";
-import { core, utils, Logger } from "./internal.js";
+import core from "./index.js";
+import * as utils from "./utils.js";
+import Logger from "./Logger.js";
 
 const TIMEOUT = 10 * 1000;
 const default_observes = [
@@ -18,7 +20,7 @@ const default_observes = [
     "mute",
 ];
 
-class MPVWrapper extends events.EventEmitter {
+export class MPVWrapper extends events.EventEmitter {
     #message_id;
     #observed_id;
     #socket_requests;
