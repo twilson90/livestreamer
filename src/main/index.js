@@ -19,6 +19,7 @@ import ClientServer from "../core/ClientServer.js";
 import WebServer from "../core/WebServer.js";
 import Download from './Download.js';
 import Upload from './Upload.js';
+import InternalSessionProps from './InternalSessionProps.js';
 import InternalSession from './InternalSession.js';
 import ExternalSession from './ExternalSession.js';
 import Client from './Client.js';
@@ -71,7 +72,7 @@ export class MainApp {
         this.$.sessions = {};
         this.$.nms_sessions = {};
         this.$.clients = {};
-        this.$.logs = core.logger.create_observer();
+        this.$.logs = core.logger.register_observer();
         this.$.plugins = {};
         this.$.targets = {};
         this.$.uploads = {};
@@ -186,7 +187,7 @@ export class MainApp {
         var change_log_watcher = chokidar.watch(this.change_log_path, {awaitWriteFinish:true});
         change_log_watcher.on("change", ()=>update_change_log());
         
-        this.$.properties = new InternalSession.PROPS_CLASS();
+        this.$.properties = InternalSessionProps;
         
         await fs.mkdir(this.old_saves_dir, { recursive: true });
         await fs.mkdir(this.curr_saves_dir, { recursive: true });
@@ -417,7 +418,6 @@ export class MainApp {
         });
         var showdown_converter = new showdown.Converter();
         exp.use(compression({threshold:0}));
-        exp.use("/", express.static(this.public_html_dir));
         exp.use("/changes.md", async (req, res, next)=>{
             var html = showdown_converter.makeHtml(await fs.readFile(this.change_log_path, "utf8"));
             res.status(200).send(html);
@@ -429,6 +429,8 @@ export class MainApp {
         });
 
         exp.use("/screenshots", express.static(core.screenshots_dir));
+        
+        exp.use("/", await core.serve(this.public_html_dir));
         
         await this.wss.init("main", this.web.wss, this.$, Client, true);
     }

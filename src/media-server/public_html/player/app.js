@@ -1,6 +1,6 @@
 import * as dom_utils from "../../../utils/dom.js";
 import * as utils from "../../../utils/utils.js";
-import {jQuery, $} from '../../../../jquery-global.js';
+import {jQuery, $} from '../../../jquery-global.js';
 import Hls from "hls.js";
 import videojs from "video.js/core";
 import "video.js/dist/video-js.css";

@@ -151,7 +151,7 @@ export class MediaServerApp {
     /** @type {Record<PropertyKey,LiveSessionWrapper>} */
     lives = {};
 
-    init() {
+    async init() {
         this.blocklist_path = path.join(core.appdata_dir, "media-server-blocklist");
         this.media_dir = path.join(core.appdata_dir, "media");
 
@@ -181,10 +181,10 @@ export class MediaServerApp {
             },
         });
 
-        this.exp = express();
-        this.web = new WebServer(this.exp);
+        let exp = express();
+        this.web = new WebServer(exp);
         
-        this.exp.use(bodyParser.urlencoded({ extended: true }));
+        exp.use(bodyParser.urlencoded({ extended: true }));
         /* app.all('*', (req, res, next) => {
             res.header('Access-Control-Allow-Origin', "*");
             res.header('Access-Control-Allow-Headers', 'Content-Type,Content-Length, Authorization, Accept,X-Requested-With');
@@ -192,7 +192,7 @@ export class MediaServerApp {
             res.header('Access-Control-Allow-Credentials', true);
             req.method === 'OPTIONS' ? res.sendStatus(200) : next();
         }); */
-        this.exp.get('*.flv', (req, res, next) => {
+        exp.get('*.flv', (req, res, next) => {
             req.nmsConnectionType = 'http';
             new NodeFlvSession({}, req, res).run();
         });
@@ -215,16 +215,6 @@ export class MediaServerApp {
         });
 
         this.media_router = Router();
-        this.media_router.use(
-            compression({
-                threshold: 0,
-                filter:(req,res)=>{
-                    if (res.getHeaders()["content-type"] === "application/vnd.apple.mpegurl") return true;
-                    return false;
-                    // return !!req.url.match(/\.m3u8$/);
-                }
-            })
-        );
         this.media_router.get("/live/:id/:v.m3u8", async (req, res, next)=>{
             var {id, v} = req.params;
             var live = this.lives[id];
@@ -269,14 +259,21 @@ export class MediaServerApp {
                 // if (metadata) res.setHeader("segment-metadata", metadata);
             }
         }));
-        this.exp.use("/media", this.media_router);
-		this.exp.use('/', express.static(path.join(dirname, "public_html")));
-        this.exp.use('/logo', express.static(path.resolve(core.conf["media-server.logo"])));
-        this.exp.use('/conf', (req, res)=>{
+        exp.use(compression({
+            threshold: 0,
+            filter:(req,res)=>{
+                if (req.url.match(/.(mp4|ts)$/)) return false;
+                return false;
+            }
+        }));
+        exp.use("/media", this.media_router);
+        exp.use('/logo', express.static(path.resolve(core.conf["media-server.logo"])));
+        exp.use('/conf', (req, res)=>{
             res.json({
                 logo_url: core.conf["media-server.logo_url"]
             });
         });
+        exp.use("/", await core.serve(path.join(dirname, "public_html")));
 
         var main_streams = {};
         core.ipc.on("main.stream.started", (stream)=>{

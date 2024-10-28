@@ -1,5 +1,6 @@
 import * as utils from "../core/utils.js";
 import SessionBase from "./SessionBase.js";
+import SessionTypes from "./SessionTypes.js";
 
 export class ExternalSession extends SessionBase {
     nms_session;
@@ -12,7 +13,7 @@ export class ExternalSession extends SessionBase {
         var name = nms_session.publishArgs["name"] || `[${ip}]`;
         var id = nms_session.publishStreamPath.split("/").pop();
 
-        super(id, name);
+        super(SessionTypes.EXTERNAL, null, id, name);
 
         this.$.client_ip = ip;
         // this.$.nms_session_id = nms_session.id;

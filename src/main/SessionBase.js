@@ -1,10 +1,89 @@
 import core from "../core/index.js";
 import * as utils from "../core/utils.js";
 import DataNode from "../core/DataNode.js";
-import PropertyCollection from "../core/PropertyCollection.js";
 import Logger from "../core/Logger.js";
 import globals from "./globals.js";
 import Stream from "./Stream.js";
+
+export const Props = {
+    index: {
+        __default__: -1,
+    },
+    name: {
+        __default__: "",
+    },
+    type: {
+        __default__: "",
+        __save__: false
+    },
+    creation_time: {
+        __default__: 0,
+    },
+    version: {
+        __default__: "1.0",
+    },
+    stream_settings: {
+        method: {
+            __default__: "rtmp",
+            __options__: [["gui","External Player"], ["file","File"], ["rtmp","RTMP"], ["ffplay","FFPlay"]]
+        },
+        targets: {
+            __default__: [],
+        },
+        test: {
+            __default__: false,
+        },
+        osc: {
+            __default__: false,
+        },
+        title: {
+            __default__: "",
+        },
+        filename: {
+            __default__: "%date%.mkv",
+        },
+        frame_rate: {
+            __default__: 30,
+            __options__: [[24,"24 fps"],[25,"25 fps"],[30,"30 fps"],[50,"50 fps"],[60,"60 fps"]]
+            // ["passthrough","Pass Through"],["vfr","Variable"],
+        },
+        use_hardware: {
+            __default__: 0,
+            __options__: [[0,"Off"],[1,"On"]]
+        },
+        legacy_mode: {
+            __default__: 1,
+            __options__: [[0,"Off"],[1,"On"]]
+        },
+        resolution: {
+            __default__: "1280x720",
+            __options__: [["426x240", "240p [Potato]"], ["640x360", "360p"], ["854x480", "480p [SD]"], ["1280x720", "720p"], ["1920x1080", "1080p [HD]"]]
+        },
+        h264_preset: {
+            __default__: "veryfast",
+            __options__: ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
+        },
+        video_bitrate: {
+            __default__: 4000
+        },
+        audio_bitrate: {
+            __default__: 160
+        },
+        re: {
+            __default__: 1
+        },
+    },
+    target_configs: {
+        __default__: {},
+    },
+    logs: {
+        __default__: {},
+        __save__: false,
+    },
+    access_control: {
+        __default__: { "*": { "access":"allow" } },
+    },
+}
 
 export class SessionBase extends DataNode {
     /** @type {Logger} */
@@ -17,15 +96,17 @@ export class SessionBase extends DataNode {
     /** @type {Stream} */
     stream;
 
-    constructor(id, name) {
+    static Props = Props;
+
+    constructor(type, props_def, id, name) {
         super(id);
 
-        /** @type {PropertyCollection} */
-        let props = new this.constructor.PROPS_CLASS();
-        Object.assign(this.$, props.__get_defaults(), {
+        this.defaults = utils.properties(props_def || Props);
+        Object.assign(this.$, {
+            ...this.defaults,
+            type,
             index: Object.keys(globals.app.sessions).length,
             name: name || globals.app.get_new_session_name(),
-            type: this.constructor.name,
             creation_time: Date.now(),
         });
 
@@ -42,7 +123,7 @@ export class SessionBase extends DataNode {
             log.prefix = `[${logger_prefix}]${log.prefix}`;
             core.logger.log(log);
         })
-        this.$.logs = this.logger.create_observer();
+        this.$.logs = this.logger.register_observer();
 
         globals.app.sessions[this.id] = this;
         globals.app.$.sessions[this.id] = this.$;
@@ -95,90 +176,5 @@ export class SessionBase extends DataNode {
 
     tick() { }
 }
-
-const PROPS_CLASS = class extends PropertyCollection {
-    constructor() {
-        super();
-        this.index = {
-            default: -1,
-        };
-        this.name = {
-            default: "",
-        };
-        this.type = {
-            save: false
-        };
-        /* this.default_stream_title = {
-            default: "",
-        }; */
-        this.creation_time = {
-            default: 0,
-        };
-        this.stream_settings = {
-            props: new class extends PropertyCollection {
-                method = {
-                    default: "rtmp",
-                    options: [["gui","External Player"], ["file","File"], ["rtmp","RTMP"], ["ffplay","FFPlay"]]
-                };
-                targets = {
-                    default: [],
-                };
-                test = {
-                    default: false,
-                };
-                osc = {
-                    default: false,
-                };
-                title = {
-                    default: "",
-                };
-                filename = {
-                    default: "%date%.mkv",
-                };
-                frame_rate = {
-                    default: 30,
-                    options: [[24,"24 fps"],[25,"25 fps"],[30,"30 fps"],[50,"50 fps"],[60,"60 fps"]]
-                    // ["passthrough","Pass Through"],["vfr","Variable"],
-                };
-                use_hardware = {
-                    default: 0,
-                    options: [[0,"Off"],[1,"On"]]
-                };
-                legacy_mode = {
-                    default: 1,
-                    options: [[0,"Off"],[1,"On"]]
-                };
-                resolution = {
-                    default: "1280x720",
-                    options: [["426x240", "240p [Potato]"], ["640x360", "360p"], ["854x480", "480p [SD]"], ["1280x720", "720p"], ["1920x1080", "1080p [HD]"]]
-                };
-                h264_preset = {
-                    default: "veryfast",
-                    options: ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
-                };
-                video_bitrate = {
-                    default: 4000
-                };
-                audio_bitrate = {
-                    default: 160
-                };
-                re = {
-                    default: 1
-                };
-            }
-        };
-        this.target_configs = {
-            default: {},
-        };
-        this.logs = {
-            default: {},
-            save: false,
-        };
-        this.access_control = {
-            default: { "*": { "access":"allow" } },
-        };
-    }
-}
-SessionBase.PROPS_CLASS = PROPS_CLASS;
 
 export default SessionBase;

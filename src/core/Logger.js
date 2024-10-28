@@ -143,7 +143,7 @@ export class Logger extends events.EventEmitter {
 		this.removeAllListeners();
 	}
 
-	create_observer() {
+	register_observer() {
 		let $ = new utils.Observer();
 		let logs = {};
 		let _id = 0;

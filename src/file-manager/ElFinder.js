@@ -56,7 +56,7 @@ export class ElFinder {
 			if (user) next();
 			else res.send(401);
 		})
-		express.use(`/${connector}/`, router);
+		express.use(`/${connector}`, router);
 		
 		router.use(bodyParser.json({
 			limit: '50mb'

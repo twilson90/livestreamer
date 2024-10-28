@@ -18,10 +18,17 @@ export { utils, dom_utils, jQuery, $, Fancybox, noUiSlider, flvjs, Chart, Hammer
 export const { UI, add_class, remove_class, toggle_attribute, set_inner_html, set_children, set_attribute, set_select_options, set_text, set_value, set_style_property, update_style_properties, remove_style_property, toggle_class } = dom_utils;
 const { Observer } = utils;
 
+/** @import InternalSessionProps from "../InternalSessionProps.js" */
+
 Chart.register(zoomPlugin);
 // Chart.register(annotationPlugin);
 
 Sortable.mount(new MultiDrag());
+
+const SessionTypes = {
+    EXTERNAL: "ExternalSession",
+    INTERNAL: "InternalSession",
+}
 
 // if (window.videojs) window.videojs.options.autoplay = true;
 // export const WS_MIN_WAIT = 1000;
@@ -1534,6 +1541,7 @@ export class Remote extends utils.EventEmitter {
         this.plugins = {};
         this.logs = {};
         this.nms_sessions = {};
+        /** @type {InternalSessionProps} */
         this.properties = {};
         this.fonts = {};
         this.uploads = {};
@@ -3620,7 +3628,7 @@ export class SessionConfigurationSettings extends ModalPropertyContainer {
             "modal.title":"Session Configuration",
         });
 
-        function get_default() { return utils.try(()=>app.$.properties[this.name].default); }
+        function get_default() { return utils.try(()=>app.$.properties[this.name].__default__); }
         this.name = new UI.Property("name", "Session Name", `<input type="text">`, {
             "default": null,
             "reset": false,
@@ -3667,8 +3675,8 @@ export class SessionConfigurationSettings extends ModalPropertyContainer {
         [this.background_mode, this.background_color, this.background_file, this.background_file_start, this.background_file_end] = create_background_properties({
             "name": "background",
             "label": "Default Background",
-            "options": ()=>utils.try(()=>app.$.properties.background_mode.options, []),
-            "default": ()=>utils.try(()=>app.$.properties.background_mode.default, null),
+            "options": ()=>utils.try(()=>app.$.properties.background_mode.__options__, []),
+            "default": ()=>utils.try(()=>app.$.properties.background_mode.__default__, null),
         }, true)
 
         this.files_dir = new FileProperty("files_dir", "Root Directory", {
@@ -3712,7 +3720,7 @@ export class SessionConfigurationSettings extends ModalPropertyContainer {
                 // [this.default_stream_title],
                 [this.creation_time]
             ];
-            if (this.data.type === "InternalSession") {
+            if (this.data.type === SessionTypes.INTERNAL) {
                 layout.push(
                     [this.stream_host,this.stream_key],
                     [this.background_mode, this.background_color, this.background_file, this.background_file_start, this.background_file_end],
@@ -4640,8 +4648,6 @@ export class StreamKeyGeneratorSettings extends UI.PropertyContainer {
         super({});
 
         this.elem.style.gap = "var(--gap)";
-        
-        // function get_default() { return utils.try(()=>app.$.properties[this.name].default); }
 
         this.stream_name = new UI.Property(null, "Name", `<input type="text">`, {
             "default": ()=>`${app.$._client.username}'s Stream`,
@@ -5259,10 +5265,10 @@ export class MediaSettingsInterface {
                 value = utils.get(app.$._session.player_default_override, name);
             }
             if (value === undefined) {
-                value = utils.try(()=>app.get_property(`playlist/*/props/${name}`).default);
+                value = utils.try(()=>app.$.properties.playlist.__enumerable__[name].__default__);
             }
             if (value === undefined) {
-                // value = utils.try(()=>app.get_property("player_default_override", name).default);
+                // value = utils.try(()=>app.get_property("player_default_override", name).__default__);
             }
             if (value === undefined) value = null;
             return value;
@@ -5272,10 +5278,10 @@ export class MediaSettingsInterface {
             var options;
             var name = this.name.split("/").pop();
             if (_this.is_parent_modify) {
-                options = utils.try(()=>app.get_property(`playlist/*/props/${name}`).options);
+                options = utils.try(()=>app.get_property(`playlist/*/props/${name}`).__options__);
             }
             if (options === undefined) {
-                options = utils.try(()=>app.get_property(`player_default_override/${name}`).options);
+                options = utils.try(()=>app.$.properties.player_default_override[name].__options__);
             }
             return options || [];
         };
@@ -5352,7 +5358,7 @@ export class MediaSettingsInterface {
         
         this.volume_normalization = new UI.Property(prop_name("volume_normalization"), "Volume Normalization", `<select></select>`, {
             "options":()=>{
-                return [[false,"Off"], ...(utils.try(()=>app.$.properties.player_default_override.props.volume_normalization.options)||EMPTY_ARRAY).map(([f,_])=>[f,f])]
+                return [[false,"Off"], ...(utils.try(()=>app.$.properties.player_default_override.volume_normalization.__options__)||EMPTY_ARRAY).map(([f,_])=>[f,f])]
             },
             "default": get_default,
         });
@@ -5577,7 +5583,7 @@ export class MediaSettingsInterface {
                         options = options.filter(o=>o[0]=="color" || o[0]==null || o[0]=="default");
                     } else {
                         var default_opt = options.find(o=>o[0]=="default") || options.find(o=>o[0]==null);
-                        var audio_display_default_opt = utils.try(()=>app.$.properties.background_mode.options.find(o=>o[0]==app.$._session.background_mode));
+                        var audio_display_default_opt = utils.try(()=>app.$.properties.background_mode.__options__.find(o=>o[0]==app.$._session.background_mode));
                         if (default_opt && audio_display_default_opt) {
                             default_opt[1] = `Default Background (${audio_display_default_opt[1]})`;
                         }
@@ -6525,7 +6531,7 @@ export class StreamSettings extends Panel {
             "class":"stream-properties",
             gap: 5,
             "align":"end",
-            "hidden": ()=>app.$._session._is_running || app.$._session.type !== "InternalSession"
+            "hidden": ()=>app.$._session._is_running || app.$._session.type !== SessionTypes.INTERNAL
         })
         this.info_ui = new UI({
             "class":"stream-info",
@@ -6584,7 +6590,7 @@ export class StreamSettings extends Panel {
                 var modal = new HandoverSessionMenu();
                 modal.show();
             },
-            hidden:()=>!app.$._session._is_running || app.$._session.type != "InternalSession" || app.$._stream.test
+            hidden:()=>!app.$._session._is_running || app.$._session.type != SessionTypes.INTERNAL || app.$._stream.test
         });
         this.config_button = new UI.Button(`<i class="fas fa-cog"></i>`, {
             "id": "config-button",
@@ -6600,9 +6606,9 @@ export class StreamSettings extends Panel {
         row.append(this.schedule_stream_button, this.handover_button, this.config_button);
         this.button_group_ui.append(this.toggle_streaming_button, row);
 
-        function get_default() { return utils.try(()=>app.$.properties.stream_settings.props[this.name].default); }
+        function get_default() { return utils.try(()=>app.$.properties.stream_settings[this.name].__default__); }
         function get_options() {
-            return utils.try(()=>app.$.properties.stream_settings.props[this.name].options) ?? (utils.try(()=>typeof app.$.properties.stream_settings.props[this.name].default) === "boolean" ? YES_OR_NO : []);
+            return utils.try(()=>app.$.properties.stream_settings[this.name].__options__) ?? (utils.try(()=>typeof app.$.properties.stream_settings[this.name].__default__) === "boolean" ? YES_OR_NO : []);
         }
 
         this.stream_method = new UI.Property("method", "Stream Method", `<select></select>`, {
@@ -6748,7 +6754,7 @@ export class StreamSettings extends Panel {
 
             var stream_info = {};
             stream_info["Stream Method"] = stream["method"];
-            if (app.$._session.type === "InternalSession") {
+            if (app.$._session.type === SessionTypes.INTERNAL) {
                 if (stream["method"] !== "gui") {
                     let parts = {
                         "h264 Preset": `${stream["h264_preset"]}`,
@@ -9367,7 +9373,7 @@ export class Area extends UI.Column {
 }
 
 export class App extends utils.EventEmitter {
-    get playlist_item_props_class() { return utils.try(()=>this.$.properties.playlist.enumerable_props.props.props); }
+    get playlist_item_props_class() { return utils.try(()=>this.$.properties.playlist.__enumerable__.props); }
     get focused_element() { return this.root_elem.activeElement; }
     get dev_mode() { return this.$.conf["debug"] || new URLSearchParams(window.location.search.slice(1)).has("dev"); }
     
@@ -9933,7 +9939,7 @@ export class App extends utils.EventEmitter {
         var has_ownership = access_control._self_is_owner_or_admin || access_control._owners.length == 0;
         var has_access = is_null_session || access_control._self_has_access(app.passwords.get(this.$._session.id)) || this.$._client.is_admin;
         var requires_password = access_control._self_requires_password;
-        var is_external_session = this.$._session.type === "ExternalSession";
+        var is_external_session = this.$._session.type === SessionTypes.EXTERNAL;
 
         // if (this.$._last_session && !this.$.sessions[this.$._last_session.id]) {
         //     alert(`'${this.$._last_session.name}' was terminated internally or by another user.`);
@@ -10095,27 +10101,20 @@ export class App extends utils.EventEmitter {
         return this.font_cache[id];
     }
     
-    get_property(...path) {
+    /* get_property(...path) {
         path = path.map(p=>p.split("/")).flat().filter(p=>p);
         var curr = this.$.properties;
-
         for (var i = 0; i<path.length; i++) {
-            /* if (!(path[i] in curr)) {
-                curr = null;
-                break;
-            } */
             curr = curr[path[i]];
             if (i != path.length-1) {
                 if (path[i+1] == "*") {
-                    curr = curr.enumerable_props
+                    curr = curr.__enumerable__
                     i++;
-                } else {
-                    curr = curr.props;
                 }
             }
         }
         return curr;
-    }
+    } */
 
     get_layout() {
         return this.areas.map(area=>[...area.elem.children].map(c=>c.dataset.id))
@@ -10580,7 +10579,7 @@ export class App extends utils.EventEmitter {
     }
 
     get_handover_sessions_options(include_none=true) {
-        var sessions = this.sessions_ordered.filter(s=>s.type==="InternalSession" && !s._is_running);
+        var sessions = this.sessions_ordered.filter(s=>s.type===SessionTypes.INTERNAL && !s._is_running);
         var names = sessions.map(s=>s.name);
         names = utils.uniquify(names, (s,i,n)=>n>1?`${s} [${i+1}]`:s);
         var options = names.map((n,i)=>[sessions[i].id,n])

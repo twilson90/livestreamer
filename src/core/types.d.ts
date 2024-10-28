@@ -7,7 +7,6 @@ export type * from "./ClientBase.js";
 export type * from "./ClientServer.js";
 export type * from "./FFMPEGWrapper.js";
 export type * from "./MPVWrapper.js";
-export type * from "./PropertyCollection.js";
 export type * from "./WebServer.js";
 export type * from "./IPC.js";
 export type * from "./index.js";

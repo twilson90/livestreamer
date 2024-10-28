@@ -10,7 +10,7 @@ $(async()=>{
 	var parent_window = window.opener || window.parent;
 	var standalone = !id || window.location.hash;
 	var connector_url = `./connector`
-	console.log("standalone:", standalone)
+	console.log("standalone:", standalone);
 
 	var defaultOpts = {
 		url : connector_url,

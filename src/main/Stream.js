@@ -7,6 +7,7 @@ import FFMPEGWrapper from "../core/FFMPEGWrapper.js";
 import MPVWrapper from "../core/MPVWrapper.js";
 import Logger from "../core/Logger.js";
 import globals from "./globals.js";
+import SessionTypes from "./SessionTypes.js";
 /** @import { SessionBase, InternalSession, ExternalSession } from './types.d.ts' */
 
 const default_fps = 30;
@@ -36,6 +37,12 @@ const State = new class {
     STARTING = "starting";
     STOPPED = "stopped";
     STOPPING = "stopping";
+};
+
+const stream_volume_normalization_configs = {
+    "dynaudnorm1": `dynaudnorm=f=500:p=0.9:m=8.0:g=7`,
+    "dynaudnorm2": `dynaudnorm=f=250:p=0.9:m=8.0:g=5`,
+    "loudnorm": `loudnorm=dual_mono=true`
 };
 
 export class Stream extends DataNode {
@@ -156,7 +163,7 @@ export class Stream extends DataNode {
         var hwenc = (use_hardware && core.conf["core.ffmpeg_hwenc"]);
         var hwaccel = (use_hardware && core.conf["core.ffmpeg_hwaccel"]);
         
-        if (this.session.type === "ExternalSession") {
+        if (this.session.type === SessionTypes.EXTERNAL) {
             /** @type {ExternalSession} */
             let session = this.session;
             ffmpeg_args.push(
@@ -165,7 +172,7 @@ export class Stream extends DataNode {
             );
             if (session.nms_session.publishArgs.volume_normalization == "1") {
                 ffmpeg_args.push(
-                    "-af", "dynaudnorm=f=500:p=0.9:m=8.0:g=7",
+                    "-af", stream_volume_normalization_configs.dynaudnorm1,
                     "-c:a", "aac",
                     "-b:a", "160k",
                 );
@@ -287,7 +294,7 @@ export class Stream extends DataNode {
             this.ffmpeg.on("info", (info)=>{
                 this.$.bitrate = info.bitrate
                 this.register_graph_point(`trans:bitrate`, this.time_running, info.bitrate);
-                if (this.session.type === "ExternalSession") {
+                if (this.session.type === SessionTypes.EXTERNAL) {
                     this.register_graph_point(`upstream:speed`, this.time_running, info.speed);
                 }
             })
@@ -300,7 +307,7 @@ export class Stream extends DataNode {
             // });
         }
 
-        if (this.session.type === "InternalSession") {
+        if (this.session.type === SessionTypes.INTERNAL) {
             
             let [width, height] = this.$.resolution.split("x").map(d=>parseInt(d));
 
@@ -647,7 +654,7 @@ export class Stream extends DataNode {
     }
     
     async try_start_playlist() {
-        if (this.session.type === "InternalSession" && this.state === State.STARTED) {
+        if (this.session.type === SessionTypes.INTERNAL && this.state === State.STARTED) {
             /** @type {InternalSession} */
             let session = this.session;
             await session.playlist_play(undefined, { start: session.$.time });
@@ -1286,7 +1293,7 @@ class MPVSessionWrapper extends MPVWrapper {
         item.fades = [];
         this.loaded_item = item;
 
-        let props_def = InternalSession.PROPS.playlist.enumerable_props.props.props;
+        let props_def = this.session.PROPS.playlist.__enumerable__.props;
         let props = {};
         let on_load_commands = [];
         
@@ -2022,7 +2029,7 @@ Format: Start,End,Style,Text`+"\n";
         }
 
         let norm_method = this.$.props.volume_normalization;
-        let norm_filter_option = InternalSession.PLAYER_PROPS.volume_normalization.options.find(f=>f[0]==norm_method);
+        let norm_filter_option = stream_volume_normalization_configs[norm_method];
         if (norm_filter_option) {
             af_graph.push(norm_filter_option[1]);
         }

@@ -53,6 +53,7 @@
             "program": "src/index.js",
             "env": {
                 "LIVESTREAMER_CONF_PATH": "conf/config.debugger.js",
+                "NODE_ENV": "development"
             },
             "runtimeArgs": [
                 "--unhandled-rejections=strict",

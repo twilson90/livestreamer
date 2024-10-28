@@ -2,14 +2,15 @@ import fs from "fs-extra";
 import path from "node:path";
 import core from "../core/index.js";
 import * as utils from "../core/utils.js";
-import PropertyCollection from "../core/PropertyCollection.js";
 import globals from "./globals.js";
 import SessionBase from "./SessionBase.js";
+import SessionTypes from "./SessionTypes.js";
+import InternalSessionProps, { PerFileProps } from "./InternalSessionProps.js";
 import Download from "./Download.js";
 
 const video_exts = ["3g2","3gp","aaf","asf","avchd","avi","drc","flv","gif","m2v","m4p","m4v","mkv","mng","mov","mp2","mp4","mpe","mpeg","mpg","mpv","mxf","nsv","ogg","ogv","qt","rm","rmvb","roq","svi","vob","webm","wmv","yuv"];
 
-const VERSION = 3.0;
+const VERSION = "3.0";
 
 export class InternalSession extends SessionBase {
     #last_tick = Date.now();
@@ -29,9 +30,9 @@ export class InternalSession extends SessionBase {
     get is_running() { return !!(this.stream||{}).is_running; }
 
     constructor(id, name) {
-        super(id, name);
+        super(SessionTypes.INTERNAL, InternalSessionProps, id, name);
 
-        this.$.__version__ = VERSION;
+        this.$.version = VERSION;
         
         fs.mkdirSync(this.saves_dir, {recursive:true});
         fs.mkdirSync(this.files_dir, {recursive:true});
@@ -548,9 +549,7 @@ export class InternalSession extends SessionBase {
         }
 
         for (var k in data) {
-            this.$[k] = PROPS.__get_default(k);
-            if (typeof this.$[k] === "object" && typeof data[k] === "object" && this.$[k] !== null && data[k] !== null) Object.assign(this.$[k], data[k]);
-            else this.$[k] = data[k];
+            this.$[k] = data[k];
         }
         this.#playlist_update_indices();
 
@@ -649,7 +648,7 @@ export class InternalSession extends SessionBase {
         const cleanup_prop = ($, props, delete_criteria) => {
             if (!$) return;
             for (var k of Object.keys($)) {
-                if (!props[k]) {
+                if (!(k in props)) {
                     if (warn) this.logger.debug(`Unrecognized property '${k}'`);
                 }
                 if (delete_criteria && delete_criteria(k, $[k], props[k])) {
@@ -677,12 +676,12 @@ export class InternalSession extends SessionBase {
             track_index = track_index || 0;
             index = index || 0;
             upload = upload || null;
-            cleanup_prop(props, PROPS.playlist.enumerable_props.props.props, (k,v,p)=>(v==null) || !p);
+            cleanup_prop(props, InternalSessionProps.playlist.__enumerable__.props, (k,v,p)=>(v==null) || !p);
             $.playlist[id] = {id,filename,parent_id,index,track_index,props,upload};
         }
 
-        cleanup_prop($, PROPS, (k,v,p)=>(p && p.save === false));
-        cleanup_prop($.player_default_override, PLAYER_PROPS, (k,v,p)=>!p || v === p.default || p.save === false);
+        cleanup_prop($, InternalSessionProps, (k,v,p)=>(p && p.__save__ === false));
+        cleanup_prop($.player_default_override, PerFileProps, (k,v,p)=>!p || v === p.__default__ || p.__save__ === false);
         
         this.#fix_circular_playlist_items($.playlist);
 
@@ -801,318 +800,8 @@ function save_diff(save1,save2) {
     return diff;
 }
 
-const PER_FILE_CLASS = class extends PropertyCollection {
-    aspect_ratio = {
-        default: -1,
-    };
-    loop_file = {
-        default: false,
-    };
-    vid_override = {
-        default: null,
-    };
-    aid_override = {
-        default: null,
-    };
-    sid_override = {
-        default: null,
-    };
-    audio_delay = {
-        default: 0,
-    };
-    sub_delay = {
-        default: 0,
-    };
-    sub_scale = {
-        default: 1.00,
-    };
-    sub_pos = {
-        default: 100,
-    };
-    speed = {
-        default: 1.00,
-    };
-    audio_pitch_correction = {
-        default: true,
-    };
-    deinterlace_mode = {
-        default: "auto",
-    };
-    audio_channels = {
-        default: "stereo",
-    };
-    volume_normalization = {
-        default: "dynaudnorm1",
-        options: [
-            ["dynaudnorm1", `dynaudnorm=f=500:p=0.9:m=8.0:g=7`],
-            ["dynaudnorm2", `dynaudnorm=f=250:p=0.9:m=8.0:g=5`],
-            ["loudnorm", `loudnorm=dual_mono=true`],
-        ],
-    };
-    audio_visualization = {
-        default: false,
-    };
-    /* force_fps = {
-        default: null,
-        options: [[null, "Variable"], 23.976, 24, 25, 30, 50, 60],
-    }; */
-    volume_multiplier = {
-        default: 1,
-    };
-};
-const PROPS_CLASS = InternalSession.PROPS_CLASS = class extends SessionBase.PROPS_CLASS {
-    playlist_id = {
-        default: -1,
-    };
-    schedule_start_time = {
-        default: null,
-    };
-    background_mode = {
-        default: "logo",
-        options: background_mode_options(),
-    };
-    background_color = {
-        default: "#000000",
-    };
-    background_file = {
-        default: null,
-        media:true,
-    };
-    background_file_start = {
-        default: null,
-    };
-    background_file_end = {
-        default: null,
-    };
-    interpolation_mode = {
-        default: false,
-        options: [["auto", "Auto"], [false, "Off"], [true, "On"]],
-    };
-    auto_interpolation_rate = {
-        default: 30,
-        options: [23.976, 24, 25, 29.97, 30, 50, 60],
-    };
-    files_dir = {
-        default: "",
-        media:true,
-    };
-    rtmp_key = {
-        default: "",
-        load: false,
-    };
-    volume_target = {
-        default: 100,
-    };
-    volume_speed = {
-        default: 2.0,
-    };
-    time = {
-        default: 0,
-    };
-
-    /* player = {
-        default: {},
-        props: new class extends PER_FILE_CLASS {}
-    }; */
-    
-    player_default_override = {
-        default: {},
-        props: new class extends PER_FILE_CLASS {}
-    };
-
-    /* file_props = {
-        default: {},
-    } */
-    playlist = {
-        default: {},
-        enumerable_props: new class extends PropertyCollection {
-            id = {
-                default: "",
-            };
-            filename = {
-                default: "",
-            };
-            index = {
-                default: 0,
-            };
-            track_index = {
-                default: 0,
-            };
-            parent_id = {
-                default: "0",
-            };
-            props = {
-                default: {},
-                props: new class extends PER_FILE_CLASS {
-                    clip_start = {
-                        default: null,
-                    };
-                    clip_end = {
-                        default: null,
-                    };
-                    /* clip_loops = {
-                        default: 1,
-                    }; */
-                    clip_offset = {
-                        default: 0,
-                    };
-                    clip_duration = {
-                        default: null,
-                    };
-                    fade_in = {
-                        default: 0,
-                    };
-                    fade_out = {
-                        default: 0,
-                    };
-                    background_mode = {
-                        default: null,
-                        options: [[null, "None"], ["default", "Default Background"], ...background_mode_options()],
-                    };
-                    background_color = {
-                        default: "#000000",
-                    };
-                    background_file = {
-                        default: null,
-                        media:true,
-                    };
-                    background_file_start = {
-                        default: null,
-                    };
-                    background_file_end = {
-                        default: null,
-                    };
-                    subtitle_file = {
-                        default: null,
-                        media:true,
-                    };
-                    audio_file = {
-                        default: null,
-                        media:true,
-                    };
-                    crop_left = {
-                        default: 0,
-                    };
-                    crop_top = {
-                        default: 0,
-                    };
-                    crop_right = {
-                        default: 0,
-                    };
-                    crop_bottom = {
-                        default: 0,
-                    };
-                    empty_duration = {
-                        default: 0,
-                    };
-                    title_text = {
-                        default: "",
-                    };
-                    title_size = {
-                        default: 50,
-                    };
-                    title_fade = {
-                        default: 0.5,
-                    };
-                    title_duration = {
-                        default: 5,
-                    };
-                    title_font = {
-                        default: "Arial",
-                        options: [["Arial", "Arial"]],
-                    };
-                    title_color = {
-                        default: "#ffffff",
-                    };
-                    title_style = {
-                        default: "",
-                        options: [["", "Regular"], ["bold", "Bold"], ["italic", "Italic"], ["bold+italic", "Bold & Italic"]],
-                    };
-                    title_alignment = {
-                        default: 5,
-                        options: [[1, "Bottom Left"], [2, "Bottom Center"], [3, "Bottom Right"], [4, "Center Left"], [5, "Center"], [6, "Center Right"], [7, "Top Left"], [8, "Top Center"], [9, "Top Right"]],
-                    };
-                    title_spacing = {
-                        default: 0,
-                    };
-                    title_outline_thickness = {
-                        default: 0,
-                    };
-                    title_outline_color = {
-                        default: "#000000",
-                    };
-                    title_shadow_depth = {
-                        default: 0,
-                    };
-                    title_shadow_color = {
-                        default: "#000000",
-                    };
-                    title_underline = {
-                        default: false,
-                    };
-                    title_rotation = {
-                        default: [0,0,0],
-                    };
-                    title_margin = {
-                        default: 10,
-                    };
-                    function = {
-                        default: null,
-                        options:[[null, "Do Nothing"], ["stop", "Stop Streaming"], ["handover", "Handover"]],
-                    };
-                    function_handover_session = {
-                        default: null,
-                    };
-                    playlist_mode = {
-                        default: 0,
-                        options: [[0,"Normal"],[1,"Merged"],[2,"2-Track"]],
-                    };
-                    playlist_end_on_shortest_track = {
-                        default: false,
-                    };
-                    playlist_revert_to_video_track_audio = {
-                        default: false,
-                    };
-                    /* playlist_timeline_eof = {
-                        default: 0,
-                        options: [[0,"Crop to Length of Shortest Track"],[1,"Pad to Length of Longest Track"]],
-                    }; */
-                    // --------
-                    label = {
-                        default: null,
-                        ignore: true,
-                    };
-                    color = {
-                        default: null,
-                        ignore: true,
-                    };
-                }
-            };
-        }
-    };
-    detected_crops = {
-        default: {},
-        save:false,
-    };
-    playlist_info = {
-        default: {},
-        save: false,
-    };
-    last_stream = {
-        default: {},
-        save: false,
-    };
-}
-
-const PROPS = InternalSession.PROPS = new PROPS_CLASS();
-const PLAYER_PROPS = InternalSession.PLAYER_PROPS = new PER_FILE_CLASS();
-
 function diff_tree_to_list(t) {
     return utils.deep_entries(t, true, (k,v)=>Array.isArray(v)?false:true);
-}
-
-function background_mode_options() {
-    return [["logo",`Logo`], ["color", "Color"], ["embedded", "Embedded Artwork"], ["external", "External Artwork"]];
 }
 
 function replace_prop($, old_names, new_name){

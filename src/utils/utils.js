@@ -1,5 +1,8 @@
-import _md5 from "pure-md5";
-const {md5} = _md5;
+import MD5 from "md5.js";
+
+export function md5(s) {
+	return new MD5().update(s).digest('hex');
+}
 
 const FLT_EPSILON = 1.19209290e-7;
 export const path_separator_regex = /[\\\/]+/g;
@@ -2382,5 +2385,3 @@ export function fix_url(_url) {
 }
 
 export const noop = ()=>{};
-
-export { md5 }

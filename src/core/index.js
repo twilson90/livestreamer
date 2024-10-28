@@ -19,6 +19,7 @@ import * as utils from "./utils.js";
 import globals from "./globals.js";
 import config_default from "./config.default.js";
 import {minimatch} from "minimatch";
+import express from "express";
 /** @typedef {typeof import("./config.default.js").default & typeof import("../file-manager/config.default.js").default & typeof import("../media-server/config.default.js").default & typeof import("../main/config.default.js").default} Conf */
 
 const pm2 = async (func, ...args)=>{
@@ -496,6 +497,23 @@ export class Core extends events.EventEmitter {
     //     else inspect_hostname = inspect_host || inspect_hostname;
     //     return [inspect_hostname, +inspect_port];
     // }
+
+    async serve(dir) {
+        dir = path.resolve(dir);
+        if (process.env.NODE_ENV === "development") {
+            var vite = await import("vite");
+            const server = await vite.createServer({
+                base: `/${this.name}/`,
+                root: dir,
+                outDir: path.resolve(this.tmp_dir, "web", utils.md5(dir)),
+                server: { middlewareMode: true },
+                build: { sourcemap: "inline" }
+            });
+            return server.middlewares;
+        } else {
+            return express.static(dir);
+        }
+    }
 
     async shutdown() {
         if (this.#shutdown) return;

@@ -5,6 +5,7 @@ import core from "../core/index.js";
 import WebServer from "../core/WebServer.js";
 import ElFinderEx from "./ElFinderEx.js";
 import globals from "./globals.js";
+import * as utils from "../core/utils.js";
 
 const dirname = import.meta.dirname;
 
@@ -19,7 +20,7 @@ export class FileManagerApp {
 
         core.ipc.respond("volumes", ()=>Object.fromEntries(Object.entries(this.elFinder.volumes).map(([k,v])=>[k,v.config])));
         
-        exp.use("/", compression({threshold:0}), express.static(path.resolve(dirname, `public_html`)));
+        exp.use(compression({threshold:0}));
         
         this.elFinder = new ElFinderEx(exp, {
             volumes: [
@@ -27,7 +28,10 @@ export class FileManagerApp {
                 ...core.conf["file-manager.volumes"]
             ],
         });
+        
         await this.elFinder.init();
+
+        exp.use("/", await core.serve(path.resolve(dirname, `public_html`)));
     }
     async destroy(){
         await this.web.destroy();

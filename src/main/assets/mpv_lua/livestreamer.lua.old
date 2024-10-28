@@ -1343,7 +1343,7 @@ function init(_init_opts)
 
     PLAYER_PROPS = init_opts.properties.player.props
     PLAYER_DEFAULT_PROPS = init_opts.properties.player_default_override.props
-    FILE_PROPS = init_opts.properties.playlist.enumerable_props.props.props
+    FILE_PROPS = init_opts.properties.playlist.__enumerable__.props
 
     local observes = deep_copy(default_observes)
 

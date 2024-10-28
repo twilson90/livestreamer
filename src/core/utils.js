@@ -9,6 +9,10 @@ import { createRequire } from "module";
 import child_process from "node:child_process";
 import os from "node:os";
 import { fileURLToPath, pathToFileURL } from 'url';
+import * as utils from "../utils/utils.js";
+
+/** @import {RequestHandler} from "express" */
+/** @import vite from "vite" */
 
 const node_require = createRequire(import.meta.url);
 
@@ -334,4 +338,32 @@ export function getCPULoadAVG(avgTime = 1000, delay = 100) {
         }, delay);
     });
 }
-  
+
+export function properties(def) {
+    var _process = (def)=>{
+        if (def.__default__ !== undefined) {
+            return utils.deep_copy(def.__default__);
+        }
+        var defaults = {};
+        for (var k in def) {
+            if (k.startsWith("__")) continue;
+            defaults[k] = _process(def[k]);
+        }
+        if (Object.keys(defaults).length) return defaults;
+    }
+    return _process(def);
+    // static get_defaults(pc) {
+    //     return Object.fromEntries(
+    //         Object.entries(pc)
+    //             .filter(([k,prop])=>prop.props || prop.default !== undefined)
+    //             .map(([k,prop])=>[k, PropertyCollection.get_default(pc, k)])
+    //     );
+    // }
+    // /** @param {PropertyCollection} pc */
+    // static get_default(pc, k) {
+    //     var prop = pc[k];
+    //     if (!prop) return;
+    //     if (prop.props && !("default" in prop)) return PropertyCollection.get_defaults(prop.props);
+    //     return utils.deep_copy(prop.default);
+    // }
+}
