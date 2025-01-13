@@ -2,7 +2,6 @@ import path from "node:path";
 import os from "node:os";
 import fs from "fs-extra";
 import readline from "node:readline";
-import core from "../core/index.js";
 import * as utils from "../core/utils.js";
 import DataNode from "../core/DataNode.js";
 import globals from "./globals.js";
@@ -21,7 +20,7 @@ export class Download extends DataNode {
         globals.app.downloads[this.id] = this;
         globals.app.$.downloads[this.id] = this.$;
 
-        this.dest_dir = dest_dir || core.files_dir;
+        this.dest_dir = dest_dir || globals.app.files_dir;
         this.$.filename = filename;
     }
 
@@ -42,20 +41,20 @@ export class Download extends DataNode {
                 var fail;
                 var tmp_download_path;
                 if (exists) {
-                    core.logger.info(`'${this.filename}' already exists.`);
+                    globals.app.logger.info(`'${this.filename}' already exists.`);
                 } else {
-                    core.logger.info(`Starting download '${this.filename}'...`);
+                    globals.app.logger.info(`Starting download '${this.filename}'...`);
                     this.$.stage = 0;
                     this.$.stages = 1;
                     tmp_download_path = path.join(os.tmpdir(), name)
-                    var proc = utils.execa(core.conf["main.youtube_dl"], [
+                    var proc = utils.execa(globals.app.conf["main.youtube_dl"], [
                         this.filename,
                         "--no-warnings",
                         "--no-call-home",
                         "--no-check-certificate",
                         // "--prefer-free-formats", // this uses MKV on ubuntu...
                         // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
-                        `--format`, core.conf["main.youtube_dl_format"],
+                        `--format`, globals.app.conf["main.youtube_dl_format"],
                         `--no-mtime`,
                         "--output", tmp_download_path
                     ], {buffer:false});
@@ -82,12 +81,12 @@ export class Download extends DataNode {
                             }
                         } else if (line.match(/^ERROR\:/i)) {
                             this.emit("error", line);
-                            // core.logger.error(`[download] ${line}`)
+                            // globals.app.logger.error(`[download] ${line}`)
                         }
                     });
                     proc.on("error", (e)=>{
-                        core.logger.error(e);
-                        core.logger.warn(`Download [${this.filename}] interrupted.`);
+                        globals.app.logger.error(e);
+                        globals.app.logger.warn(`Download [${this.filename}] interrupted.`);
                         fail = true;
                     });
 
@@ -95,7 +94,7 @@ export class Download extends DataNode {
 
                     if (!fail && tmp_download_path) {
                         await fs.rename(tmp_download_path, dest_path);
-                        core.logger.info(`Download finished [${this.filename}]`);
+                        globals.app.logger.info(`Download finished [${this.filename}]`);
                     }
                 }
 

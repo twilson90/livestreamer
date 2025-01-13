@@ -1,89 +1,9 @@
-import core from "../core/index.js";
 import * as utils from "../core/utils.js";
 import DataNode from "../core/DataNode.js";
 import Logger from "../core/Logger.js";
 import globals from "./globals.js";
 import Stream from "./Stream.js";
-
-export const Props = {
-    index: {
-        __default__: -1,
-    },
-    name: {
-        __default__: "",
-    },
-    type: {
-        __default__: "",
-        __save__: false
-    },
-    creation_time: {
-        __default__: 0,
-    },
-    version: {
-        __default__: "1.0",
-    },
-    stream_settings: {
-        method: {
-            __default__: "rtmp",
-            __options__: [["gui","External Player"], ["file","File"], ["rtmp","RTMP"], ["ffplay","FFPlay"]]
-        },
-        targets: {
-            __default__: [],
-        },
-        test: {
-            __default__: false,
-        },
-        osc: {
-            __default__: false,
-        },
-        title: {
-            __default__: "",
-        },
-        filename: {
-            __default__: "%date%.mkv",
-        },
-        frame_rate: {
-            __default__: 30,
-            __options__: [[24,"24 fps"],[25,"25 fps"],[30,"30 fps"],[50,"50 fps"],[60,"60 fps"]]
-            // ["passthrough","Pass Through"],["vfr","Variable"],
-        },
-        use_hardware: {
-            __default__: 0,
-            __options__: [[0,"Off"],[1,"On"]]
-        },
-        legacy_mode: {
-            __default__: 1,
-            __options__: [[0,"Off"],[1,"On"]]
-        },
-        resolution: {
-            __default__: "1280x720",
-            __options__: [["426x240", "240p [Potato]"], ["640x360", "360p"], ["854x480", "480p [SD]"], ["1280x720", "720p"], ["1920x1080", "1080p [HD]"]]
-        },
-        h264_preset: {
-            __default__: "veryfast",
-            __options__: ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
-        },
-        video_bitrate: {
-            __default__: 4000
-        },
-        audio_bitrate: {
-            __default__: 160
-        },
-        re: {
-            __default__: 1
-        },
-    },
-    target_configs: {
-        __default__: {},
-    },
-    logs: {
-        __default__: {},
-        __save__: false,
-    },
-    access_control: {
-        __default__: { "*": { "access":"allow" } },
-    },
-}
+import SessionBaseProps from "./SessionBaseProps.js";
 
 export class SessionBase extends DataNode {
     /** @type {Logger} */
@@ -96,12 +16,10 @@ export class SessionBase extends DataNode {
     /** @type {Stream} */
     stream;
 
-    static Props = Props;
-
-    constructor(type, props_def, id, name) {
+    constructor(type, Props, id, name) {
         super(id);
 
-        this.defaults = utils.properties(props_def || Props);
+        this.defaults = utils.properties(Props || SessionBaseProps);
         Object.assign(this.$, {
             ...this.defaults,
             type,
@@ -121,15 +39,15 @@ export class SessionBase extends DataNode {
                 logger_prefix = parts.join("-");
             }
             log.prefix = `[${logger_prefix}]${log.prefix}`;
-            core.logger.log(log);
+            globals.app.logger.log(log);
         })
         this.$.logs = this.logger.register_observer();
 
         globals.app.sessions[this.id] = this;
         globals.app.$.sessions[this.id] = this.$;
-        core.logger.info(`Initialized session [${this.id}]`);
+        globals.app.logger.info(`Initialized session [${this.id}]`);
 
-        core.ipc.emit("main.session.created", this.$);
+        globals.app.ipc.emit("main.session.created", this.$);
     }
 
     rename(new_name) {
@@ -168,7 +86,7 @@ export class SessionBase extends DataNode {
         }
         this.logger.info(`${this.name} was destroyed.`);
 
-        core.ipc.emit("main.session.destroyed", this.id);
+        globals.app.ipc.emit("main.session.destroyed", this.id);
 
         this.logger.destroy();
         super.destroy();

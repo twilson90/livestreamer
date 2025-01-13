@@ -1,7 +1,10 @@
+import path from "node:path";
+var dirname = import.meta.dirname;
+
 export default {
 	"main.title": "Live Streamer",
 	"main.description": "Handles all sessions, playlists and most of the media processing.",
-	"main.logo_path": "assets/logo.png",
+	"main.logo_path": path.resolve(dirname, "../assets/logo.png"),
 	"main.autosave_interval": 30,
 	"main.autosaves_limit": 256,
 	"main.youtube_dl": "yt-dlp",

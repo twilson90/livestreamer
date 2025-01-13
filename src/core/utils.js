@@ -1,69 +1,15 @@
 import fs from "fs-extra";
 import path from "node:path";
+import child_process from "node:child_process";
+import os from "node:os";
 import * as tar from "tar";
 import * as uuid from "uuid";
 import is_image from "is-image";
 import { execa } from "execa";
 import pidtree from "pidtree";
-import { createRequire } from "module";
-import child_process from "node:child_process";
-import os from "node:os";
-import { fileURLToPath, pathToFileURL } from 'url';
 import * as utils from "../utils/utils.js";
 
-/** @import {RequestHandler} from "express" */
-/** @import vite from "vite" */
-
-const node_require = createRequire(import.meta.url);
-
 export * from "../utils/utils.js";
-export * from "node:util";
-
-export { pidtree };
-
-export function is_windows() { return process.platform === "win32"; }
-
-async function _import(p, o) {
-    if (!p.startsWith("file://")) p = pathToFileURL(p);
-    return import(p, o);
-}
-export { _import as import }
-
-export function require(require_path) {
-    try { require_path = node_require.resolve(require_path); } catch { require_path = path.resolve(require_path); }
-    delete node_require.cache[require_path];
-    return node_require(require_path);
-}
-
-export { execa }
-
-/** @template T @param {any} o @param {T} type @return {T} */
-export function cast(o, type) { return o; }
-
-export function is_main(meta) {
-    if (!meta || !process.argv[1]) {
-      return false;
-    }
-    const modulePath = fileURLToPath(meta.url);
-    const require = createRequire(meta.url);
-    let scriptPath;
-    for (var a of process.argv.slice(1)) {
-        try { scriptPath = require.resolve(path.resolve(a)); } catch (e) {}
-        if (scriptPath) break;
-    }
-    if (path.extname(scriptPath)) {
-        return modulePath === scriptPath;
-    }
-    return strip_ext(modulePath) === scriptPath;
-}
-
-export function strip_ext(name) {
-  const extension = path.extname(name);
-  if (!extension) {
-    return name;
-  }
-  return name.slice(0, -extension.length);
-}
 
 //command: string, args: ReadonlyArray<string>, options: SpawnOptions
 // /** @param {string} command @param {readonly string[]} args @param {child_process.SpawnOptions} options */
@@ -75,6 +21,19 @@ export function strip_ext(name) {
 //         console.error(e);
 //     }
 // }
+
+export function is_windows() { return !!process.platform.match(/^win/i); }
+
+/** @template T @param {any} o @param {T} type @return {T} */
+export function cast(o, type) { return o; }
+
+export function strip_ext(name) {
+    const extension = path.extname(name);
+    if (!extension) {
+        return name;
+    }
+    return name.slice(0, -extension.length);
+}
 
 export async function read_last_lines(input_file_path, max_lines, encoding, buffer_size) {
     buffer_size = buffer_size || 16 * 1024;
@@ -367,3 +326,6 @@ export function properties(def) {
     //     return utils.deep_copy(prop.default);
     // }
 }
+
+export { promisify } from "node:util";
+export { pidtree, execa }

@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "fs-extra";
-import core from "./index.js";
+import globals from "./globals.js";
 
 export class Cache {
     #cache = {};
@@ -8,7 +8,7 @@ export class Cache {
     #dir;
 
     constructor(dir, default_expire = 0) {
-        this.#dir = path.resolve(core.cache_dir, dir);
+        this.#dir = path.resolve(globals.core.cache_dir, dir);
         this.#default_expire = default_expire;
         fs.mkdirSync(this.#dir, {recursive:true});
     }
@@ -35,7 +35,7 @@ export class Cache {
                     try {
                         return JSON.parse(await fs.readFile(filename, "utf8"));
                     } catch {
-                        core.logger.error(`Failed to load cache file '${filename}'`);
+                        globals.core.logger.error(`Failed to load cache file '${filename}'`);
                     }
                 }
             })();

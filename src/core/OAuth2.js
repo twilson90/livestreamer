@@ -3,7 +3,7 @@ import events from "node:events";
 import fs from "fs-extra";
 import path from "node:path";
 import fetch from "node-fetch";
-import core from "./index.js";
+import globals from "./globals.js";
 import * as utils from "./utils.js";
 import Logger from "./Logger.js";
 
@@ -26,7 +26,7 @@ class OAuth2 extends events.EventEmitter {
         this.refresh_token_timeouts = {};
 
         this.logger = new Logger("oauth2");
-        this.logger.on("log", (log)=>core.logger.log(log));
+        this.logger.on("log", (log)=>globals.core.logger.log(log));
 
         setInterval(()=>this.refresh_almost_expired(), DAY);
 
@@ -112,7 +112,7 @@ class OAuth2 extends events.EventEmitter {
         this.$[id] = config.authorization_uri;
 
         try {
-            this.credentials[id] = JSON.parse(fs.readFileSync(path.join(core.credentials_dir, id)));
+            this.credentials[id] = JSON.parse(fs.readFileSync(path.join(globals.core.credentials_dir, id)));
         } catch {}
     }
 
@@ -190,14 +190,14 @@ class OAuth2 extends events.EventEmitter {
 
     delete_credentials(id) {
         delete this.credentials[id];
-        try { fs.unlinkSync(path.join(core.credentials_dir, id)); } catch {}
+        try { fs.unlinkSync(path.join(globals.core.credentials_dir, id)); } catch {}
     }
 
     save_credentials(id, creds) {
         creds.expires = Date.now() + (creds.expires_in || creds.accessTokenExpiresIn) * 1000;
         creds.refresh_token_expires = Date.now() + (creds.refresh_token_expires_in || creds.refreshTokenExpiresIn || this.configs[id].refresh_token_expires_in || 31536000) * 1000;
         this.credentials[id] = creds;
-        fs.writeFileSync(path.join(core.credentials_dir, id), JSON.stringify(creds, null, "  "));
+        fs.writeFileSync(path.join(globals.core.credentials_dir, id), JSON.stringify(creds, null, "  "));
         this.emit("update", id, creds);
     }
 }

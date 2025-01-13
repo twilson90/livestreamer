@@ -5,14 +5,14 @@ import showdown from "showdown";
 import chokidar from "chokidar";
 import upath from "upath";
 import compression from "compression";
-import express from "express";
+import express, {Router} from "express";
 import bodyParser from "body-parser";
 import multer from "multer";
 import pidusage from "pidusage";
 import checkDiskSpace from "check-disk-space";
 import readline from "node:readline";
 import child_process from "node:child_process";
-import core from "../core/index.js";
+import Core from "../core/index.js";
 import * as utils from "../core/utils.js";
 import Cache from "../core/Cache.js";
 import ClientServer from "../core/ClientServer.js";
@@ -23,7 +23,6 @@ import InternalSessionProps from './InternalSessionProps.js';
 import InternalSession from './InternalSession.js';
 import ExternalSession from './ExternalSession.js';
 import Client from './Client.js';
-import Plugin from './Plugin.js';
 import Target from './Target.js';
 import Stream from './Stream.js';
 import globals from './globals.js';
@@ -35,15 +34,13 @@ const TICK_INTERVAL = 1 * 1000;
 /** @typedef {string} Domain */
 /** @typedef {Record<PropertyKey,{access:string, password:string, suspended:boolean}>} AccessControl */
 
-export class MainApp {
+export class MainApp extends Core {
     /** @type {Object.<string,Download>} */
     downloads = {};
     /** @type {Object.<string,import("./SessionBase.js")>} */
     sessions = {};
     /** @type {Object.<string,Target>} */
     targets = {};
-    /** @type {Object.<string,Plugin>} */
-    plugins = {};
     /** @type {Object.<string,Upload>} */
     uploads = {};
     // #media_info = {};
@@ -66,29 +63,35 @@ export class MainApp {
     /** @type {Record<PropertyKey,Client>} */
     get clients() { return this.wss.clients; }
 
+    constructor() {
+        super("main");
+        globals.app = this;
+    }
+
     async init() {
         
         this.$ = new utils.Observer();
         this.$.sessions = {};
         this.$.nms_sessions = {};
         this.$.clients = {};
-        this.$.logs = core.logger.register_observer();
-        this.$.plugins = {};
+        this.$.logs = this.logger.register_observer();
         this.$.targets = {};
         this.$.uploads = {};
         this.$.downloads = {};
         this.$.media_info = {};
-        this.$.sysinfo = {};
+        this.$.sysinfo = {
+            platform: process.platform
+        };
         this.$.processes = {};
         this.$.process_info = {};
         
         var update_processes = ()=>{
-            for (var m in core.modules) {
-                var p = core.ipc.get_process(m);
+            for (var m in this.modules) {
+                var p = this.ipc.get_process(m);
                 p = p ? {...p, status: "online"} : {status:"stopped"}
                 Object.assign(p, {
-                    title: core.conf[`${m}.title`],
-                    description: core.conf[`${m}.description`],
+                    title: this.conf[`${m}.title`],
+                    description: this.conf[`${m}.description`],
                 });
                 this.$.processes[m] = p;
             }
@@ -96,40 +99,39 @@ export class MainApp {
         };
         update_processes();
 
-        core.ipc.on("internal:processes", ()=>update_processes());
-        core.ipc.respond("stream_targets", ()=>{
+        this.ipc.on("internal:processes", ()=>update_processes());
+        this.ipc.respond("stream_targets", ()=>{
             return this.streams.map(s=>Object.values(s.stream_targets)).flat().map(t=>t.$);
         });
-        core.ipc.on("main.save-sessions", (data)=>{
+        this.ipc.on("main.save-sessions", (data)=>{
             this.save_sessions();
         });
-        core.ipc.on("media-server.post-publish", (nms_session)=>{
+        this.ipc.on("media-server.post-publish", (nms_session)=>{
             if (nms_session.rejected) return;
             this.$.nms_sessions[nms_session.id] = nms_session;
             if (nms_session.appname === "livestream") {
                 new ExternalSession(nms_session);
             }
         });
-        core.ipc.on("media-server.metadata-publish", (nms_session)=>{
+        this.ipc.on("media-server.metadata-publish", (nms_session)=>{
             this.$.nms_sessions[nms_session.id] = nms_session;
         });
-        core.ipc.on("media-server.done-publish", (nms_session)=>{
+        this.ipc.on("media-server.done-publish", (nms_session)=>{
             Object.values(this.sessions).filter(s=>s instanceof ExternalSession && s.nms_session && s.nms_session.id == nms_session.id).forEach(s=>s.destroy());
             delete this.$.nms_sessions[nms_session.id];
         });
-        core.ipc.request("media-server", "published_sessions").catch(()=>{}).then((nms_sessions)=>{
+        this.ipc.request("media-server", "published_sessions").catch(()=>{}).then((nms_sessions)=>{
             if (!nms_sessions) return;
             Object.assign(this.$.nms_sessions, Object.fromEntries(nms_sessions.map(s=>[s.id,s])));
         })
-        core.ipc.on("core:update-conf", ()=>{
-            core.logger.info("Config file updated.");
+        this.on("update-conf", ()=>{
+            this.logger.info("Config file updated.");
             update_conf();
         });
 
         this.netstats = []
         let nethogs = child_process.spawn(`nethogs`, ["-t"]);
-        let listener = readline.createInterface(nethogs.stdout);
-        listener.on("line", line=>{
+        readline.createInterface(nethogs.stdout).on("line", line=>{
             if (String(line).match(/^Refreshing:/)) {
                 this.netstats = [];
                 return;
@@ -139,21 +141,19 @@ export class MainApp {
             var [_,program,pid,userid,sent,received] = m;
             sent *= 1024;
             received *= 1024;
-            this.netstats.push({program,pid,userid,sent,received})
+            this.netstats.push({program,pid,userid,sent,received});
         });
         nethogs.on("error", (e)=>{
             console.error(e.message);
         });
 
-        this.curr_saves_dir = path.resolve(core.saves_dir, "curr");
-        this.old_saves_dir = path.resolve(core.saves_dir, "old");
-        // this.fonts_dir = path.resolve(core.root_dir, ".fonts");
+        this.curr_saves_dir = path.resolve(this.saves_dir, "curr");
+        this.old_saves_dir = path.resolve(this.saves_dir, "old");
         this.public_html_dir = path.resolve(dirname, "public_html");
         this.change_log_path = path.resolve(dirname, "assets", "changes.md");
-        this.mpv_lua_dir = path.resolve(dirname, "assets", "mpv_lua");
-        this.null_video_path = path.resolve(core.tmp_dir, `nv`);
-        this.null_audio_path = path.resolve(core.tmp_dir, `na`);
-        this.null_audio_video_path = path.resolve(core.tmp_dir, `nav`);
+        this.null_video_path = path.resolve(this.tmp_dir, `nv`);
+        this.null_audio_path = path.resolve(this.tmp_dir, `na`);
+        this.null_audio_video_path = path.resolve(this.tmp_dir, `nav`);
         // this.fixed_media_dir = path.resolve(core.cache_dir, "fixed");
 
         // setInterval(()=>this.cleanup_tmp_dirs(), 1000 * 60 * 60);
@@ -198,7 +198,7 @@ export class MainApp {
         
         var save_interval_id = new utils.Interval(()=>{
             this.save_sessions();
-        }, ()=>core.conf["main.autosave_interval"] * 1000);
+        }, ()=>this.conf["main.autosave_interval"] * 1000);
 
         var update_conf = ()=>{
             this.load_targets();
@@ -206,11 +206,7 @@ export class MainApp {
         };
         update_conf();
 
-        for (var k in core.conf["main.plugins"]) {
-            this.add_plugin(k, ...core.conf["main.plugins"][k]);
-        }
-
-        core.on("input", async (c)=>{
+        this.on("input", async (c)=>{
             const log = (s)=>process.stdout.write(s+"\n", "utf8");
             let command = c[0];
             if (command.match(/^replace-filenames$/)) {
@@ -302,10 +298,10 @@ export class MainApp {
     }
 
     check_volumes() {
-        if (!core.ipc.get_process("file-manager")) return;
-        core.ipc.request("file-manager", "volumes").catch(()=>{}).then((data)=>{
+        if (!this.ipc.get_process("file-manager")) return;
+        this.ipc.request("file-manager", "volumes").catch(()=>{}).then((data)=>{
             if (!data) return;
-            core.logger.info(`update-volumes [${Object.keys(data).length}]`);
+            this.logger.info(`update-volumes [${Object.keys(data).length}]`);
             this.$.volumes = data;
         });
     }
@@ -331,7 +327,7 @@ export class MainApp {
             //     fileSize: 40*1024*1024*1024  // 40 gb limit
             // },
             storage: {
-                /** @param {express.Request} req @param {Express.Multer.File} file */
+                /** @param {express.Request} req @param {Express.Multer.File & {upload:Upload}} file */
                 _handleFile: async (req, file, cb)=>{
                     var c;
                     try { c = JSON.parse(decodeURIComponent(file.originalname)); } catch {}
@@ -348,7 +344,7 @@ export class MainApp {
                     let {filename, start, filesize, mtime, id, session_id} = c;
                     // let hash = get_hash(filesize, mtime);
                     let rel_dir = req.path.slice(1);
-                    let dest_dir = core.files_dir;
+                    let dest_dir = this.files_dir;
                     /** @type {InternalSession} */
                     let session = this.sessions[session_id];
                     if (session) dest_dir = session.files_dir;
@@ -366,25 +362,27 @@ export class MainApp {
                         if (req.query.media) {
                             var initial_scan = false;
                             upload.on("chunk", ()=>{
+                                if (!item) return;
                                 if (initial_scan) return;
                                 if ((upload.unique_dest_path.match(/\.mp4$/i) && upload.first_and_last_chunks_uploaded) || upload.first_chunk_uploaded) {
                                     initial_scan = true;
-                                    if (item) {
-                                        item.filename = upload.unique_dest_path;
-                                        this.probe_media(item.filename, {force:true});
-                                    }
+                                    this.probe_media(item.filename, {force:true});
                                 }
                             });
                             upload.on("complete", ()=>{
-                                delete item.upload;
+                                // delete item.upload;
                                 if (upload.chunks > 1) {
                                     if (item) this.probe_media(item.filename, {force:true});
                                 }
                             });
                         }
                     }
+                    if (item) {
+                        item.upload_id = upload.$.id;
+                        item.filename = upload.unique_dest_path;
+                    }
 
-                    if (item) item.upload = upload.$;
+                    // if (item) item.upload = upload.$;
                     // same as "abort" apparently
                     /* req.on('close', () => {
                         if (!req.complete) {
@@ -397,9 +395,8 @@ export class MainApp {
                     let err = await upload.add_chunk(file.stream, start).catch((e)=>e);
                     cb(err);
                 },
-                /** @param {Request} _req @param {Express.Multer.File} file @param {(error: Error | null) => void} cb */
+                /** @param {Request} _req @param {Express.Multer.File & {upload:Upload}} file @param {(error: Error | null) => void} cb */
                 _removeFile: async (req, file, cb)=>{
-                    /** @type {Upload} */
                     let upload = file.upload;
                     await fs.rm(upload.unique_dest_path, {force:true, recursive:true});
                     // await ul.cancel();
@@ -412,7 +409,7 @@ export class MainApp {
             upload(req, res, (err)=>{
                 let d = {};
                 if (err) d.error = err;
-                core.logger.log(err);
+                this.logger.log(err);
                 res.status(err ? 400 : 200).json(d);
             })
         });
@@ -422,15 +419,17 @@ export class MainApp {
             var html = showdown_converter.makeHtml(await fs.readFile(this.change_log_path, "utf8"));
             res.status(200).send(html);
         });
-        exp.use("/plugins/:id/", (req, res, next)=>{
-            var p = this.plugins[req.params.id];
-            if (p) express.static(p.dir)(req, res, next);
-            else res.status(404).send("Plugin not found.");
-        });
 
-        exp.use("/screenshots", express.static(core.screenshots_dir));
+        exp.use("/screenshots", express.static(this.screenshots_dir));
         
-        exp.use("/", await core.serve(this.public_html_dir));
+        let plugins = [];
+        if (!process.env.BUILD) {
+            plugins.push((await import("../../vite.plugin.js")).default(this.conf["main.plugins"]));
+        }
+        exp.use("/", await this.serve({
+            root: this.public_html_dir,
+            plugins
+        }));
         
         await this.wss.init("main", this.web.wss, this.$, Client, true);
     }
@@ -453,31 +452,31 @@ export class MainApp {
 				"name": "Local Media Server",
 				"description": "Default streaming target",
 				// "title": "{{title}}", // not necessary
-				"rtmp_host": `rtmp://${core.conf["core.hostname"]}:${core.conf["media-server.rtmp_port"]}`,
+				"rtmp_host": `rtmp://${this.conf["core.hostname"]}:${this.conf["media-server.rtmp_port"]}`,
 				"limit": 0,
-                /** @param {Stream} ctx */
-                "config": (ctx, config)=>{
-                    return {
-                        config,
-                        "rtmp_key": `live/${ctx.id}`,
-                        "url": `${core.url}/media-server/player/index.html?id=${ctx.id}`,
-                    }
+                /** @param {StreamTarget} st */
+                "config": (st)=>({
+                    "rtmp_key": `live/${st.id}`,
+                    "url": `${this.url}/media-server/player/index.html?id=${st.id}`,
+                }),
+                "opts": {
+                    "use_hardware": true
                 },
 				"locked": true
 			}
         ];
-        for (var t of core.conf["main.targets"]) {
-            if (!t.id) core.logger.error(`Cannot load conf defined target without 'id'.`);
+        for (var t of this.conf["main.targets"]) {
+            if (!t.id) this.logger.error(`Cannot load conf defined target without 'id'.`);
             t.locked = true;
             target_defs.push(t);
         }
-        for (var id of await fs.readdir(core.targets_dir)) {
+        for (var id of await fs.readdir(this.targets_dir)) {
             /** @type {Target} */
             var t;
             try {
-                t = JSON.parse(await fs.readFile(path.resolve(core.targets_dir, id)));
+                t = JSON.parse(await fs.readFile(path.resolve(this.targets_dir, id)));
             } catch (e) {
-                core.logger.error(`Couldn't read or parse target '${id}'`);
+                this.logger.error(`Couldn't read or parse target '${id}'`);
             }
             t.id = id;
             target_defs.push(t);
@@ -515,10 +514,6 @@ export class MainApp {
         Object.values(this.sessions).forEach(s=>s.tick());
     }
 
-    add_plugin(id, dir, options) {
-        new Plugin(id, dir, options);
-    }
-
     // async cleanup_tmp_dirs() {
     //     // stupid
     //     var files = await glob("*", {cwd:this.fixed_media_dir, withFileTypes:true});
@@ -533,19 +528,19 @@ export class MainApp {
         var [w,h] = [1280,720];
         var t0 = Date.now();
         if (!(await fs.exists(this.null_video_path))) {
-            core.logger.info(`Generating null video stream...`);
-            await utils.execa(core.conf["core.ffmpeg_executable"], ["-f", "lavfi", "-i", `color=c=black:s=${w}x${h}:r=30`, "-c:v", "libx264", "-b:v", "10m", `-force_key_frames`, `expr:gte(t,n_forced*1)`, "-r", "30", "-pix_fmt", "yuv420p", "-f", "matroska", "-t", String(this.null_stream_duration), this.null_video_path]);
+            this.logger.info(`Generating null video stream...`);
+            await utils.execa(this.conf["core.ffmpeg_executable"], ["-f", "lavfi", "-i", `color=c=black:s=${w}x${h}:r=30`, "-c:v", "libx264", "-b:v", "10m", `-force_key_frames`, `expr:gte(t,n_forced*1)`, "-r", "30", "-pix_fmt", "yuv420p", "-f", "matroska", "-t", String(this.null_stream_duration), this.null_video_path]);
         }
         if (!(await fs.exists(this.null_audio_path))) {
-            core.logger.info(`Generating null audio stream...`);
-            await utils.execa(core.conf["core.ffmpeg_executable"], ["-f", "lavfi", "-i", "anullsrc,aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo", "-c:a", "flac", "-f", "flac", "-t", String(this.null_stream_duration), this.null_audio_path]);
+            this.logger.info(`Generating null audio stream...`);
+            await utils.execa(this.conf["core.ffmpeg_executable"], ["-f", "lavfi", "-i", "anullsrc,aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo", "-c:a", "flac", "-f", "flac", "-t", String(this.null_stream_duration), this.null_audio_path]);
         }
         if (!(await fs.exists(this.null_audio_video_path))) {
-            core.logger.info(`Generating null audio/video stream...`);
-            await utils.execa(core.conf["core.ffmpeg_executable"], ["-i", this.null_audio_path, "-i", this.null_video_path, "-map", "0:a:0", "-map", "1:v:0", "-c", "copy", "-f", "matroska", this.null_audio_video_path]);
+            this.logger.info(`Generating null audio/video stream...`);
+            await utils.execa(this.conf["core.ffmpeg_executable"], ["-i", this.null_audio_path, "-i", this.null_video_path, "-map", "0:a:0", "-map", "1:v:0", "-c", "copy", "-f", "matroska", this.null_audio_video_path]);
         }
         var t1 = Date.now();
-        core.logger.info(`Finished generating null [${t1-t0}ms]`);
+        this.logger.info(`Finished generating null [${t1-t0}ms]`);
     }
 
     async save_sessions() {
@@ -565,12 +560,12 @@ export class MainApp {
             let filenames = await utils.order_files_by_mtime_descending(await fs.readdir(session_dir), session_dir);
             for (let filename of filenames) {
                 let fullpath = path.resolve(session_dir, filename);
-                core.logger.info(`Loading '${filename}'...`);
+                this.logger.info(`Loading '${filename}'...`);
                 var session = null;
                 try {
                     session = JSON.parse(await fs.readFile(fullpath, "utf8"));
                 } catch {
-                    core.logger.error(`Failed to load '${filename}'`);
+                    this.logger.error(`Failed to load '${filename}'`);
                 }
                 if (session) {
                     session.id = uid;
@@ -823,7 +818,7 @@ export class MainApp {
                         break check;
                     }
                     if (protocol === "edl:" || is_edl_file) {
-                        rmi = await edl_probe(filename).catch(e=>core.logger.warn(e));
+                        rmi = await edl_probe(filename).catch(e=>this.logger.warn("EDL error:", e));
                         if (rmi) {
                             // mi.name = filename;
                             data.duration = rmi.duration;
@@ -855,7 +850,7 @@ export class MainApp {
             
                 if (add_to_cache) {
                     let t1 = Date.now();
-                    core.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
+                    this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
                 }
             }
 
@@ -956,7 +951,7 @@ export class MainApp {
     }
 
     async update_process_infos() {
-        var results = await utils.pidtree(core.ppid, {root:true, advanced:true});
+        var results = await utils.pidtree(this.ppid, {root:true, advanced:true});
         var all_pids = [...Object.values(results).map(r=>r.pid).flat()];
         var tree = utils.tree(results, (p)=>[p.pid, p.ppid])[0];
         var stats_lookup = all_pids.length ? await pidusage(all_pids) : {};
@@ -985,9 +980,9 @@ export class MainApp {
     }
 
     async destroy() {
-        core.logger.info("Saving all sessions before exit...");
+        this.logger.info("Saving all sessions before exit...");
         await this.save_sessions();
-        core.logger.info("Sessions saved.");
+        this.logger.info("Sessions saved.");
         this.web.destroy();
     }
 }
@@ -1001,7 +996,7 @@ async function read_file(filename, start, length) {
 }
 
 async function youtubedl_probe(uri) {
-    var proc = await utils.execa(core.conf["main.youtube_dl"] || "yt-dlp", [
+    var proc = await utils.execa(globals.app.conf["main.youtube_dl"] || "yt-dlp", [
         uri,
         "--dump-json",
         "--no-warnings",
@@ -1010,7 +1005,7 @@ async function youtubedl_probe(uri) {
         // "--prefer-free-formats",
         // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
         "--flat-playlist",
-        "--format", core.conf["main.youtube_dl_format"]
+        "--format", globals.app.conf["main.youtube_dl_format"]
     ]);
     var lines = proc.stdout.split("\n");
     var arr = lines.map(line=>JSON.parse(line));
@@ -1035,12 +1030,10 @@ async function ffprobe(uri) {
 }
 
 async function edl_probe(uri) {
-    var output = await utils.execa(core.conf["core.mpv_executable"], ['--frames=0', '--vo=null', '--ao=null', `--script=${path.resolve(app.mpv_lua_dir, 'get_media_info.lua')}`, uri]);
+    var output = await utils.execa(globals.app.conf["core.mpv_executable"], ['--frames=0', '--vo=null', '--ao=null', `--script=${path.resolve(globals.app.mpv_lua_dir, 'get_media_info.lua')}`, uri]);
     var m = output.stdout.match(/^\[get_media_info\] (.+)/);
     if (m) return JSON.parse(m[1].trim());
     return null;
 }
 
-export const app = globals.app = new MainApp();
-core.init("main", app);
-export default app;
+export default new MainApp();

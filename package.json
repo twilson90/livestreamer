@@ -6,17 +6,18 @@
   "description": "Live dynamic playlist for streaming",
   "main": "src/index.js",
   "type": "module",
-  "bin": {
-    "livestreamer": "./src/index.js"
+  "exports": {
+    "./*": "./*",
+    ".": "./src/core/exports.js"
   },
   "scripts": {
-    "build": "node tools.js build",
-    "dev": "node tools.js dev",
-    "package": "node tools.js package",
-    "electron:start": "electron-forge start dist",
-    "electron:package": "set DEBUG=1 && set NODE_OPTIONS=--disable-warning=DEP0174 && electron-forge package dist",
-    "electron:make": "set DEBUG=1 && set NODE_OPTIONS=--disable-warning=DEP0174 && electron-forge make dist",
-    "electron:publish": "electron-forge publish dist"
+    "build:dev": "node tools/cmd.js build --platform=windows",
+    "build:prod": "set NODE_ENV=production && node tools/cmd.js build",
+    "electron:start": "node tools/cmd.js start",
+    "electron:package": "node tools/cmd.js package",
+    "electron:make": "node tools/cmd.js make",
+    "build:prod+electron:package": "npm run build:prod && npm run electron:package",
+    "build:prod+electron:make": "npm run build:prod && npm run electron:make"
   },
   "dependencies": {
     "@fancyapps/ui": "^4.0.26",
@@ -24,7 +25,6 @@
     "axios": "^1.7.7",
     "basic-ftp": "^5.0.5",
     "body-parser": "^1.20.3",
-    "bufferutil": "^4.0.8",
     "chart.js": "^4.4.4",
     "chartjs-plugin-zoom": "^2.0.1",
     "check-disk-space": "^3.4.0",
@@ -32,6 +32,7 @@
     "commander": "^12.1.0",
     "compression": "^1.7.4",
     "data-uri-to-buffer": "^6.0.2",
+    "deasync": "^0.1.30",
     "electron-squirrel-startup": "^1.0.1",
     "encoding-japanese": "^2.2.0",
     "execa": "^9.4.0",
@@ -48,7 +49,8 @@
     "jquery": "^3.7.1",
     "jquery-ui": "^1.14.0",
     "js-cookie": "^3.0.5",
-    "md5.js": "^1.3.5",
+    "js-md5": "^0.8.3",
+    "linux-os-info": "^2.0.0",
     "mime": "^4.0.4",
     "minimatch": "^10.0.1",
     "multer": "^1.4.5-lts.1",
@@ -70,6 +72,7 @@
     "upath": "^2.0.1",
     "uuid": "^10.0.0",
     "video.js": "^8.17.4",
+    "which": "^5.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -83,10 +86,12 @@
     "@electron-forge/plugin-webpack": "^7.5.0",
     "@electron/fuses": "^1.8.0",
     "@rollup/plugin-esm-shim": "^0.1.7",
+    "@rollup/plugin-replace": "^6.0.1",
     "@types/fs-extra": "^11.0.4",
-    "electron": "32.2.0",
-    "electron-vite": "^2.3.0",
+    "electron": "^33.2.0",
+    "find-package-json": "^1.2.0",
     "madge": "^8.0.0",
+    "sass-embedded": "^1.80.6",
     "ts-node": "^10.9.2",
     "vite": "^5.4.10",
     "vite-plugin-static-copy": "^2.0.0"

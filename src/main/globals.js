@@ -1,6 +1,5 @@
 /** @import { MainApp } from './types.d.ts' */
-export const globals = new class {
+export default {
     /** @type {MainApp} */
-    app;
+    app: undefined
 }
-export default globals;

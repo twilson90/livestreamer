@@ -1,7 +1,7 @@
 import http from "node:http";
 import WebSocket from "ws";
-import core from "./index.js";
 import * as utils from "./utils.js";
+import globals from "./globals.js";
 import Logger from "./Logger.js";
 import DataNode from "./DataNode.js";
 /** @import { ClientServer } from './types.d.ts' */
@@ -66,7 +66,7 @@ export class ClientBase extends DataNode {
             else if (request.set) result = utils.set(this, request.set, request.value);
             else error = `Invalid request: ${JSON.stringify(request)}`;
         };
-        if (core.debug) {
+        if (globals.core.debug) {
             run();
         } else {
             try { run(); } catch (e) { error = e; }

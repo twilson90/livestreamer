@@ -1,8 +1,5 @@
-import MD5 from "md5.js";
-
-export function md5(s) {
-	return new MD5().update(s).digest('hex');
-}
+import { md5 } from "./md5.js";
+export { md5 } from "./md5.js";
 
 const FLT_EPSILON = 1.19209290e-7;
 export const path_separator_regex = /[\\\/]+/g;
@@ -338,6 +335,12 @@ export class Rectangle {
 		this.y = +args[1] || 0;
 		this.width = +args[2] || 0;
 		this.height = +args[3] || 0;
+	}
+	update(x, y, width, height) {
+		this.x = x;
+		this.y = y;
+		this.width = width;
+		this.height = height;
 	}
 	contains(obj) {
 		if (!obj.width && !obj.height) return obj.x > this.left && obj.x < this.right && obj.y > this.top && obj.y < this.bottom;
@@ -1200,6 +1203,13 @@ export function format_bytes(bytes, decimals = 2, min=1) {
 	if (!isFinite(i)) i = 0;
 	return `${(bytes / Math.pow(k, i)).toFixed(decimals)} ${sizes[i]}`;
 }
+export function format_bytes_short(value, unit="k") {
+	unit = unit.toLowerCase();
+    if (unit.startsWith("b")) return String(Math.floor(value*8))+"bps"
+    if (unit.startsWith("k")) return String(Math.floor(value/1000*8))+"kb"
+    if (unit.startsWith("m")) return String(Math.floor(value/1000/1000*8))+"mb"
+    if (unit.startsWith("g")) return String(Math.floor(value/1000/1000/1000*8))+"gb"
+}
 /** @param {string} s */
 export function string_to_bytes(s) {
 	var m = s.match(/[a-z]+/i);
@@ -1219,13 +1229,6 @@ export function string_to_bytes(s) {
 	unit = unit.slice(m ? m[0].length : 0);
 	if (unit.match(/^b(?!yte)/)) num /= 8; // important lower case, uppercase B means byte usually;
 	return num * e;
-}
-export function format_bitrate(value, unit="k") {
-	unit = unit.toLowerCase();
-    if (unit.startsWith("b")) return Math.floor(value*8)+"bps"
-    if (unit.startsWith("k")) return Math.floor(value/1000*8)+"kbps"
-    if (unit.startsWith("m")) return Math.floor(value/1000/1000*8)+"mbps"
-    if (unit.startsWith("g")) return Math.floor(value/1000/1000/1000*8)+"gbps"
 }
 export function is_ip_local(ip) {
 	return ip === "127.0.0.1" || ip === "::1" || ip == "::ffff:127.0.0.1"
@@ -1830,7 +1833,8 @@ export function relative_path(source, target) {
 	return relative_parts.join("/");
 }
 export function split_datetime(date, apply_timezone=false) {
-	var date = +new Date(date);
+	if (isNaN(date)) return ["", ""];
+	date = +new Date(date);
 	if (apply_timezone) date += - (+new Date(date).getTimezoneOffset()*60*1000);
 	var parts = new Date(date).toISOString().slice(0,-1).split("T");
 	if (parts[0][0]=="+") parts[0] = parts[0].slice(1);

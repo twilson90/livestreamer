@@ -30,15 +30,10 @@
             ]
         },
         {
-            "name": "livestreamer-electron",
+            "name": "livestreamer",
             "type": "node",
             "request": "launch",
-            "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd",
-            "program": "${workspaceFolder}/src/index.js",
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "LIVESTREAMER_CONF_PATH": "${workspaceFolder}/conf/config.electron.js",
-            },
+            "program": "src/index.js",
             "runtimeArgs": [
                 "--unhandled-rejections=strict",
             ],
@@ -47,30 +42,36 @@
             ],
         },
         {
-            "name": "livestreamer",
+            "name": "livestreamer-pm2",
             "type": "node",
             "request": "launch",
-            "program": "src/index.js",
-            "env": {
-                "LIVESTREAMER_CONF_PATH": "conf/config.debugger.js",
-                "NODE_ENV": "development"
-            },
+            "program": "pm2",
+            "args": ["start", "src/pm2.config.cjs"],
             "runtimeArgs": [
                 "--unhandled-rejections=strict",
             ],
             "skipFiles": [
                 "<node_internals>/**"
             ],
-            // "trace":true
+        },
+        {
+            "name": "livestreamer-pm2-dist",
+            "type": "node",
+            "request": "launch",
+            "program": "pm2",
+            "args": ["start", "dist/pm2.config.cjs"],
+            "runtimeArgs": [
+                "--unhandled-rejections=strict",
+            ],
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
         },
         {
             "name": "livestreamer-dist",
             "type": "node",
             "request": "launch",
             "program": "dist/index.js",
-            "env": {
-                "LIVESTREAMER_CONF_PATH": "conf/config.debugger.js",
-            },
             "runtimeArgs": [
                 "--unhandled-rejections=strict",
             ],
@@ -79,11 +80,39 @@
             ]
         },
         {
+            "name": "livestreamer-electron",
+            "type": "node",
+            "request": "launch",
+            "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd",
+            "program": "src/index.js",
+            "args": ["-d"],
+            "runtimeArgs": [
+                "--unhandled-rejections=strict",
+            ],
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+        },
+        {
+            "name": "livestreamer-electron-dist",
+            "type": "node",
+            "request": "launch",
+            "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd",
+            "program": "dist/index.js",
+            "args": ["-d"],
+            "runtimeArgs": [
+                "--unhandled-rejections=strict",
+            ],
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+        },
+        {
             "name": "build",
             "type": "node",
             "request": "launch",
-            "program": "tools.js",
-            "args": ["build"],
+            "program": "tools/cmd.js",
+            "args": ["build", "-p"],
             "runtimeArgs": [
                 "--unhandled-rejections=strict",
             ],
@@ -95,7 +124,7 @@
             "name": "package",
             "type": "node",
             "request": "launch",
-            "program": "tools.js",
+            "program": "tools/cmd.js",
             "args": ["package"],
             "runtimeArgs": [
                 "--unhandled-rejections=strict",
@@ -111,6 +140,9 @@
             "localRoot": "${workspaceFolder}",
             "remoteRoot": "/opt/livestreamer",
             "port": 9229,
+            "presentation": {
+                "hidden": true
+            }
         },
         {
             "name": "docker-media-server",
@@ -119,6 +151,9 @@
             "localRoot": "${workspaceFolder}",
             "remoteRoot": "/opt/livestreamer",
             "port": 9230,
+            "presentation": {
+                "hidden": true
+            },
         },
         {
             "name": "docker-file-manager",
@@ -127,6 +162,9 @@
             "localRoot": "${workspaceFolder}",
             "remoteRoot": "/opt/livestreamer",
             "port": 9231,
+            "presentation": {
+                "hidden": true
+            },
         },
         {
             "name": "docker-main",
@@ -135,20 +173,15 @@
             "localRoot": "${workspaceFolder}",
             "remoteRoot": "/opt/livestreamer",
             "port": 9232,
-        },
-        {
-            "name": "docker-cabtv",
-            "type": "node",
-            "request": "attach",
-            "localRoot": "${workspaceFolder}",
-            "remoteRoot": "/opt/livestreamer",
-            "port": 9233,
-        },
+            "presentation": {
+                "hidden": true
+            },
+        }
     ],
     "compounds": [
         {
           "name": "docker",
-          "configurations": ["docker-root", "docker-main", "docker-media-server", "docker-file-manager", "docker-cabtv"],
+          "configurations": ["docker-root", "docker-main", "docker-media-server", "docker-file-manager"],
           "stopAll": true,
         }
     ]

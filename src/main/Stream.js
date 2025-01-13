@@ -1,6 +1,5 @@
 import fs from "fs-extra";
 import path from "node:path";
-import core from "../core/index.js";
 import * as utils from "../core/utils.js";
 import DataNode from "../core/DataNode.js";
 import FFMPEGWrapper from "../core/FFMPEGWrapper.js";
@@ -8,13 +7,15 @@ import MPVWrapper from "../core/MPVWrapper.js";
 import Logger from "../core/Logger.js";
 import globals from "./globals.js";
 import SessionTypes from "./SessionTypes.js";
-/** @import { SessionBase, InternalSession, ExternalSession } from './types.d.ts' */
+import InternalSessionProps from './InternalSessionProps.js';
+/** @import { SessionBase, InternalSession, ExternalSession, Target } from './types.d.ts' */
 
 const default_fps = 30;
 const TICK_RATE = 30;
 const WARNING_MPV_LOG_SIZE = 1 * 1024 * 1024 * 1024;
 const MAX_MPV_LOG_SIZE = 8 * 1024 * 1024 * 1024;
 const EDL_TRACK_TYPES = ["video", "audio", "sub"];
+const RESTRICT_TEST_STREAM_TO_LOWER_SETTINGS = true;
 
 const ALBUMART_FILENAMES = Object.fromEntries([
     "albumart", "album", "cover", "front", "albumartsmall", "folder", ".folder", "thumb",
@@ -37,6 +38,13 @@ const State = new class {
     STARTING = "starting";
     STOPPED = "stopped";
     STOPPING = "stopping";
+};
+
+let ignore_mpv_realtime_changes = {
+    "time-pos": 1,
+    "output-frames": 1,
+    "output-pts": 1,
+    "volume": 1
 };
 
 const stream_volume_normalization_configs = {
@@ -95,8 +103,7 @@ export class Stream extends DataNode {
         this.logger.info(`Starting stream...`);
         this.$.state = State.STARTING;
 
-        var restrict_test_stream_to_lower_settings = true;
-        if (settings.test && restrict_test_stream_to_lower_settings) {
+        if (settings.test && RESTRICT_TEST_STREAM_TO_LOWER_SETTINGS) {
             settings.audio_bitrate = "128";
             settings.video_bitrate = "2000";
             settings.h264_preset = "veryfast";
@@ -107,32 +114,28 @@ export class Stream extends DataNode {
 
         this.$.title = this.$.title || this.session.name; // this.session.$.default_stream_title || 
         this.$.start_time = Date.now();
-        this.$.graphs = {};
+        this.$.metrics = {};
         this.$.stream_targets = {};
         this.$.internal_stream_paths = [];
         this.$.bitrate = 0;
         
-        let stream_method = settings.method;
+        let stream_method = this.$.method;
         let outputs = [];
         let error;
         let keyframes_per_second = 2.0;
-        let use_hardware = this.$.use_hardware && !this.$.legacy_mode;
-        let ffmpeg_copy = this.$.legacy_mode;
+        let use_hardware = this.$.use_hardware && this.$.experimental_mode;
+        let ffmpeg_copy = !this.$.experimental_mode;
         
         if (stream_method == "rtmp") {
-            if (settings.test) {
-                let path = `/test/${this.session.id}`;
-                this.$.internal_stream_paths.push(path)
-                outputs.push(utils.build_url({"protocol":"rtmp:", "host": "127.0.0.1", "port": core.conf["media-server.rtmp_port"], "pathname":path }));
-            } else {
-                let path = `/internal/${this.session.id}`;
-                this.$.internal_stream_paths.push(path)
-                outputs.push(utils.build_url({"protocol":"rtmp:", "host": "127.0.0.1", "port": core.conf["media-server.rtmp_port"], "pathname":path }));
-            }
+            let path = `/internal/${this.session.id}`;
+            this.$.internal_stream_paths.push(path);
+            let url = new URL(`rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${path}`);
+            if (this.$.test) url.searchParams.append("test", 1);
+            outputs.push(url.toString());
             if (!outputs.length) error = `No outputs specified`;
         } else if (stream_method == "file") {
             try {
-                let filename = await globals.app.evaluate_filename(core.files_dir, this.$.filename).catch(e=>this.logger.error(e.message));
+                let filename = await globals.app.evaluate_filename(globals.app.files_dir, this.$.filename).catch(e=>this.logger.error(e.message));
                 this.$.filename_evaluated = path.basename(filename);
                 if (filename) outputs.push(filename);
             } catch (e) {
@@ -160,14 +163,14 @@ export class Stream extends DataNode {
             // `-re`
         ];
         
-        var hwenc = (use_hardware && core.conf["core.ffmpeg_hwenc"]);
-        var hwaccel = (use_hardware && core.conf["core.ffmpeg_hwaccel"]);
+        var hwenc = (use_hardware && globals.app.conf["core.ffmpeg_hwenc"]);
+        var hwaccel = (use_hardware && globals.app.conf["core.ffmpeg_hwaccel"]);
         
         if (this.session.type === SessionTypes.EXTERNAL) {
             /** @type {ExternalSession} */
             let session = this.session;
             ffmpeg_args.push(
-                "-i", utils.build_url({"protocol":"rtmp:", "host":"127.0.0.1", "port":core.conf["media-server.rtmp_port"], "pathname": this.session.nms_session.publishStreamPath}),
+                "-i", `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${this.session.nms_session.publishStreamPath}`,
                 "-c", "copy",
             );
             if (session.nms_session.publishArgs.volume_normalization == "1") {
@@ -180,8 +183,8 @@ export class Stream extends DataNode {
         } else {
             
             if (use_hardware) {
-                if (!core.conf["core.ffmpeg_hwaccel"]) this.logger.warn(`ffmpeg_hwaccel must be set in config to use hardware acceleration.`);
-                if (!core.conf["core.ffmpeg_hwenc"]) this.logger.warn(`ffmpeg_hwenc must be set in config to use hardware acceleration.`);
+                if (!globals.app.conf["core.ffmpeg_hwaccel"]) this.logger.warn(`ffmpeg_hwaccel must be set in config to use hardware acceleration.`);
+                if (!globals.app.conf["core.ffmpeg_hwenc"]) this.logger.warn(`ffmpeg_hwenc must be set in config to use hardware acceleration.`);
             }
 
             if (this.is_realtime) {
@@ -204,8 +207,8 @@ export class Stream extends DataNode {
             }
             if (hwaccel) {
                 ffmpeg_args.push(
-                    "-hwaccel", core.conf["core.ffmpeg_hwaccel"],
-                    "-hwaccel_output_format", core.conf["core.ffmpeg_hwaccel"],
+                    "-hwaccel", globals.app.conf["core.ffmpeg_hwaccel"],
+                    "-hwaccel_output_format", globals.app.conf["core.ffmpeg_hwaccel"],
                     // "-extra_hw_frames", "10"
                 );
             }
@@ -227,7 +230,7 @@ export class Stream extends DataNode {
 
             } else {
                 ffmpeg_args.push(
-                    "-c:v", hwenc ? `h264_${core.conf["core.ffmpeg_hwenc"]}` : "libx264",
+                    "-c:v", hwenc ? `h264_${globals.app.conf["core.ffmpeg_hwenc"]}` : "libx264",
                     "-preset", hwenc ? `p7` : this.$.h264_preset,
                 );
                 if (hwaccel) {
@@ -286,16 +289,16 @@ export class Stream extends DataNode {
             );
         }
 
-        if (settings.method != "gui") {
+        if (this.$.method != "gui") {
             this.ffmpeg = new FFMPEGWrapper();
             this.ffmpeg.logger.on("log", (log)=>{
                 this.logger.log(log);
             });
             this.ffmpeg.on("info", (info)=>{
                 this.$.bitrate = info.bitrate
-                this.register_graph_point(`trans:bitrate`, this.time_running, info.bitrate);
+                this.register_metric(`trans:bitrate`, this.time_running, info.bitrate);
                 if (this.session.type === SessionTypes.EXTERNAL) {
-                    this.register_graph_point(`upstream:speed`, this.time_running, info.speed);
+                    this.register_metric(`upstream:speed`, this.time_running, info.speed);
                 }
             })
             this.ffmpeg.on("end", ()=>{
@@ -314,7 +317,7 @@ export class Stream extends DataNode {
             this.mpv = new MPVSessionWrapper(this, {
                 width,
                 height,
-                cwd: core.tmp_dir,
+                cwd: globals.app.tmp_dir,
             });
             this.mpv.logger.on("log", (log)=>{
                 this.logger.log(log)
@@ -324,7 +327,7 @@ export class Stream extends DataNode {
             });
             this.$.mpv = this.mpv.$;
 
-            this.mpv_log_file = path.join(core.logs_dir, `mpv-${utils.date_to_string(Date.now())}.log`);
+            this.mpv_log_file = path.join(globals.app.logs_dir, `mpv-${utils.date_to_string(Date.now())}.log`);
 
             var mpv_args = [];
             
@@ -339,9 +342,9 @@ export class Stream extends DataNode {
                 "--stream-buffer-size=4k",
                 "--interpolation=no",
                 "--force-window=yes",
-                `--ytdl-format=${core.conf["main.youtube_dl_format"]}`,
+                `--ytdl-format=${globals.app.conf["main.youtube_dl_format"]}`,
                 `--script-opts-append=ytdl_hook-try_ytdl_first=yes`, // <-- important for detecting youtube edls on load hook in livestreamer.lua
-                `--script-opts-append=ytdl_hook-ytdl_path=${core.conf["main.youtube_dl"]}`,
+                `--script-opts-append=ytdl_hook-ytdl_path=${globals.app.conf["main.youtube_dl"]}`,
                 `--script=${path.join(globals.app.mpv_lua_dir, "livestreamer.lua")}`,
                 "--quiet",
                 `--log-file=${this.mpv_log_file}`,
@@ -382,7 +385,7 @@ export class Stream extends DataNode {
                     "--audio-format=float",
                     "--audio-samplerate=48000",
                     `--audio-channels=stereo`,
-                    `--sub-ass-vsfilter-aspect-compat=no`, // fixes fucked up sub scaling on ass files for anamorphic vids (vids with embedded aspect ratio)
+                    // `--sub-ass-vsfilter-aspect-compat=no`, // fixes fucked up sub scaling on ass files for anamorphic vids (vids with embedded aspect ratio)
                     `--sub-fix-timing=yes`,
                     "--no-config",
                     "--framedrop=no",
@@ -394,8 +397,8 @@ export class Stream extends DataNode {
                     // `--demuxer-lavf-o-add=copyts`,
                     // `--demuxer-lavf-o-add=use_wallclock_as_timestamps=1`,
                 );
-                if (use_hardware && core.conf["core.mpv_hwdec"]) {
-                    mpv_args.push(`--hwdec=${core.conf["core.mpv_hwdec"]}-copy`);
+                if (use_hardware && globals.app.conf["core.mpv_hwdec"]) {
+                    mpv_args.push(`--hwdec=${globals.app.conf["core.mpv_hwdec"]}-copy`);
                 }
                 if (ffmpeg_copy) {
                     mpv_args.push(
@@ -441,7 +444,7 @@ export class Stream extends DataNode {
                         `--oforce-key-frames=expr:gte(t,n_forced*2)`, // keyframe every 2 seconds.
                     );
                 } else {
-                    if (use_hardware && !core.conf["core.mpv_hwdec"]) {
+                    if (use_hardware && !globals.app.conf["core.mpv_hwdec"]) {
                         this.logger.warn(`mpv_hwdec must be set in config to use hardware acceleration.`);
                     }
                     /* mpv_args.push(
@@ -478,11 +481,11 @@ export class Stream extends DataNode {
 
             if (this.mpv.allowed_mpv_props["output-pts"]) {
                 this.mpv.on("speed",(speed)=>{
-                    this.register_graph_point(`trans:speed`, this.time_running, speed);
+                    this.register_metric(`trans:speed`, this.time_running, speed);
                 });
             } else if (this.ffmpeg) {
                 this.ffmpeg.on("info", (info)=>{
-                    this.register_graph_point(`trans:speed`, this.time_running, info.speed_alt);
+                    this.register_metric(`trans:speed`, this.time_running, info.speed_alt);
                 });
             }
         }
@@ -522,7 +525,7 @@ export class Stream extends DataNode {
 
         this.$.state = State.STARTED;
         
-        core.ipc.emit("main.stream.started", this.$);
+        globals.app.ipc.emit("main.stream.started", this.$);
         this.emit("started");
 
         this.try_start_playlist();
@@ -554,19 +557,19 @@ export class Stream extends DataNode {
         if (this.$.method == "rtmp" && !this.$.test) {
             let old_targets = Object.values(this.stream_targets);
             let curr_targets = new Set();
-            for (let id of this.$.targets) {
-                let target = globals.app.targets[id];
+            for (let target_id of this.$.targets) {
+                let target = globals.app.targets[target_id];
                 if (!target) continue;
-                if (!this.stream_targets[id]) {
+                if (!this.stream_targets[target_id]) {
                     if (target.limit && target.streams.length >= target.limit) {
                         this.logger.warn(`Target '${target}' cannot be used by more than ${target.limit} streams concurrently.`);
                     } else {
-                        this.stream_targets[id] = new StreamTarget(id, this);
-                        this.stream_targets[id].start();
+                        var st = new StreamTarget(this, target);
+                        st.start();
                     }
                 }
-                this.stream_targets[id].$.title = this.$.title;
-                curr_targets.add(this.stream_targets[id]);
+                this.stream_targets[target_id].$.title = this.$.title;
+                curr_targets.add(this.stream_targets[target_id]);
             }
             for (let target of old_targets) {
                 if (!curr_targets.has(target)) {
@@ -599,7 +602,7 @@ export class Stream extends DataNode {
 
         this.$.state = State.STOPPED;
 
-        core.ipc.emit("main.stream.stopped", this.id);
+        globals.app.ipc.emit("main.stream.stopped", this.id);
         this.emit("stopped");
         
         this.logger.info(`Stream stopped, total duration was ${utils.ms_to_timespan_str(Math.round(Date.now()-this.$.start_time))}`);
@@ -613,8 +616,8 @@ export class Stream extends DataNode {
         super.destroy();
     }
 
-    register_graph_point(key, x, y) {
-        var d = this.$.graphs[key] = this.$.graphs[key] ?? {min:0,max:0,data:{}};
+    register_metric(key, x, y) {
+        var d = this.$.metrics[key] = this.$.metrics[key] ?? {min:0,max:0,data:{}};
         d.data[d.max++] = [x, y];
     }
     
@@ -657,29 +660,31 @@ export class Stream extends DataNode {
         if (this.session.type === SessionTypes.INTERNAL && this.state === State.STARTED) {
             /** @type {InternalSession} */
             let session = this.session;
-            await session.playlist_play(undefined, { start: session.$.time });
+            await session.playlist_play(session.$.playlist_id, { start: session.$.time });
         }
     }
 }
 
-class StreamTarget extends DataNode {
+export class StreamTarget extends DataNode {
     #state = State.STOPPED;
     get state() { return this.#state; }
-    /** @param {string} id @param {Stream} stream */
-    constructor(id, stream) {
-        super(id);
+    /** @param {Stream} stream @param {Target} target */
+    constructor(stream, target) {
+        super();
 
-        this.logger = new Logger(`target-${id}`);
+        this.logger = new Logger(`target-${target.id}`);
         this.logger.on("log", (log)=>this.stream.logger.log(log));
 
         this.stream = stream;
-        this.target = globals.app.targets[id];
+        this.target = target;
 
-        stream.stream_targets[id] = this;
-        stream.$.stream_targets[id] = this.$;
-        
-        this.evaluated_target = this.target.evaluate(stream, stream.session.$.target_configs[id]);
+        stream.stream_targets[target.id] = this;
+        stream.$.stream_targets[target.id] = this.$;
+
+        this.evaluated_target = target.evaluate(this);
         this.$.evaluated_target = this.evaluated_target;
+        this.$.stream = stream.id;
+        this.$.target = target.id;
 
         this.ffmpeg = new FFMPEGWrapper();
         var host = new URL(this.evaluated_target.rtmp_url).hostname;
@@ -687,7 +692,7 @@ class StreamTarget extends DataNode {
         var hostname = `${host}:${stream.hosts[host]++}`;
         // this.ffmpeg.on("line", console.log);
         this.ffmpeg.on("info", (info)=>{
-            stream.register_graph_point(`${hostname}:speed`, this.stream.time_running, info.speed);
+            stream.register_metric(`${hostname}:speed`, this.stream.time_running, info.speed);
         });
         this.ffmpeg.logger.on("log",(log)=>{
             if (log.level !== Logger.DEBUG) this.logger.log(log);
@@ -713,12 +718,13 @@ class StreamTarget extends DataNode {
             "-f", "flv",
             this.evaluated_target.rtmp_url
         ]);
-        core.emit("stream-target.started", this.id);
+        globals.app.emit("stream-target.started", this.id);
     }
     stop() {
         if (this.#state === State.STOPPED) return;
         this.#state = State.STOPPED;
         this.ffmpeg.stop();
+        globals.app.emit("stream-target.stopped", this.id);
     }
     restart() {
         this.stop();
@@ -728,7 +734,7 @@ class StreamTarget extends DataNode {
     destroy() {
         super.destroy();
         this.stop();
-        delete this.stream.stream_targets[this.id];
+        delete this.stream.stream_targets[this.target.id];
         clearTimeout(this.reconnect_timeout);
         this.ffmpeg.destroy();
     }
@@ -858,11 +864,14 @@ class MPVSessionWrapper extends MPVWrapper {
     #mpv_load_props = {};
     allowed_mpv_args = {};
     allowed_mpv_props = {};
+    #props = {};
     width = 0;
     height = 0;
     $ = new utils.Observer();
 
-    get is_encoding() { return !!this.$.props.o; }
+    get time_pos() { return (this.$.special_start_time + (this.#props["time-pos"] || 0)) || 0; }
+
+    get is_encoding() { return !!this.#props.o; }
     /** @type {InternalSession} */
     get session() { return this.stream.session; }
     
@@ -878,7 +887,6 @@ class MPVSessionWrapper extends MPVWrapper {
         this.height = this.options.height;
 
         this.stream = stream;
-        this.curr_volume = 100;
         
         Object.assign(this.$, {
             playing: false,
@@ -898,8 +906,8 @@ class MPVSessionWrapper extends MPVWrapper {
     }
 
     async start(mpv_args) {
-        var proc = await utils.execa(core.conf["core.mpv_executable"], ["--list-options"]);
-        let temp_mpv_out = proc.stdout
+        var proc = await utils.execa(globals.app.conf["core.mpv_executable"], ["--list-options"]);
+        let temp_mpv_out = proc.stdout;
         for (let line of temp_mpv_out.split("\n")) {
             let m = line.trim().match(/^--([^=\s]+)(?:\s+(.+))?$/);
             if (m) {
@@ -964,6 +972,7 @@ class MPVSessionWrapper extends MPVWrapper {
         this.$.is_encoding = !!await this.get_property("o");
 
         for (let k in mpv_props) {
+            this.#props[k] = mpv_props[k];
             this.$.props[k] = mpv_props[k];
             this.observe_property(k);
         }
@@ -999,9 +1008,9 @@ class MPVSessionWrapper extends MPVWrapper {
         let valid_eof_reasons = new Set(["eof","error","unknown"]);
         this.on("end-file", (e)=>{
             eof_reason = e.reason;
-            var fn1 = this.$.props["path"]
-            var fn2 = this.$.props["stream-open-filename"]
-            var fn3 = this.$.props["stream-path"];
+            var fn1 = this.#props["path"]
+            var fn2 = this.#props["stream-open-filename"]
+            var fn3 = this.#props["stream-path"];
             if (fn1 != "null://eof" && valid_eof_reasons.has(eof_reason)) {
                 this.load_next();
             }
@@ -1015,12 +1024,15 @@ class MPVSessionWrapper extends MPVWrapper {
         this.on("seek", (e)=>{
             this.$.playing = false;
             this.$.seeking = true;
+            this.update_time_pos();
         });
 
         this.on("playback-restart", (e)=>{
             this.$.playing = true;
             this.$.seeks++;
             this.$.seeking = false;
+            this.$.user_seeking = false;
+            this.update_time_pos();
         });
 
         /* this.on("on_after_end_file", (e)=>{
@@ -1031,16 +1043,10 @@ class MPVSessionWrapper extends MPVWrapper {
 
         this.on("property-change", async (e)=>{
             let {name, data} = e;
-            if (name === "time-pos" && data != null) {
-                // fixes issue with rubberbanding time-pos after special seek
-                if (this.$.loaded) {
-                    let t = data || 0;
-                    this.$.time = this.$.special_start_time + t;
-                }
-            } else if (name === "eof-reached") {
+            if (name === "eof-reached") {
                 if (data) {
                     this.logger.info("eof-reached");
-                    if (this.$.props.loop_file) this.seek(0);
+                    if (this.#props.loop_file) this.seek(0);
                     else this.load_next();
                 }
             }
@@ -1048,21 +1054,27 @@ class MPVSessionWrapper extends MPVWrapper {
                 this.emit("user-property-change", e);
                 this.#mpv_expected_props[name] = data;
             }
-            this.$.props[name] = data;
+            if (!(name in ignore_mpv_realtime_changes)) {
+                this.$.props[name] = data;
+            }
+            if (name === "time-pos" && this.$.seeking) {
+                this.update_time_pos();
+            }
+            this.#props[name] = data;
         });
         
         this.on("user-property-change", async (e)=>{
             let {name, data} = e;
-            if (name === "volume") {
-                this.session.$.volume_target = data / this.$.props.volume_multiplier;
-            }
+            /* if (name === "volume") {
+                this.session.$.volume_target = data / this.#props.volume_multiplier;
+            } */
             // too confusing...
             /* else if (["sid", "aid"].includes(name)) {
                 let override_key = `${name}_override`;
                 let auto_key = `${name}_auto`;
                 if (data == "auto") return;
-                if (this.$.props[override_key] == null && data == this.$.props[auto_key]) return;
-                this.$.props[override_key] = (data == this.$.props[auto_key]) ? null : data;
+                if (this.#props[override_key] == null && data == this.#props[auto_key]) return;
+                this.#props[override_key] = (data == this.#props[auto_key]) ? null : data;
             } */
         });
         
@@ -1090,16 +1102,17 @@ class MPVSessionWrapper extends MPVWrapper {
 
     seek(t) {
         if (!this.$.seekable) return;
-        this.$.seeking = true;
+        this.$.user_seeking = true;
+        this.$.seek_time = t;
         if (this.$.is_special) {
-            return this.loadfile(this.loaded_item, { start: t, reload_props:false, pause:this.$.props.pause });
+            return this.loadfile(this.loaded_item, { start: t, reload_props:false, pause:this.#props.pause });
         } else {
             return super.seek(t);
         }
     }
 
     reload(reload_props=true) {
-        return this.loadfile(this.session.get_playlist_item(this.loaded_item.id), { start: this.$.time, reload_props, pause:this.$.props.pause });
+        return this.loadfile(this.session.get_playlist_item(this.loaded_item.id), { start: this.$.time, reload_props, pause:this.#props.pause });
     }
         
     /** @param {{offset:number, duration:number, media_type:string}} opts */
@@ -1280,7 +1293,7 @@ class MPVSessionWrapper extends MPVWrapper {
         }, opts);
 
         let last_id = this.loaded_item && this.loaded_item.id;
-        let last_props = utils.deep_copy(this.$.props);
+        let last_props = utils.deep_copy(this.#props);
 
         // this.$.current_item_on_load = utils.deep_copy(item);
         // this.$.current_descendents_on_load = utils.deep_copy(this.get_playlist_items(id, null, true));
@@ -1293,13 +1306,13 @@ class MPVSessionWrapper extends MPVWrapper {
         item.fades = [];
         this.loaded_item = item;
 
-        let props_def = this.session.PROPS.playlist.__enumerable__.props;
+        let props_def = InternalSessionProps.playlist.__enumerable__.props;
         let props = {};
         let on_load_commands = [];
         
         if (opts.reload_props) {
             for (let k in props_def) {
-                props[k] = props_def[k].default;
+                props[k] = props_def[k].__default__;
             }
             for (let k in this.session.$.player_default_override) {
                 props[k] = this.session.$.player_default_override[k];
@@ -1375,7 +1388,7 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
                 
                 filename = `memory://${ass_str}`;
             } else if (ls_path == "rtmp") {
-                filename = utils.build_url({protocol:"rtmp:", "host": "127.0.0.1", "port": core.conf["media-server.rtmp_port"], "pathname": `/private/${this.session.$.id}`});
+                filename = `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}/private/${this.session.$.id}`;
                 // if localhost port is open and accepts request but stream is not live it breaks mpv completely. Can't figure it out.
                 // filename = "wss://localhost:8112/live/"..S.rtmp_key..".flv"
                 // filename = "https://localhost:8112/live/"..S.rtmp_key..".m3u8"
@@ -1599,7 +1612,7 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
             if (background_mode == "file") {
                 await add_video(background_file, background_file_start, background_file_end);
             } else if (background_mode == "logo") {
-                await add_video(path.resolve(core.conf["main.logo_path"]));
+                await add_video(path.resolve(globals.app.conf["main.logo_path"]));
             } else if (background_mode == "color") {
                 // vid_auto = 0; // ?
             }
@@ -1788,6 +1801,7 @@ Format: Start,End,Style,Text`+"\n";
         this.$.seekable = seekable;
         this.$.streams = streams;
 
+        this.#props = props;
         this.$.props = props;
         this.#mpv_load_props = {};
         for (var k in props) {
@@ -1801,13 +1815,19 @@ Format: Start,End,Style,Text`+"\n";
         if (aid != null) this.#mpv_load_props.aid = aid || false;
         if (sid != null) this.#mpv_load_props.sid = sid || false;
         if (this.$.seekable) this.#mpv_load_props.start = String(start_time);
+        
+        for (var k of Object.keys(this.#mpv_load_props)) {
+            if (!this.allowed_mpv_props[k]) delete this.#mpv_load_props[k];
+        }
+
         await this.on_load_promise(this.lua_message("loadfile", filename, this.#mpv_load_props, on_load_commands));
 
         return filename;
     }
 
     async set_property(key, value, current_file_override=false) {
-        let changed = this.$.props[key] != value;
+        let changed = this.#props[key] != value;
+        this.#props[key] = value;
         this.$.props[key] = value;
         let mpv_key = key, mpv_value = value;
 
@@ -1859,15 +1879,14 @@ Format: Start,End,Style,Text`+"\n";
 
     lua_message(name, ...args) {
         return this.command("script-message-to", "livestreamer", name, JSON.stringify(args)).catch(e=>{
-            this.logger.warn(`[mpv] ${e}`);
+            this.logger.warn(`[mpv] ${JSON.stringify(e)}`);
         })
     }
     
     update_volume(immediate = false) {
-        let target_volume = this.session.$.volume_target * this.$.props.volume_multiplier;
-        let curr_volume = this.$.props.volume ?? 100;
+        let target_volume = this.session.$.volume_target * this.#props.volume_multiplier;
+        let curr_volume = this.#props.volume ?? 100;
         this.set_property("volume_target", target_volume);
-        // if (curr_volume == target_volume) return;
         let inc = this.session.$.volume_speed;
         if (inc == 0 || immediate) {
             curr_volume = target_volume;
@@ -1878,8 +1897,9 @@ Format: Start,End,Style,Text`+"\n";
                 curr_volume = Math.max(curr_volume - inc, target_volume);
             }
         }
-        this.curr_volume = curr_volume;
-        this.set_property("volume", curr_volume);
+        if (this.#props.volume != curr_volume) {
+            this.set_property("volume", curr_volume);
+        }
     }
 
     async #tick() {
@@ -1899,11 +1919,10 @@ Format: Start,End,Style,Text`+"\n";
     }
 
     async #long_tick() {
-        this.session.$.time = this.$.time;
 
         let ts = Date.now();
-        if (this.$.props["output-pts"]) {
-            let diff_pts = (this.$.props["output-pts"] - this.#mpv_last_pts) * 1000;
+        if (this.#props["output-pts"]) {
+            let diff_pts = (this.#props["output-pts"] - this.#mpv_last_pts) * 1000;
             let diff_ts = ts - this.#mpv_last_speed_check;
             let speed = (diff_pts / diff_ts);
             if (isNaN(speed) || speed < 0) speed = 0;
@@ -1911,7 +1930,7 @@ Format: Start,End,Style,Text`+"\n";
             this.speed = speed;
             this.emit("speed", speed);
         }
-        this.#mpv_last_pts = this.$.props["output-pts"];
+        this.#mpv_last_pts = this.#props["output-pts"];
         this.#mpv_last_speed_check = ts;
 
         (async ()=>{
@@ -1928,11 +1947,11 @@ Format: Start,End,Style,Text`+"\n";
 
         if (!this.is_encoding) {
             let interpolation_mode = this.session.$.interpolation_mode || false;
-            let curr_val = this.$.props.interpolation;
+            let curr_val = this.#props.interpolation;
             let new_val = curr_val;
             if (interpolation_mode == "auto") {
                 let df = this.session.$.auto_interpolation_rate || 30;
-                let vf = this.$.props["estimated-vf-fps"];
+                let vf = this.#props["estimated-vf-fps"];
                 if (vf) {
                     if (vf < df) {
                         let r =  df % vf;
@@ -1948,11 +1967,22 @@ Format: Start,End,Style,Text`+"\n";
                 this.set_property("interpolation", new_val);
             }
         }
+
+        this.update_time_pos();
+
+        for (var k in this.#props) {
+            this.$.props[k] = this.#props[k];
+        }
+    }
+    update_time_pos() {
+        var t = this.$.user_seeking ? this.$.seek_time : this.time_pos;
+        this.$.time = t;
+        this.session.$.time = t;
     }
 
     rebuild_deinterlace() {
         this.deinterlace_dirty = false;
-        let deint = this.$.props.deinterlace_mode;
+        let deint = this.#props.deinterlace_mode;
         if (deint == "auto") {
             deint = false;
             if (this.loaded_item && this.loaded_item.media_info) deint = !!this.loaded_item.media_info.interlaced;
@@ -1982,7 +2012,7 @@ Format: Start,End,Style,Text`+"\n";
             `pan=stereo|FL<1.0*FL+0.707*FC+0.707*BL|FR<1.0*FR+0.707*FC+0.707*BR`,
             `aresample=async=1`
         );
-        // let fps = +(this.$.props.force_fps || this.stream.fps);
+        // let fps = +(this.#props.force_fps || this.stream.fps);
         let fps = +this.stream.fps;
         if (fps) {
             vf_graph.push(
@@ -1990,10 +2020,10 @@ Format: Start,End,Style,Text`+"\n";
             );
         }
 
-        let crop_left = this.$.props.crop_left || 0;
-        let crop_right = this.$.props.crop_right || 0;
-        let crop_top = this.$.props.crop_top || 0;
-        let crop_bottom = this.$.props.crop_bottom || 0;
+        let crop_left = this.#props.crop_left || 0;
+        let crop_right = this.#props.crop_right || 0;
+        let crop_top = this.#props.crop_top || 0;
+        let crop_bottom = this.#props.crop_bottom || 0;
         if (crop_left || crop_right || crop_top || crop_bottom) {
             vf_graph.push(
                 `crop=w=iw*${Math.abs(1-crop_right-crop_left)}:h=ih*${Math.abs(1-crop_bottom-crop_top)}:x=iw*${crop_left}:y=ih*${crop_top}`
@@ -2002,9 +2032,9 @@ Format: Start,End,Style,Text`+"\n";
 
         const get_fade_in_out = ()=>{
             if ((this.loaded_item||{}).filename == "livestreamer://intertitle") {
-                return [this.$.props.title_fade || 0, this.$.props.title_fade || 0];
+                return [this.#props.title_fade || 0, this.#props.title_fade || 0];
             }
-            return [this.$.props.fade_in || 0, this.$.props.fade_out || 0];
+            return [this.#props.fade_in || 0, this.#props.fade_out || 0];
         };
         let [fade_in, fade_out] = get_fade_in_out();
         var real_duration = this.$.duration - this.$.special_start_time;
@@ -2028,25 +2058,25 @@ Format: Start,End,Style,Text`+"\n";
             );
         }
 
-        let norm_method = this.$.props.volume_normalization;
+        let norm_method = this.#props.volume_normalization;
         let norm_filter_option = stream_volume_normalization_configs[norm_method];
         if (norm_filter_option) {
-            af_graph.push(norm_filter_option[1]);
+            af_graph.push(norm_filter_option);
         }
 
-        if (this.is_encoding && this.$.props.audio_delay) {
+        if (this.is_encoding && this.#props.audio_delay) {
             af_graph.push(
-                `asetpts=PTS+${this.$.props.audio_delay}/TB`,
+                `asetpts=PTS+${this.#props.audio_delay}/TB`,
                 `aresample=async=1`
             );
         }
 
         let has_2_channels = (()=>{
             var streams = this.$.streams;
-            return (get_stream_by_id(this.$.props.aid, streams, "audio") || get_stream_by_id("auto", streams, "audio") || {}).channels == 2;
+            return (get_stream_by_id(this.#props.aid, streams, "audio") || get_stream_by_id("auto", streams, "audio") || {}).channels == 2;
         })();
 
-        let ac = this.$.props.audio_channels;
+        let ac = this.#props.audio_channels;
         if (has_2_channels) {
             if (ac == "mix") {
                 af_graph.push(

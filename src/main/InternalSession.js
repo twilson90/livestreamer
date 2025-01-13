@@ -1,6 +1,5 @@
 import fs from "fs-extra";
 import path from "node:path";
-import core from "../core/index.js";
 import * as utils from "../core/utils.js";
 import globals from "./globals.js";
 import SessionBase from "./SessionBase.js";
@@ -22,7 +21,7 @@ export class InternalSession extends SessionBase {
     #updating = false;
 
     get saves_dir() { return path.join(globals.app.curr_saves_dir, this.id); }
-    get files_dir() { return this.$.files_dir ? this.$.files_dir : core.files_dir; }
+    get files_dir() { return this.$.files_dir ? this.$.files_dir : globals.app.files_dir; }
 
     get rtmp_key_without_args() { return this.$.rtmp_key.split("?")[0]; }
 
@@ -42,7 +41,7 @@ export class InternalSession extends SessionBase {
         utils.Observer.listen(this.$, c=>{
             // if (!c.nested) { }
             /* if (!(c.path[0] in PROPS)) {
-                core.logger.error(`Property '${c.path[0]}' is not defined.`);
+                globals.app.logger.error(`Property '${c.path[0]}' is not defined.`);
             } */
             // need to determine if this prop is to be sent to lua script.
             /* if (PROPS[c.path[0]] && PROPS[c.path[0]].lua !== false) {
@@ -63,8 +62,6 @@ export class InternalSession extends SessionBase {
                 this.$.volume_target = utils.clamp(c.new_value, 0, 200);
             }
         });
-
-        // if (!this.$.rtmp_key) this.generate_rtmp_key();
     }
 
     async #handle_filename_add_or_change(id){
@@ -183,8 +180,8 @@ export class InternalSession extends SessionBase {
         this.logger.info(`Scheduled to start streaming now...`);
         await this.start_stream();
         this.$.schedule_start_time = null;
-        // core.emit("session.scheduled-start", this.id);
-        core.ipc.emit("main.session.scheduled-start", this.$);
+        // globals.app.emit("session.scheduled-start", this.id);
+        globals.app.ipc.emit("main.session.scheduled-start", this.$);
     }
 
     async tick() {
@@ -301,29 +298,25 @@ export class InternalSession extends SessionBase {
             var props = item.props || {};
             var start = props.clip_start || 0;
             var end = Math.min(props.clip_end || Number.MAX_SAFE_INTEGER, +mi.duration);
-            var duration = end-start;
-            duration -= duration/n;
-            start += duration/n/2;
-
+            let offset = (end-start)/n/2;
+            end -= offset;
+            start += offset;
             var filepath = utils.try_file_uri_to_path(filename);
             var hash = `${utils.md5(filepath)}-${new Date().toISOString().replace(/[^\d]+/g,"")}`;
-            var dir = path.join(core.screenshots_dir, hash);
-            fs.mkdirSync(dir, {recursive:true});
-            var r = (n/duration).toFixed(5);
+            var dir = path.join(globals.app.screenshots_dir, hash);
+            await fs.mkdir(dir, {recursive:true});
             var vfs = [
-                `cropdetect=limit=24:round=2:reset_count=1`, //skip=0: // skip is not available on server, by default it skips first 2 frames (wtf? booo!)
+                `cropdetect=limit=24:round=2:reset_count=1:skip=0`,
                 `scale=trunc(ih*dar/2)*2:trunc(ih/2)*2`,
                 `setsar=1/1`
             ];
-            var proc = await utils.execa(core.conf["core.ffmpeg_executable"], ["-skip_frame", "nokey", '-noaccurate_seek', "-ss", start, "-i", filepath, "-max_muxing_queue_size","9999", "-vf", vfs.join(","), "-vsync", "0", "-vframes", String(n), "-y", `%04d.jpg`], {cwd: dir});
+            var proc = await utils.execa(globals.app.conf["core.ffmpeg_executable"], ["-skip_frame", "nokey", '-noaccurate_seek', "-ss", start, "-i", filepath, "-max_muxing_queue_size","9999", "-vf", vfs.join(","), "-vsync", "0", "-vframes", String(n), "-y", `%04d.jpg`], {cwd: dir});
             var files = await fs.readdir(dir);
-            
             var lines = proc.stderr.split(/\r?\n/);
             var rects = [];
             for (var line of lines) {
                 var m = line.match(/crop=(.+?):(.+?):(.+?):(.+?)$/);
                 if (m) {
-                    console.log(m[0])
                     var rect = new utils.Rectangle(+m[3],+m[4],+m[1],+m[2]);
                     rect.scale(1/w,1/h);
                     if (rect.width < 0 || rect.height < 0) rect = new utils.Rectangle(0,0,1,1);
@@ -331,7 +324,6 @@ export class InternalSession extends SessionBase {
                 }
             }
             var t1 = Date.now();
-            this.logger.info(`Crop detection found ${combined_rect} in ${(t1-t0)/1000} secs`);
             if (rects.length) {
                 var crop_data = files.slice(0, n).map((f,i)=>{
                     var url = `screenshots/${hash}/${f}`;
@@ -348,6 +340,7 @@ export class InternalSession extends SessionBase {
                     "crop_bottom": 1-combined_rect.bottom,
                 });
             }
+            this.logger.info(`Crop detection found ${combined_rect} in ${(t1-t0)/1000} secs`);
         }
     }
 
@@ -358,7 +351,7 @@ export class InternalSession extends SessionBase {
     get_playlist_next_item(id) {
         id = id ?? this.$.playlist_id;
         var curr = this.get_playlist_item(id);
-        var playlist = this.get_flat_playlist("0");
+        var playlist = this.get_flat_playlist();
         var next = curr;
         var i = playlist.indexOf(curr);
         while (true) {
@@ -560,7 +553,7 @@ export class InternalSession extends SessionBase {
     }
 
     #fix_circular_playlist_items(data) {
-        var ids = utils.detect_circular_structure(Object.values(data).filter(({parent_id})=>!!parent_id).map(({id,parent_id:parent})=>({id,parent})));
+        var ids = utils.detect_circular_structure(Object.values(data).filter(d=>d && d.parent_id).map(({id,parent_id:parent})=>({id,parent})));
         if (ids.length) {
             this.logger.error(`Found circular parent-child loops in playlist, attempting to fix:`, ids.join(", "))
             for (var id of ids) data[id].parent_id = "0";
@@ -593,7 +586,7 @@ export class InternalSession extends SessionBase {
         var fullpath = path.join(this.saves_dir, filename);
         await fs.writeFile(fullpath, json);
         
-        while (this.#autosaves.length > core.conf["main.autosaves_limit"]) {
+        while (this.#autosaves.length > globals.app.conf["main.autosaves_limit"]) {
             await this.delete_save(this.#autosaves.shift());
         }
     }
@@ -703,61 +696,52 @@ export class InternalSession extends SessionBase {
     }
 
     async playlist_play(id, opts) {
-        id = id ?? this.$.playlist_id;
         opts = Object.assign({
             start: 0,
-            allow_null: false,
         }, opts);
 
-        var item = this.get_playlist_item(id);
-
-        if (this.is_running && this.is_item_playlist(id) && !item.props.playlist_mode) {
-            item = this.get_playlist_next_item(id);
-        }
-        if (id != "-1" && !item && !opts.allow_null) {
-            item = this.get_flat_playlist("0").filter(i=>!this.is_item_playlist(i.id))[0];
-        }
-        if (this.is_running && item && item.filename === "livestreamer://exit") {
-            var parent = this.get_playlist_item(item.parent_id)
-            var parent_items = this.get_playlist_items(parent.parent_id);
-            var next_item = parent_items[parent_items.findIndex(s=>s.id == parent.id)+1];
-            item = next_item || item;
-        }
-
-        this.$.playlist_id = item ? item.id : null;
+        let item = this.get_playlist_item(id);
 
         this.$.time = opts.start || 0;
-        
+
         if (this.is_running) {
-            if (item) {
-                if (item.filename === "livestreamer://macro") {
-                    if (item.props.function === "handover") {
-                        let session_id = item.props.function_handover_session;
-                        this.$.playlist_id = null;
-                        if (session_id == this.id) this.stop_stream();
-                        else this.stream.attach(session_id);
-                    } else if (item.props.function === "stop") {
-                        await this.stream.stop();
-                        this.$.playlist_id = null;
-                    }
-                    return;
-                } else {
-                    var filename = await globals.app.prepare(item && item.filename);
-                    if (filename !== item.filename) {
-                        this.logger.info(`Using '${filename}' in place of '${item.filename}'.`);
-                    }
-                    this.prepare_next_playlist_item();
-                    item = {...item, filename};
-                }
+            if (item && this.is_item_playlist(id) && !item.props.playlist_mode) {
+                item = this.get_playlist_next_item(id)
             }
+            if (item && item.filename === "livestreamer://exit") {
+                var parent = this.get_playlist_item(item.parent_id)
+                var parent_items = this.get_playlist_items(parent.parent_id);
+                var next_item = parent_items[parent_items.findIndex(s=>s.id == parent.id)+1];
+                item = next_item || item;
+            }
+            let macro = item && item.filename === "livestreamer://macro" && item.props.function
+            if (macro === "handover") {
+                let session_id = item.props.function_handover_session;
+                this.$.playlist_id = null;
+                if (session_id == this.id) this.stop_stream();
+                else this.stream.attach(session_id);
+            } else if (macro === "stop") {
+                this.$.playlist_id = null;
+                await this.stream.stop();
+            } else {
+                this.$.playlist_id = item ? item.id : null;
+                await this.mpv.loadfile(item, opts);
+            }
+            // var filename = await globals.app.prepare(item && item.filename);
+            // if (filename !== item.filename) {
+            //     this.logger.info(`Using '${filename}' in place of '${item.filename}'.`);
+            // }
+            // this.prepare_next_playlist_item();
+            // item = {...item, filename};
             
-            await this.mpv.loadfile(item, opts);
+        } else {
+            this.$.playlist_id = item ? item.id : null;
         }
     }
 
     playlist_next() {
         var next = this.get_playlist_next_item();
-        return this.playlist_play(next ? next.id : null, {allow_null:true});
+        return this.playlist_play(next ? next.id : null);
     }
 
     is_item_playlist(id) {
@@ -789,9 +773,9 @@ export class InternalSession extends SessionBase {
         this.stream.attach(session, false);
     }
 
-    update_target_config(name, key, value) {
-        if (!this.$.target_configs[name]) this.$.target_configs[name] = {};
-        this.$.target_configs[name][key] = value;
+    update_target_opts(name, key, value) {
+        if (!this.$.target_opts[name]) this.$.target_opts[name] = {};
+        this.$.target_opts[name][key] = value;
     }
 }
 

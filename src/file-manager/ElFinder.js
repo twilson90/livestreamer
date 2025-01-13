@@ -4,11 +4,11 @@ import multer from "multer";
 import fs from "fs-extra";
 import crypto from "node:crypto";
 import bodyParser from "body-parser";
-import core from "../core/index.js";
 import * as utils from "./utils.js";
 import * as errors from "./errors.js";
 import * as constants from "./constants.js";
 import Volume from "./Volume.js";
+import globals from "./globals.js";
 /** @import { Driver } from './types.d.ts' */
 
 const dirname = import.meta.dirname;
@@ -30,10 +30,10 @@ export class ElFinder {
 	/** @param {Express} express @param {object} config */
 	constructor(express, config) {
 		this.commands = new Set(['abort','archive','callback','chmod','dim','duplicate','editor','extract','file','get','info','ls','mkdir','mkfile','netmount','open','parents','paste','put','rename','resize','rm','search','size','subdirs','tmb','tree','upload','url','zipdl']);
-		this.appdata_dir = path.join(core.appdata_dir, "elfinder");
-		this.uploads_dir = path.join(this.appdata_dir, 'uploads');
-		this.thumbnails_dir = path.join(this.appdata_dir, 'tmb');
-		this.tmp_dir = path.join(this.appdata_dir, 'tmp');
+		this.elfinder_dir = path.join(globals.app.appdata_dir, "elfinder");
+		this.uploads_dir = path.join(this.elfinder_dir, 'uploads');
+		this.thumbnails_dir = path.join(this.elfinder_dir, 'tmb');
+		this.tmp_dir = path.join(this.elfinder_dir, 'tmp');
 		fs.mkdirSync(this.thumbnails_dir, {recursive:true});
 		fs.mkdirSync(this.uploads_dir, {recursive:true});
 		fs.emptyDirSync(this.uploads_dir);
@@ -48,11 +48,11 @@ export class ElFinder {
 		this.config = config;
 
 		var connector = `connector`;
-		this.connector_url = `/${core.name}/${connector}/`;
+		this.connector_url = `/${globals.app.name}/${connector}/`;
 		var router = Router();
 
 		express.use(async (req, res, next) => {
-			var user = await core.authorise(req, res);
+			var user = await globals.app.authorise(req, res);
 			if (user) next();
 			else res.send(401);
 		})

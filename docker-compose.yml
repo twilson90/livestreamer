@@ -3,10 +3,7 @@ services:
     container_name: livestreamer
     build: .
     volumes:
-      - ./src:/opt/livestreamer/src
-      - ./package.json:/opt/livestreamer/package.json
-      - //c/Users/hedge/Downloads:/downloads
-      - node_modules:/opt/livestreamer/node_modules
+      - ./dist:/opt/livestreamer
       - appdata:/var/opt/livestreamer
     restart: on-failure
     ports:
@@ -24,4 +21,3 @@ networks:
 
 volumes:
   appdata:
-  node_modules:

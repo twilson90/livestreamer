@@ -1,4 +1,5 @@
-import SessionBase from "./SessionBase.js";
+import SessionBaseProps from "./SessionBaseProps.js";
+/** @import {Property} from "../core/types.d.ts" */
 
 export const PerFileProps = {
     __default__: {},
@@ -63,6 +64,7 @@ export const PerFileProps = {
 
 const background_mode_options = [["logo",`Logo`], ["color", "Color"], ["embedded", "Embedded Artwork"], ["external", "External Artwork"]];
 
+/** @type {Record<string,Property>} */
 export const PlaylistItemProps = {
     id: {
         __default__: "",
@@ -218,7 +220,7 @@ export const PlaylistItemProps = {
 }
 
 export const Props = {
-    ...SessionBase.Props, 
+    ...SessionBaseProps, 
     playlist_id: {
         __default__: -1,
     },
@@ -252,10 +254,6 @@ export const Props = {
     files_dir: {
         __default__: "",
     },
-    rtmp_key: {
-        __default__: "",
-        __load__: false,
-    },
     volume_target: {
         __default__: 100,
     },
@@ -276,15 +274,15 @@ export const Props = {
     },
     detected_crops: {
         __default__: {},
-        save:false,
+        __save__:false,
     },
     playlist_info: {
         __default__: {},
-        save: false,
+        __save__: false,
     },
     last_stream: {
         __default__: {},
-        save: false,
+        __save__: false,
     },
 }
 

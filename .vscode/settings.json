@@ -1,8 +1,8 @@
 {
     "git.repositoryScanMaxDepth": 2,
     "files.exclude": {
-        "dist/": true,
         "out/": true,
+        "dist/": true,
     },
     "search.exclude": {
         "**/node_modules": true,

@@ -1,7 +1,5 @@
 import fs from "fs-extra";
 import path from "node:path";
-
-import core from "../core/index.js";
 import * as utils from "../core/utils.js";
 import DataNode from "../core/DataNode.js";
 import globals from "./globals.js";
@@ -56,14 +54,14 @@ export class Upload extends DataNode {
 
         globals.app.uploads[id] = this;
         globals.app.$.uploads[id] = this.$;
-        core.logger.info(`Starting upload '${this.unique_dest_path}'...`);
+        globals.app.logger.info(`Starting upload '${this.unique_dest_path}'...`);
 
         this.ready = (async ()=>{
             await fs.mkdir(dir, {recursive:true});
             // await fs.mkdir(chunks_dir, {recursive:true});
             this.$.dest_path = await utils.unique_filename(dest_path);
             if (dest_path !== this.unique_dest_path) {
-                core.logger.info(`Upload (${dir}) '${path.basename(dest_path)}' -> '${path.basename(this.unique_dest_path)}'...`);
+                globals.app.logger.info(`Upload (${dir}) '${path.basename(dest_path)}' -> '${path.basename(this.unique_dest_path)}'...`);
             }
 
             // this should force the file to be written sequentially even if chunks arrive out of order by reserving the space on disk first.
@@ -101,7 +99,7 @@ export class Upload extends DataNode {
             var percent = this.bytes / this.$.total;
             if ((ts - this.#last_log) > log_interval) {
                 this.#last_log = ts;
-                core.logger.info(`Uploading ['${this.unique_dest_path}', ${this.bytes}/${this.$.total}, ${(percent*100).toFixed(2)}%`);
+                globals.app.logger.info(`Uploading ['${this.unique_dest_path}', ${this.bytes}/${this.$.total}, ${(percent*100).toFixed(2)}%`);
             }
             p += chunk.length;
         });
@@ -126,7 +124,7 @@ export class Upload extends DataNode {
                     
                     if (this.finished && this.$.status !== Upload.Status.FINISHED) {
                         this.$.status = Upload.Status.FINISHED;
-                        core.logger.info(`Upload finished '${this.unique_dest_path}'`);
+                        globals.app.logger.info(`Upload finished '${this.unique_dest_path}'`);
                         writestream.on("close", ()=>{
                             // this.sync_mtime();
                             this.emit("complete");
@@ -156,7 +154,7 @@ export class Upload extends DataNode {
         for (var s of this.streams) {
             s.close();
         }
-        core.logger.info(`Upload cancelled by user: ${this.unique_dest_path}`);
+        globals.app.logger.info(`Upload cancelled by user: ${this.unique_dest_path}`);
         this.destroy();
     }
     destroy() {

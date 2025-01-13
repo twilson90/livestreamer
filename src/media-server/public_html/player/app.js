@@ -54,14 +54,19 @@ var settings = new dom_utils.LocalStorageBucket("player", {
     crop_mode: "auto",
 });
 
-if (DEBUG) document.body.style.background = "blue";
-if (IS_EMBED) document.body.classList.add("embedded");
-
-class App {
+export class App {
     /** @type {VideoPlayer} */
     player;
 
+    constructor() {
+        this.init();
+    }
+
     async init() {
+
+        if (DEBUG) document.body.style.background = "blue";
+        if (IS_EMBED) document.body.classList.add("embedded");
+        
         conf = await (await fetch("../conf")).json();
 
         var params = new URLSearchParams(location.search);
@@ -895,5 +900,4 @@ class Crop {
     }
 }
 
-export const app = new App();
-app.init();
+export default App;

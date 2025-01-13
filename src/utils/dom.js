@@ -280,7 +280,7 @@ const entity_table = {
     });
 }).observe(document.body, { childList: true }); */
 
-class TouchListener extends utils.EventEmitter {
+export class TouchListener extends utils.EventEmitter {
     constructor(elem, user_settings) {
         super();
         var settings = {
@@ -345,7 +345,7 @@ class TouchListener extends utils.EventEmitter {
         this._destroy();
     }
 }
-class AutoSizeController extends utils.EventEmitter {
+export class AutoSizeController extends utils.EventEmitter {
     constructor(elem, min_rows, auto_update=true) {
         super();
         this.elem = elem;
@@ -380,7 +380,7 @@ class AutoSizeController extends utils.EventEmitter {
     }
 }
 // var LocalStorageDeleted = Symbol("LocalStorageDeleted");
-class LocalStorageBucket extends utils.EventEmitter
+export class LocalStorageBucket extends utils.EventEmitter
 {   
     get data() { return { ...this.#defaults, ...this.#data } }
     get keys() { return Object.keys(this.data); }
@@ -474,7 +474,9 @@ class WebSocket2 extends utils.EventEmitter
             this.send(Object.assign({
                 __id__: rid,
             }, data));
-            setTimeout(()=>reject(`WebSocket2 request ${rid} timed out`), timeout)
+            if (timeout) {
+                setTimeout(()=>reject(`WebSocket2 request ${rid} timed out`), timeout)
+            }
         }).catch((e)=>console.error(e));
     }
 
@@ -547,9 +549,10 @@ class WebSocket2 extends utils.EventEmitter
         });
     }
 }
+export {WebSocket2 as WebSocket}
 
 // depends on tippy js
-class UI extends utils.EventEmitter {
+export class UI extends utils.EventEmitter {
     get disabled() { return !!this.get_setting("disabled"); }
     set disabled(value) {
         if (this.settings.disabled == value) return;
@@ -873,6 +876,7 @@ Element.prototype.append = function(...children) {
 Element.prototype.prepend = function(...children) {
     old_prepend.apply(this, [...handle_els(children)]);
 }
+
 UI.Column = class Column extends UI {
     init() {
         super.init();
@@ -1000,17 +1004,17 @@ UI.Root = class Root extends UI {
 }
 
 UI.PropertyContainer = class PropertyContainer extends UI {
-    get data() { return this.get_setting("data", this._datas[0]); }
-    set data(value) {
-        this._datas = [value];
-    }
+    _datas = [null];
     get datas() { return this._datas.map(data=>this.get_setting("data", data)); }
     /** @type {object[]} */
-    set datas(values) {
-        if (!Array.isArray(values)) values = [values];
-        this._datas = [...values];
-        if (this._datas.length == 0) this._datas = [null];
+    set datas(datas) {
+        if (!Array.isArray(datas)) datas = [datas];
+        if (!datas.length) datas = [null];
+        this._datas = [...datas];
+        this.__update_values();
     }
+    get data() { return this.datas[0]; }
+    set data(value) { this.datas = [value]; }
     get valid() { return this.properties.filter(p=>!p.hidden).every(p=>p.valid); }
     /** @type {object} */
     get property_lookup() { return Object.fromEntries(this.properties.map(p=>[p.id, p._value])); }
@@ -1018,8 +1022,8 @@ UI.PropertyContainer = class PropertyContainer extends UI {
     get named_property_lookup() { return Object.fromEntries(this.properties.filter(p=>!p.is_indeterminate && p.name).map(p=>[p.name, p._value])); }
     /** @type {object} */
     get named_property_lookup_not_null() { return Object.fromEntries(Object.entries(this.named_property_lookup).filter(([k,v])=>v!==null)); }
-    get properties() { return [...this.get_properties()]; }
-    *get_properties() {
+    get properties() { return [...this.iterate_properties()]; }
+    *iterate_properties() {
         if (!this._properties) return;
         for (var p of this._properties) {
             yield p;
@@ -1057,27 +1061,31 @@ UI.PropertyContainer = class PropertyContainer extends UI {
     }
 
     reset() {
-        for (var p of this.get_properties()) p.reset(true);
+        for (var p of this.iterate_properties()) p.reset(true);
     }
 
-    __update() {
-        for (var p of this.get_properties()) {
+    __update_values() {
+        for (var p of this.iterate_properties()) {
             if (p.settings["data"] !== undefined) {
                 var values = this.datas.map(d=>p.get_setting("data", d));
                 p.set_values(values);
             } else if (p.name) {
-                var path = p.name.split("/").filter(p=>p);
+                var path = p.name.split("/");
                 var values = this.datas.map(d=>{
                     if (!d) return null;
                     return utils.try(()=>utils.get(d, path));
                 });
                 var hash = JSON.stringify(values);
                 if (p._last_values_on_property_update !== hash) {
-                    p._last_values_on_property_update = hash
+                    p._last_values_on_property_update = hash;
                     p.set_values(values);
                 }
             }
         }
+    }
+
+    __update() {
+        this.__update_values();
         super.__update();
     }
 }
@@ -1117,7 +1125,7 @@ UI.Property = class Property extends UI {
         return this.datas.some(item=>this.get_setting("disabled", item)) || this.disabled_parent || !this.options_consistant;
     }
     get valid() {
-        return this.inputs_valid === true;
+        return this.inputs.every(i=>i._last_valid === true || i._last_valid === undefined);
     }
     
     /** @param {string} name @param {string} label @param {string|Element[]} contents @param {object} settings */
@@ -1129,7 +1137,7 @@ UI.Property = class Property extends UI {
                     if (e.matches(inputs_selector)) return [e];
                     return Array.from(e.querySelectorAll(inputs_selector));
                 }).flat();
-                inputs.forEach(i=>this.setup_generic_input(i));
+                this.setup_generic_input(inputs);
                 return inputs;
             },
             "label": label,
@@ -1167,15 +1175,16 @@ UI.Property = class Property extends UI {
         this.contents = [];
         /** @type {Input[]} */
         this.inputs = [];
-        /** @type {Function(any,Input):string[]} */
+        /** @type {Function(any):string[]} */
+        this.modifiers = [];
+        /** @type {Function(any):string[]} */
         this.input_modifiers = [];
-        /** @type {Function(any,Input):any[]} */
-        this.output_modifiers = []; //(v,input)=>input.value=v
+        /** @type {Function(any):any[]} */
+        this.output_modifiers = [];
         /** @type {Function(any,Input):any[]} */
         this.validators = [];
         this.options_consistant = true;
         // this.values_valid = true;
-        this.inputs_valid = true;
         this.name = name;
         this.name_id = `${this.name}-${this.id}`;
 
@@ -1190,17 +1199,19 @@ UI.Property = class Property extends UI {
 
         var inputs = this.get_setting("setup") || [];
         if (!Array.isArray(inputs)) inputs = [inputs];
+        
         this.inputs = inputs;
 
         if (this.input) {
             if (this.settings["placeholder"] === undefined) this.settings["placeholder"] = this.input.placeholder;
             if (this.settings["readonly"] ===undefined) this.settings["readonly"] = this.input.readOnly;
             if (this.settings["default"] === undefined) this.settings["default"] = this.input.value;
-            if (this.settings["min"] === undefined && this.input.min) this.settings["min"] = ()=>this.apply_input_modifiers(+this.input.min);
-            if (this.settings["max"] === undefined && this.input.max) this.settings["max"] = ()=>this.apply_input_modifiers(+this.input.max);
-            if (this.settings["step"] === undefined && this.input.step) this.settings["step"] = ()=>this.apply_input_modifiers(+this.input.step);
+            if (this.settings["min"] === undefined && this.input.min) this.settings["min"] = ()=>+this.input.min;
+            if (this.settings["max"] === undefined && this.input.max) this.settings["max"] = ()=>+this.input.max;
+            if (this.settings["step"] === undefined && this.input.step) this.settings["step"] = ()=>+this.input.step;
         }
-        if ((this.input && this.input.type === "number") || this.settings["step"] !== undefined || this.settings["precision"] !== undefined || this.settings["round"] !== undefined || this.settings["min"] !== undefined || this.settings["max"] !== undefined || this.settings["spinner"] !== undefined) {
+        var multiple = this.get_setting("multiple");
+        if ((!multiple && this.input && this.input.type === "number") || this.settings["step"] !== undefined || this.settings["precision"] !== undefined || this.settings["round"] !== undefined || this.settings["min"] !== undefined || this.settings["max"] !== undefined || this.settings["spinner"] !== undefined) {
             this.is_numeric = true;
             this.settings["step"] = this.settings["step"] || 1;
             
@@ -1254,7 +1265,6 @@ UI.Property = class Property extends UI {
                     if (!copy_tippy) {
                         copy_tippy = tippy(this.input, {
                             content:"Copied!",
-                            distance:0,
                             trigger:"manual",
                             zIndex: 999999,
                             onShow:(instance)=>{
@@ -1289,76 +1299,63 @@ UI.Property = class Property extends UI {
         }); */
     }
 
-    setup_generic_input(input) {
-        set_attribute(input, "id", this.name_id);
-        // set_attribute(input, "name", this.name);
-        var input_events = ["change", "input"];
-        input_events.forEach(ev_type=>{
-            input.addEventListener(ev_type, (e,i)=>{
-                if (ev_type == "input") this.emit("input", e);
-                var value = get_value(input);
-                value = this.apply_input_modifiers(value, input);
-                this.set_value(value, {trigger_if_changed: e.type == "change"});
+    setup_generic_input(inputs) {
+        inputs.forEach((input, i)=>{
+            set_attribute(input, "id", this.name_id);
+            // set_attribute(input, "name", this.name);
+            ["change", "input"].forEach(ev_type=>{
+                input.addEventListener(ev_type, (e)=>{
+                    if (ev_type == "input") this.emit("input", e);
+                    var value = (this.get_setting("multiple")) ? inputs.map(input=>get_value(input)) : get_value(input);
+                    value = this.apply_input_modifiers(value);
+                    this.set_value(value, {trigger_if_changed: e.type == "change"});
+                });
             });
-        });
-        input.addEventListener("blur", (e)=>{
-            this.root.update();
-        });
-        input.addEventListener("focus", (e)=>{
-            this.root.update();
-        });
-
-        if (input.nodeName === "INPUT") {
-            input.addEventListener("keydown", (e)=>{
-                if (e.key === "Enter") {
-                    e.preventDefault();
-                    e.target.blur();
-                }
-                if (input.type !== "number" && this.is_numeric) {
-                    var new_value;
-                    if (e.key == "ArrowUp") new_value = this.value + this.get_setting("step");
-                    else if (e.key == "ArrowDown") new_value = this.value - this.get_setting("step");
-                    if (new_value !== undefined) {
-                        e.stopPropagation();
+            /* input.addEventListener("blur", (e)=>{
+                this.root.update();
+            });
+            input.addEventListener("focus", (e)=>{
+                this.root.update();
+            }); */
+            input.addEventListener("blur", (e)=>{
+                this.update();
+            });
+            input.addEventListener("focus", (e)=>{
+                this.update();
+            });
+            if (input.nodeName === "INPUT") {
+                input.addEventListener("keydown", (e)=>{
+                    if (e.key === "Enter") {
                         e.preventDefault();
-                        // input._force_update_value = true;
-                        this.set_values(new_value, {trigger_if_changed:true});
+                        e.target.blur();
                     }
+                    if (input.type !== "number" && this.is_numeric) {
+                        var new_value;
+                        if (e.key == "ArrowUp") new_value = this.value + this.get_setting("step");
+                        else if (e.key == "ArrowDown") new_value = this.value - this.get_setting("step");
+                        if (new_value !== undefined) {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            this.set_values(new_value, {trigger_if_changed:true});
+                        }
+                    }
+                });
+            }
+            input.addEventListener("dblclick", (e)=>{
+                if (this.get_setting("reset_on_dblclick")) {
+                    this.set_values(null, {trigger_if_changed:true});
                 }
             });
-        }
-        input.addEventListener("dblclick", (e)=>{
-            if (this.get_setting("reset_on_dblclick")) {
-                this.set_values(null, {trigger_if_changed:true});
-            }
+            
+            /* Object.defineProperty(input, 'value', {
+                get () { return this.get_value(); },
+                set (value) { this.set_value(value, false); }
+            }); */
         });
-        
-        /* Object.defineProperty(input, 'value', {
-            get () { return this.get_value(); },
-            set (value) { this.set_value(value, false); }
-        }); */
     }
 
     reset(trigger=false) {
         this.set_values(null, {trigger_if_changed:trigger});
-    }
-
-    fix_value(value) {
-        if (typeof(value) == "number") {
-            var min = this.get_setting("min");
-            var max = this.get_setting("max");
-            var round = this.get_setting("round");
-            var precision = this.get_setting("precision");
-            if (max !== undefined) value = Math.min(value, +max);
-            if (min !== undefined) value = Math.max(value, +min);
-            if (round !== undefined) value = utils.round_to_factor(value, round);
-            if (precision !== undefined) value = +value.toFixed(precision)
-            /* if (isNaN(value)) {
-                debugger;
-                value = 0
-            } */
-        }
-        return value;
     }
 
     /** @typedef {{trigger:boolean, trigger_if_changed:boolean}} SetValueOptions */
@@ -1375,14 +1372,34 @@ UI.Property = class Property extends UI {
         }, options);
         // console.trace(this.name, values, trigger);
         // if (!Array.isArray(values)) throw new Error("Values must be array...");
-        if (!Array.isArray(values)) values = this.datas.map(item=>values);
-        if (values.length != this.datas.length) {
-            throw new Error(`Values length (${values.length}) mismatch datas length (${this.datas.length})...`);
+
+        var datas = this.datas;
+        if (!Array.isArray(values)) values = datas.map(item=>values);
+        if (values.length != datas.length) {
+            throw new Error(`Values length (${values.length}) mismatch datas length (${datas.length})...`);
         }
-        values = values.map((v)=>this.fix_value(v));
+
+        var fix_value = (value)=>{
+            if (typeof(value) == "number") {
+                var min = this.get_setting("min");
+                var max = this.get_setting("max");
+                var round = this.get_setting("round");
+                var precision = this.get_setting("precision");
+                if (max !== undefined) value = Math.min(value, +max);
+                if (min !== undefined) value = Math.max(value, +min);
+                if (round !== undefined) value = utils.round_to_factor(value, round);
+                if (precision !== undefined) value = +value.toFixed(precision)
+            }
+            for (var m of this.modifiers) {
+                value = m.apply(this, [value]);
+            }
+            return value;
+        };
+
+        values = values.map((v)=>fix_value(v));
         
-        this._values = this.datas.map((data,i)=>{
-            var default_value = this.fix_value(this.get_setting("default", data));
+        this._values = datas.map((data,i)=>{
+            var default_value = fix_value(this.get_setting("default", data));
             if (this.nullify_defaults) return JSON.stringify(values[i]) === JSON.stringify(default_value) ? null : values[i];
             return (values[i] == null) ? default_value : values[i];
         });
@@ -1394,9 +1411,6 @@ UI.Property = class Property extends UI {
         var changed = values_hash !== this._last_changed_values_hash;
         if (changed) this._last_changed_values_hash = values_hash;
         var trigger = options.trigger || (options.trigger_if_changed && changed)
-        if (trigger) {
-            this.inputs.forEach(input=>input._force_update_value = true);
-        }
 
         // --------------------------------------------
 
@@ -1419,8 +1433,8 @@ UI.Property = class Property extends UI {
         return changed;
     }
 
-    __update() {
-        super.__update();
+    __render() {
+        super.__render();
 
         var is_default = this.is_default;
         var is_indeterminate = this.is_indeterminate;
@@ -1428,6 +1442,7 @@ UI.Property = class Property extends UI {
         var readonly = this.get_setting("readonly");
         var disabled = this.disabled;
         var style_not_default = !!this.get_setting("reset");
+        var is_multiple = !!this.get_setting("multiple");
 
         this.options_consistant = true;
         if (this.settings["options"] !== undefined) {
@@ -1457,17 +1472,42 @@ UI.Property = class Property extends UI {
             }
             this.inputs.filter(e=>e.nodeName==="SELECT").forEach(e=>set_select_options(e, options));
         }
-        
-        var valids = [];
 
-        this.inputs.forEach((/**@type {HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement}*/ input,i)=>{
+        var value = this.apply_output_modifiers(this.value);
+        
+        if (typeof value === "number" && this.settings["precision"] !== undefined) {
+            value = value.toFixed(this.get_setting("precision"));
+            if (value.includes(".")) value = value.replace(/\.?0+$/,"");
+        }
+
+        var update_value = (input, value)=>{
+            if (is_indeterminate) {
+                if (input.type == "color") value = "#000000";
+                else value = "";
+            }
+            set_value(input, value, {trigger:false});
+        };
+
+        var is_focused = this.inputs.some(input=>has_focus(input));
+        var is_text_field = this.inputs.some(input=>!input.readOnly && (input.type === "text" || input.type === "password" || input.nodeName === "TEXTAREA")) && !this.is_numeric;
+        
+        if (this.inputs.length) {
+            if (!is_text_field || !is_focused) {
+                if (is_multiple) {
+                    this.inputs.forEach((input,i)=>update_value(input, value[i]));
+                } else {
+                    update_value(this.input, value);
+                }
+            }
+        }
+
+        for (var input of this.inputs) {
             // input.disabled = disabled;
             toggle_attribute(input, "disabled", disabled===true);
             if (readonly !== undefined) {
                 input.readOnly = readonly;
                 // set_attribute(input, "readonly", readonly);
             }
-            var is_focused = has_focus(input);
             var is_checkbox = input.nodeName === "INPUT" && input.type === "checkbox";
             
             toggle_class(input, "not-default", !is_default && style_not_default); // !is_focused && 
@@ -1475,35 +1515,9 @@ UI.Property = class Property extends UI {
             if (is_checkbox) {
                 input.indeterminate = is_indeterminate;
             }
-
-            var value = this.value;
-            if (is_indeterminate) {
-                if (input.type == "color") value = "#000000";
-                else value = "";
-            } else {
-                value = this.apply_output_modifiers(value, input);
-                if (typeof value === "number" && this.settings["precision"] !== undefined) {
-                    value = value.toFixed(this.get_setting("precision"));
-                    if (value.includes(".")) value = value.replace(/\.?0+$/,"");
-                }
-            }
-            // if ((input.nodeName === "INPUT" || input.nodeName === "TEXTAREA") && is_focused && !input.hasAttribute("readonly") && !input._force_update_value) {
-            /* if ((input.nodeName === "INPUT" && (input.type == "date" || input.type == "time")) && is_focused) {
-            } else {
-            } */
-            if (!is_focused || input.nodeName === "SELECT" || input._force_update_value) {
-                set_value(input, value, false);
-            }
-            input._force_update_value = false;
             
-            // set_value(input, value, false);
-            
-            /* if (blur) {
-                input.blur();
-            } */
-            
-            // set_attribute(input, "placeholder", placeholder);
-            input.placeholder = is_indeterminate ? "Multiple values" : this.get_setting("placeholder");
+            var placeholder = is_indeterminate ? "Multiple values" : this.get_setting("placeholder");
+            if (input.placeholder !== placeholder) input.placeholder = placeholder;
 
             var title = is_indeterminate ? "Multiple values" : this.get_setting("title") || "";
             if (title) set_attribute(input, "title", title);
@@ -1511,12 +1525,11 @@ UI.Property = class Property extends UI {
             
             var valid = disabled || is_indeterminate || (()=>{
                 for (var validator of this.validators) {
-                    valid = validator.apply(this, [this.value, input])
+                    valid = validator.apply(this, [this.value, input]);
                     if (valid !== true) return valid;
                 }
                 return true;
             })();
-            valids.push(valid);
             
             var invalid_class = this.get_setting("invalid_class");
             if (invalid_class) toggle_class(input, invalid_class, valid !== true);
@@ -1531,27 +1544,19 @@ UI.Property = class Property extends UI {
                 }
                 input._last_valid = valid;
             }
-        });
-        
-        this.inputs_valid = valids.every(v=>v===true);
+        }
     }
 
-    add_validator(...cb) {
-        this.validators.push(...cb);
-    }
-
-    apply_input_modifiers(v, input) {
+    apply_input_modifiers(v) {
         for (var m of this.input_modifiers) {
-            v = m.apply(this,[v,input]);
+            v = m.apply(this, [v]);
         }
         return v;
     }
 
-    apply_output_modifiers(v, input) {
-        var v;
+    apply_output_modifiers(v) {
         for (var m of this.output_modifiers) {
-            v = m.apply(this,[v,input]);
-            if (v === undefined) return;
+            v = m.apply(this, [v]);
         }
         return v;
     }
@@ -1568,86 +1573,45 @@ UI.Property = class Property extends UI {
         super.destroy();
     } */
 }
-UI.MultiProperty = class MultiProperty extends UI.Property {
-    constructor(name, label, contents, settings) {
-        super(name, label, contents, settings);
-        this.input_modifiers.push((value,input)=>{
-            if (Array.isArray(this.value)) {
-                var i = this.inputs.indexOf(input);
-                var v = [...this.value];
-                v[i] = value;
-            }
-            return v;
-        });
-        this.output_modifiers.push((value,input)=>{
-            if (Array.isArray(this.value)) {
-                var i = this.inputs.indexOf(input);
-                value = value[i];
-            }
-            return value;
-        });
-    }
-}
 UI.DateTimeProperty = class DateTimeProperty extends UI.Property {
     get today_str() { return new Date().toISOString().split("T")[0]; }
 
     constructor(name, label, settings = {}) {
         var inputs = $(`<input type="date"><input type="time">`);
-        
-        var get_value = ()=>{
-            var values = inputs.map(i=>i.value);
-            if (values.every(v=>v==="")) return NaN;
-            if (!values[0]) values[0] = this.today_str
-            if (!values[1]) values[1] = "00:00";
-            return utils.join_datetime(values, this.get_setting("datetime.apply_timezone"));
-        }
 
         super(name, label, inputs, Object.assign({
             "datetime.apply_timezone": true,
             "default": null,
-            "setup": ()=>{
-                inputs.forEach(input=>{
-                    input.addEventListener("blur",(e)=>{
-                        var value = get_value();
-                        if (!isNaN(value)) {
-                            this.set_value(value, {trigger_if_changed:true});
-                        }
-                    });
-                    input.addEventListener("keydown",(e)=>{
-                        if (e.key === "Enter") {
-                            e.preventDefault();
-                            e.target.blur();
-                            if (e.target === inputs[0]) inputs[1].focus();
-                        }
-                    });
-                });
-                return inputs;
-            },
+            "multiple": true,
         }, settings));
-        
-        this.add_validator((_,input)=>{
-            if (this.get_setting("datetime.after_now")) {
-                // inputs[0].min = utils.split_datetime(new Date())[0];
-                if (!input.value) return true;
-                var before_now = get_value() < Math.floor(new Date()/1000)*1000;
-                var before_today = new Date(inputs[0].value) < new Date(this.today_str);
-                if (before_today && input === inputs[0]) return "Scheduled date is in the past.";
-                else if (!before_today && before_now && input === inputs[1]) return "Scheduled time is in the past.";
-                return true;
-            }
+
+        this.modifiers.push(value=>{
+            return new Date(value ? value : NaN);
+        })
+        this.input_modifiers.push((values)=>{
+            if (values.every(v=>v==="")) return NaN;
+            if (!values[0]) values[0] = this.today_str
+            if (!values[1]) values[1] = "00:00";
+            return utils.join_datetime(values, this.get_setting("datetime.apply_timezone"));
         });
 
-        this.output_modifiers.push((value,input)=>{
-            // if (isNaN(get_value()) && !v) return;
+        this.output_modifiers.push((value)=>{
             var parts = ["",""];
             if (value) {
                 parts = utils.split_datetime(value, this.get_setting("datetime.apply_timezone"));
             }
-            if (input === inputs[0]) {
-                return parts[0];
-            } else {
-                return parts[1].slice(0,5);
-            }
+            return [parts[0], parts[1].slice(0,5)];
+        });
+        
+        this.validators.push((_,input)=>{
+            if (!this.get_setting("datetime.after_now")) return true;
+            if (!inputs.some(input=>input.value)) return true;
+            // inputs[0].min = utils.split_datetime(new Date())[0];
+            var before_now = this.value < Math.floor(Date.now()/1000)*1000;
+            var before_today = new Date(inputs[0].value) < new Date(this.today_str);
+            if (before_today && input.type == "date") return "Scheduled date is in the past.";
+            else if (!before_today && before_now && input.type == "time") return "Scheduled time is in the past.";
+            return true;
         });
     }
 }
@@ -1658,7 +1622,6 @@ UI.TimeSpanProperty = class TimeSpanProperty extends UI.Property {
             "timespan.format": "hh:mm:ss",
             "timespan.zero_infinity": false,
             "step": 1.0,
-            "min-step": 0.001,
             "default": 0,
         }, settings));
         this.input_modifiers.push((v)=>{
@@ -1722,7 +1685,7 @@ UI.Tooltip = class {
         this._tippy = tippy(elem, {
             allowHTML:true,
             zIndex:99999,
-            // appendTo: root,
+            appendTo: "parent",
         });
         this.elem = elem;
         if (content) this.set_content(content);
@@ -1749,14 +1712,6 @@ UI.VALIDATORS = {
         try { JSON.parse(v); return true; } catch { return false; }
     },
 };
-
-export {
-    WebSocket2 as WebSocket,
-    LocalStorageBucket,
-    UI,
-    AutoSizeController,
-    TouchListener,
-}
 
 export function is_visible(elem) {
     if (!elem.isConnected) return false;
@@ -2072,7 +2027,11 @@ export function get_value(elem) {
     }
 }
 // sets value and triggers change (only if value is different to previous value)
-export function set_value(elem, new_value, trigger_change = false) {
+export function set_value(elem, new_value, opts) {
+    opts = {
+        trigger: false,
+        ...opts
+    };
     // var curr_val = get_value(elem);
     // if (curr_val === val) return;
     if (elem.type === "checkbox") {
@@ -2097,7 +2056,7 @@ export function set_value(elem, new_value, trigger_change = false) {
         elem.value = new_value;
         if (position !== undefined && elem.selectionEnd != null) elem.selectionEnd = position;
     }
-    if (trigger_change) elem.dispatchEvent(new Event("change"));
+    if (opts.trigger) elem.dispatchEvent(new Event("change"));
     return true;
 }
 export function get_index(element) {

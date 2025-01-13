@@ -10,18 +10,14 @@ import Driver from "../Driver.js";
  * @inheritDoc
  */
 class LocalFileSystem extends Driver {
-
 	__abspath(id_or_path) {
 		return upath.join(this.volume.root, id_or_path);
 	}
-
 	__config(config) {
 		config.separator = "/";
 		config.root = upath.resolve(config.root);
 	}
-
 	__destroy() { }
-
 	async __init() {
 		var stat = await fs.stat(this.volume.root).catch(()=>{});
 		if (!stat || !stat.isDirectory()) {
@@ -30,8 +26,6 @@ class LocalFileSystem extends Driver {
 		}
 		return true;
 	}
-	
-
 	async __fix_permissions(id) {
 		var p = this.abspath(id);
 		var stat = await fs.stat(p).catch(()=>{});
@@ -47,19 +41,16 @@ class LocalFileSystem extends Driver {
 			await fs.chown(p, this.volume.config.uid, this.volume.config.gid);
 		}
 	}
-
 	__uri(id) {
 		var p = this.abspath(id);
 		if (!p.startsWith("/")) p = "/"+p;
 		return new URL(p, "file://").toString();
 	}
-
 	async __upload(tmpfile, dirid, name) {
 		var dstid = upath.join(dirid, name);
 		await fs.move(tmpfile, this.abspath(dstid));
 		return dstid;
 	}
-
 	async __stat(id) {
 		if (this.cache.stats[id]) return this.cache.stats[id];
 		return this.cache.stats[id] = (async()=>{
@@ -70,27 +61,27 @@ class LocalFileSystem extends Driver {
 			let stat;
 			
 			try { stat = await fs.lstat(abspath).catch(()=>null); } catch { } // needed because windows emoji bug
-			if (!stat) return null;
-			
-			let name = is_root ? this.volume.name : upath.basename(id);
-			let parent = upath.dirname(id);
-			let size = stat ? stat.size : 0;
-			let ts = stat ? Math.floor(stat.mtime.getTime() / 1000) : 0;
-			
-			let readable = await fs.access(abspath, fs.constants.R_OK).then(()=>true).catch((e)=>false);
-			let writable = await fs.access(abspath, fs.constants.W_OK).then(()=>true).catch((e)=>false);
-			let mime = null;
-			let symlink = stat && stat.isSymbolicLink();
-			if (symlink) {
-				let symlinkpath = await fs.readlink(abspath);
-				symlinkpath = path.resolve(abspath, symlinkpath); // resolves relative symlinks
-				stat = await fs.stat(symlinkpath).catch(()=>null);
-				if (!stat) {
-					mime = "symlink-broken";
-					readable = writable = true;
-				}
-			}
+
+			let name = "", parent = "", mime = null, size = 0, ts = 0, readable = false, writable = false;
+
 			if (stat) {
+				name = is_root ? this.volume.name : upath.basename(id);
+				parent = upath.dirname(id);
+				size = stat ? stat.size : 0;
+				ts = stat ? Math.floor(stat.mtime.getTime() / 1000) : 0;
+				
+				readable = await fs.access(abspath, fs.constants.R_OK).then(()=>true).catch((e)=>false);
+				writable = await fs.access(abspath, fs.constants.W_OK).then(()=>true).catch((e)=>false);
+				let symlink = stat && stat.isSymbolicLink();
+				if (symlink) {
+					let lpath = await fs.readlink(abspath);
+					lpath = path.resolve(abspath, lpath); // resolves relative symlinks
+					let lstat = await fs.stat(lpath).catch(()=>null);
+					if (!lstat) {
+						mime = "symlink-broken";
+						readable = writable = true;
+					}
+				}
 				if (stat.isDirectory() || is_root) mime = constants.DIRECTORY;
 				else mime = Mime.getType(id);
 			}
@@ -137,8 +128,8 @@ class LocalFileSystem extends Driver {
 			data.pipe(writable);
 			this.on("abort", ()=>writable.destroy("aborted"));
 			await new Promise((resolve,reject)=>{
-				writable.on("close", resolve)
-				writable.on("error", reject)
+				writable.on("close", resolve);
+				writable.on("error", reject);
 			});
 		} else {
 			await fs.writeFile(this.abspath(dst), data);

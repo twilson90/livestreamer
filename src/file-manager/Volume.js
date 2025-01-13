@@ -650,26 +650,30 @@ export class Volume {
 	async size(opts, res) {
 		if (!opts.targets || opts.targets.length == 0) throw new errors.ErrCmdParams();
 		return this.driver(opts.reqid, async (driver)=>{
+			let recursive = false;
 			var ids = opts.targets.map(t=>driver.unhash(t).id);
 			var size = 0
 			var fileCnt = 0;
 			var dirCnt = 0;
 			var sizes = [];
-			for (var id of ids) {
-				var s = 0;
-				var check = async (id)=>{
-					var stat = await driver.stat(id);
-					if (stat.mime === constants.DIRECTORY) {
-						dirCnt++;
+			var check = async (id, level)=>{
+				var stat = await driver.stat(id);
+				let s = 0;
+				if (stat.mime === constants.DIRECTORY) {
+					dirCnt++;
+					if (recursive || level == 0) {
 						for (var cid of await driver.readdir(id)) {
-							await check(cid);
+							s += await check(cid, level+1);
 						}
-					} else {
-						fileCnt++;
-						s += stat.size;
 					}
+				} else {
+					fileCnt++;
+					s += stat.size;
 				}
-				await check(id);
+				return s;
+			}
+			for (var id of ids) {
+				var s = await check(id, 0);
 				sizes.push(s);
 				size += s;
 			}

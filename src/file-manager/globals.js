@@ -1,6 +1,5 @@
 /** @import { FileManagerApp } from './types.d.ts' */
-export const globals = new class Globals {
+export default {
     /** @type {FileManagerApp} */
-    app;
+    app: undefined
 }
-export default globals;

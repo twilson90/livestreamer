@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "fs-extra";
 import readline from "node:readline";
 import child_process from "node:child_process";
-import core from "./index.js";
+import globals from "./globals.js";
 import * as utils from "./utils.js";
 import Logger from "./Logger.js";
 
@@ -45,12 +45,12 @@ export class MPVWrapper extends events.EventEmitter {
         super();
 
         this.options = options = {
-            executable: "mpv",
+            executable: globals.core.conf["core.mpv_executable"],
             cwd: ".",
             ...options,
         };
         
-        this.socket_path = core.get_socket_path(`mpv-${utils.uuid4()}`);
+        this.socket_path = globals.core.get_socket_path(`mpv-${utils.uuid4()}`);
 
         this.logger = new Logger("mpv");
     }
@@ -93,17 +93,17 @@ export class MPVWrapper extends events.EventEmitter {
         // this.#process.stdin.on("close",  (e)=>{});
         // this.#process.stdout.on("close", (e)=>{});
 
-        core.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
+        globals.core.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
         {
             let stderr_listener = readline.createInterface(this.#process.stderr);
             let stdout_listener = readline.createInterface(this.#process.stdout);
-            console.log("Waiting for IPC to signal open...");
+            this.logger.info("Waiting for MPV IPC to signal open...");
             await new Promise((resolve, reject)=>{
                 setTimeout(()=>{
                     reject("Received no IPC signal.");
                 }, 5000);
                 let check = (line)=>{
-                    console.log(line);
+                    this.logger.info(line);
                     if (line.match(/Listening to IPC (socket|pipe)/)) {
                         resolve();
                     } else if (line.match(/Could not bind IPC (socket|pipe)/)) {
@@ -369,9 +369,9 @@ export class MPVWrapper extends events.EventEmitter {
     // ----------------------------------------------
 
     command(...command) {
-        return new Promise((resolve, reject)=>{
+        return new Promise(async (resolve, reject)=>{
             if (this.#socket.closed) {
-                this.logger.warn("Command", command, "failed, socket is destroyed..")
+                this.logger.warn(`Command '${command}' failed, socket is destroyed.`);
                 // setImmediate(()=>reject("Socket is destroyed."));
                 return;
             }
@@ -383,10 +383,12 @@ export class MPVWrapper extends events.EventEmitter {
                 reject: reject,
             };
             try {
-                this.#socket.write(JSON.stringify(msg) + "\n");
+                this.#socket.write(JSON.stringify(msg) + "\n", (e)=>{
+                    if (this.#socket.closed || this.#quitting) return;
+                    if (e instanceof Error) this.logger.error(e);
+                });
             } catch (e) {
-                reject(e);
-                return;
+                this.logger.error(e);
             }
         })
     }

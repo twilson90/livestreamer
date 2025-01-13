@@ -1,6 +1,5 @@
 /** @import { Core } from './types.d.ts' */
-export const globals = new class Globals {
+export default {
     /** @type {Core} */
-    core;
+    core: undefined
 }
-export default globals;

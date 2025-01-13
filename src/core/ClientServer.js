@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import path from "node:path";
 import fs from "fs-extra";
-import core from "./index.js";
+import globals from "./globals.js";
 import Logger from "./Logger.js";
 import * as utils from "./utils.js";
 /** @import { ClientBase } from './index.js' */
@@ -21,17 +21,17 @@ export class ClientServer {
     /** @param {WebSocket.Server} wss @param {new () => T} ClientClass */
     async init(id, wss, $, ClientClass, auth) {
         this.id = id;
-        this.clients_filename = path.join(core.clients_dir, id);
+        this.clients_filename = path.join(globals.core.clients_dir, id);
 
         this.logger = new Logger(`client-server`);
         this.logger.on("log", (log)=>{
-            core.logger.log(log)
+            globals.core.logger.log(log)
         });
         this.wss = wss;
 
         wss.on("connection", async (ws, request)=>{
             var user = null;
-            user = await core.authorise(request);
+            user = await globals.core.authorise(request);
             if (auth && !user) {
                 ws.close(1014, "go away");
                 return;

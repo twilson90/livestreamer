@@ -1,7 +1,7 @@
 import * as utils from "../../utils/utils.js";
 import * as dom_utils from "../../utils/dom.js";
 import "../../utils/style.scss";
-import { jQuery, $ } from '../../../jquery-global.js';
+import { jQuery, $ } from '../../jquery-global.js';
 import 'jquery-ui/dist/jquery-ui.js';
 import 'jquery-ui/dist/themes/base/jquery-ui.css';
 import { Fancybox as _Fancybox } from "@fancyapps/ui";
@@ -12,18 +12,14 @@ import flvjs from 'flv.js';
 import {Chart} from 'chart.js/auto';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import Hammer from 'hammerjs';
-import {Sortable, MultiDrag} from 'sortablejs';
+import Sortable, {MultiDrag} from 'sortablejs';
 import "./app.scss";
+
+/** @type {App} */
+let app;
+
 export { utils, dom_utils, jQuery, $, Fancybox, noUiSlider, flvjs, Chart, Hammer, Sortable, MultiDrag }
 export const { UI, add_class, remove_class, toggle_attribute, set_inner_html, set_children, set_attribute, set_select_options, set_text, set_value, set_style_property, update_style_properties, remove_style_property, toggle_class } = dom_utils;
-const { Observer } = utils;
-
-/** @import InternalSessionProps from "../InternalSessionProps.js" */
-
-Chart.register(zoomPlugin);
-// Chart.register(annotationPlugin);
-
-Sortable.mount(new MultiDrag());
 
 const SessionTypes = {
     EXTERNAL: "ExternalSession",
@@ -38,7 +34,6 @@ export const MIN_VIDEO_BUFFER_TIME = 1000; // 1 second
 export const IMAGE_DURATION = 0.040;
 export const CROP_LIMIT = 0.4;
 export const IS_ELECTRON = /electron/i.test(navigator.userAgent);
-// console.log("IS_ELECTRON:", IS_ELECTRON);
 
 export const logs_max_length = 512;
 export const ZERO_DURATION = 60;
@@ -49,10 +44,7 @@ export const EMPTY_OBJECT = Object.freeze({});
 export const EMPTY_ARRAY = Object.freeze([]);
 export const ALL_XHRS = new Set();
 
-window.onbeforeunload = (e)=>{
-    if (ALL_XHRS.size) return `Uploads are in progress, leaving will abort the uploads.`;
-    // return "";
-};
+export const { Observer } = utils;
 export const YES_OR_NO = [[false,"No"], [true,"Yes"]];
 
 export const ignore_logging_session_$ = new Set([
@@ -67,6 +59,8 @@ export const ignore_logging_session_$ = new Set([
 export const UPLOAD_STATUS = { STARTED:1, FINISHED:2, CANCELED:3, ERROR:4 };
 export const PLAYLIST_VIEW = { LIST: "list", TIMELINE: "timeline" };
 export const PLAYLIST_MODE = { NORMAL: 0, MERGED: 1, DUAL_TRACK: 2 };
+
+export let plugins = [];
 
 // --------------------------------------------------------------------
 
@@ -164,12 +158,10 @@ export var item_colors = {
     "magenta":"#e78ac3",
     "beige":"#e5c494",
 };
-(()=>{
-    for (var k in item_colors) {
-        if (!item_colors[k]) continue;
-        item_colors[k] = new utils.Color(item_colors[k]).rgb_mix("#fff",0.5).to_rgb_hex();
-    }
-})();
+for (var k in item_colors) {
+    if (!item_colors[k]) continue;
+    item_colors[k] = new utils.Color(item_colors[k]).rgb_mix("#fff",0.5).to_rgb_hex();
+}
 
 /* var children_map = new Map();
 export var parent_map = new Map();
@@ -386,8 +378,8 @@ export function round_ms(num) {
 }
 
 // removes properties from o1 if o2 has exact same property (recursive). If both identical returns null.
-export function cull(o1,o2) {
-    if (typeof o1 === "object" && typeof o2 === "object" && o1 !== null && o2 !== null) {
+export function cull(o1, o2) {
+    if (typeof o1 === "object" && typeof o2 === "object" && o1 !== null && o2 !== null && !Array.isArray(o1) && !Array.isArray(o2)) {
         var empty = true;
         for (var k in o1) {
             if (cull(o1[k], o2[k]) === null) delete o1[k];
@@ -534,22 +526,22 @@ export function hash(str) {
     return hash;
 }
 
-export function create_background_properties(options, is_session) {
-    options = Object.assign({
+export function create_background_properties(settings) {
+    settings = Object.assign({
         "name": "background",
         "label": "Background",
         "default": "",
-    },options)
-    var name = options["name"];
+    }, settings)
+    var name = settings["name"];
 
     var background_mode = new UI.Property(`${name}_mode`, null, `<select></select>`, {
         "info": ()=>{
             if (background_mode.value == "embedded") return `Shows the currently playing audio file's embedded artwork.`;
             if (background_mode.value == "external") return `Shows the external artwork relative to the audio file (a file named AlbumArt.jpg, Cover.jpg, etc.)`;
         },
-        "label": options["label"],
-        "options": options["options"],
-        "default": options["default"],
+        "label": settings["label"],
+        "options": settings["options"],
+        "default": settings["default"],
     });
 
     var background_color = new UI.Property(`${name}_color`, "Color", `<input type="color">`, {
@@ -560,17 +552,11 @@ export function create_background_properties(options, is_session) {
     var get_file_duration = ()=>app.$.media_info[background_file.value] ? app.$.media_info[background_file.value].duration : 0;
     var is_file_image = ()=>get_file_duration()<=IMAGE_DURATION;
 
-    var background_file = new FileProperty(`${name}_file`, is_session ? "Logo File" : "Replace Video File", {
+    var background_file = new FileProperty(`${name}_file`, "Background File", {
         "file.options": { files: true, filter: ["image/*", "video/*"] },
-        "info": is_session ? "An image or video file." : "Select a video or an image file to loop and repeat for the duration of the base media item."
+        "info": "An image or video file, overriding the 'Background' option"
         // "hidden": ()=>background_mode.value !== "file",
     });
-    background_file.add_validator(UI.VALIDATORS.media_video);
-    /* background_file.on("change", (e=>{
-        if (e.trigger && e.value) {
-            background_mode.set_value("file");
-        }
-    })) */
 
     var background_file_start = new UI.TimeSpanProperty(`${name}_file_start`, "Loop Start Time", {
         "timespan.format": "h:mm:ss.SSS",
@@ -1011,7 +997,6 @@ export class CancelSortPlugin {
     }
 }
 CancelSortPlugin.pluginName = "cancelSort";
-Sortable.mount(CancelSortPlugin);
 
 export var Orientation = {
     VERTICAL: "vertical",
@@ -1123,14 +1108,15 @@ export class ResponsiveSortable extends Sortable {
             this.set_active_sortable_in_group();
         });
         this.el.addEventListener("start", this._on_start = ()=>{
+            this.dragging = true;
             this.last_drag = new Promise((resolve)=>{
-                var r = ()=> {
-                    this.el.removeEventListener("end", r);
-                    resolve();
-                }
-                this.el.addEventListener("end", r);
+                this.last_drag_resolve = resolve;
             });
         })
+        this.el.addEventListener("end", this._end = ()=> {
+            this.dragging = false;
+            if (this.last_drag_resolve) this.last_drag_resolve();
+        });
         this.el.addEventListener("unchoose", this._on_unchoose = (e)=>{
             if (!this.options.multiDrag) return;
             if (!e.item.parentElement) return;
@@ -1334,6 +1320,8 @@ export class ResponsiveSortable extends Sortable {
         utils.array_remove(ResponsiveSortable.instances, this);
         window.removeEventListener("keydown", this._on_key_down);
         this.el.removeEventListener("click", this._on_click);
+        this.el.removeEventListener("start", this._on_start);
+        this.el.removeEventListener("end", this._on_end);
         this.el.removeEventListener("unchoose", this._on_unchoose);
         this.el.removeEventListener("contextmenu", this._on_contextmenu);
         this.el.removeEventListener("pointerdown", this._on_pointer_down)
@@ -1486,45 +1474,56 @@ export class Media {
     seeking = false;
     buffering = false;
     loaded;
+    running = false;
     #cache = {};
     constructor() {
         this.update();
     }
     update() {
-        var item = app.$._session._current_playing_item;
-        var running = app.$._session._is_running;
-        var loaded = !running || !!app.$._stream.mpv.loaded;
-        var seeking = running ? (loaded && !!app.$._stream.mpv.seeking) : false;
-        var special_seeking = (running && app.$._stream.mpv.is_special && (seeking || !app.$._stream.mpv.playing));
+        var session = app.$._session;
+        var stream = app.$._stream;
+        var item = session._current_playing_item;
+        var running = session._is_running;
+        var loaded = !running || !!stream.mpv.loaded;
+        var seeking = running ? (loaded && !!stream.mpv.seeking) : false;
+        var special_seeking = (running && stream.mpv.is_special && (seeking || !stream.mpv.playing));
         // console.log("special_seeking", special_seeking)
-        var buffering = (seeking || !loaded || !!app.$._stream.mpv.props["paused-for-cache"]);
-        var seekable = !running || !!app.$._stream.mpv.seekable;
+        var buffering = (seeking || !loaded || !!stream.mpv.props["paused-for-cache"]);
+        var seekable = !running || !!stream.mpv.seekable;
         
         this.buffering = buffering;
         this.seeking = seeking;
+        this.running = running;
 
         if (special_seeking) return;
 
-        this.time = app.$._session._current_time;
-        this.duration = app.$._session._current_duration;
-        this.chapters = loaded ? app.$._session._current_chapters : EMPTY_CHAPTERS;
+        this.time = session._current_time;
+        this.paused = stream.mpv.props.pause || stream.mpv.props["paused-for-cache"];
+        this.duration = session._current_duration;
+        this.chapters = loaded ? session._current_chapters : EMPTY_CHAPTERS;
         this.seekable = loaded ? this.duration != 0 && seekable && item.filename !== "livestreamer://empty" : false;
         this.loaded = loaded;
         this.status = running ? (loaded ? "Playing" : "Loading") : "Pending";
         this.stats = {};
-        this.stats["V-FPS"] = (+app.$._stream.mpv.props["estimated-vf-fps"] || 0).toFixed(2);
-        if (!app.$._stream._is_encoding) this.stats["D-FPS"] = (+app.$._stream.mpv.props["estimated-display-fps"] || 0).toFixed(2);
-        this.stats["INTRP"] = app.$._stream.mpv.interpolation ? "On" : "Off";
-        this.stats["DEINT"] = app.$._stream.mpv.deinterlace ? "On" : "Off";
-        this.ranges = app.$._session._current_seekable_ranges;
-        // this.#last_seeks = app.$._stream.mpv.seeks;
+        this.stats["V-FPS"] = (+stream.mpv.props["estimated-vf-fps"] || 0).toFixed(2);
+        if (!stream._is_encoding) this.stats["D-FPS"] = (+stream.mpv.props["estimated-display-fps"] || 0).toFixed(2);
+        this.stats["INTRP"] = stream.mpv.interpolation ? "On" : "Off";
+        this.stats["DEINT"] = stream.mpv.deinterlace ? "On" : "Off";
+        this.ranges = session._current_seekable_ranges;
+        // this.#last_seeks = stream.mpv.seeks;
         this.#cache = {};
     }
     get curr_chapters() {
-        return this.#cache["curr_chapters"] = this.#cache["curr_chapters"] ?? app.$._session._get_current_chapters_at_time(this.time);
+        var session = app.$._session;
+        return this.#cache["curr_chapters"] = this.#cache["curr_chapters"] ?? session._get_current_chapters_at_time(this.time);
     }
-    get time_left() { return Math.max(0, this.duration - this.time); }
-    get do_live_seek(){ return app.$._stream._is_running && !app.$._stream._is_encoding && !app.$._stream.mpv.is_special; }
+    get time_left() {
+        return Math.max(0, this.duration - this.time);
+    }
+    get do_live_seek(){
+        var stream = app.$._stream;
+        return stream._is_running && !stream._is_encoding && !stream.mpv.is_special;
+    }
 }
 
 export class Remote extends utils.EventEmitter {
@@ -1538,17 +1537,18 @@ export class Remote extends utils.EventEmitter {
         this.targets = create_proxy(Target);
         this.volumes = {};
         this.change_log = {};
-        this.plugins = {};
         this.logs = {};
         this.nms_sessions = {};
-        /** @type {InternalSessionProps} */
+        /** @type {typeof import("../InternalSessionProps.js").default} */
         this.properties = {};
         this.fonts = {};
         this.uploads = {};
         this.downloads = {};
         this.media_info = {};
         this.processes = {};
-        this.sysinfo = {};
+        this.sysinfo = {
+            platform: ""
+        };
         this.process_info = {};
         this.conf = {};
         this._pending_requests = new Set();
@@ -1567,9 +1567,6 @@ export class Remote extends utils.EventEmitter {
                 this[k] = v.toJSON();
             }
         });
-        // !!
-        // var a = utils.try(()=>changes.sessions["hedgehog90"].stream.id)
-        // if (a) debugger;
         Observer.apply_changes(this, changes);
         this.emit("update", changes);
     }
@@ -1615,6 +1612,7 @@ export class Target extends DataNode {
         this.ts = 0
         this.limit = 0
         this.locked = false
+        this.opts = {};
     }
     get _streams() { return app.$._streams.filter(s=>s.targets.find(t=>t.id == this.id)); }
     get _active_streams() { return this._streams.filter(s=>s._is_running); }
@@ -1632,13 +1630,14 @@ export class Stream extends DataNode {
         this.id = "";
         this.start_time = 0;
         this.state = "stopped";
-        this.graphs = {};
+        this.metrics = {};
         this.session_id = 0;
         this.mpv = new MPV();
         /** @type {StreamTarget[]} */
         this.targets = [];
         this.test = false;
         this.bitrate = 0;
+        this.internal_stream_paths = [];
     }
     get _session() {
         return app.$.sessions[this.session_id];
@@ -1650,7 +1649,12 @@ export class Stream extends DataNode {
         return !!this.mpv.is_encoding && this._is_running;
     }
     get _live_nms_session() {
-        return Object.values(app.$.nms_sessions).filter(s=>s.publishStreamPath.split("/").pop() === this.id)[0];
+        for (var s of Object.values(app.$.nms_sessions)) {
+            if (s.appname === "live") {
+                var st = Object.values(this.stream_targets).find(st=>s.publishStreamPath === new URL(st.evaluated_target.rtmp_url).pathname);
+                if (st) return s;
+            }
+        }
     }
     get _run_time() {
         return app.$._now() - this.start_time;
@@ -1690,9 +1694,10 @@ export class Session extends DataNode {
         this.stream = new Stream();
         // this.current_item_on_load = null;
         // this.current_descendents_on_load = null;
-        this.target_configs = {};
+        this.target_opts = {};
         this.playlist_info = {};
         this.name = "";
+        this.background_mode = "";
         /** @type {Record<PropertyKey,PlaylistItem>} */
         this.playlist = new Proxy({}, {
             /** @param {Record<PropertyKey,PlaylistItem>} target */
@@ -1738,7 +1743,7 @@ export class Session extends DataNode {
     get _current_duration() {
         var d;
         if (this.stream._is_running && this.stream.mpv.playing) {
-            d = this.stream.mpv.duration || 0;
+            d = this.stream.mpv.props.duration || 0;
         } else {
             d = 0;
             var item = this._current_playing_item;
@@ -1748,7 +1753,7 @@ export class Session extends DataNode {
         return round_ms(d || 0);
     }
     get _current_time() {
-        return (this.stream._is_running && this.stream.mpv.loaded) ? this.stream.mpv.time : this.time;
+        return (this.stream._is_running) ? this.stream.mpv.time : this.time;
     }
     get _current_seekable_ranges() {
         if (this.stream._is_running) return this.stream.mpv.seekable_ranges;
@@ -1797,8 +1802,8 @@ export class PlaylistItem extends DataNode {
         this.filename = "";
         this.index = 0;
         this.track_index = 0;
-        this.upload = undefined;
         this.props = {};
+        this.upload_id = null;
     }
     /** @return {Session} */
     get _session() {
@@ -1952,10 +1957,10 @@ export class PlaylistItem extends DataNode {
         }
 
         ud.is_merged = this._is_merged;
-        ud.duration = duration;
-        ud.media_duration = media_duration;
-        ud.children_duration = children_duration;
-        ud.timeline_duration = timeline_duration;
+        ud.duration = duration || 0;
+        ud.media_duration = media_duration || 0;
+        ud.children_duration = children_duration || 0;
+        ud.timeline_duration = timeline_duration || 0;
         ud.num_updates = this._num_updates;
         /* ud.pending_changes = (()=>{
             if (!this.session.is_running || !this.is_current_playing_item) return false;
@@ -2093,7 +2098,7 @@ export class PlaylistItem extends DataNode {
         return app.$.downloads[this.id];
     }
     get _upload() {
-        return this.upload && app.$.uploads[this.upload.id];
+        return app.$.uploads[this.upload_id];
     }
     get _is_downloadable() {
         return !this._download && (this._media_info||EMPTY_OBJECT).downloadable && !this._is_playlist;
@@ -2683,15 +2688,24 @@ export class ModalPropertyContainer extends UI.PropertyContainer {
 }
 
 export class LocalServerTargetConfigMenu extends ModalPropertyContainer {
+    /** @type {Target} */
+    target;
     constructor() {
         super({
             "modal.title": `Configure Local Media Server`,
             "modal.title-overflow": true,
-            data: ()=>utils.try(()=>app.$._session.target_configs["local"]) || {},
+            data: ()=>utils.try(()=>app.$._session.target_opts[this.target.id]) || {},
         });
 
-        var row = this.content.append(new UI.FlexRow());
-        row.append(`<p>Nothing here yet.</p>`);
+        var _this = this;
+        function get_default() { return _this.target.opts[this.name]; }
+
+        var use_hardware = new UI.Property("use_hardware", "Use Hardware", `<select>`, {
+            "options": YES_OR_NO,
+            "default": get_default,
+        });
+        this.content.append(use_hardware);
+
         /* var streams = new UI.PropertyList("streams", "Streams", {
             properties:()=>{
                 var container = new UI.PropertyContainer({
@@ -2721,23 +2735,19 @@ export class LocalServerTargetConfigMenu extends ModalPropertyContainer {
         });
         row.append(streams); */
 
-        /* this.on("property-change", (e)=>{
+        this.on("property-change", (e)=>{
             if (e.trigger) {
                 app.request({
-                    call: ["session", "update_service_config"],
-                    arguments: ["restream.io", e.name, e._value]
+                    call: ["session", "update_target_opts"],
+                    arguments: [this.target.id, e.name, e._value]
                 });
             }
-        }); */
+        });
     }
 
     async show(target) {
+        this.target = target;
         super.show();
-        /* this.target = target
-        console.log(await app.request({
-            call: ["app", "plugins", "restream.io", "get_channels"],
-            arguments: [target.id]
-        })); */
     }
 }
 
@@ -2808,6 +2818,16 @@ export class UserConfigurationSettings extends ModalPropertyContainer {
             }
         });
         this.footer_elem.append(reset_layout_button);
+        var logout_button = new UI.Button(`Log Out`, {
+            click: async ()=>{
+                dom_utils.Cookie.remove("ls_key");
+                var request = new XMLHttpRequest();
+                request.addEventListener("loadend", ()=>window.location.reload());
+                request.open("get", window.location.toString(), false, "false", "false");
+                request.send();
+            }
+        });
+        this.footer_elem.append(logout_button);
 
         this.on("property-change", (e)=>{
             if (!e.name || !e.trigger) return;
@@ -3530,7 +3550,8 @@ export class SplitSettings extends ModalPropertyContainer {
         
         this.split_button = new UI.Button(`Split`, {
             click: ()=>{
-                app.playlist_split(this.datas, this.get_splits(), true)
+                app.playlist_split(this.datas, this.get_splits(), true);
+                this.time_list.set_value([]);
                 this.hide();
             }
         });
@@ -3633,7 +3654,7 @@ export class SessionConfigurationSettings extends ModalPropertyContainer {
             "default": null,
             "reset": false,
         });
-        this.name.add_validator(UI.VALIDATORS.not_empty);
+        this.name.validators.push(UI.VALIDATORS.not_empty);
 
         /* this.default_stream_title = new UI.Property("default_stream_title", "Default Stream Title", `<input type="text">`, {
             "placeholder":()=>this.name.value,
@@ -3677,14 +3698,14 @@ export class SessionConfigurationSettings extends ModalPropertyContainer {
             "label": "Default Background",
             "options": ()=>utils.try(()=>app.$.properties.background_mode.__options__, []),
             "default": ()=>utils.try(()=>app.$.properties.background_mode.__default__, null),
-        }, true)
+        })
 
         this.files_dir = new FileProperty("files_dir", "Root Directory", {
             "info": "Your preferred location for storing any uploaded / downloaded files.",
             "file.options":{ folders: true },
             "default": get_default,
         });
-        this.files_dir.add_validator(UI.VALIDATORS.media_exists);
+        this.files_dir.validators.push(UI.VALIDATORS.media_exists);
 
         this.interpolation_mode = new UI.Property("interpolation_mode", "Interpolation Mode", `<select></select>`, {
             "options":()=>{
@@ -3822,10 +3843,10 @@ export class UploadsDownloadsMenu extends ModalPropertyContainer {
 }
 
 export class JSONViewer extends ModalPropertyContainer {
-    async show(title, json) {
+    async show(title, data) {
         super.show();
         this.update_settings({"modal.title": title });
-        var json = new JSONContainer(json);
+        var json = new JSONContainer(data);
         set_inner_html(this.content.elem, "");
         set_style_property(this.content.elem, "margin-bottom", 0);
         this.content.elem.append(json);
@@ -3918,7 +3939,7 @@ export class SetVolumeSettings extends ModalPropertyContainer {
         row.append(volume_input);
         var vol_speed = new UI.Property(null, "Volume Transition Speed", `<select>`, {
             title: "Volume Transition Speed",
-            default: 2.0,
+            default: 4.0,
             // reset: false,
             options: [[0.5, "Very Slow"], [1.0, "Slow"], [2.0, "Medium"], [4.0, "Fast"], [8.0, "Very Fast"], [0, "Immediate"]],
         });
@@ -3942,7 +3963,7 @@ export class SetVolumeSettings extends ModalPropertyContainer {
         volume_input.set_value(app.$._session.volume_target);
         vol_speed.set_value(app.$._session.volume_speed);
 
-        this.ok = new UI.Button("Apply Changes", {
+        this.ok = new UI.Button("Apply", {
             disabled: ()=>this.changes.length==0,
             click: ()=>{
                 app.media_player.volume.set_value(volume_input.value, {trigger:true});
@@ -4000,7 +4021,7 @@ export class TargetEditMenu extends ModalPropertyContainer {
             "default": "",
             "placeholder": "My Stream",
         });
-        this.name.add_validator(UI.VALIDATORS.not_empty, (v)=>{
+        this.name.validators.push(UI.VALIDATORS.not_empty, (v)=>{
             return Object.values(app.$.targets).filter((t)=>t!=this.data).map(t=>t.name).includes(v) ? "Name already exists." : true
         });
         row.append(this.name)
@@ -4019,7 +4040,7 @@ export class TargetEditMenu extends ModalPropertyContainer {
             "default": "",
             "placeholder": "rtmp://streaming-service.com",
         });
-        this.rtmp_host.add_validator(UI.VALIDATORS.rtmp);
+        this.rtmp_host.validators.push(UI.VALIDATORS.rtmp);
         this.rtmp_key = new UI.Property("rtmp_key", "Stream Key", `<input type="text">`, {
             "reset":false,
             "default": "",
@@ -4034,7 +4055,7 @@ export class TargetEditMenu extends ModalPropertyContainer {
             "default": "",
             "placeholder": "https://streaming-service.com/my-channel",
         });
-        this.url.add_validator((v)=>!v || UI.VALIDATORS.url(v));
+        this.url.validators.push((v)=>!v || UI.VALIDATORS.url(v));
         row.append(this.url);
 
         var row = this.content.append(new UI.FlexRow());
@@ -4051,7 +4072,7 @@ export class TargetEditMenu extends ModalPropertyContainer {
         this.custom = new UI.TextArea("custom", "Additional Properties (JSON)", {
             "default": {},
         });
-        this.custom.add_validator(UI.VALIDATORS.json);
+        this.custom.validators.push(UI.VALIDATORS.json);
         this.custom.input_modifiers.push(v=>{ try { return JSON.parse(v) } catch {} });
         this.custom.output_modifiers.push(v=>JSON.stringify(v, null, "  "));
         row.append(this.custom); */
@@ -4122,7 +4143,7 @@ export class TargetConfigurationMenu extends ModalPropertyContainer {
     /** @param {TargetsProperty} parent_prop */
     constructor(parent_prop, settings) {
         super({
-            "modal.title": "Stream Targets",
+            "modal.title": "Targets",
             "show_in_use": true,
             "auto_apply": true,
             ...settings,
@@ -4144,13 +4165,14 @@ export class TargetConfigurationMenu extends ModalPropertyContainer {
         add_class(list_el, "target-list");
         this.content.append(list_el);
 
+        var row = this.content.append(new UI.FlexRow());
         var new_button = new UI.Button(`New Target <i class="fas fa-plus" style="padding:0 5px"></i>`, {
             "click":()=>{
                 new TargetEditMenu().show(null);
             },
             "title": "New Target",
         });
-        this.content.append(new_button);
+        row.append(new_button);
 
         if (!this.settings["auto_apply"]) {
             var apply_button = new UI.Button(`Apply`, {
@@ -4160,7 +4182,7 @@ export class TargetConfigurationMenu extends ModalPropertyContainer {
                 },
                 "title": "Apply",
             });
-            this.content.append(apply_button);
+            row.append(apply_button);
         }
         var update_value = (force)=>{
             this.targets_selected_ids = [...selected_el.children, ...list_el.children].filter(e=>e.dataset.id && e.querySelector("input").checked).map(e=>e.dataset.id);
@@ -4211,7 +4233,7 @@ export class TargetConfigurationMenu extends ModalPropertyContainer {
             var get_config_menu = ()=>utils.try(()=>app.target_config_menus[target.id]);
 
             var config_button = new UI.Button(`<i class="fas fa-cog"></i>`, {
-                "hidden": ()=>!parent_prop || !get_config_menu(),
+                "hidden": ()=>!get_config_menu(),
                 "click": ()=>get_config_menu().show(target),
                 "title": "Configure",
             });
@@ -4315,17 +4337,6 @@ export class TargetsProperty extends UI.Property {
     }
 }
 export class SeekBar extends UI {
-    
-    get _time() { return this.get_setting("seek.time"); }
-    get _duration() { return this.get_setting("seek.duration"); }
-    get _ranges() { return this.get_setting("seek.ranges"); }
-    get _markers() { return this.get_setting("seek.markers"); }
-    get _chapters() { return this.get_setting("seek.chapters"); }
-    get _buffering() { return this.get_setting("seek.buffering"); }
-    get _seekable() { return this.get_setting("seek.seekable"); }
-    get _show_times() { return this.get_setting("seek.show_times"); }
-    get _show_markers() { return this.get_setting("seek.add_markers"); }
-    get _time_left_mode() { return this.get_setting("seek.time_left_mode"); }
 
     constructor(settings) {
         var input = $(
@@ -4349,6 +4360,7 @@ export class SeekBar extends UI {
             "disabled": ()=>!this.get_setting("seek.seekable"),
             //-----
             "seek.time": 0,
+            "seek.paused": true,
             "seek.seekable": true,
             "seek.duration": 0,
             "seek.chapters": [],
@@ -4446,7 +4458,7 @@ export class SeekBar extends UI {
                 moving_curr_marker = false;
                 var marker_elem = e.target.closest(".marker");
                 if (marker_elem) {
-                    curr_marker = this._markers.find(m=>m.id == marker_elem.dataset.id);
+                    curr_marker = this.get_setting("seek.markers").find(m=>m.id == marker_elem.dataset.id);
                 }
                 if (!curr_marker) {
                     curr_marker = this.add_marker(data.time);
@@ -4484,31 +4496,41 @@ export class SeekBar extends UI {
             this.emit("time_left_mode", time_left_mode);
         });
 
+        var last_time = 0;
+        var extra_time = 0;
+        var now = Date.now();
+        var last_paused = false;
+        setInterval(()=>{
+            var paused = this.get_setting("seek.paused");
+            let c = Date.now();
+            var delta = (c-now);
+            now = c;
+            if (!paused) {
+                extra_time += delta/1000;
+            }
+            this.update_time(last_time + extra_time);
+        }, 1000/30);
+
         this.on("render", ()=>{
-            var duration = this._duration;
-            var ranges = this._ranges;
-            var markers = this._markers;
-            var chapters = this._chapters;
-            var show_times = this._show_times;
-            var show_markers = this._show_markers;
-            var time_left_mode = this._time_left_mode;
+            var time = this.get_setting("seek.time");
+            var duration = this.get_setting("seek.duration");
+            var ranges = this.get_setting("seek.ranges");
+            var markers = this.get_setting("seek.markers");
+            var chapters = this.get_setting("seek.chapters");
+            var show_markers = this.get_setting("seek.add_markers");
+            var time_left_mode = this.get_setting("seek.time_left_mode");
+            var buffering = this.get_setting("seek.buffering");
+            var seekable = this.get_setting("seek.seekable");
+            if (time != last_time) extra_time = 0;
+            this.update_time(time + extra_time);
+            last_time = time;
             
             set_attribute(this.time_left_elem, "title", time_left_mode == 0 ? "Time Left" : "Duration");
 
-            var time = this._time;
-            var time_left = duration ? (duration - time) : 0;
-            var time_percent = (time / duration) || 0;
-            if (!Number.isFinite(time_percent)) time_percent = 0;
-            this.bar_elem.style.width = `${time_percent*100}%`;
-
-            this.time_elem.style.display = show_times ? "" : "none";
-            this.time_left_elem.style.display = show_times ? "" : "none";
-
-            toggle_attribute(this.seek_elem, "disabled", !this._seekable)
+            toggle_attribute(this.seek_elem, "disabled", !seekable)
             this.elem.style.cursor = show_markers ? "copy" : "";
             toggle_class(this.bar_elem, "d-none", show_markers);
             this.markers_elem.style.display = show_markers ? "" : "none";
-            // toggle_class(this.input, "d-none", _show_markers);
 
             var ranges_hash = JSON.stringify([duration, ranges]);
             if (this._ranges_hash != ranges_hash) {
@@ -4524,7 +4546,7 @@ export class SeekBar extends UI {
                 }
             }
 
-            toggle_class(this.seek_elem, "buffering", this._buffering);
+            toggle_class(this.seek_elem, "buffering", buffering);
 
             var markers_hash = JSON.stringify([markers, duration]);
             if (this._markers_hash != markers_hash) {
@@ -4558,18 +4580,29 @@ export class SeekBar extends UI {
             }
 
             this.ticks_bar.update(0, duration);
-
-            set_text(this.time_elem, `${utils.seconds_to_timespan_str(time, app.user_time_format)}`);
-            var time_left_str = "";
-            if (time_left_mode === TimeLeftMode.TIME_LEFT) time_left_str = `-${utils.seconds_to_timespan_str(Math.max(0, time_left), app.user_time_format)}`;
-            else if (time_left_mode === TimeLeftMode.DURATION) time_left_str = utils.seconds_to_timespan_str(Math.max(0, duration), app.user_time_format)
-            set_text(this.time_left_elem, time_left_str);
         });
 
         this.on("destroy", ()=>{
             hover_listener.destroy();
             seek_listener.destroy();
         })
+    }
+    update_time(time) {
+        var show_times = this.get_setting("seek.show_times");
+        var duration = this.get_setting("seek.duration");
+        var time_left_mode = this.get_setting("seek.time_left_mode");
+
+        var time_left = duration ? (duration - time) : 0;
+        var time_percent = (time / duration) || 0;
+        if (!Number.isFinite(time_percent)) time_percent = 0;
+        this.bar_elem.style.width = `${time_percent*100}%`;
+        this.time_elem.style.display = show_times ? "" : "none";
+        this.time_left_elem.style.display = show_times ? "" : "none";
+        set_text(this.time_elem, `${utils.seconds_to_timespan_str(time, app.user_time_format)}`);
+        var time_left_str = "";
+        if (time_left_mode === TimeLeftMode.TIME_LEFT) time_left_str = `-${utils.seconds_to_timespan_str(Math.max(0, time_left), app.user_time_format)}`;
+        else if (time_left_mode === TimeLeftMode.DURATION) time_left_str = utils.seconds_to_timespan_str(Math.max(0, duration), app.user_time_format)
+        set_text(this.time_left_elem, time_left_str);
     }
     clear_markers() {
         this.update_settings({"seek.markers": []});
@@ -4594,10 +4627,14 @@ export class MediaSeekBar extends SeekBar {
         super();
     
         var seeking = false, seek_time = 0, last_seek_time, seek_end_timeout, seeking_interval;
+        var cleanup = ()=>{
+            clearTimeout(seek_end_timeout);
+            clearInterval(seeking_interval);
+        }
         this.on("seek-start", (e)=>{
             seek_time = e.time;
-            clearTimeout(seek_end_timeout);
             seeking = true;
+            cleanup();
             seeking_interval = setInterval(()=>{
                 if (seek_time != last_seek_time && app.media.do_live_seek) {
                     app.seek(seek_time);
@@ -4610,7 +4647,7 @@ export class MediaSeekBar extends SeekBar {
         });
         this.on("seek-end", (e)=>{
             seek_time = e.time;
-            clearInterval(seeking_interval);
+            cleanup();
             seek_end_timeout = setTimeout(()=>{
                 seeking = false;
             }, 500);
@@ -4632,7 +4669,8 @@ export class MediaSeekBar extends SeekBar {
         update_time_left_mode();
         this.on("pre_update", ()=>{
             Object.assign(this.settings, {
-                "seek.time": seeking ? seek_time : app.media.time,
+                "seek.time": (seeking) ? seek_time : app.media.time,
+                "seek.paused": !app.media.running || app.media.paused,
                 "seek.seekable": app.media.seekable,
                 "seek.duration": app.media.duration,
                 "seek.chapters": app.media.chapters,
@@ -4663,14 +4701,14 @@ export class StreamKeyGeneratorSettings extends UI.PropertyContainer {
             "title": "Generate ID",
         }); */
         // stream_name.inner.append(regenerate_button);
-        this.stream_name.add_validator(UI.VALIDATORS.not_empty);
+        this.stream_name.validators.push(UI.VALIDATORS.not_empty);
         this.append(this.stream_name);
 
-        this.stream_targets = new TargetsProperty(null, "Stream Target(s)", {
+        this.stream_targets = new TargetsProperty(null, "Target(s)", {
             "show_in_use":false,
             "flex":1,
         });
-        this.stream_targets.add_validator(v=>(!v || v.length == 0) ? "No targets selected" : true);
+        this.stream_targets.validators.push(v=>(!v || v.length == 0) ? "No targets selected" : true);
         this.append(this.stream_targets)
 
         this.volume_normalization = new UI.Property(null, "Volume Normalization", `<select>`, {
@@ -4697,7 +4735,7 @@ export class StreamKeyGeneratorSettings extends UI.PropertyContainer {
             "disabled":()=>!this.valid
         });
         this.append(this.output_key)
-        this.output_key.add_validator(v=>this.stream_targets.value == 0 ? "Invalid targets" : true);
+        this.output_key.validators.push(v=>this.stream_targets.value == 0 ? "Invalid targets" : true);
 
         var update_output = ()=>{
             var name = this.stream_name.value.trim();
@@ -4727,16 +4765,16 @@ export class StreamConfigurationMenu extends ModalPropertyContainer {
             "modal.title": "Stream Configuration",
             data:()=>app.$._stream,
         });
-        var title_ui = new UI.Property("title", "Stream Title", `<input type="text">`, {
+        var title_ui = new UI.Property("title", "Title", `<input type="text">`, {
             // "reset": false
         });
         this.content.append(title_ui);
         
-        var stream_targets = new TargetsProperty("targets", "Stream Target(s)", {
+        var stream_targets = new TargetsProperty("targets", "Target(s)", {
             "hidden": ()=>app.$._stream.method != "rtmp",
             "auto_apply": false,
         });
-        stream_targets.add_validator(v=>(!v || v.length == 0) ? "No targets selected" : true);
+        stream_targets.validators.push(v=>(!v || v.length == 0) ? "No targets selected" : true);
         this.content.append(stream_targets);
 
         this.on("property-change", (e)=>{
@@ -4794,7 +4832,7 @@ export class SavePlaylistSettings extends ModalPropertyContainer {
             flex: 2,
             "default": ()=>filename,
         });
-        this.playlist_save_file.add_validator(UI.VALIDATORS.not_empty);
+        this.playlist_save_file.validators.push(UI.VALIDATORS.not_empty);
         row.append(this.playlist_save_file);
 
         this.playlist_save_format = new UI.Property("playlist-save-format", "Format", `<select></select>`,{
@@ -4822,7 +4860,7 @@ export class SavePlaylistSettings extends ModalPropertyContainer {
             "default": "",
             "invalid_class": null,
         });
-        this.playlist_save_dir.add_validator(UI.VALIDATORS.not_empty);
+        this.playlist_save_dir.validators.push(UI.VALIDATORS.not_empty);
         row.append(this.playlist_save_dir);
         
         var save_remote_button = new UI.Button(`Save (Remote)`, {
@@ -4881,7 +4919,7 @@ export class SavePlaylistSettings extends ModalPropertyContainer {
 
         this.on("show", ()=>{
             playlist_name = app.playlist.current._get_pretty_name() || app.$._session.name;
-            filename = `${utils.sanitize_filename(playlist_name)}-${utils.date_to_string()}.json`;
+            filename = `${utils.sanitize_filename(playlist_name)}-${utils.date_to_string()}`;
             render_preview();
         });
 
@@ -5164,7 +5202,6 @@ export class PlaylistModifySettings extends ModalPropertyContainer {
 
 export class MediaSettingsInterface {
     get is_parent_modify() { return this.parent instanceof PlaylistModifySettings }
-    /** @param {UI.PropertyContainer} parent */
     constructor(parent) {
         this.parent = parent;
         var _this = this;
@@ -5248,6 +5285,7 @@ export class MediaSettingsInterface {
         }; */
         
         // var nullify = (v)=>v===undefined?null:v;
+        this.name
         let get_default = function() {
             var value;
             var name = this.name.split("/").pop();
@@ -5265,11 +5303,11 @@ export class MediaSettingsInterface {
                 value = utils.get(app.$._session.player_default_override, name);
             }
             if (value === undefined) {
-                value = utils.try(()=>app.$.properties.playlist.__enumerable__[name].__default__);
+                value = utils.try(()=>app.$.properties.playlist.__enumerable__.props[name].__default__);
             }
-            if (value === undefined) {
+            /* if (value === undefined) {
                 // value = utils.try(()=>app.get_property("player_default_override", name).__default__);
-            }
+            } */
             if (value === undefined) value = null;
             return value;
         }
@@ -5278,7 +5316,7 @@ export class MediaSettingsInterface {
             var options;
             var name = this.name.split("/").pop();
             if (_this.is_parent_modify) {
-                options = utils.try(()=>app.get_property(`playlist/*/props/${name}`).__options__);
+                options = utils.try(()=>app.$.properties.playlist.__enumerable__.props[name].__options__);
             }
             if (options === undefined) {
                 options = utils.try(()=>app.$.properties.player_default_override[name].__options__);
@@ -5390,9 +5428,14 @@ export class MediaSettingsInterface {
 
         if (this.is_parent_modify) {
 
+            /** @return {PlaylistItem} */
+            let _item = ()=>parent.data;
+            /** @return {PlaylistItem[]} */
+            let _items = ()=>parent.datas;
+
             /** @param {PlaylistItem} item */
             let default_duration = (item)=>{
-                return (item || parent.data)._userdata.media_duration;
+                return (item || _item())._userdata.media_duration;
             };
             
             this.filename = new UI.Property("filename", "File URI", `<input type="text">`, {
@@ -5401,8 +5444,8 @@ export class MediaSettingsInterface {
                 reset: false,
                 info: "A single wrong character will invalidate the file URI, edit with care."
             });
-            this.filename.add_validator(UI.VALIDATORS.not_empty);
-            this.filename.add_validator(UI.VALIDATORS.media_exists);
+            this.filename.validators.push(UI.VALIDATORS.not_empty);
+            this.filename.validators.push(UI.VALIDATORS.media_exists);
 
             this.playlist_mode = new UI.Property(prop_name("playlist_mode"), "Playlist Mode", `<select>`, {
                 "info": `Setting to 'Merged' or '2-Track', the media player will attempt to merge the playlist's contents as if it were a single file, with each item represented as a chapter. A merged playlist may only include local files (ie, no URIs or special items).`,
@@ -5543,12 +5586,14 @@ export class MediaSettingsInterface {
                 "step":0.1,
                 "timespan.format": "s.SSS",
                 "default": get_default,
+                "min": 0,
             })
 
             this.fade_out_time = new UI.TimeSpanProperty(prop_name("fade_out"), "Fade Out Duration (Seconds)", {
                 "step":0.1,
                 "timespan.format": "s.SSS",
                 "default": get_default,
+                "min": 0,
             });
 
             /* this.fade_in_out_time = new UI.Property(prop_name("fade_in"), "Fade In/Out", `<div class="input-wrapper suffix number secs"><input type="number" min="0" step="0.1"></div>`, {
@@ -5573,47 +5618,37 @@ export class MediaSettingsInterface {
 
             [this.background_mode, this.background_color, this.background_file, this.background_file_start, this.background_file_end] = create_background_properties({
                 "name": prop_name("background"),
-                "label": "Replace Video",  /* (item)=>{
-                    if (is_special(item)) return "Background";
-                    return "Add Video";
-                } */
                 "options":function(item){
                     var options = get_background_options.apply(this,[item]);
                     if (item.filename == "livestreamer://intertitle") {
                         options = options.filter(o=>o[0]=="color" || o[0]==null || o[0]=="default");
                     } else {
                         var default_opt = options.find(o=>o[0]=="default") || options.find(o=>o[0]==null);
-                        var audio_display_default_opt = utils.try(()=>app.$.properties.background_mode.__options__.find(o=>o[0]==app.$._session.background_mode));
-                        if (default_opt && audio_display_default_opt) {
-                            default_opt[1] = `Default Background (${audio_display_default_opt[1]})`;
+                        var background_mode_option = app.$.properties.background_mode.__options__.find(o=>o[0]==app.$._session.background_mode);
+                        if (default_opt && background_mode_option) {
+                            default_opt[1] = `Default Background (${background_mode_option[1]})`;
                         }
                     }
                     return options;
                 },
                 "default": null,
-                /* "default": function(item) {
-                    if (item.filename == "livestreamer://intertitle") return "color";
-                    else return get_default.apply(this, [id]);
-                }, */
             });
 
             this.audio_file = new FileProperty(prop_name("audio_file"), "Add Audio", {
                 "file.options": { files: true, filter: ["audio/*", "video/*"] },
             });
-            this.audio_file.add_validator(UI.VALIDATORS.media_audio);
+            this.audio_file.validators.push(UI.VALIDATORS.media_audio);
 
             this.subtitle_file = new FileProperty(prop_name("subtitle_file"), "Add Subtitles", {
                 "file.options": { files: true, filter: ["text/*"] },
             })
-            this.subtitle_file.add_validator(UI.VALIDATORS.media_subtitle);
+            this.subtitle_file.validators.push(UI.VALIDATORS.media_subtitle);
             
             var m = (v)=>+Number.parseFloat(v)/100;
             var r = (v)=>`${(+v*100).toFixed(2)}`
             var crop_html = `<input type="number" min="0" max="${CROP_LIMIT*100}" step="1">`
             var crop_props = {
-                /* "step": 0.01,
-                "min": 0,
-                "max": CROP_LIMIT, */
+                step: 0.01,
                 "precision":4,
                 "default": get_default
             }
@@ -5638,7 +5673,7 @@ export class MediaSettingsInterface {
                     auto_cropping = true;
                     await app.request({
                         call: ["session", "detect_crop"],
-                        arguments: [parent.datas.map(data=>data.id)]
+                        arguments: [_items().map(i=>i.id)]
                     }, {
                         show_spinner: false,
                         timeout: 0
@@ -5656,24 +5691,24 @@ export class MediaSettingsInterface {
             this.crop_detection_images = new UI.Property(null, "Crop Detection Images", `<div style="position:relative;width:100%;"></div>`, {
                 "reset": false,
                 "hidden": function() {
-                    return parent.datas.length != 1 || !parent.data.detected_crops;
+                    return _items().length != 1 || !_item()._detected_crops;
                 },
                 "update": function() {
-                    var data = parent.data.detected_crops;
+                    var data = _item()._detected_crops;
                     var crop_rect = get_current_crop_rect();
-                    var hash = JSON.stringify([data, crop_rect, parent.datas.map(data=>data.id)]);
+                    var hash = JSON.stringify([data, crop_rect, _items().map(data=>data.id)]);
                     if (hash === old_hash) return;
                     old_hash = hash;
                     // dom_utils.empty(this.content);
                     var new_container = $(`<div class="crop-image-container"></div>`)[0];
-                    if (data && parent.datas.length == 1) {
+                    if (data && _items().length == 1) {
                         // var scale = 1 / data.length;
                         data.forEach((d,i)=>{
                             var p = new CropPreview(d.url, d.rect, crop_rect);
                             var container = $(`<div></div>`)[0];
                             container.appendChild(p.elem);
                             new_container.appendChild(container);
-                            p.elem.onclick = ()=>show_crop_edit_modal(parent.data.id, i);
+                            p.elem.onclick = ()=>show_crop_edit_modal(_item(), i);
                         });
                     }
                     this.content.append(new_container);
@@ -5697,8 +5732,9 @@ export class MediaSettingsInterface {
                 }
             });
             
-            function show_crop_edit_modal(id, index) {
-                var data = app.$._session.detected_crops[id];
+            /** @param {PlaylistItem} item */
+            function show_crop_edit_modal(item, index) {
+                var data = item._detected_crops;
                 var fb = new Fancybox(data.map((d,i)=>{
                     var container = $(`<div></div>`)[0];
                     var cp = new CropPreview(d.url, d.rect, get_current_crop_rect(), true);
@@ -5707,10 +5743,10 @@ export class MediaSettingsInterface {
                         app.request({
                             call: ["session", "update_values"],
                             arguments: [
-                                [`playlist/${id}/props/crop_left`, rect.left],
-                                [`playlist/${id}/props/crop_top`, rect.top],
-                                [`playlist/${id}/props/crop_right`, 1-rect.right],
-                                [`playlist/${id}/props/crop_bottom`, 1-rect.bottom],
+                                [`playlist/${item.id}/props/crop_left`, rect.left],
+                                [`playlist/${item.id}/props/crop_top`, rect.top],
+                                [`playlist/${item.id}/props/crop_right`, 1-rect.right],
+                                [`playlist/${item.id}/props/crop_bottom`, 1-rect.bottom],
                             ]
                         });
                     });
@@ -5744,7 +5780,7 @@ export class MediaSettingsInterface {
                 "reset": false,
                 "textarea.min_rows": 3,
             });
-            this.title_text.add_validator(UI.VALIDATORS.not_empty);
+            this.title_text.validators.push(UI.VALIDATORS.not_empty);
             
             this.title_duration = new UI.TimeSpanProperty(prop_name("title_duration"), "Duration", {
                 "min":0,
@@ -5804,8 +5840,9 @@ export class MediaSettingsInterface {
                 "default": get_default,
                 "options": YES_OR_NO,
             });
-            this.title_rotation = new UI.MultiProperty(prop_name("title_rotation"), "3D Rotation (degrees)", `<input type="number"><input type="number"><input type="number">`, {
+            this.title_rotation = new UI.Property(prop_name("title_rotation"), "3D Rotation (degrees)", `<input type="number"><input type="number"><input type="number">`, {
                 "default": get_default,
+                "multiple": true
             });
             this.title_margin = new UI.Property(prop_name("title_margin"), "Margin", `<input type="number" min="0" max="100">`, {
                 "default": get_default,
@@ -6023,7 +6060,7 @@ export class MediaSettingsInterface {
                 "options":get_options,
                 "default":get_default,
             });
-            // this.macro_function.add_validator(UI.VALIDATORS.not_empty);
+            // this.macro_function.validators.push(UI.VALIDATORS.not_empty);
 
             this.macro_handover_session = new UI.Property(prop_name("function_handover_session"), "Handover Session", `<select>`, {
                 "options":()=>app.get_handover_sessions_options(),
@@ -6031,14 +6068,14 @@ export class MediaSettingsInterface {
                 "reset":true,
                 "hidden":()=>this.macro_function.value != "handover"
             });
-            this.macro_handover_session.add_validator(UI.VALIDATORS.not_empty);
+            this.macro_handover_session.validators.push(UI.VALIDATORS.not_empty);
 
             // -------------------------------------
 
             this.label = new UI.Property(prop_name("label"), "Label", `<input type="text">`, {
                 /** @param {PlaylistItem} item */
                 "default": (item)=>{
-                    return item._get_pretty_name({label:false}) || "";return item._get_pretty_name({label:false}) || "";
+                    return (item??NULL_PLAYLIST_ITEM)._get_pretty_name({label:false}) || "";
                 },
             });
 
@@ -6214,8 +6251,8 @@ export class EditAccessControlMemberMenu extends ModalPropertyContainer {
             "disabled": ()=>!is_new(),
             "reset": false,
         });
-        this.username.add_validator(UI.VALIDATORS.not_empty);
-        this.username.add_validator((v)=>(is_new() && prop.access_control[v]) ? "Username already registered" : true);
+        this.username.validators.push(UI.VALIDATORS.not_empty);
+        this.username.validators.push((v)=>(is_new() && prop.access_control[v]) ? "Username already registered" : true);
         this.access = new UI.Property("access", "Access", `<select>`, {
             "default": "allow",
             "options": ()=>{
@@ -6611,12 +6648,12 @@ export class StreamSettings extends Panel {
             return utils.try(()=>app.$.properties.stream_settings[this.name].__options__) ?? (utils.try(()=>typeof app.$.properties.stream_settings[this.name].__default__) === "boolean" ? YES_OR_NO : []);
         }
 
-        this.stream_method = new UI.Property("method", "Stream Method", `<select></select>`, {
+        this.stream_method = new UI.Property("method", "Method", `<select></select>`, {
             "options": function() {
                 var options = dom_utils.fix_options(get_options.apply(this));
                 if (!app.$._client.is_admin) options = options.filter(o=>o.value === "rtmp");
                 if (!app.dev_mode) options = options.filter(o=>o.value !== "ffplay");
-                if (!IS_ELECTRON) {
+                if (!app.$.sysinfo.platform.match(/^win/i)) {
                     var gui_option = options.find(o=>o.value === "gui");
                     if (gui_option) {
                         gui_option["disabled"] = true;
@@ -6631,33 +6668,33 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.stream_method)
 
-        this.stream_targets = new TargetsProperty("targets", "Stream Target(s)", {
+        this.targets = new TargetsProperty("targets", "Target(s)", {
             "hidden": ()=>this.stream_method.value != "rtmp",
         });
-        this.stream_targets.add_validator(v=>(!v || v.length == 0) ? "No targets selected" : true);
-        this.properties_ui.append(this.stream_targets)
+        this.targets.validators.push(v=>(!v || v.length == 0) ? "No targets selected" : true);
+        this.properties_ui.append(this.targets)
 
-        this.stream_title = new UI.Property("title", "Stream Title", `<input type="text">`, {
+        this.title = new UI.Property("title", "Title", `<input type="text">`, {
             "default": "",
             "placeholder": ()=>/* app.$.session.default_stream_title || */ app.$._session.name,
             "hidden": ()=>this.stream_method.value != "rtmp",
         });
-        this.properties_ui.append(this.stream_title)
+        this.properties_ui.append(this.title)
 
-        this.stream_file = new UI.Property("filename", "Filename", `<input type="text">`, {
+        this.file = new UI.Property("filename", "Filename", `<input type="text">`, {
             "default": get_default,
             "hidden": ()=>this.stream_method.value != "file",
             "info": "Special keywords: %date% | %unix%",
         });
-        this.stream_file.add_validator(UI.VALIDATORS.not_empty)
-        this.properties_ui.append(this.stream_file)
+        this.file.validators.push(UI.VALIDATORS.not_empty)
+        this.properties_ui.append(this.file)
         
-        this.stream_re = new UI.Property("re", "Encoding Speed", `<select></select>`, {
+        this.re = new UI.Property("re", "Encoding Speed", `<select></select>`, {
             "options": [[1,"Realtime"],[0,"Fastest"]],
             "default": get_default,
             "hidden": ()=>this.stream_method.value != "file"
         });
-        this.properties_ui.append(this.stream_re)
+        this.properties_ui.append(this.re)
 
         this.h264_preset = new UI.Property("h264_preset", "h264 Preset", `<select></select>`, {
             "options": get_options,
@@ -6692,17 +6729,17 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.frame_rate)
 
-        this.legacy_mode = new UI.Property("legacy_mode", "Legacy Mode", `<select></select>`, {
+        this.experimental_mode = new UI.Property("experimental_mode", "Experimental Mode", `<select></select>`, {
             "options": get_options,
             "default": get_default,
             "hidden": ()=>this.stream_method.value == "gui"
         });
-        this.properties_ui.append(this.legacy_mode)
+        this.properties_ui.append(this.experimental_mode)
 
         this.use_hardware = new UI.Property("use_hardware", "Hardware Transcoding", `<select></select>`, {
             "options": get_options,
             "default": get_default,
-            "hidden": ()=>this.stream_method.value == "gui" || this.legacy_mode.value
+            "hidden": ()=>this.stream_method.value == "gui" || !this.experimental_mode.value
         });
         this.properties_ui.append(this.use_hardware)
 
@@ -6753,7 +6790,7 @@ export class StreamSettings extends Panel {
             set_text(this.toggle_streaming_button, state);
 
             var stream_info = {};
-            stream_info["Stream Method"] = stream["method"];
+            stream_info["Method"] = stream["method"];
             if (app.$._session.type === SessionTypes.INTERNAL) {
                 if (stream["method"] !== "gui") {
                     let parts = {
@@ -6761,10 +6798,9 @@ export class StreamSettings extends Panel {
                         "Video Bitrate": `${stream["video_bitrate"]}Kbps`,
                         "Audio Bitrate": `${stream["audio_bitrate"]}Kbps`,
                         "Resolution": `${stream["resolution"]}`,
+                        "Experimental Mode": stream["experimental_mode"]?"Yes":"No"
                     };
-                    if (stream["legacy_mode"]) {
-                        parts["Legacy Mode"] = `${stream["legacy_mode"]?"Yes":"No"}`;
-                    } else {
+                    if (stream["experimental_mode"]) {
                         parts["Use Hardware"] = `${stream["use_hardware"]?"Yes":"No"}`;
                     }
                     stream_info["Encoder Settings"] = Object.entries(parts).map(([k,v])=>`${k}: ${v}`).join(", ");
@@ -6783,21 +6819,27 @@ export class StreamSettings extends Panel {
             }
             if (stream["method"] === "rtmp") {
                 if (!stream["test"]) {
-                    stream_info["Stream Target(s)"] = stream["targets"].map((t,i)=>`${t} <span style="color:${app.$.targets[t]?"#00f":"f00"}">[${app.$.targets[t]?"OK":"NOT EXIST"}]</span>`).join(", ");
-                    stream_info["Stream Title"] = stream.title;
+                    stream_info["Target(s)"] = stream["targets"].map((t,i)=>`${t} <span style="color:${app.$.targets[t]?"#00f":"f00"}">[${app.$.targets[t]?"OK":"NOT EXIST"}]</span>`).join(", ");
+                    stream_info["Title"] = stream.title;
                 }
             }
             var live_nms_session = stream._live_nms_session;
             if (live_nms_session) {
                 var {live} = live_nms_session;
                 if (live && live.url) {
-                    stream_info["Video URL"] = `<a href="${live.url}" target="_blank">${live.url}</a>`;
+                    stream_info["Live URL"] = `<a href="${live.url}" target="_blank">${live.url}</a>`;
                 }
                 /* if (live.thumbnail_url) {
                     stream_info["Thumbnail"] = `<a href="${live.thumbnail_url}" target="_blank">${new URL(live.thumbnail_url).pathname}</a>`;
                 } */
             }
-            stream_info["Bit Rate"] = utils.format_bitrate(session.stream.bitrate, "k");
+            var internal_session = app.$._session._get_connected_nms_session_with_appname("internal");
+            if (internal_session) {
+                let url = new URL(`${app.get_rtmp_url()}${internal_session.publishStreamPath}`);
+                // url.search = new URLSearchParams(internal_session.publishArgs);
+                stream_info["Internal URL"] = `<a href="${url.toString()}" target="_blank">${url}</a>`;
+            }
+            stream_info["Bit Rate"] = utils.format_bytes_short(session.stream.bitrate, "k")+"ps";
             stream_info["Run Time"] = session._is_running ? utils.ms_to_timespan_str(session.stream._run_time) : 0;
 
             var hash = JSON.stringify(stream_info);
@@ -6847,8 +6889,8 @@ export class MediaPlayerPanel extends Panel {
                         <button class="popout" title="Pop-out Player"><i class="fas fa-external-link-alt"></i></button>
                         <button class="toggle-info" title="Toggle Player Info"><i class="fas fa-circle-info"></i></button>
                     </div>
-                    <span class="info"></span>
                 </div>
+                <span class="info"></span>
             </div>
         </div>`)[0];
         this.body_elem.append(tsc);
@@ -6941,7 +6983,7 @@ video {
             this.backward_button = new UI.Button(`<i class="fas fa-backward"></i>`, {
                 title:"-30 Seconds",
                 click: (e)=>{
-                    app.seek(-30,true);
+                    app.seek(-30, true);
                 },
                 disabled:()=>!app.media.seekable || app.media.time <= 0,
             }),
@@ -6950,7 +6992,7 @@ video {
                 content: ()=>app.$._stream.mpv.props.pause ? `<i class="fas fa-play"></i>` : `<i class="fas fa-pause"></i>`,
                 click: (e)=>{
                     var new_pause = !app.$._stream.mpv.props.pause;
-                    app.$._push([`streams/${app.$._stream.id}/mpv/props/pause`, new_pause]);
+                    app.$._push([`sessions/${app.$._session.id}/stream/mpv/props/pause`, new_pause]);
                     app.request({
                         call: ["session", "mpv", "set_property"],
                         arguments: ["pause", new_pause]
@@ -7040,7 +7082,7 @@ video {
         });
         
         this.vol_down_button = new UI.Button(`<i class="fas fa-volume-down"></i>`, {
-            class:"icon-btn",
+            class:"icon-button",
             title:"Volume - 5%",
             click: (e)=>{
                 this.volume.set_values(utils.ceil_to_factor(this.volume.value-VOLUME_STEP,VOLUME_STEP), {trigger:true});
@@ -7061,7 +7103,7 @@ video {
         });
         
         this.vol_up_button = new UI.Button(`<i class="fas fa-volume-up"></i>`, {
-            class:"icon-btn",
+            class:"icon-button",
             title:"Volume + 5%",
             click: (e)=>{
                 this.volume.set_values(utils.floor_to_factor(this.volume.value+VOLUME_STEP,VOLUME_STEP), {trigger:true});
@@ -7069,7 +7111,7 @@ video {
         })
         
         /* this.mute_button = new UI.Button(`<i class="fas fa-volume-xmark"></i>`, {
-            class:"icon-btn",
+            class:"icon-button",
             title:"Mute",
             hidden: true,
             click: (e)=>{
@@ -7141,10 +7183,10 @@ video {
     }
 
     async refresh_player(force) {
-        var test_video_url = `${window.location.protocol==="https:"?"wss:":"ws:"}//${window.location.host}/media-server/test/${app.$._session.id}.flv`;
+        var test_video_url = `${window.location.protocol==="https:"?"wss:":"ws:"}//${window.location.host}/media-server/internal/${app.$._session.id}.flv`;
         var show = !!(app.$._session._is_running && app.$._stream.test && test_video_url);
         var is_popped_out = !!windows["test-"+app.$._session.id];
-        var is_playable = !!(show && app.$._session._get_connected_nms_session_with_appname("test"));
+        var is_playable = !!(show && app.$._session._get_connected_nms_session_with_appname("internal"));
 
         toggle_class(this.test_stream_container_elem, "d-none", !show);
         toggle_class(this.test_stream_overlay_elem, "d-none", !is_playable);
@@ -7154,7 +7196,7 @@ video {
         var buffer_length = this.video_buffer_length;
         set_inner_html(this.test_stream_info_elem, `Buffered: ${buffer_length ? buffer_length.toFixed(2) : "-"} secs`);
 
-        if (!force && !!this.flv_player == is_playable) return;
+        if (!force && (!!this.flv_player == is_playable)) return;
 
         if (this.flv_player) {
             this.flv_player.pause();
@@ -7252,7 +7294,7 @@ export class MediaSettingsPanel extends Panel {
             /* if (this._mode === MediaSettingsMode.all) {
                 app.$.push([`sessions/${app.$.session.id}/player_default_override/${e.name}`, e._value]);
             } else {
-                app.$.push([`streams/${app.$.stream.id}/mpv/props/${e.name}`, e._value]);
+                app.$.push([`sessions/${app.$.session.id}/stream/mpv/props/${e.name}`, e._value]);
             } */
         });
 
@@ -7416,6 +7458,7 @@ export class StreamMetricsPanel extends Panel {
     #panning = false;
     #init_view_len = 60*1000
     #last_data_max = 0;
+    _updates = 0;
     constructor() {
         super("Stream Metrics");
 
@@ -7458,9 +7501,6 @@ export class StreamMetricsPanel extends Panel {
 
         this.on("update", ()=>{
             this.#update_chart();
-            if (!this.#panning && !this.#zooming) {
-                this.#update_info();
-            }
         });
         this.canvas.ondblclick = ()=>{
             this.#update_pan(true);
@@ -7642,48 +7682,49 @@ export class StreamMetricsPanel extends Panel {
             reset = true;
         }
 
-        let graphs = app.$._session.stream.graphs;
-        let raw_data = Object.fromEntries(Object.entries(graphs).filter(([k,v])=>k.split(":").pop()===this.#mode));
-        var _hash = JSON.stringify([mode_hash, reinit_hash, Object.entries(graphs).map(([k,v])=>[k, v.data])]);
-        if (this._hash !== _hash) {
-            this._hash = _hash;
-            this.chart.data.datasets = Object.entries(raw_data).map(([key,{min,max,data}], i)=>{
-                let dataset = this.chart.data.datasets.find(d=>d.label==key);
-                dataset = dataset ?? {
-                    label: key,
-                    borderWidth: 1.0,
-                    pointRadius: 1.5,
-                    pointHitRadius: 2,
-                    pointStyle: "rect",
-                    fill: false,
-                    // tension: 0,
-                    tension: 0.5,
-                    borderJoinStyle: "round",
-                    data: []
-                };
-                dataset.borderColor = graph_colors[i%graph_colors.length];
-                if (data && max>0) {
-                    let dataset_data = dataset._data ?? dataset.data;
-                    for (var i = dataset_data.length; i<max; i++) {
-                        let [x,y] = data[i];
-                        let d = {x:x??0,y: y??0};
-                        dataset.data.push(d);
-                        if (dataset._data) dataset._data.push(d);
-                    }
+        let metrics = app.$._session.stream.metrics;
+        var data_hash = JSON.stringify([mode_hash, reinit_hash, this._updates]);
+        if (this._data_hash === data_hash) return;
+        this._data_hash = data_hash;
+        
+        let raw_data = Object.fromEntries(Object.entries(metrics).filter(([k,v])=>k.split(":").pop()===this.#mode));
+        this.chart.data.datasets = Object.entries(raw_data).map(([key,{min,max,data}], i)=>{
+            let dataset = this.chart.data.datasets.find(d=>d.label==key);
+            dataset = dataset ?? {
+                label: key,
+                borderWidth: 1.0,
+                pointRadius: 1.5,
+                pointHitRadius: 2,
+                pointStyle: "rect",
+                fill: false,
+                // tension: 0,
+                tension: 0.5,
+                borderJoinStyle: "round",
+                data: []
+            };
+            dataset.borderColor = graph_colors[i%graph_colors.length];
+            if (data && max>0) {
+                let dataset_data = dataset._data ?? dataset.data;
+                for (var i = dataset_data.length; i<max; i++) {
+                    let [x,y] = data[i];
+                    let d = {x:x??0,y: y??0};
+                    dataset.data.push(d);
+                    if (dataset._data) dataset._data.push(d);
                 }
-                return dataset;
-            });
-        }
-        
+            }
+            return dataset;
+        });
         this.#update_pan(reset);
-        
         this.chart.update();
+        if (!this.#panning && !this.#zooming) {
+            this.#update_info();
+        }
     }
     #format_value(value) {
         var type = this.#mode;
         // var type = ds.label.split(":").pop();
         if (type == "speed") return `${value.toFixed(3)}x`;
-        if (type == "bitrate") return utils.format_bitrate(value, "k");
+        if (type == "bitrate") return utils.format_bytes_short(value, "k");
     }
     #update_pan(reset=false) {
         if (!this.chart.scales.x) return;
@@ -7752,6 +7793,8 @@ export class PlaylistPanel extends Panel {
     /** @type {PlaylistItem} */
     #current;
     #tracks_hash;
+    #rebuilding_resolve;
+
     get active_sortable() { return this.sortables.find(s=>s.is_active_sortable_in_group()) || this.sortables[0]; }
     get active_track_index() { return this.sortables.indexOf(this.active_sortable); }
     get timeline_width() { return Math.max(...[...this.tracks_elem.children].map(t=>t.lastElementChild ? t.lastElementChild.offsetLeft+t.lastElementChild.offsetWidth : 0)); }
@@ -7838,9 +7881,9 @@ export class PlaylistPanel extends Panel {
                 </div>
                 <div class="playlist-buttons">
                     <button id="pl-add-file" title="Add Files...">Add Files...</button>
-                    <button id="pl-upload-file" title="Upload Files...">Upload Files...</button>
                     <button id="pl-add-url" title="Add URLs...">Add URLs...</button>
-                    <button id="pl-add-other" title="Other..."><i class="fas fa-ellipsis-h"></i></button>
+                    <button id="pl-upload-file" title="Upload...">Upload...</button>
+                    <button id="pl-add-other" title="Other..."><i class="fas fa-ellipsis-v"></i></button>
                 </div>
             </div>`
         add_class(this.body_elem, "playlist-body");
@@ -8077,7 +8120,7 @@ export class PlaylistPanel extends Panel {
             cancel_upload: new PlaylistCommand({
                 name: "Cancel Upload",
                 icon: `<i class="fas fa-ban"></i>`,
-                visible: (items)=>items.some(i=>i.upload && i.upload.status == UPLOAD_STATUS.STARTED),
+                visible: (items)=>items.some(i=>i._upload && i._upload.status == UPLOAD_STATUS.STARTED),
                 click: (items)=>{
                     app.playlist_cancel_upload(items);
                 }
@@ -8467,6 +8510,7 @@ export class PlaylistPanel extends Panel {
         this.on("register", ()=>resize_observer.observe(this.elem.parentElement));
 
         this.on("update", ()=>{
+            this.rebuilding = new Promise((r)=>this.#rebuilding_resolve = r);
             var current = this.current;
             var current_ud = current._userdata;
             var duration = current_ud.duration;
@@ -8496,9 +8540,14 @@ export class PlaylistPanel extends Panel {
             
             this.#update_position();
             this.#update_view();
-            this.#rebuild_items();
             this.#update_info();
-        })
+            (async()=>{
+                if (this.sortables.some(s=>s.dragging)) {
+                    await Promise.all(this.sortables.map(s=>s.last_drag)).then(()=>utils.timeout(500))
+                }
+                this.#rebuild_items();
+            })();
+        });
 
         this.on("destroy", ()=>{
             resize_observer.disconnect();
@@ -8525,7 +8574,6 @@ export class PlaylistPanel extends Panel {
         var tracks_hash = JSON.stringify(tracks);
         if (tracks_hash == this.#tracks_hash) return;
 
-        console.debug("refreshing sortables")
         this.#tracks_hash = tracks_hash;
         this.#tracks = tracks;
         dom_utils.empty(this.tracks_elem);
@@ -8614,39 +8662,17 @@ export class PlaylistPanel extends Panel {
         }
     }
 
-    async #rebuild_items() {
-        await Promise.all(this.sortables.map(s=>s.last_drag));
-
+    #rebuild_items() {
+        // console.log("rebuild", Date.now());
         let is_running = app.$._session._is_running;
-        
         var current_playlist = this.current;
         var current_playlist_tracks = current_playlist._tracks;
-        // var last_playlist = this.last_playlist_on_rebuild || NULL_PLAYLIST_ITEM;
         /** @type {PlaylistItem} */
         var current_item = app.$._session._current_playing_item;
         var current_item_parents = new Set(current_item._parents);
-        
-        var start_time = null;
-        // var now = Date.now();
-        // /** @param {PlaylistItem} item */
-        // var calculate_start_time = (item)=>{
-        //     var t = (utils.sum([item, ...item._get_parents()].map(i=>i._userdata.start || 0))) * 1000;
-        //     if (item === current_item) t -= app.$._session._current_time * 1000;
-        //     return t;
-        // }
-        // if (app.settings.get("playlist_show_scheduled_times")) {
-        //     if (!is_running && app.$._session.schedule_start_time) {
-        //         start_time = +new Date(app.$._session.schedule_start_time);
-        //     } else {
-        //         // start_time = calculate_start_time(current_item)
-        //     }
-        // }
-
         this.set_tracks(current_playlist_tracks.length, current_playlist && current_playlist.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK);
         var new_items = [];
-
-        var emit_change = dom_utils.debounce_next_frame(()=>this.emit("change"));
-
+        var changed = false;
         this.sortables.forEach((sortable,i)=>{
             /** @type {PlaylistItem[]} */
             var items = current_playlist_tracks[i] || EMPTY_ARRAY;
@@ -8661,7 +8687,7 @@ export class PlaylistPanel extends Panel {
                     var is_current_ancestor = current_item_parents.has(item);
                     var is_cutting = !!(this.clipboard && this.clipboard.cutting && this.clipboard.items_set.has(item));
                     
-                    var _hash = JSON.stringify([index, item, ud, is_current_item, is_current_ancestor, is_cutting, start_time, is_running]);
+                    var _hash = JSON.stringify([index, item, ud, is_current_item, is_current_ancestor, is_cutting, is_running]);
                     if (_hash === elem._hash) return;
 
                     elem._hash = _hash;
@@ -8683,7 +8709,7 @@ export class PlaylistPanel extends Panel {
                     let badges = {};
     
                     toggle_class(elem, "cutting", is_cutting);
-                    var is_upload_dummy = item.filename == "livestreamer://upload"
+                    var is_uploading = !!item.upload_id;
                     
                     var play_icons_elem = elem.querySelector(".play-icons");
                     var icons_elem = elem.querySelector(".icons");
@@ -8736,7 +8762,7 @@ export class PlaylistPanel extends Panel {
                         play_icons.push(`<span class="numbering">${String(index+1).padStart(2,"0")}</span>`);
                     }
                     
-                    if (!is_upload_dummy) {
+                    if (!is_uploading) {
                         if (media_info.exists === false) {
                             problems.push({level:3, text:"Media does not exist."});
                         } else if (!utils.is_empty(media_info) && !media_info.streams && media_info.protocol !== "livestreamer:" && !item._is_playlist && !ud.is_processing) {
@@ -8827,13 +8853,13 @@ export class PlaylistPanel extends Panel {
                         }
                     }
                     {
-                        let upload = item.upload;
+                        let upload = item._upload;
                         let download = item._download;
                         let d = null, t = null;
                         if (download) {
                             d = download
                             t = "download";
-                        } else if (upload || item.filename === "livestreamer://upload") {
+                        } else if (upload) {
                             d = upload || { bytes:0, total:0, speed:0 };
                             t = "upload";
                         }
@@ -8869,20 +8895,6 @@ export class PlaylistPanel extends Panel {
                     }
     
                     var duration_str = null;
-                    // let _start_time = start_time ? (start_time + ud.start * 1000) : 0;
-                    // if (_start_time >= now) {
-                    //     let s = new Date(_start_time);
-                    //     let t_str = `${String(s.getHours()).padStart(2,"0")}:${String(s.getMinutes()).padStart(2,"0")}`;
-                    //     duration_str = `<i class="far fa-clock" style="padding-right:3px"></i><span>${t_str}</span>`;
-                    // }
-                    // if (start_time) {
-                    //     let _start_time = (calculate_start_time(item) - calculate_start_time(current_item));
-                    //     // if (_start_time >= start_time) {
-                    //     let s = new Date(_start_time);
-                    //     let t_str = `${String(s.getHours()).padStart(2,"0")}:${String(s.getMinutes()).padStart(2,"0")}`;
-                    //     duration_str = `<i class="far fa-clock" style="padding-right:3px"></i><span>${t_str}</span>`;
-                    //     // }
-                    // }
                     if (!duration_str) {
                         if (ud.duration || ud.media_duration) duration_str = utils.seconds_to_timespan_str(ud.duration || ud.children_duration, "h?:mm:ss");
                     }
@@ -8916,8 +8928,8 @@ export class PlaylistPanel extends Panel {
                     set_style_property(elem, "--outline-color", outline_color || "");
                     set_attribute(elem, "title", title_parts.join(" "));
                     toggle_class(elem, "current", is_current_item);
-
-                    emit_change();
+                    
+                    changed = true;
     
                     return elem;
                 },
@@ -8927,11 +8939,12 @@ export class PlaylistPanel extends Panel {
                     var sortable = Sortable.utils.get(elem);
                     if (sortable) sortable.deselect(elem);
                     elem.remove();
-
-                    emit_change();
+                    changed = true;
                 }
             });
         });
+        this.#rebuilding_resolve();
+        if (changed) this.emit("change");
     }
 
 
@@ -9064,11 +9077,12 @@ export class PlaylistPanel extends Panel {
     async clipboard_paste() {
         if (!this.clipboard) return;
         var clipboard = this.clipboard;
+        var items = clipboard.items.filter(i=>!i._is_deleted);
         if (clipboard.cutting) {
             this.clipboard = null;
-            app.playlist_move(clipboard.items);
+            app.playlist_move(items);
         } else {
-            app.playlist_add(clipboard.items);
+            app.playlist_add(items);
         }
     }
 
@@ -9137,7 +9151,8 @@ export class PlaylistPanel extends Panel {
     }
 
     /** @param {PlaylistItem[]} items */
-    set_selection(items, focus=true) {
+    async set_selection(items, focus=true) {
+        await this.rebuilding;
         if (!Array.isArray(items)) items = [items];
         this.sortables.forEach(s=>s.deselect_all());
         var elems = new Set(items.map(item=>this.get_element(item)).filter(e=>e));
@@ -9178,21 +9193,18 @@ export class PlaylistPanel extends Panel {
     }
 
     /** @param {PlaylistItem} item */
-    open(item, selection) {
+    async open(item, selection) {
         if (!item) item = app.$._session.playlist["0"];
         if (!item._is_playlist) return;
         this.sortables.forEach(s=>s.forget_last_active());
+        // var same = this.current === item;
         this.current = item;
         this.cursor_position = null;
+        item.__private.hash_on_open = item._calculate_contents_hash();
         this.update();
-        item.__private.hash_on_open = item._calculate_contents_hash()
-        this.once("update", ()=>{
-            if (this.timeline_mode && this.clipping) this.set_timeline_view([this.clipping.start, this.clipping.end], this.time);
-            else this.scroll_into_view(this.get_elements()[0]);
-        })
-        this.once("change",()=>{
-            if (selection) this.set_selection(selection);
-        })
+        if (this.timeline_mode && this.clipping) this.set_timeline_view([this.clipping.start, this.clipping.end], this.time);
+        else this.scroll_into_view(this.get_elements()[0]);
+        await this.set_selection(selection);
     }
     
     #update_info() {
@@ -9373,13 +9385,41 @@ export class Area extends UI.Column {
 }
 
 export class App extends utils.EventEmitter {
+    /** @type {App} */
+    static instance;
+
     get playlist_item_props_class() { return utils.try(()=>this.$.properties.playlist.__enumerable__.props); }
     get focused_element() { return this.root_elem.activeElement; }
     get dev_mode() { return this.$.conf["debug"] || new URLSearchParams(window.location.search.slice(1)).has("dev"); }
     
     $ = new Remote();
 
+    constructor() {
+        super();
+        app = this;
+        App.instance = this;
+        this.init();
+    }
+
     async init() {
+
+        Chart.register(zoomPlugin);
+        // Chart.register(annotationPlugin);
+        
+        Sortable.mount(new MultiDrag(), CancelSortPlugin);
+        
+        window.onbeforeunload = (e)=>{
+            if (ALL_XHRS.size) return `Uploads are in progress, leaving will abort the uploads.`;
+            // return "";
+        };
+
+        if (IS_ELECTRON) {
+            window.prompt = async (message, default_value)=>{
+                var result = await fancybox_prompt(message, default_value);
+                if (result) return result;
+                else return null;
+            };
+        }
 
         this.settings = new dom_utils.LocalStorageBucket("livestreamer-1.0", {
             "playlist_mode": 0,
@@ -9418,7 +9458,6 @@ export class App extends utils.EventEmitter {
         this.num_requests = 0;
         this.upload_queue = new UploadQueue();
         this.clipboard = null;
-        this.plugins = {};
         this.target_config_menus = {};
         this.advanced_functions = [];
 
@@ -9662,15 +9701,17 @@ export class App extends utils.EventEmitter {
             }),
         );
 
-        var messenger = new dom_utils.WindowCommunicator();
         var key;
         if (window.self == window.top) {
             key = dom_utils.Cookie.get("ls_key") || new URLSearchParams(window.location.search).get("ls_key");
         } else {
+            let messenger = new dom_utils.WindowCommunicator();
             key = await messenger.request(window.parent, "key");
+            messenger.destroy();
         }
-        if (key) dom_utils.Cookie.set("ls_key", key, { expires: 365 });
-        messenger.destroy();
+        if (key) {
+            dom_utils.Cookie.set("ls_key", key, { expires: 365 });
+        }
 
         var ws_url = `${(window.location.protocol === "https:") ? "wss:" : "ws:"}//${window.location.host}/main/`;
         var ws_params = new URLSearchParams();
@@ -9688,7 +9729,6 @@ export class App extends utils.EventEmitter {
         });
         this.ws.on("close", ()=>{
             this.loader.update({visible:true, text:"Lost connection..."});
-            this.remove_plugins();
             Fancybox.close(true);
         });
     
@@ -9753,7 +9793,6 @@ export class App extends utils.EventEmitter {
         Object.assign(Fancybox.defaults, {parentEl: this.body_elem});
 
         dom_utils.tippy.setDefaultProps({
-            distance: 0,
             // boundary just doesn't work... maybe due to shadow dom, have to use popperOptions
             popperOptions: {
                 strategy: 'fixed',
@@ -9846,7 +9885,8 @@ export class App extends utils.EventEmitter {
             this.history_menu.show();
         });
 
-        this.show_help_button.addEventListener("click", async ()=>{
+        this.show_help_button.addEventListener("click", async (e)=>{
+            e.preventDefault();
             this.toggle_help();
         });
 
@@ -9918,6 +9958,10 @@ export class App extends utils.EventEmitter {
             on_setting_change(k, this.settings.get(k))
         }
 
+        for (let p of plugins) {
+            new ((await p).default)();
+        }
+
         this.root.update();
     }
 
@@ -9982,10 +10026,6 @@ export class App extends utils.EventEmitter {
 
         this.#rebuild_sessions();
         this.#rebuild_clients();
-        
-        if (changes.plugins) {
-            for (var k in changes.plugins) this.init_plugin(k);
-        }
 
         if (session_changes) {
             if (session_changes.playlist && !Object.isFrozen(this.$._session)) {
@@ -10016,6 +10056,12 @@ export class App extends utils.EventEmitter {
             if (session_changes.logs) {
                 this.session_logger.append_logs(session_changes.logs);
             }
+
+            if (session_changes.stream){
+                if (session_changes.stream.metrics) {
+                    this.metrics._updates++;
+                }
+            }
         }
 
         {
@@ -10025,7 +10071,8 @@ export class App extends utils.EventEmitter {
                 utils.set_add(ids, Object.keys(changes.downloads));
             }
             if (changes.uploads) {
-                utils.set_add(ids, Object.keys(changes.uploads));
+                let ids = new Set(Object.keys(changes.uploads));
+                utils.set_add(ids, Object.values(this.$._session.playlist).filter(i=>ids.has(i.upload_id)).map(i=>i.id));
             }
             if (changes.uploads) {
                 for (var id in changes.uploads) {
@@ -10222,7 +10269,7 @@ export class App extends utils.EventEmitter {
     }
 
     /** @param {PlaylistItem[]} items */
-    playlist_breakdown(items) {
+    async playlist_breakdown(items) {
         if (!Array.isArray(items)) items = [items];
         items = items.filter(item=>item._is_playlist);
         if (!items.length) return;
@@ -10246,20 +10293,18 @@ export class App extends utils.EventEmitter {
             });
         });
         items.forEach((item)=>changes[item.id] = null);
-        this.playlist_update(changes);
-        
-        this.playlist.once("change",()=>{
-            this.playlist.set_selection(selection);
-        })
+        await this.playlist_update(changes);
+        await this.playlist.set_selection(selection);
     }
 
     /** @typedef {{insert_pos:number, track_index:number, parent:PlaylistItem}} PlaylistInsertOptions */
     /** @param {PlaylistItem[]} items @param {PlaylistInsertOptions} opts */
-    playlist_move(items, opts) {
+    async playlist_move(items, opts) {
         if (!Array.isArray(items)) items = [items];
         if (!items.length) return;
         let {track_index, insert_pos, parent} = this.get_playlist_insert_options(opts);
-        var new_parent_session_id = parent._session.id;
+        var old_session_id = items[0]._session.id;
+        var new_session_id = parent._session.id;
 
         var all = items.map(i=>[{id:i.id, parent:parent.id}, ...i._descendents.map(d=>({id:d.id, parent:d.parent_id}))]).flat();
         var is_circular = utils.is_circular(all);
@@ -10271,22 +10316,18 @@ export class App extends utils.EventEmitter {
         var affected = new Set(items);
         var parent_items = parent._get_track(track_index);
         parent_items = parent_items.map(item=>affected.has(item)?null:item);
-        var i = insert_pos;
-        for (var [session_id, group] of Object.entries(utils.group_by(items, i=>i._session.id))) {
-            if (session_id == new_parent_session_id) {
-                parent_items.splice(i, 0, ...group);
-            } else {
-                this.playlist_remove(group);
-                this.playlist_add(group, {insert_pos:i, track_index});
-            }
-            i += group.length;
+        if (old_session_id == new_session_id) {
+            parent_items.splice(insert_pos, 0, ...items);
+            parent_items = parent_items.filter(i=>i);
+            var data = Object.fromEntries(parent_items.map((item,i)=>[item.id, {index:i, track_index, parent_id:parent.id}]));
+            await this.playlist_update(data);
+            await this.playlist.set_selection(items);
+        } else {
+            await new Promise.all([
+                this.playlist_remove(items),
+                this.playlist_add(items, {insert_pos, track_index})
+            ]);
         }
-        parent_items = parent_items.filter(i=>i);
-        var data = Object.fromEntries(parent_items.map((item,i)=>[item.id, {index:i, track_index, parent_id:parent.id}]));
-        this.playlist_update(data, new_parent_session_id);
-        this.playlist.once("change",()=>{
-            this.playlist.set_selection(items);
-        });
     }
 
     /** @param {any[]} items @param {PlaylistInsertOptions} opts */
@@ -10312,10 +10353,10 @@ export class App extends utils.EventEmitter {
                     if (IS_ELECTRON) {
                         filename = electron.getPathForFile(file);
                     } else {
-                        filename = `livestreamer://upload`;
+                        filename = file.name;
                         file.id = id;
                         this.upload_queue.add(file, {
-                            first_and_last_pieces_first: !!data.name.match(/\.mp4$/i),
+                            first_and_last_pieces_first: !!file.name.match(/\.mp4$/i),
                             media: true,
                             session: this.$._session.id,
                         });
@@ -10358,7 +10399,7 @@ export class App extends utils.EventEmitter {
         
         this.playlist.once("change",()=>{
             this.playlist.set_selection(new_items);
-        })
+        });
 
         return new_items;
     }
@@ -10407,9 +10448,8 @@ export class App extends utils.EventEmitter {
                 call: ["sessions", session_id, "playlist_update"],
                 arguments: [changes]
             });
-        } else {
-            await this.playlist.update();
         }
+        await this.playlist.update();
     }
     
     /** @param {PlaylistItem[]} items */
@@ -10454,6 +10494,7 @@ export class App extends utils.EventEmitter {
 
     /** @param {PlaylistItem} item */
     playlist_play(item, start=0) {
+        item = item ?? NULL_PLAYLIST_ITEM
         var options = {pause:false};
         var root_merged = item._root_merged_playlist;
         if (root_merged) {
@@ -10476,7 +10517,8 @@ export class App extends utils.EventEmitter {
 
         this.$._push(
             [`sessions/${this.$._session.id}/playlist_id`, item.id],
-            [`sessions/${this.$._session.id}/time`, start]
+            [`sessions/${this.$._session.id}/time`, start],
+            [`sessions/${app.$._session.id}/stream/mpv/time`, start]
         );
         
         return this.request({
@@ -10509,6 +10551,7 @@ export class App extends utils.EventEmitter {
         if (t < 0) t = 0;
         app.$._push(
             [`sessions/${app.$._session.id}/time`, t],
+            [`streams/${app.$._stream.id}/mpv/seeking`, true],
         );
         return this.request({
             call: ["session", "seek"],
@@ -10612,7 +10655,9 @@ export class App extends utils.EventEmitter {
             }
             var ws_promise = this.ws.request(data, opts.timeout);
 
-            if (opts.show_spinner) this.$._pending_requests.add(ws_promise);
+            if (opts.show_spinner) {
+                this.$._pending_requests.add(ws_promise);
+            }
             var loader;
             if (opts.block) {
                 loader = new Loader();
@@ -10631,7 +10676,9 @@ export class App extends utils.EventEmitter {
                     }
                 })
                 .finally(()=>{
-                    if (opts.show_spinner) this.$._pending_requests.delete(ws_promise);
+                    if (opts.show_spinner) {
+                        this.$._pending_requests.delete(ws_promise);
+                    }
                     this.update_request_loading();
                     if (opts.block) loader.destroy();
                 });
@@ -10667,40 +10714,6 @@ export class App extends utils.EventEmitter {
             });
         }
         return true;
-    }
-
-    add_notice(content, dismissable = true) {
-        throw new Error("not implemented yet");
-        var notice = $(`<div class="notice custom-notice">${content}</div>`)[0];
-        if (dismissable) add_class(notice, "is-dismissible");
-        add_class(notice, "below-h2"); // fixes fucking annoying wordpress automatically moving it after header on page load.
-        notices_elem.appendChild(notice);
-        return notice;
-    }
-
-    remove_plugins() {
-        for (var id of Object.keys(this.plugins)) this.remove_plugin(id);
-    }
-
-    async remove_plugin(id) {
-        if (!this.plugins[id]) return;
-        console.debug("remove_plugin", id);
-        this.plugins[id].destroy();
-        delete this.plugins[id];
-    }
-
-    async init_plugin(id) {
-        var data = this.$.plugins[id];
-        console.debug("init_pugin", id);
-        this.remove_plugin(id);
-        try {
-            var plugin_js = await (await fetch(data.front_url)).text();
-            this.plugins[id] = eval.apply(window, [plugin_js]);
-            this.plugins[id].init(data.options);
-        } catch (e) {
-            console.error(`Plugin '${id}' failed to load...`)
-            console.error(e);
-        }
     }
 
     tick() {
@@ -10758,7 +10771,6 @@ export class App extends utils.EventEmitter {
 
     async #rebuild_sessions() {
         await this.session_sortable.last_drag;
-
         var items = this.sessions_ordered;
         var session_id = this.$._client.session_id;
         dom_utils.rebuild(this.sessions_tabs_elem, items, {
@@ -10863,7 +10875,12 @@ export class App extends utils.EventEmitter {
 
     async toggle_help() {
         if (!this.help_container) {
-            this.help_container = $(await fetch("./help.html").then(d=>d.text()))[0];
+            var a = $(await fetch("./help.html").then(d=>d.text()));
+            this.help_container = $(`<div class="help"></div>`)[0];
+            var iframe = $(`<iframe frameBorder="0">`)[0];
+            iframe.src = "./help.html";
+            var close_button = $(`<button class="close"><i class="fas fa-times"></i></button>`)[0];
+            this.help_container.append(close_button, iframe);
             this.elem.append(this.help_container);
             var close_button = this.help_container.querySelector("button.close");
             close_button.onclick = ()=>this.toggle_help();
@@ -10905,22 +10922,4 @@ export class App extends utils.EventEmitter {
         // this.playlist.destroy();
     }
 };
-
-/* window.addEventListener("message", (e)=>{
-    console.log(e);
-    var d = JSON.parse(e.data);
-    if (d.event) {
-        console.log(d.event);
-    }
-}); */
-
-if (IS_ELECTRON) {
-    window.prompt = async (message, default_value)=>{
-        var result = await fancybox_prompt(message, default_value);
-        if (result) return result;
-        else return null;
-    };
-}
-
-export var app = new App();
-jQuery(()=>app.init());
+export default App;

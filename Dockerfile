@@ -3,25 +3,21 @@ FROM ubuntu:22.04
 RUN mkdir /var/opt/livestreamer
 WORKDIR /opt/livestreamer
 
+ENV CACHBUST=1
 RUN apt update -y
-RUN apt install -y \
-    ca-certificates \
-    curl
+RUN apt install -y ca-certificates curl
 
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-RUN apt-get install -y nodejs
+RUN apt-get install -y nodejs python3-pip
 RUN npm -v
 RUN node -v
+RUN dpkg --configure -a
 
-RUN apt install -y git ffmpeg yt-dlp nethogs
-
-COPY bin/linux /
-RUN apt install -y /*.deb
-
-ENV LIVESTREAMER_DOCKER=1
-
-COPY docker-entrypoint.sh .
-
-ENTRYPOINT [ "./docker-entrypoint.sh" ]
+# COPY package*.json .
+# RUN npm config set strict-ssl false
+# RUN npm pkg delete devDependencies
+# RUN npm i --omit=dev
+# RUN npm i pm2 -g
 
 CMD [ "node", "index.js" ]
+# CMD ["pm2-runtime", "pm2.config.cjs"]

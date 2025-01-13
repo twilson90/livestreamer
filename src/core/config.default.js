@@ -1,7 +1,4 @@
 export default {
-	"core.appdata_dir": "",
-	"core.portable": false,
-	"core.debug": false,
 	"core.hostname": "localhost",
 	"core.logs_max_length": 64,
 	"core.logs_max_msg_length": 128 * 1024, // 128 kb
@@ -17,5 +14,5 @@ export default {
 	"core.ffmpeg_executable": "ffmpeg",
 	"core.ffmpeg_hwaccel": null,
 	"core.ffmpeg_hwenc": null,
-	"core.use_pm2": false
+	"core.pm2": false
 }

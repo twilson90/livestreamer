@@ -2,7 +2,7 @@ import os from "node:os";
 import events from "node:events";
 import readline from "node:readline";
 import child_process from "node:child_process";
-import core from "./index.js";
+import globals from "./globals.js";
 import Logger from "./Logger.js";
 import * as utils from "./utils.js";
 
@@ -11,6 +11,7 @@ export class FFMPEGWrapper extends events.EventEmitter {
     #process;
     #logger;
     #closed;
+    #info_interval;
 
     get process() { return this.#process; }
     get logger() { return this.#logger; }
@@ -31,18 +32,20 @@ export class FFMPEGWrapper extends events.EventEmitter {
         this.#logger.info("Starting FFMPEG...");
         this.#logger.debug("FFMPEG args:", args);
         
-        this.#process = child_process.spawn(core.conf["core.ffmpeg_executable"], args, {windowsHide: true, ...opts});
+        this.#process = child_process.spawn(globals.core.conf["core.ffmpeg_executable"], args, {windowsHide: true, ...opts});
 
-        core.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
+        globals.core.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
 
         this.#process.on("error", (e) => {
             // must consume errors! om nom nom
             if (this.#closed) return;
+            if (e.message.match(/kill EPERM/)) return;
             this.#logger.error(e);
             this.stop();
         });
         this.#process.on("close", (code) => {
             this.#closed = true;
+            clearInterval(this.#info_interval);
             this.emit("end");
         });
         // this.#process.on("exit", () => {});
@@ -82,16 +85,26 @@ export class FFMPEGWrapper extends events.EventEmitter {
             }
         });
         if (this.opts.info_interval) {
-            setInterval(()=>{
+            this.#info_interval = setInterval(()=>{
                 if (last_info == last_emitted_info) return;
                 this.emit("info", last_info);
                 last_emitted_info = last_info
-            },this.opts.info_interval)
+            }, this.opts.info_interval);
         }
     }
 
-    stop() {
-        if (!this.#closed) this.#process.kill("SIGKILL");
+    async stop() {
+        if (this.#closed) return;
+        return new Promise(resolve=>{
+            this.#process.kill("SIGINT");
+            var timeout = setTimeout(()=>{
+                this.#process.kill("SIGKILL");
+            }, 2000);
+            this.#process.on("close", ()=>{
+                clearTimeout(timeout);
+                resolve();
+            });
+        })
     }
 
     destroy() {

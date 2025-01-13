@@ -33,7 +33,7 @@
 [~] detect any props changed by user in GUI. useful (vid, sid, aid, volume, time-pos etc)
 [x] show bitrate in stream info (for both session types)
 [x] finish up chart update with zoom and bitrate and never clearing etc.
-[ ] weird, links to external site chrome is still requesting app.css.map and stuff which triggers an auth callback but no cookie present and it shows login! public html stuff really shouldnt be denied, only reason for this is to tirgger a password prompt. figure out a better way.
+[~] weird, links to external site chrome is still requesting app.css.map and stuff which triggers an auth callback but no cookie present and it shows login! public html stuff really shouldnt be denied, only reason for this is to tirgger a password prompt. figure out a better way.
 [ ] [18:40:47.271][w][main][session-1][stream][mpv] [mpv] Source stream 1 (audio) unused and hidden.
     [18:40:47.272][w][main][session-1][stream][mpv] [mpv] Source stream 0 (video) unused and hidden.
     [18:40:47.272][w][main][session-1][stream][mpv] [mpv] Source stream 2 (sub) unused and hidden.
@@ -42,3 +42,12 @@
 [ ] fix_2_track_playlist (when creating a 2 track playlist automatically put audio in one column, video in another)
 [ ] vid generated from loop file, why isnt it cutting the beginning after seek? restarts. Must be a reason, figure  out why I did it that way or fix it.
 [ ] slice at timeline cursor delestt the item apparently if cursor not over the item
+[x] check cropping still works and screenshots folder. 
+[x] login screen for livestreamer ui
+[~] 'Replace Video' does not 'replace video' with video items but changes the background if the media is cropped/padded.
+[x] chat is url encoding % in links, screwing them up.
+[x] livestreamer seekbar jumpiness after seek has returned
+[ ] removing stream target and adding back Local Media Server screwiness. ID is the same confusing the client HLS player. ID should be different.
+[x] UI focus/blur textfield try different method (wait for unfocus then update instead of root.update())
+[ ] Keep alive media server rtmp streams for 2 mins unless explicitly shutdown by system. Allowing streams to stop/start without starting a new streamtarget
+[ ] auto detect crop offset time textbox, auto detect crop its own modal?

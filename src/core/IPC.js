@@ -21,6 +21,7 @@ export class IPC extends events.EventEmitter {
     #ready_resolve;
     /** @type {net.Server} */
     #server;
+    #destroyed = false;
     $ = new utils.Observer();
 
     constructor(is_master, name, socket_path) {
@@ -49,7 +50,8 @@ export class IPC extends events.EventEmitter {
                 let pid;
                 let sock_id = ++this.#socket_last_id;
                 this.#socks[sock_id] = sock;
-                sock.on('close', ()=>{
+                sock.on("error", handle_socket_error);
+                sock.on("close", ()=>{
                     delete this.#socks[sock_id];
                     if (this.processes[pid]) {
                         delete this.processes[pid];
@@ -76,9 +78,10 @@ export class IPC extends events.EventEmitter {
             this.ready = new Promise(resolve=>{this.#ready_resolve=resolve});
         }
     }
-    connect() {
+    async connect() {
         if (this.is_master) return;
         this.#master_sock = net.createConnection(this.socket_path);
+        this.#master_sock.on("error", handle_socket_error);
         this.#master_sock.on('connect', ()=>{
             write(this.#master_sock, "internal:register", {process: this.process});
             this.#ready_resolve(true);
@@ -88,21 +91,16 @@ export class IPC extends events.EventEmitter {
                 this.processes = data.processes;
             } else if (event === "internal:request") {
                 let {rid, origin, request, args} = data;
-                Promise.resolve(this.#responses[request](...args))
+                let [result, error] = await Promise.resolve(this.#responses[request](...args))
                     .then((result)=>[result, null])
-                    .catch((err)=>[null, err])
-                    .then(([result,err])=>{
-                        this.send(origin, `internal:response:${rid}`, [result, err]);
-                    });
+                    .catch((err)=>[null, err]);
+                this.send(origin, `internal:response:${rid}`, [result, error]);
             } else if (event === "internal:data-change") {
                 _ignore_data_changes = true;
                 utils.Observer.apply_changes(this.$, [data]);
                 _ignore_data_changes = false;
             }
             super.emit(event, data);
-        });
-        this.#master_sock.on('error', (err)=>{
-            console.error(err)
         });
         return this.ready;
     }
@@ -154,10 +152,12 @@ export class IPC extends events.EventEmitter {
             this.once(`internal:response:${rid}`, ([result,err])=>{
                 if (err && _default === undefined) reject(err);
                 else resolve(result ?? _default);
-            })
+            });
         });
     }
     async destroy() {
+        if (this.#destroyed) return;
+        this.#destroyed = true;
         if (this.#server) {
             await new Promise(r=>this.#server.close(r));
             for (var id of Object.keys(this.#socks)) {
@@ -174,15 +174,24 @@ function digest_sock_messages(sock, cb) {
         if (line) cb(JSON.parse(line));
     });
 }
+
 /** @param {net.Socket} sock @param {any} packet */
 function write(sock, event, data) {
-    return new Promise((resolve,reject)=>{
+    return new Promise((resolve, reject)=>{
+        if (sock.closed) return;
         let payload = JSON.stringify({event, data})+"\n";
-        sock.write(payload, (err)=>{
-            if (err) reject(err)
-            else resolve();
-        });
+        try {
+            sock.write(payload, (err)=>{
+                if (sock.closed || err) return;
+                // if (err) console.error(err); // maybe just write error?
+                resolve();
+            });
+        } catch (e) {}
     });
+}
+
+function handle_socket_error(e) {
+    // console.error(e);
 }
 
 export default IPC;
