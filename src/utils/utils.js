@@ -2231,21 +2231,6 @@ export function call(fn_this, fn_path, fn_args){
 	}
 }
 
-export function build_url(...args) {
-	var config, url;
-	if (args.length == 1) [config] = args;
-	else [url, config] = args;
-	url = String(url || ((typeof window !== "undefined" && window.location) ? window.location.origin : null ) || "https://localhost");
-	var protocol = url.match(/^([^:]+:)?\/\//)[0];
-	url = "https://" + url.slice(protocol.length);
-	if (config.protocol) protocol = config.protocol;
-	var url_ob = new URL(url);
-	for (var k in config) url_ob[k] = config[k];
-	url = url_ob.toString();
-	if (url_ob.protocol != protocol) url = url.replace("https:", protocol);
-	return url;
-}
-
 export function path_to_file_uri(path) {
 	if (!path.startsWith("/")) path = "/"+path;
 	return new URL("file://"+path).toString();
@@ -2373,18 +2358,18 @@ export function deferred() {
 }
 
 export function fix_url(_url) {
-  _url = String(_url).trim();
-	let url;
-  try {
-    url = new URL(url);
-    if (!url.hostname) url = new URL("https://"+_url)
-  } catch {
+	_url = String(_url).trim();
+		let url;
+	try {
+		url = new URL(url);
+		if (!url.hostname) url = new URL("https://"+_url)
+	} catch {
 		try {
-    	url = new URL("https://"+_url);
+			url = new URL("https://"+_url);
 		} catch {
 			return;
 		}
-  }
+	}
 	return url.toString();
 }
 

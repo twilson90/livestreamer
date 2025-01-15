@@ -330,7 +330,7 @@ export class MainApp extends Core {
                 /** @param {express.Request} req @param {Express.Multer.File & {upload:Upload}} file */
                 _handleFile: async (req, file, cb)=>{
                     var c;
-                    try { c = JSON.parse(decodeURIComponent(file.originalname)); } catch {}
+                    try { c = JSON.parse(decodeURIComponent(Buffer.from(file.originalname, 'ascii').toString('utf8'))); } catch {}
                     if (!c) {
                         cb("files[] field name incorrect format.");
                         return;
@@ -452,12 +452,12 @@ export class MainApp extends Core {
 				"name": "Local Media Server",
 				"description": "Default streaming target",
 				// "title": "{{title}}", // not necessary
-				"rtmp_host": `rtmp://${this.conf["core.hostname"]}:${this.conf["media-server.rtmp_port"]}`,
+				"rtmp_host": `rtmp://${this.hostname}:${this.conf["media-server.rtmp_port"]}`,
 				"limit": 0,
                 /** @param {StreamTarget} st */
                 "config": (st)=>({
                     "rtmp_key": `live/${st.id}`,
-                    "url": `${this.url}/media-server/player/index.html?id=${st.id}`,
+                    "url": `${this.get_urls("media-server").url}/player/?id=${st.id}`,
                 }),
                 "opts": {
                     "use_hardware": true

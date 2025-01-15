@@ -14,6 +14,7 @@ import * as errors from "./errors.js";
 import * as constants from "./constants.js";
 import Cache from "./Cache.js";
 import Volume from "./Volume.js";
+import globals from "./globals.js";
 
 const THUMBNAIL_SIZE = 48;
 const MAX_MEDIA_CHUNK = 1024 * 1000 * 4; // 4 MB
@@ -480,6 +481,7 @@ export class Driver extends events.EventEmitter {
 	__abspath(id) { return this.id + this.volume.config.separator + id; }
 	/** @param {ID} id @return {Promise<ID>} */
 	__options() {
+		var base = globals.app.get_urls().url;
 		return {
 			disabled: [],
 			archivers: {
@@ -495,9 +497,9 @@ export class Driver extends events.EventEmitter {
 			},
 			csscls: "elfinder-navbar-root-local",
 			uiCmdMap: [],
-			url: upath.join(this.elfinder.connector_url, "file", this.volume.id)+"/",
-			tmbUrl: upath.join(this.elfinder.connector_url, "tmb", this.volume.id)+"/",
-			// tmbUrl: upath.join(this.elfinder.connector_url, "tmb")+"/",
+			url: new URL(`/api/file/${this.volume.id}/`, base).toString(),
+			tmbUrl: new URL(`/api/tmb/${this.volume.id}/`, base).toString(),
+			// tmbUrl: upath.join("api/tmb")+"/",
 		}
 	}
 }

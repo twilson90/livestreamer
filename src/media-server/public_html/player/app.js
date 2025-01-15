@@ -1,5 +1,4 @@
-import * as dom_utils from "../../../utils/dom.js";
-import * as utils from "../../../utils/utils.js";
+import * as utils from "../../../utils/all.js";
 import {jQuery, $} from '../../../jquery-global.js';
 import Hls from "hls.js";
 import videojs from "video.js/core";
@@ -48,7 +47,7 @@ const CROP_DETECT_INTERVAL = 100;
 const VIDEO_UI_UPDATE_INTERVAL = 100;
 const IS_EMBED = window.parent !== window.self;
 
-var settings = new dom_utils.LocalStorageBucket("player", {
+var settings = new utils.LocalStorageBucket("player", {
     time_display_mode: 0,
     volume: 1,
     crop_mode: "auto",
@@ -75,7 +74,7 @@ export class App {
         var src = new URL(`../media/live/${params.get("id")}/master.m3u8`, window.location.origin+window.location.pathname).toString();
         console.log(src);
 
-        var messenger = new dom_utils.WindowCommunicator();
+        var messenger = new utils.WindowCommunicator();
         messenger.on("set_aspect_ratio", (ar)=>{
             this.aspect_ratio = ar;
             return true;
@@ -139,7 +138,7 @@ class VideoPlayer {
         // this.video_wrapper.append(this.video_el);
     }
 
-    update = dom_utils.debounce_next_frame(()=>this.__update())
+    update = utils.debounce_next_frame(()=>this.__update())
 
     __update() {
         if (!this.player) return;
@@ -600,7 +599,7 @@ class VideoPlayer {
         if (conf.logo_url) {
             // let target = IS_EMBED ? `_parent` : `_blank`;
             let target = `_blank`;
-            dom_utils.load_image("../logo").then(img=>{
+            utils.load_image("../logo").then(img=>{
                 this.logo_el = $(`<a target="${target}" class="logo" href="${conf.logo_url}"></a>`)[0];
                 this.logo_el.append(img);
                 this.player.el_.append(this.logo_el);

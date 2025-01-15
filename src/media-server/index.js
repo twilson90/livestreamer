@@ -456,7 +456,7 @@ class LiveSessionWrapper extends events.EventEmitter {
         globals.app.lives[id] = this;
         session.live = {
             id,
-            url: `${globals.app.url}/media-server/player/index.html?id=${id}`,
+            url: `${globals.app.get_urls("media-server").url}/player/index.html?id=${id}`,
         };
         this.init();
     }
@@ -501,7 +501,7 @@ class LiveSessionWrapper extends events.EventEmitter {
                 thumbnail_path
             );
             await utils.execa(globals.app.conf["core.ffmpeg_executable"], ffmpeg_args);
-            this.session.live.thumbnail_url = `${globals.app.url}/media-server/media/${this.appname}/${this.id}/thumbnails/${thumbnail_name}`;
+            this.session.live.thumbnail_url = `${globals.app.get_urls("media-server").url}/media/${this.appname}/${this.id}/thumbnails/${thumbnail_name}`;
             t++;
         };
         this.last_level.on("new_segment", create_thumbnail);

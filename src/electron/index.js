@@ -224,7 +224,7 @@ if (electron.app) {
             });
             await globals.core.ready;
             if (globals.core.debug) window.webContents.openDevTools();
-            window.loadURL(new URL(`/main/index.html`, globals.core.http_url).toString());
+            window.loadURL(globals.core.get_urls("main").url);
         }
     });
 }

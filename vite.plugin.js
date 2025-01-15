@@ -1,6 +1,7 @@
 import path from "node:path";
 
 const dirname = import.meta.dirname;
+
 const app_js = path.resolve(dirname, "main/public_html/app.js");
 
 /** @param {string[]} plugins @return {import("vite").PluginOption} */

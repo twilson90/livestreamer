@@ -1,5 +1,5 @@
 export default {
-	"core.hostname": "localhost",
+	"core.hostname": "livestreamer.localhost",
 	"core.logs_max_length": 64,
 	"core.logs_max_msg_length": 128 * 1024, // 128 kb
 	"core.ssl_key": "",

@@ -1,6 +1,4 @@
-import * as utils from "../../utils/utils.js";
-import * as dom_utils from "../../utils/dom.js";
-import "../../utils/style.scss";
+import * as utils from "../../utils/all.js";
 import { jQuery, $ } from '../../jquery-global.js';
 import 'jquery-ui/dist/jquery-ui.js';
 import 'jquery-ui/dist/themes/base/jquery-ui.css';
@@ -18,8 +16,8 @@ import "./app.scss";
 /** @type {App} */
 let app;
 
-export { utils, dom_utils, jQuery, $, Fancybox, noUiSlider, flvjs, Chart, Hammer, Sortable, MultiDrag }
-export const { UI, add_class, remove_class, toggle_attribute, set_inner_html, set_children, set_attribute, set_select_options, set_text, set_value, set_style_property, update_style_properties, remove_style_property, toggle_class } = dom_utils;
+export { utils, jQuery, $, Fancybox, noUiSlider, flvjs, Chart, Hammer, Sortable, MultiDrag }
+export const { UI, add_class, remove_class, toggle_attribute, set_inner_html, set_children, set_attribute, set_select_options, set_text, set_value, set_style_property, update_style_properties, remove_style_property, toggle_class } = utils.dom;
 
 const SessionTypes = {
     EXTERNAL: "ExternalSession",
@@ -169,7 +167,7 @@ export function toggle_parent(elem, v) {
     if (v && !elem.parentElement) {
         var p = parent_map[elem];
         var new_children = children_map[p].filter(e=>!!e.parentElement || e === elem);
-        dom_utils.insert_at(p, elem, new_children.indexOf(elem));
+        utils.dom.insert_at(p, elem, new_children.indexOf(elem));
         delete parent_map[elem];
         if (children_map[p].every(e=>!!e.parentElement)) delete children_map[p];
     } else if (!v && elem.parentElement) {
@@ -224,7 +222,7 @@ export class UploadFileChunk {
 UploadFileChunk.create = function(blob, path=undefined) {
     var ufc = new UploadFileChunk();
     ufc._blob = blob;
-    ufc.id = blob.id || dom_utils.uuid4();
+    ufc.id = blob.id || utils.dom.uuid4();
     ufc.path = path || blob.path || blob.name;
     ufc.last_modified = +blob.lastModified || 0;
     ufc.start = 0;
@@ -298,7 +296,7 @@ export class UploadQueue {
                 xhr.addEventListener("loadend", (e) => {
                     resolve(xhr.readyState == 4 && utils.try(()=>JSON.parse(xhr.responseText)));
                 });
-                let url = new URL(location.origin+"/main/");
+                let url = new URL(location.origin);
                 if (c.media) url.searchParams.set("media", "1");
                 xhr.open("PUT", url.toString(), true);
                 xhr.send(form_data);
@@ -466,7 +464,7 @@ export function get_clip_segments(start, end, duration, offset=0) {
 
 async function read_file(file, encoding="utf-8") {
     if (file instanceof File) {
-        return dom_utils.read_file(file, {encoding})
+        return utils.dom.read_file(file, {encoding})
     } else if (IS_ELECTRON) {
         return fs.readFileSync(file.path, encoding);
     }
@@ -480,7 +478,7 @@ async function open_file_dialog(options) {
         var dialog_opts = {};
         if (options.filter) dialog_opts.accept = options.filter.join(", ");
         if (options.multiple) dialog_opts.multiple = !!options.multiple;
-        return await dom_utils.open_file_dialog(dialog_opts);
+        return await utils.dom.open_file_dialog(dialog_opts);
     }
 }
 async function save_local_file(filename, text) {
@@ -494,7 +492,7 @@ async function save_local_file(filename, text) {
         }
         return false;
     } else {
-        dom_utils.download(filename, text);
+        utils.dom.download(filename, text);
         return true;
     }
 }
@@ -607,7 +605,7 @@ export class TicksBar {
             set_inner_html(seek_time, `<div>${opts.modifier(html, data.time)}</div>`);
         }
 
-        this.hover_listener = new dom_utils.TouchListener(opts.hover_elem, {
+        this.hover_listener = new utils.dom.TouchListener(opts.hover_elem, {
             mode: "hover",
             start: (e)=>{
                 // console.log("in")
@@ -683,9 +681,37 @@ TicksBar.max_ticks = 100;
 
 
 
-function get_file_manager_url(id) {
-    var url = new URL("/file-manager/index.html", window.location.origin);
-    if (id !== undefined) url.searchParams.append("id", id);
+function get_file_manager_url(opts) {
+    if (!opts) opts = {};
+    var elfinder_options = {
+        id: opts.id,
+        commandsOptions: {
+            getfile: {
+                multiple: !!opts.multiple,
+                // files: !!options.files,
+                folders: !!opts.folders,
+            }
+        }
+    };
+    if (opts.folders) {
+        elfinder_options.onlyMimes = ["directory"];
+    }
+    if (opts.start) {
+        var dir = opts.start.split("/").slice(0,-1).join("/");
+        elfinder_options.startPathHash = app.filename_to_elfinder_hash(dir);
+        elfinder_options.selectHashes = [app.filename_to_elfinder_hash(opts.start)];
+    }
+    if (opts.filter) {
+        elfinder_options.fileFilter = opts.filter;
+    }
+    
+    var getfile = !!(opts.multiple || opts.files || opts.folders);
+    if (getfile) {
+        elfinder_options.getFileCallback = true;
+    }
+
+    var url = new URL("/index.html", utils.dom.get_url(null, "file-manager"));
+    url.searchParams.append("opts", JSON.stringify(elfinder_options));
     return url.toString();
 }
 
@@ -696,10 +722,8 @@ async function open_file_manager(options) {
     options = Object.assign({
         "new_window" : app.settings.get("open_file_manager_in_new_window")
     }, default_file_manager_options, options);
-    if (!options.standalone && options.id === undefined) options.id = dom_utils.uuidb64();
+    if (!options.standalone && options.id === undefined) options.id = utils.dom.uuidb64();
     // if ("start" in options && !Array.isArray(options.start)) options.start = [options.start];
-    
-    var getfile = !!(options.multiple || options.files || options.folders)
 
     if (IS_ELECTRON) {
         var electron_options = {
@@ -745,43 +769,16 @@ async function open_file_manager(options) {
         var win;
         var win_id = options.hidden_id || options.id;
         var use_window = options.new_window;
-        var on_message;
-        var messenger = new dom_utils.WindowCommunicator();
+        var messenger = new utils.dom.WindowCommunicator();
         return new Promise((resolve,reject)=>{
-            var elfinder_options = {
-                commandsOptions: {
-                    getfile: {
-                        multiple: !!options.multiple,
-                        // files: !!options.files,
-                        folders: !!options.folders,
-                    }
-                }
-            };
-            if (options.folders) {
-                elfinder_options.onlyMimes = ["directory"];
-            }
-            if (options.start) {
-                var dir = options.start.split("/").slice(0,-1).join("/");
-                elfinder_options.startPathHash = app.filename_to_elfinder_hash(dir);
-                elfinder_options.selectHashes = [app.filename_to_elfinder_hash(options.start)];
-            }
-            if (options.filter) {
-                elfinder_options.fileFilter = options.filter
-            }
-            if (getfile) {
-                elfinder_options.getFileCallback = true;
-            }
-
-            messenger.on("elfinder_options", (id)=>{
-                if (id == options.id) return elfinder_options;
-            });
             messenger.on("files", ({files,id})=>{
+                console.log("FILES", files,id)
                 if (id != options.id) return;
                 var paths = files.map(f=>ELFINDER_USE_FILE_PROTOCOL ? f.uri : utils.try_file_uri_to_path(f.uri));
                 resolve(paths);
             });
 
-            var url = get_file_manager_url(options.id);
+            var url = get_file_manager_url(options);
             if (use_window) {
                 win = windows[win_id];
                 if (!win || win.closed) {
@@ -803,7 +800,6 @@ async function open_file_manager(options) {
             }
         }).finally(()=>{
             messenger.destroy();
-            window.removeEventListener("message", on_message);
             if (use_window) win.close();
             else app.file_manager_menu.hide();
         })
@@ -814,7 +810,7 @@ async function open_file_manager(options) {
 
 export function create_context_menu(parent, elem, e) {
     var on_click;
-    var t = dom_utils.tippy(parent, {
+    var t = utils.dom.tippy(parent, {
         appendTo: app.elem,
         content: elem,
         onHide: (instance) =>{
@@ -839,7 +835,7 @@ export function create_context_menu(parent, elem, e) {
     t.show();
     setTimeout(()=>{
         app.root_elem.addEventListener("click", on_click = (e)=>{
-            if (!dom_utils.closest(e.target, el=>el==t.popper)) t.hide();
+            if (!utils.dom.closest(e.target, el=>el==t.popper)) t.hide();
         })
     },0)
     return t;
@@ -916,7 +912,7 @@ export function fancybox_prompt(title, inputs, settings) {
         var prop;
         if (input instanceof UI.Property) {
             prop = input;
-        } else if (dom_utils.is_html(input)) {
+        } else if (utils.dom.is_html(input)) {
             prop = new UI.Property(null, null, input, { reset: false });
         } else if (typeof input === "number") {
             prop = new UI.Property(null, null, `<input type="number"></input>`, { default: input, reset: false });
@@ -1048,7 +1044,7 @@ export class ResponsiveSortable extends Sortable {
         // --------------------------------------
         
         window.addEventListener("keydown", this._on_key_down = (e)=>{
-            if (!dom_utils.has_focus(this.el, true)) return;
+            if (!utils.dom.has_focus(this.el, true)) return;
             if (!this.options.multiDrag) return;
             if (!this.is_active_sortable_in_group()) return;
             var items = this.get_items();
@@ -1335,7 +1331,7 @@ ResponsiveSortable.active = {};
 Sortable.utils.get = function(e) {
     if (!e) return null;
     if (e instanceof Sortable) return e;
-    var el = dom_utils.closest(e, c=>Sortable.get(c));
+    var el = utils.dom.closest(e, c=>Sortable.get(c));
     return el ? Sortable.get(el) : null;
 }
 
@@ -1557,7 +1553,7 @@ export class Remote extends utils.EventEmitter {
         this.ts = this._ts = Date.now();
     }
 
-    _debounced_update = dom_utils.debounce_next_frame(()=>this._update());
+    _debounced_update = utils.dom.debounce_next_frame(()=>this._update());
     _update() {
         var changes = utils.tree_from_entries(this._changes);
         utils.clear(this._changes);
@@ -2396,7 +2392,7 @@ export class SelectableList extends utils.EventEmitter {
             this.toggle(tr);
         });
         window.addEventListener("keydown", this.on_keydown = (e)=>{
-            if (!dom_utils.has_focus(this.elem)) return;
+            if (!utils.dom.has_focus(this.elem)) return;
             e.preventDefault();
             var items = this.items;
             var index = items.indexOf(this._selected);
@@ -2820,7 +2816,7 @@ export class UserConfigurationSettings extends ModalPropertyContainer {
         this.footer_elem.append(reset_layout_button);
         var logout_button = new UI.Button(`Log Out`, {
             click: async ()=>{
-                dom_utils.Cookie.remove("ls_key");
+                utils.dom.Cookies.remove("ls_key");
                 var request = new XMLHttpRequest();
                 request.addEventListener("loadend", ()=>window.location.reload());
                 request.open("get", window.location.toString(), false, "false", "false");
@@ -2897,35 +2893,37 @@ export class FileSystemInfoMenu extends ModalPropertyContainer {
         var uid = 0;
         var nodes = [];
         var percent_fraction_digits=1;
-        var process = (n, parent, icon)=>{
+        var process = (name, children, parent, icon)=>{
             var node = {};
             node.id = ++uid;
             nodes[node.id] = node;
-            node.level = parent.level+1;
+            let level = parent.level+1;
+            node.level = level;
             node.parent = parent;
-            // node.parent = parent;
-            // node.parents = [node.id,...parent.parents];
-            node.name = n[0];
-            // console.log(node.level, node.name)
-            if (typeof n[1] === "object") {
+            node.name = name;
+            
+            var parent_path = parent.path || "/";
+            var path = (icon == "files") ? parent_path : parent_path+"/"+node.name;
+            node.path = path;
+
+            if (typeof children === "object") {
                 node.icon = icon || "folder";
                 node.isdir = true;
                 node.folders = 0;
                 node.files = 0;
                 node.size = 0;
                 node.children = [];
-                var children = n[1];
                 children.sort((a,b)=>(typeof b[1]==="object"?1:0)-(typeof a[1]==="object"?1:0));
                 var i=0, len=children.length;
                 var f = children.findIndex(c=>typeof c[1]!=="object");
                 if (f < 1) f = len;
                 for (;i<f;i++) {
-                    node.children.push(process(children[i], node));
+                    node.children.push(process(children[i], undefined, node));
                 }
                 if (i<len) {
                     var files = children.slice(i);
                     if (files.length == 1) node.children.push(process(files[0], node));
-                    else node.children.push(process([`[${files.length} Files]`, files], node, "files"));
+                    else node.children.push(process(`[${files.length} Files]`, files, node, "files"));
                 }
                 for (var c of node.children) {
                     if (c.isdir) {
@@ -2938,7 +2936,7 @@ export class FileSystemInfoMenu extends ModalPropertyContainer {
                 }
             } else {
                 node.icon = icon || "file";
-                node.size = n[1] || 0;
+                node.size = children || 0;
             }
             return node;
         };
@@ -2967,14 +2965,14 @@ export class FileSystemInfoMenu extends ModalPropertyContainer {
                 if (app.$.volumes[id].driver !== "LocalFileSystem") continue;
                 var volume = app.$.volumes[id];
                 var loading_el = $(`<tr><td colspan="6"><i class="fas fa-sync fa-spin"></i> Loading...</td></tr>`)[0];
-                dom_utils.empty(tbody);
+                utils.dom.empty(tbody);
                 tbody.append(loading_el);
                 var r = await app.request({
                     call: ["app", "analyze_local_file_system_volume"],
                     arguments: [id]
                 });
                 loading_el.remove();
-                var root_node = process([volume.name, r[1]], {root:volume.root,level:-1}, "drive");
+                var root_node = process(volume.name, r[1], {root:volume.root,level:-1}, "drive");
                 process2(root_node, root_node);
                 render(root_node);
                 tbody.append(root_node.el);
@@ -2997,20 +2995,9 @@ export class FileSystemInfoMenu extends ModalPropertyContainer {
             name_inner_el.style.paddingLeft = `${node.level * 10}px`;
 
             var name_el = document.createElement("a");
-            name_el.href="javascript:void(0)";
+            name_el.href = get_file_manager_url({start:node.path});
             name_el.innerText = node.name;
-
-            name_el.onclick = ()=>{
-                var path = [], p = node;
-                while(p.parent) {
-                    if (p.icon != "files") path.push(p.name);
-                    p = p.parent;
-                }
-                var path = path.filter(p=>p).reverse();
-                if (node.icon == "files") path.push("");
-                path[0] = p.root;
-                open_file_manager({start: path.join("/")});
-            }
+            
             var arrow_el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
             set_inner_html(arrow_el, `<use href="icons.svg#chevron-right"></use>`);
             add_class(arrow_el, "arrow");
@@ -3239,7 +3226,7 @@ export class SystemManagerMenu extends ModalPropertyContainer {
         this.on("update", ()=>{
             var processes = Object.keys(app.$.processes);
             utils.sort(processes, (p)=>p==="main"?0:1)
-            dom_utils.rebuild(process_container.elem, processes, {
+            utils.dom.rebuild(process_container.elem, processes, {
                 id_callback: (p)=>p,
                 add: (p, elem, i)=>{
                     if (!elem) elem = new Process(p).elem;
@@ -3424,7 +3411,7 @@ export class FontSettings extends ModalPropertyContainer {
         
         var add_button = new UI.Button("Add New Font", {
             click:async ()=>{
-                var files = dom_utils.upload(`application/font-sfnt,application/font-sfnt`, true)
+                var files = utils.dom.upload(`application/font-sfnt,application/font-sfnt`, true)
                 app.upload_queue.add(files, {dir:"/fonts"});
             },
             "disabled":()=>!list.selected,
@@ -3450,7 +3437,7 @@ export class FontSettings extends ModalPropertyContainer {
         
         list.on("change", async (item, i)=>{
             // await app.load_font(item.id);
-            // dom_utils.empty(info_elem);
+            // utils.dom.empty(info_elem);
         });
 
         this.on("show", async ()=>{
@@ -3834,10 +3821,10 @@ export class UploadsDownloadsMenu extends ModalPropertyContainer {
                         progress: `${((u.bytes/u.total)*100).toLocaleString(undefined, {maximumFractionDigits:2,minimumFractionDigits:2})}%`
                     });
                 }
-                var table = dom_utils.build_table(rows, { header, empty: `No active ${type}` });
+                var table = utils.dom.build_table(rows, { header, empty: `No active ${type}` });
                 content.append(table);
             }
-            dom_utils.sync_dom(this.content.elem, content.elem, {attrs:false});
+            utils.dom.sync_dom(this.content.elem, content.elem, {attrs:false});
         });
     }
 }
@@ -4212,7 +4199,7 @@ export class TargetConfigurationMenu extends ModalPropertyContainer {
 
             var up_button = new UI.Button(`<i class="fas fa-arrow-up"></i>`, {
                 "click":()=>{
-                    dom_utils.move(elem, -1);
+                    utils.dom.move(elem, -1);
                     update_value();
                 },
                 "hidden":()=>this.targets_selected_ids.length<2 || !this.targets_selected_ids.includes(target.id),
@@ -4222,7 +4209,7 @@ export class TargetConfigurationMenu extends ModalPropertyContainer {
 
             var down_button = new UI.Button(`<i class="fas fa-arrow-down"></i>`, {
                 "click":()=>{
-                    dom_utils.move(elem, 1);
+                    utils.dom.move(elem, 1);
                     update_value();
                 },
                 "hidden":()=>this.targets_selected_ids.length<2 || !this.targets_selected_ids.includes(target.id),
@@ -4297,12 +4284,12 @@ export class TargetConfigurationMenu extends ModalPropertyContainer {
             if (hash === old_hash) return;
             old_hash = hash;
             if (parent_prop) {
-                dom_utils.rebuild(selected_el, this.targets_selected, { add });
+                utils.dom.rebuild(selected_el, this.targets_selected, { add });
                 if (this.targets_selected.length == 0) {
                     set_inner_html(selected_el, `<span style="display: flex; justify-content: center; padding: 10px;">No Targets Selected.</span>`);
                 }
             }
-            dom_utils.rebuild(list_el, this.targets_remaining, { add });
+            utils.dom.rebuild(list_el, this.targets_remaining, { add });
             if (this.targets_remaining.length == 0) {
                 set_inner_html(list_el, `<span style="display: flex; justify-content: center; padding: 10px;">No Remaining Targets.</span>`);
             }
@@ -4413,7 +4400,7 @@ export class SeekBar extends UI {
             }
         });
 
-        var hover_listener = new dom_utils.TouchListener(this.seek_elem, {
+        var hover_listener = new utils.dom.TouchListener(this.seek_elem, {
             mode: "hover",
             start: (e)=>{
                 var data = this.ticks_bar.parse_event(e);
@@ -4428,7 +4415,7 @@ export class SeekBar extends UI {
             }
         });
         var seek_interval, seek_end_timeout, t;
-        var seek_listener = new dom_utils.TouchListener(this.seek_elem, {
+        var seek_listener = new utils.dom.TouchListener(this.seek_elem, {
             start: (e)=>{
                 t = this.ticks_bar.parse_event(e).time;
                 clearTimeout(seek_end_timeout);
@@ -4449,7 +4436,7 @@ export class SeekBar extends UI {
         });
 
         var curr_marker, moving_curr_marker, curr_marker_start_x;
-        var marker_listener = new dom_utils.TouchListener(this.seek_elem, {
+        var marker_listener = new utils.dom.TouchListener(this.seek_elem, {
             start: (e)=>{
                 this.seek_elem.focus();
                 var data = this.ticks_bar.parse_event(e);
@@ -4535,7 +4522,7 @@ export class SeekBar extends UI {
             var ranges_hash = JSON.stringify([duration, ranges]);
             if (this._ranges_hash != ranges_hash) {
                 this._ranges_hash = ranges_hash;
-                dom_utils.empty(this.ranges_elem);
+                utils.dom.empty(this.ranges_elem);
                 if (duration && ranges) {
                     for (var r of ranges) {
                         var e = $(`<div class="range"></div>`)[0];
@@ -4551,7 +4538,7 @@ export class SeekBar extends UI {
             var markers_hash = JSON.stringify([markers, duration]);
             if (this._markers_hash != markers_hash) {
                 this._markers_hash = markers_hash;
-                dom_utils.empty(this.markers_elem);
+                utils.dom.empty(this.markers_elem);
                 if (duration) {
                     for (var m of markers) {
                         var e = $(`<div class="marker"><div></div></div>`)[0];
@@ -4565,7 +4552,7 @@ export class SeekBar extends UI {
             var chapters_hash = JSON.stringify([chapters, duration]);
             if (this._chapters_hash != chapters_hash) {
                 this._chapters_hash = chapters_hash;
-                dom_utils.empty(this.chapters_elem);
+                utils.dom.empty(this.chapters_elem);
                 if (duration && chapters.length > 1) {
                     chapters.forEach((c,i)=>{
                         var d = Math.max(0, c.end-c.start);
@@ -4697,7 +4684,7 @@ export class StreamKeyGeneratorSettings extends UI.PropertyContainer {
         if (saved_id) this.stream_name.set_value(saved_id)
 
         /* var regenerate_button = new UI.Button(`<i class="fas fa-sync-alt"></i>`, {
-            "click":()=>stream_name.set_value(dom_utils.uuidb64()),
+            "click":()=>stream_name.set_value(utils.dom.uuidb64()),
             "title": "Generate ID",
         }); */
         // stream_name.inner.append(regenerate_button);
@@ -4751,7 +4738,7 @@ export class StreamKeyGeneratorSettings extends UI.PropertyContainer {
             this.output_key.set_values(key);
         };
 
-        var debounced_update_output = dom_utils.debounce_next_frame(()=>update_output());
+        var debounced_update_output = utils.dom.debounce_next_frame(()=>update_output());
         this.on("property-change",(e)=>{
             if (!e.trigger) return;
             debounced_update_output();
@@ -4996,7 +4983,7 @@ export class HistorySettings extends ModalPropertyContainer {
         });
         this.selectable_list.on("change", (item, i)=>{
             var data = this.history[i];
-            dom_utils.empty(info_elem);
+            utils.dom.empty(info_elem);
 
             if (!data) return;
             // var diff_type_to_str = ["-", "created", "deleted", "changed"]
@@ -5023,7 +5010,7 @@ export class HistorySettings extends ModalPropertyContainer {
 
         this.on("show", async ()=>{
             this.selectable_list.select(null);
-            dom_utils.empty(tbody);
+            utils.dom.empty(tbody);
 
             this.update_settings({"modal.title": `History [Fetching...]`});
 
@@ -5196,7 +5183,7 @@ export class PlaylistModifySettings extends ModalPropertyContainer {
         var update_layout = ()=>{
             this.content.update_layout(this.interface.get_layout());
         }
-        var update_layout_next_frame = dom_utils.debounce_next_frame(()=>update_layout());
+        var update_layout_next_frame = utils.dom.debounce_next_frame(()=>update_layout());
     }
 }
 
@@ -5482,7 +5469,7 @@ export class MediaSettingsInterface {
             })
 
             this.clip_end = new UI.TimeSpanProperty(prop_name("clip_end"), null, {
-                "label": ()=>dom_utils.is_visible(this.clip_start.elem) ? "Clip End" : "Duration",
+                "label": ()=>utils.dom.is_visible(this.clip_start.elem) ? "Clip End" : "Duration",
                 "timespan.format": "h:mm:ss.SSS",
                 "min": 0,
                 "max": default_duration,
@@ -5699,7 +5686,7 @@ export class MediaSettingsInterface {
                     var hash = JSON.stringify([data, crop_rect, _items().map(data=>data.id)]);
                     if (hash === old_hash) return;
                     old_hash = hash;
-                    // dom_utils.empty(this.content);
+                    // utils.dom.empty(this.content);
                     var new_container = $(`<div class="crop-image-container"></div>`)[0];
                     if (data && _items().length == 1) {
                         // var scale = 1 / data.length;
@@ -5984,7 +5971,7 @@ export class MediaSettingsInterface {
                     }
                     title_preview_style.textContent = style_text;
                     set_style_property(timeline_elem.firstElementChild, "animation", `title-preview-timeline linear ${duration}s 1 forwards`)
-                    dom_utils.restart_animation(elem);
+                    utils.dom.restart_animation(elem);
                 }
 
                 var update_preview = ()=>{
@@ -6321,7 +6308,7 @@ export class AccessControlProperty extends UI.Property {
         });
         
         this.access_control = new AccessControl();
-        this.debounced_update_value = dom_utils.debounce_next_frame(()=>this.update_value());
+        this.debounced_update_value = utils.dom.debounce_next_frame(()=>this.update_value());
 
         var columns = {
             "Username": (data)=>$(`<span>${data.username}</span>`)[0],
@@ -6384,7 +6371,7 @@ export class AccessControlProperty extends UI.Property {
             if (hash === old_hash) return;
             old_hash = hash;
 
-            dom_utils.empty(tbody_elem);
+            utils.dom.empty(tbody_elem);
             add_button.innerText = add_button.title = this.access_control._owners.length == 0 ? "Claim Ownership" : "Add User";
             toggle_attribute(add_button, "disabled", !this.access_control._self_can_edit);
             for (let user of this.access_control._users) {
@@ -6650,7 +6637,7 @@ export class StreamSettings extends Panel {
 
         this.stream_method = new UI.Property("method", "Method", `<select></select>`, {
             "options": function() {
-                var options = dom_utils.fix_options(get_options.apply(this));
+                var options = utils.dom.fix_options(get_options.apply(this));
                 if (!app.$._client.is_admin) options = options.filter(o=>o.value === "rtmp");
                 if (!app.dev_mode) options = options.filter(o=>o.value !== "ffplay");
                 if (!app.$.sysinfo.platform.match(/^win/i)) {
@@ -6845,7 +6832,7 @@ export class StreamSettings extends Panel {
             var hash = JSON.stringify(stream_info);
             if (hash !== last_stream_info_hash) {
                 last_stream_info_hash = hash;
-                dom_utils.rebuild(this.info_ui.elem, Object.keys(stream_info), {
+                utils.dom.rebuild(this.info_ui.elem, Object.keys(stream_info), {
                     id_callback: (k)=>utils.sanitize_filename(k),
                     add: (k, elem, index)=>{
                         if (!elem) elem = $(`<span></span>`)[0];
@@ -6919,10 +6906,11 @@ export class MediaPlayerPanel extends Panel {
                 height = Math.min(720, height);
                 width = height * ratio;
                 // yay this works well.
-                w = windows["test-"+id] = window.open(window.location.origin+"/main/blank.html", id, `width=${width},height=${height},scrollbars=1,resizable=1`);
+                var test_url = utils.dom.get_url(null, "main")+"/blank.html";
+                w = windows["test-"+id] = window.open(test_url, id, `width=${width},height=${height},scrollbars=1,resizable=1`);
                 w.onload=()=>{
                     w.document.head.append($(`<title>Test Stream ${id}</title>`)[0]);
-                    /* await */ dom_utils.clone_document_head(app.root_elem, w.document.head);
+                    /* await */ utils.dom.clone_document_head(app.root_elem, w.document.head);
                     var style = w.document.createElement("style");
                     style.textContent =
 `body {
@@ -6937,7 +6925,7 @@ video {
     width: 100% !important;
     height: 100% !important;
 }`;
-                    //+"\n"+dom_utils.get_all_css(document, true);
+                    //+"\n"+utils.dom.get_all_css(document, true);
                     w.document.head.append(style);
                     w.document.body.append(this.test_stream_elem);
                     this.refresh_player(true);
@@ -7151,8 +7139,8 @@ video {
         // this.fader_controls_elem = $(`<div class="fader-controls"></div>`)[0];
         // this.body.append(this.fader_controls_elem);
 
-        var detect_wrap = dom_utils.debounce_next_frame(()=>{
-            dom_utils.detect_wrapped_elements(this.player_inline_elem);
+        var detect_wrap = utils.dom.debounce_next_frame(()=>{
+            utils.dom.detect_wrapped_elements(this.player_inline_elem);
         });
         var resize_observer = new ResizeObserver(()=>detect_wrap());
         resize_observer.observe(this.elem);
@@ -7183,8 +7171,9 @@ video {
     }
 
     async refresh_player(force) {
-        var test_video_url = `${window.location.protocol==="https:"?"wss:":"ws:"}//${window.location.host}/media-server/internal/${app.$._session.id}.flv`;
-        var show = !!(app.$._session._is_running && app.$._stream.test && test_video_url);
+        
+        var test_video_url = new URL(`/internal/${app.$._session.id}.flv`, utils.dom.get_url(null, "media-server", true));
+        var show = !!(app.$._session._is_running && app.$._stream.test);
         var is_popped_out = !!windows["test-"+app.$._session.id];
         var is_playable = !!(show && app.$._session._get_connected_nms_session_with_appname("internal"));
 
@@ -7222,7 +7211,7 @@ video {
             this.test_stream_video_wrapper.append(this.video_el);
             this.flv_player = flvjs.createPlayer({
                 type: "flv",
-                url: test_video_url,
+                url: test_video_url.toString(),
                 hasAudio: true,
                 hasVideo: true,
                 isLive: true,
@@ -7382,7 +7371,7 @@ export class LogViewerPanel extends Panel {
     }
 
     append_logs(logs) {
-        var scroll_bottom = dom_utils.scroll_y_percent(this.logs_container) == 1;
+        var scroll_bottom = utils.dom.scroll_y_percent(this.logs_container) == 1;
         this._new_log_elems = [];
         for (var log of Object.values(logs)) {
             if (!log || !log.message) continue;
@@ -7427,7 +7416,7 @@ export class LogViewerPanel extends Panel {
                 this._logs[log.level].shift().remove();
             }
         }
-        if (scroll_bottom) dom_utils.scroll_y_percent(this.logs_container, 1);
+        if (scroll_bottom) utils.dom.scroll_y_percent(this.logs_container, 1);
         this.update();
     }
 
@@ -7777,7 +7766,7 @@ export class StreamMetricsPanel extends Panel {
         var hash = JSON.stringify(info_rows);
         if (this.__info_rows_hash != hash) {
             this.__info_rows_hash = hash;
-            var table = dom_utils.build_table(info_rows);
+            var table = utils.dom.build_table(info_rows);
             set_children(this.chart_info_elem, table ? [table] : []);
         }
     }
@@ -7817,8 +7806,8 @@ export class PlaylistPanel extends Panel {
 
         this.collapsible = false;
         this.clipping = null;
-        // this.debounced_update_info = dom_utils.debounce_next_frame(()=>this.update_info());
-        // this.debounced_update_view = dom_utils.debounce_next_frame(()=>this.update_view());
+        // this.debounced_update_info = utils.dom.debounce_next_frame(()=>this.update_info());
+        // this.debounced_update_view = utils.dom.debounce_next_frame(()=>this.update_view());
 
         this.header_elem.innerHTML =
         `<div class="playlist-header">
@@ -7991,8 +7980,8 @@ export class PlaylistPanel extends Panel {
         });
         if (IS_ELECTRON) this.pl_upload_file_button.style.display = "none";
         this.pl_upload_file_button.addEventListener("click", async (e)=>{
-            var files = await dom_utils.open_file_dialog({multiple:true}) // directories:true
-            app.playlist_add(files);
+            var files = await utils.dom.open_file_dialog({multiple:true}) // directories:true
+            app.playlist_add(files.map(file=>({file})));
         });
 
         this.pl_add_url_button.addEventListener("click", async (e)=>{
@@ -8006,7 +7995,7 @@ export class PlaylistPanel extends Panel {
             }
         });
 
-        dom_utils.tippy(this.pl_add_other_button, {
+        utils.dom.tippy(this.pl_add_other_button, {
             appendTo: app.elem,
             allowHTML: true,
             trigger: "click",
@@ -8498,7 +8487,7 @@ export class PlaylistPanel extends Panel {
         });
         
         window.addEventListener("keydown", this.on_keydown = (e)=>{
-            if (dom_utils.has_focus(this.timeline_container_elem)) {
+            if (utils.dom.has_focus(this.timeline_container_elem)) {
                 this.try_command_shortcut(e);
             }
         }, true);
@@ -8576,9 +8565,9 @@ export class PlaylistPanel extends Panel {
 
         this.#tracks_hash = tracks_hash;
         this.#tracks = tracks;
-        dom_utils.empty(this.tracks_elem);
-        dom_utils.empty(this.headers_elem);
-        dom_utils.empty(this.highlights_elem);
+        utils.dom.empty(this.tracks_elem);
+        utils.dom.empty(this.headers_elem);
+        utils.dom.empty(this.highlights_elem);
         this.sortables.forEach(s=>s.destroy());
 
         toggle_class(this.timeline_container_elem, "single-track", num_tracks == 1);
@@ -8676,7 +8665,7 @@ export class PlaylistPanel extends Panel {
         this.sortables.forEach((sortable,i)=>{
             /** @type {PlaylistItem[]} */
             var items = current_playlist_tracks[i] || EMPTY_ARRAY;
-            dom_utils.rebuild(sortable.el, items, {
+            utils.dom.rebuild(sortable.el, items, {
                 add: (item, elem, index)=>{
                     if (!elem) {
                         new_items.push(item);
@@ -8972,15 +8961,15 @@ export class PlaylistPanel extends Panel {
     }
     move_selection_back() {
         var elems = this.get_selection();
-        var first_index = Math.max(0,dom_utils.get_index(elems[0])-1);
-        elems.forEach((e,i)=>dom_utils.insert_at(e.parentElement, e, first_index+i));
+        var first_index = Math.max(0,utils.dom.get_index(elems[0])-1);
+        elems.forEach((e,i)=>utils.dom.insert_at(e.parentElement, e, first_index+i));
         this.scroll_into_view(elems[0]);
         this.sync();
     }
     move_selection_forward() {
         var elems = this.get_selection();
-        var last_index = Math.min(elems[0].parentElement.childElementCount, dom_utils.get_index(elems[elems.length-1])+2);
-        elems.forEach((e,i)=>dom_utils.insert_at(e.parentElement, e, last_index));
+        var last_index = Math.min(elems[0].parentElement.childElementCount, utils.dom.get_index(elems[elems.length-1])+2);
+        elems.forEach((e,i)=>utils.dom.insert_at(e.parentElement, e, last_index));
         this.scroll_into_view(elems[elems.length-1])
         this.sync();
     }
@@ -9186,7 +9175,7 @@ export class PlaylistPanel extends Panel {
         return this.get_selection().map(e=>app.$._session.playlist[e.dataset.id]).filter(i=>i);
     }
     get_selection_indices() {
-        return this.get_selection().map(e=>dom_utils.get_index(e));
+        return this.get_selection().map(e=>utils.dom.get_index(e));
     }
     get_first_selected_data() {
         return this.get_selection_datas()[0];
@@ -9421,7 +9410,7 @@ export class App extends utils.EventEmitter {
             };
         }
 
-        this.settings = new dom_utils.LocalStorageBucket("livestreamer-1.0", {
+        this.settings = new utils.dom.LocalStorageBucket("livestreamer-1.0", {
             "playlist_mode": 0,
             // "playlist_show_scheduled_times": false,
             "playlist_sticky": true,
@@ -9439,7 +9428,7 @@ export class App extends utils.EventEmitter {
             "session_order": null,
             "last_session_id": null
         });
-        this.passwords = new dom_utils.LocalStorageBucket("livestreamer-passwords");
+        this.passwords = new utils.dom.LocalStorageBucket("livestreamer-passwords");
 
         this.loader = new Loader();
         this.loader.update({visible:true, text:"Initializing..."});
@@ -9588,7 +9577,7 @@ export class App extends utils.EventEmitter {
                 handle: ".drawer>.header",
                 filter: (e)=>{
                     if (e.target.closest(".drawer>.header")) {
-                        if (dom_utils.has_touch_screen() || e.target.closest("button,input,select")) return true;
+                        if (utils.dom.has_touch_screen() || e.target.closest("button,input,select")) return true;
                     }
                 },
                 onEnd: ()=>this.save_layout(),
@@ -9701,25 +9690,24 @@ export class App extends utils.EventEmitter {
             }),
         );
 
-        var key;
-        if (window.self == window.top) {
-            key = dom_utils.Cookie.get("ls_key") || new URLSearchParams(window.location.search).get("ls_key");
+        // var key;
+        /* if (window.self == window.top) {
+            key = utils.dom.Cookies.get("ls_key") || new URLSearchParams(window.location.search).get("ls_key");
         } else {
-            let messenger = new dom_utils.WindowCommunicator();
+            let messenger = new utils.dom.WindowCommunicator();
             key = await messenger.request(window.parent, "key");
             messenger.destroy();
         }
         if (key) {
-            dom_utils.Cookie.set("ls_key", key, { expires: 365 });
-        }
-
-        var ws_url = `${(window.location.protocol === "https:") ? "wss:" : "ws:"}//${window.location.host}/main/`;
-        var ws_params = new URLSearchParams();
-        // if (key) ws_params.set("key", key);
+            utils.dom.Cookies.set("ls_key", key, { expires: 365 });
+        } */
+        var key = new URL(window.location.href).searchParams.get("ls_key");
+        var ws_url = new URL(utils.dom.get_url(null, "main", true));
         var session_id = window.location.hash.slice(1) || this.settings.get("last_session_id");
-        if (session_id) ws_params.set("session_id", session_id);
+        if (session_id) ws_url.searchParams.set("session_id", session_id);
+        if (key) ws_url.searchParams.set("ls_key", key);
 
-        this.ws = new dom_utils.WebSocket(ws_url+"?"+ws_params.toString());
+        this.ws = new utils.dom.WebSocket(ws_url.toString());
         this.ws.on("open", ()=>{
             this.$ = new Remote();
             this.$.on("update", (changes)=>this.#update(changes));
@@ -9773,16 +9761,15 @@ export class App extends utils.EventEmitter {
                 }
             }
             if (e.target.matches("a")) {
-                var url = dom_utils.get_anchor_url(e.target);
-                if (url.origin === "/file-manager/index.html", window.location.origin === url.origin) {
-                    // open file-manager
-                }
-                if (url.origin === "/main/index.html", window.location.origin === url.origin) {
-                    if (url.hash) {
-                        this.try_attach_to(url.hash.slice(1));
-                        e.preventDefault();
-                    }
-                }
+                // var url = utils.dom.get_anchor_url(e.target);
+                // var file_manager_url = new URL(utils.dom.get_url(null, "file-manager")).pathname === "index.html";
+                // if (url.host === file_manager_url.host && url.pathname === "/index.html") {
+                //     // open file-manager
+                // }
+                // if (url.host === window.location.host && url.pathname === "/index.html" && url.hash) {
+                //     this.try_attach_to(url.hash.slice(1));
+                //     e.preventDefault();
+                // }
             }
         });
 
@@ -9792,7 +9779,7 @@ export class App extends utils.EventEmitter {
         
         Object.assign(Fancybox.defaults, {parentEl: this.body_elem});
 
-        dom_utils.tippy.setDefaultProps({
+        utils.dom.tippy.setDefaultProps({
             // boundary just doesn't work... maybe due to shadow dom, have to use popperOptions
             popperOptions: {
                 strategy: 'fixed',
@@ -10339,7 +10326,7 @@ export class App extends utils.EventEmitter {
         /** @type {PlaylistItem[]} */
         var new_items = [];
         var add_file = async (data, index, parent_id, track_index)=>{
-            let id = dom_utils.uuid4();
+            let id = utils.dom.uuid4();
             let filename, props, children;
             if (typeof data === "string") {
                 filename = data;
@@ -10584,7 +10571,7 @@ export class App extends utils.EventEmitter {
         let num_items = parent._get_track(track_index).length;
         if (insert_pos === undefined) {
             let last_active = this.playlist.sortables[track_index].get_last_active();
-            insert_pos = (last_active) ? dom_utils.get_index(last_active) + 1 : num_items;
+            insert_pos = (last_active) ? utils.dom.get_index(last_active) + 1 : num_items;
         }
         insert_pos = utils.clamp(insert_pos, 0, num_items);
         track_index = utils.clamp(track_index, 0, 1);
@@ -10599,7 +10586,7 @@ export class App extends utils.EventEmitter {
         var path_hash = JSON.stringify([this.playlist.current.id, path.map(i=>[i.id, i._hash])]);
         if (parent_elem._path_hash === path_hash) return;
         parent_elem._path_hash = path_hash;
-        dom_utils.empty(parent_elem);
+        utils.dom.empty(parent_elem);
         add_class(parent_elem, "breadcrumbs");
         path.forEach((item,i)=>{
             var elem = $(`<a></a>`)[0];
@@ -10704,7 +10691,7 @@ export class App extends utils.EventEmitter {
         this.settings.set("last_session_id", session_id);
         this.$._last_session = this.$.sessions[session_id];
         if (window.location.hash !== new_hash) {
-            window.history.replaceState({}, '', new_hash);
+            window.history.replaceState({}, "", new_hash);
         }
         if (this.$._client.session_id != session_id) {
             this.$._push([`clients/${this.$.client_id}/session_id`, session_id]);
@@ -10717,7 +10704,7 @@ export class App extends utils.EventEmitter {
     }
 
     tick() {
-        toggle_class(this.body_elem, "is-touch", dom_utils.has_touch_screen());
+        toggle_class(this.body_elem, "is-touch", utils.dom.has_touch_screen());
     }
 
     #rebuild_clients() {
@@ -10736,7 +10723,7 @@ export class App extends utils.EventEmitter {
         ];
         for (var i of items) i.id = utils.md5(JSON.stringify(i));
 
-        dom_utils.rebuild(this.users_elem, items, {
+        utils.dom.rebuild(this.users_elem, items, {
             add: (item, elem, i)=>{
                 var elem = $(`<span class="user"></span>`)[0];
                 var is_self = this.$._client.username == item.username;
@@ -10773,7 +10760,7 @@ export class App extends utils.EventEmitter {
         await this.session_sortable.last_drag;
         var items = this.sessions_ordered;
         var session_id = this.$._client.session_id;
-        dom_utils.rebuild(this.sessions_tabs_elem, items, {
+        utils.dom.rebuild(this.sessions_tabs_elem, items, {
             add: (item, elem, i)=>{
                 if (!elem) elem = $(`<a class="session-tab"><div class="handle"><i class="fas fa-grip-lines"></i></div><span class="name"></span><span class="icons"></span></a>`)[0];
                 var access_control = item.access_control;

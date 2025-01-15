@@ -1,6 +1,6 @@
 import tippy from 'tippy.js';
 import "tippy.js/dist/tippy.css";
-import Cookie from 'js-cookie';
+import Cookies from 'js-cookie';
 import 'resize-observer-polyfill';
 import { OverlayScrollbars,  ScrollbarsHidingPlugin,  SizeObserverPlugin,  ClickScrollPlugin } from 'overlayscrollbars';
 import 'overlayscrollbars/overlayscrollbars.css';
@@ -445,7 +445,7 @@ export class LocalStorageBucket extends utils.EventEmitter
     }
 }
 
-class WebSocket2 extends utils.EventEmitter
+class _WebSocket extends utils.EventEmitter
 {
     get requests() { return this._requests; }
 
@@ -549,7 +549,7 @@ class WebSocket2 extends utils.EventEmitter
         });
     }
 }
-export {WebSocket2 as WebSocket}
+export {_WebSocket as WebSocket}
 
 // depends on tippy js
 export class UI extends utils.EventEmitter {
@@ -2687,7 +2687,7 @@ export {ScrollOverlay};
 
 export { OverlayScrollbars,  ScrollbarsHidingPlugin,  SizeObserverPlugin,  ClickScrollPlugin };
 
-export { tippy, Cookie };
+export { tippy, Cookies };
 
 /** @param {HTMLIFrameElement} el */
 export function iframe_ready(el) {
@@ -2708,4 +2708,14 @@ export function *find(el, selector, type) {
     else {
         for (var c of el.querySelectorAll(selector)) yield c;
     }
+}
+
+export function get_url(uri, sub, ws=false) {
+	let url = new URL(uri || window.location.origin);
+    var parts = url.host.split(".")
+    if (!uri) parts.shift();
+    parts.unshift(sub);
+    url.host = parts.filter(a=>a).join(".");
+    if (ws) url.protocol = window.location.protocol === "https:"?"wss:":"ws:";
+    return url.toString().slice(0,-1);
 }

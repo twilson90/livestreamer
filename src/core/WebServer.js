@@ -41,7 +41,7 @@ export class WebServer {
 
         this.socket_path = globals.core.get_socket_path(`${globals.core.name}_http`);
         globals.core.logger.info(`Starting HTTP server on socket ${this.socket_path}...`);
-        console.info(new URL(`/${globals.core.name}/`, globals.core.http_url).toString());
+        // console.info(globals.core.get_urls(globals.core.name).url);
         
         this.server = http.createServer(http_opts, async (req, res)=>{
             // accesslog(req, res, undefined, (l)=>core.logger.debug(l));
@@ -67,8 +67,9 @@ export class WebServer {
             //if (req.headers.referrer || req.headers.referer) {
             // var url = new URL(req.headers.referrer || req.headers.referer);
             var allow_origin = opts.allow_origin;
-            // var allow_origin = [...new Set([`${url.protocol}//${url.hostname}:*`, `${url.protocol}//${core.conf["core.hostname"]}:*`])].join(" ");
-            res.setHeader('Access-Control-Allow-Origin', allow_origin);
+            // var allow_origin = [...new Set([`${url.protocol}//${url.hostname}:*`, `${url.protocol}//${core.hostname}:*`])].join(" ");
+            // res.setHeader('Access-Control-Allow-Origin', allow_origin);
+            res.setHeader('Access-Control-Allow-Origin', globals.core.get_urls().domain);
             res.setHeader('Access-Control-Allow-Credentials', true);
             res.setHeader('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', 'Origin, Accept, X-Requested-With, Content-Type, Authorization, Access-Control-Allow-Headers, Access-Control-Request-Method, Access-Control-Request-Headers');

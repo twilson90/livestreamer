@@ -25,8 +25,6 @@ export class ElFinder {
 	/** @type {Object.<string,string[]>} */
 	uploads = {}
 
-	connector_url;
-
 	/** @param {Express} express @param {object} config */
 	constructor(express, config) {
 		this.commands = new Set(['abort','archive','callback','chmod','dim','duplicate','editor','extract','file','get','info','ls','mkdir','mkfile','netmount','open','parents','paste','put','rename','resize','rm','search','size','subdirs','tmb','tree','upload','url','zipdl']);
@@ -46,9 +44,6 @@ export class ElFinder {
 		
 		if (!config.volumes) config.volumes = [];
 		this.config = config;
-
-		var connector = `connector`;
-		this.connector_url = `/${globals.app.name}/${connector}/`;
 		var router = Router();
 
 		express.use(async (req, res, next) => {
@@ -56,7 +51,7 @@ export class ElFinder {
 			if (user) next();
 			else res.send(401);
 		})
-		express.use(`/${connector}`, router);
+		express.use(`/api`, router);
 		
 		router.use(bodyParser.json({
 			limit: '50mb'

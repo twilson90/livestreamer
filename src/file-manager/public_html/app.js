@@ -8,16 +8,18 @@ export class App {
 	async init() {
 		var is_iframe = window.self !== window.top;
 		var params = new URLSearchParams(window.location.search);
-		var id = params.get("id");
+		let opts;
+		try { opts = JSON.parse(params.get("opts")); } catch {}
+		if (!opts) opts = {};
+		window.history.replaceState({}, "", "/"+window.location.hash);
+		console.log(opts);
+		var id = opts ? opts.id : null;
 		// var key = params.get("key");
-
-		var parent_window = window.opener || window.parent;
-		var standalone = !id || window.location.hash;
-		var connector_url = `./connector`
-		console.log("standalone:", standalone);
+		// debugger;
+		// var parent_window = window.opener || window.parent;
 
 		var defaultOpts = {
-			url : connector_url,
+			url : "./api",
 			// cssAutoLoad : false,
 			ui : ['toolbar', 'tree', 'path', 'stat'], /* 'places', */
 			uiOptions: {
@@ -35,7 +37,6 @@ export class App {
 					['search'],
 					['view', 'sort'],
 					['preference', 'help'],
-					['getfile']
 				],
 				toolbarExtra: {
 					defaultHides: [],
@@ -59,7 +60,7 @@ export class App {
 				// current directory menu
 				cwd    : ['reload', 'back', '|', 'upload', 'mkdir', 'mkfile', 'paste', '|', 'sort', '|', 'info', 'downloadtree'],
 				// current directory file menu
-				files  : ['getfile', '|', 'open', 'quicklook', '|', 'download', '|', 'copy', 'cut', 'paste', 'duplicate', '|', 'rm', '|', 'edit', 'rename', '|', 'archive', 'extract', '|', 'info', 'downloadtree']
+				files  : ['open', 'quicklook', '|', 'download', '|', 'copy', 'cut', 'paste', 'duplicate', '|', 'rm', '|', 'edit', 'rename', '|', 'archive', 'extract', '|', 'info', 'downloadtree']
 			},
 			// These name are 'size', 'aliasfor', 'path', 'link', 'dim', 'modify', 'perms', 'locked', 'owner', 'group', 'perm' and your custom info items label
 			hideItems : ['aliasfor'],
@@ -208,35 +209,35 @@ export class App {
 				});
 			},
 		};
-		var opts = {};
-		if (!standalone) {
-			var messenger = new WindowCommunicator();
-			opts = (await messenger.request(parent_window, "elfinder_options", id));
-			// console.log("elfinder_options received:", opts);
-			if (Array.isArray(opts.fileFilter)) {
-				var fileFilter = opts.fileFilter;
-				opts.fileFilter = (file)=>{
-					for (var f of fileFilter) {
-						var m;
-						if (m = f.match(/^\.\w+$/)) {
-							if (file.name.endsWith(m[0])) return true;
-						} else {
-							var mime = f.split("/");
-							if (file.mime === f || (mime[1] == "*" && file.mime.split("/")[0] == mime[0])) return true;
-						}
+		// opts = (await messenger.request(parent_window, "elfinder_options", id));
+		// console.log("elfinder_options received:", opts);
+		if (Array.isArray(opts.fileFilter)) {
+			var fileFilter = opts.fileFilter;
+			opts.fileFilter = (file)=>{
+				for (var f of fileFilter) {
+					var m;
+					if (m = f.match(/^\.\w+$/)) {
+						if (file.name.endsWith(m[0])) return true;
+					} else {
+						var mime = f.split("/");
+						if (file.mime === f || (mime[1] == "*" && file.mime.split("/")[0] == mime[0])) return true;
 					}
-					return false;
 				}
-			}
-			if (opts.getFileCallback === true) {
-				opts.getFileCallback = (files)=>{
-					if (!Array.isArray(files)) files = [files];
-					messenger.request(window.parent, "files", {files, id})
-				};
+				return false;
 			}
 		}
-
+		if (opts.getFileCallback === true) {
+			var messenger = new WindowCommunicator();
+			opts.getFileCallback = (files)=>{
+				if (!Array.isArray(files)) files = [files];
+				messenger.request(window.parent, "files", {files, id})
+			};
+		}
 		opts = $.extend(true, defaultOpts, opts);
+		if (opts.getFileCallback) {
+			opts.contextmenu.files.unshift('getfile', '|');
+			opts.uiOptions.toolbar.push(['getfile']);
+		}
 		console.log(opts);
 		$('#elfinder').elfinder(opts);
 	}

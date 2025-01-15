@@ -70,6 +70,7 @@ export class Core extends events.EventEmitter {
     #opts = {};
     /** @type {string[]} */
     #conf_paths = [];
+    #ssl_certs;
     /** @type {Conf} */
     conf = {};
     
@@ -78,6 +79,7 @@ export class Core extends events.EventEmitter {
     get debug() { return !!(process.env.LIVESTREAMER_DEBUG || this.#opts.debug || false); }
     get is_electron() { return !!(process.versions['electron']); }
     get use_pm2() { return !!(this.#opts.pm2 || "pm_id" in process.env || this.conf["core.pm2"]); }
+    get hostname() { return this.conf["core.hostname"] || os.hostname(); }
 
     constructor(name, master_opts) {
         super();
@@ -402,14 +404,16 @@ export class Core extends events.EventEmitter {
         console.info(`Starting HTTP Server on port ${this.conf["core.http_port"]}`);
         /** @param {http.IncomingMessage} req @param {string} name */
         var get_proxy = async (req)=>{
-            var url = new URL(req.url, "http://localhost");
-            var parts = url.pathname.slice(1).split("/");
-            var name = parts[0];
+            var host_parts = req.headers.host.split(".");
+            // var url = new URL(req.url, "http://localhost");
+            // var parts = url.pathname.slice(1).split("/");
+            // var name = parts[0];
+            var name = host_parts[0];
             /** @type {http_proxy} */
             var proxy, target;
             
             if (this.modules[name] && await this.ipc.wait_for_process(name)) {
-                req.url = "/"+parts.slice(1).join("/") + url.search;
+                // req.url = "/"+parts.slice(1).join("/") + url.search;
                 if (!proxies[name]) {
                     proxies[name] = http_proxy.createProxy({ agent });
                     proxies[name].on("error", (e)=>{
@@ -467,15 +471,15 @@ export class Core extends events.EventEmitter {
             this.#servers.push(proxy_http_server);
         }
 
-        var certs = await this.#get_certs();
-        if (this.conf["core.https_port"] && certs) {
+        this.#ssl_certs = await this.#get_certs();
+        if (this.conf["core.https_port"] && this.#ssl_certs) {
             console.info(`Starting HTTPS Server on port ${this.conf["core.https_port"]}`);
-            let proxy_https_server = https.createServer(certs, this.web_request_listener);
+            let proxy_https_server = https.createServer(this.#ssl_certs, this.web_request_listener);
             proxy_https_server.listen(this.conf["core.https_port"]);
             this.#servers.push(proxy_https_server);
             setInterval(async ()=>{
-                var certs = await this.#get_certs();
-                if (certs) proxy_https_server.setSecureContext(certs);
+                this.#ssl_certs = await this.#get_certs();
+                if (this.#ssl_certs) proxy_https_server.setSecureContext(this.#ssl_certs);
             }, 1000*60*60*24*7) // every week
         }
         // }
@@ -517,12 +521,22 @@ export class Core extends events.EventEmitter {
         } else {
             Object.assign(this.conf, JSON.parse(await fs.readFile(this.conf_path, "utf-8")));
         }
-        this.use_https = !!(this.conf["core.https_port"] && (await this.#get_certs()));
-        this.http_url = `http://${this.conf["core.hostname"]}:${this.conf["core.http_port"]}`;
-        this.https_url = `https://${this.conf["core.hostname"]}:${this.conf["core.https_port"]}`;
-        this.url = this.use_https ? this.https_url : this.http_url;
-
         this.emit("update-conf");
+    }
+    
+    get_urls(subdomain) {
+        if (!subdomain && subdomain !== false) subdomain = globals.core.name;
+        var hostname = subdomain ? `${subdomain}.${this.hostname}` : this.hostname;
+        var http = `http://${hostname}:${this.conf["core.http_port"]}`;
+        var https = `https://${hostname}:${this.conf["core.https_port"]}`;
+        var ssl = !!(this.conf["core.https_port"] && this.#ssl_certs);
+        return {
+            http,
+            https,
+            ssl,
+            domain: hostname,
+            url: ssl ? https : http,
+        }
     }
     
     get auth() {
