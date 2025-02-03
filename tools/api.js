@@ -72,7 +72,7 @@ export default class {
         process.env.DEBUG = 1;
     }
 
-    /** @return {vite.InlineConfig[]} */
+    /** @return {Promise<vite.InlineConfig[]>} */
     async generate_configs(opts) {
         opts = {
             input: [],
@@ -108,11 +108,8 @@ export default class {
         let input = [
             "core/exports.js",
             "media-server/index.js",
-            "media-server/config.default.js",
             "main/index.js",
-            "main/config.default.js",
             "file-manager/index.js",
-            "file-manager/config.default.js",
         ]
 
         input = [...new Set([
@@ -333,7 +330,7 @@ export default class {
             let pages = glob.sync(`**/*.html`, {cwd: dir, absolute:true});
             let root_dir = path.resolve(path.dirname(indexes[0]));
             let web_config = defineConfig({
-                plugins: [],
+                plugins: opts.plugins??[],
                 base: `/${name}/`,
                 root: root_dir,
                 build: {
@@ -347,8 +344,6 @@ export default class {
                     sourcemap: true
                 }
             });
-            let create_plugin = (await import("../vite.plugin.js")).default;
-            web_config.plugins.push(create_plugin(opts.plugins));
             configs.push(web_config);
         }
         for (var c of configs) {

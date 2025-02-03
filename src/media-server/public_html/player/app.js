@@ -47,7 +47,7 @@ const CROP_DETECT_INTERVAL = 100;
 const VIDEO_UI_UPDATE_INTERVAL = 100;
 const IS_EMBED = window.parent !== window.self;
 
-var settings = new utils.LocalStorageBucket("player", {
+var settings = new utils.dom.LocalStorageBucket("player", {
     time_display_mode: 0,
     volume: 1,
     crop_mode: "auto",
@@ -74,7 +74,7 @@ export class App {
         var src = new URL(`../media/live/${params.get("id")}/master.m3u8`, window.location.origin+window.location.pathname).toString();
         console.log(src);
 
-        var messenger = new utils.WindowCommunicator();
+        var messenger = new utils.dom.WindowCommunicator();
         messenger.on("set_aspect_ratio", (ar)=>{
             this.aspect_ratio = ar;
             return true;
@@ -138,7 +138,7 @@ class VideoPlayer {
         // this.video_wrapper.append(this.video_el);
     }
 
-    update = utils.debounce_next_frame(()=>this.__update())
+    update = utils.dom.debounce_next_frame(()=>this.__update())
 
     __update() {
         if (!this.player) return;
@@ -198,6 +198,7 @@ class VideoPlayer {
         } else if (!this.pause_button.parentElement) {
             this.video_el.after(this.pause_button);
         }
+
         this.update_aspect_ratio();
     }
 
@@ -216,6 +217,7 @@ class VideoPlayer {
             if (dims_hash !== this._last_dims_hash) remove_crop_detect();
             this._last_dims_hash = dims_hash;
             if (!this.crop_detect) this.crop_detect = new CropDetect(this.video_el);
+            this.crop_detect.update();
         } else {
             remove_crop_detect();
             if (ar) {
@@ -315,10 +317,7 @@ class VideoPlayer {
                 var levels = [];
                 app.player.hls.on(Hls.Events.MANIFEST_PARSED, (event, data)=>{
                     levels = data.levels.map((l,i)=>{
-                        var m = l.url[0].match(/([^/]+)\.[a-z0-9]+$/);
-                        if (m) {
-                            return {value:i, text:m[1], bitrate:l.bitrate}
-                        }
+                        return {value:i, text:l.height+"p", bitrate:l.bitrate}
                     }).filter(l=>l);
                     levels.push({value:-1, text:"AUTO", bitrate:0});
                     this.options_.levels = levels;
@@ -599,7 +598,7 @@ class VideoPlayer {
         if (conf.logo_url) {
             // let target = IS_EMBED ? `_parent` : `_blank`;
             let target = `_blank`;
-            utils.load_image("../logo").then(img=>{
+            utils.dom.load_image("../logo").then(img=>{
                 this.logo_el = $(`<a target="${target}" class="logo" href="${conf.logo_url}"></a>`)[0];
                 this.logo_el.append(img);
                 this.player.el_.append(this.logo_el);
@@ -723,17 +722,17 @@ class CropDetect {
 
     constructor(video_el) {
         this.video_el = video_el;
-        this.ready = this.init();
+        this.init();
     }
 
     async init() {
+        /** @type {HTMLCanvasElement} */
         this.canvas = this.crop_detect_canvas = document.createElement('canvas');
 
         await new Promise(resolve=>{
             this.video_el.addEventListener("loadeddata", resolve)
             if (this.video_el.readyState >= HTMLMediaElement.HAVE_METADATA) resolve();
         });
-        this.interval_id = setInterval(()=>this.update(), CROP_DETECT_INTERVAL);
 
         var {vw,vh} = this;
         var ar = vw / vh;
@@ -758,17 +757,21 @@ class CropDetect {
         this.possible_crops = crops.map(([w,h])=>Crop.from(w,h,vw,vh));
         this.canvas.height = 120;
         this.canvas.width = this.canvas.height * ar;
+
+        this.ready = true;
+
         this.update();
-        return true;
     }
     
     async update() {
+        if (!this.ready) return;
+
         let {vw,vh} = this;
         // if (this.video_el.paused || this.video_el.ended) return;
         if (this._last_time == this.video_el.currentTime) return;
         this._last_time = this.video_el.currentTime;
         var s = vh / this.canvas.height;
-        let ctx = this.canvas.getContext('2d');
+        let ctx = this.canvas.getContext('2d', {willReadFrequently:true});
         let x0=0, y0=0, ow=this.canvas.width, oh=this.canvas.height;
         let x1=ow, y1=oh;
         let tx, ty;
@@ -819,6 +822,8 @@ class CropDetect {
         }
 
         this.apply();
+
+        return true;
     }
     /** @param {Region} r */
     push_region(r) {
@@ -839,6 +844,7 @@ class CropDetect {
     apply() {
         var {vw,vh} = this;
         var c = this.region_nearest;
+        // console.log(this.region_nearest);
         if (!c.valid) return;
         if (c.w < vw/2 || c.h < vh/2) return;
         var ww = window.innerWidth;
@@ -853,9 +859,9 @@ class CropDetect {
             "top": `${(wh/2)-(c.h/2*scale)}px`,
         });
     }
+
     dispose() {
         this.canvas.remove();
-        clearInterval(this.interval_id);
         this.video_el.style = {};
         /* Object.assign(this.video_el.style, {
             "width": ``,

@@ -16,24 +16,20 @@ export const Props = {
         __default__: "1.0",
     },
     stream_settings: {
-        method: {
-            __default__: "rtmp",
-            __options__: [["gui","External Player"], ["file","File"], ["rtmp","RTMP"], ["ffplay","FFPlay"]]
-        },
         targets: {
-            __default__: [],
+            __default__: {},
+            __custom__: true,
+            __enumerable__: {
+                enabled: {
+                    __default__: false
+                }
+            },
         },
         test: {
             __default__: false,
         },
-        osc: {
-            __default__: false,
-        },
         title: {
             __default__: "",
-        },
-        filename: {
-            __default__: "%date%.mkv",
         },
         frame_rate: {
             __default__: 30,
@@ -57,17 +53,15 @@ export const Props = {
             __options__: ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
         },
         video_bitrate: {
-            __default__: 4000
+            __default__: 5000
         },
         audio_bitrate: {
             __default__: 160
         },
-        re: {
-            __default__: 1
-        },
     },
-    target_opts: {
+    stream: {
         __default__: {},
+        __save__: false,
     },
     logs: {
         __default__: {},
@@ -75,6 +69,7 @@ export const Props = {
     },
     access_control: {
         __default__: { "*": { "access":"allow" } },
+        __custom__:true,
     },
 }
 export default Props;

@@ -1,6 +1,7 @@
 import * as utils from "../core/utils.js";
 import SessionBase from "./SessionBase.js";
 import SessionTypes from "./SessionTypes.js";
+import globals from './globals.js';
 
 export class ExternalSession extends SessionBase {
     nms_session;
@@ -20,8 +21,7 @@ export class ExternalSession extends SessionBase {
 
         this.nms_session = nms_session;
         
-        this.$.stream_settings["method"] = "rtmp";
-        this.$.stream_settings["targets"] = (nms_session.publishArgs["targets"] || "").split(",");
+        this.$.stream_settings.targets = globals.app.parse_targets(nms_session.publishArgs["targets"]);
         
         this.start_stream();
 

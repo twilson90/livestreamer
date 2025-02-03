@@ -99,19 +99,18 @@ mp.add_hook("on_load_fail", 50, function ()
 end)
 
 -- this prevents mpv from unloading encoder at the end of the playlist
-local e_reason
-mp.register_event("end-file", function(e)
-    e_reason = e.reason
-end)
-
-mp.add_hook("on_after_end_file", 50, function ()
-    local valid_eof_reasons = {eof=1,error=1,unknown=1}
-    if not loading and valid_eof_reasons[e_reason] then
-        on_load_commands = nil
-        on_load_opts = nil
-        mp.commandv("loadfile", "null://eof", "replace")
-    end
-end)
+-- local e_reason
+-- mp.register_event("end-file", function(e)
+--     e_reason = e.reason
+-- end)
+-- mp.add_hook("on_after_end_file", 50, function ()
+--     local valid_eof_reasons = {eof=1,error=1,unknown=1}
+--     if not loading and valid_eof_reasons[e_reason] then
+--         on_load_commands = nil
+--         on_load_opts = nil
+--         mp.commandv("loadfile", "null://eof", "replace")
+--     end
+-- end)
 -----------------------------------------------------------------------
 
 mp.add_hook("on_unload", 50, function ()

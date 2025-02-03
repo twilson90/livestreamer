@@ -11,7 +11,7 @@ import upath from "upath";
 import { Writable, Readable, Stream } from "node:stream";
 import * as utils from "./utils.js";
 import * as errors from "./errors.js";
-import * as constants from "./constants.js";
+import * as constants from "../core/constants.js";
 import Cache from "./Cache.js";
 import Volume from "./Volume.js";
 import globals from "./globals.js";

@@ -17,7 +17,10 @@
     "electron:package": "node tools/cmd.js package",
     "electron:make": "node tools/cmd.js make",
     "build:prod+electron:package": "npm run build:prod && npm run electron:package",
-    "build:prod+electron:make": "npm run build:prod && npm run electron:make"
+    "build:prod+electron:make": "npm run build:prod && npm run electron:make",
+    "start-external-stream": "tests\\start-external-stream.bat",
+    "start-session-stream": "tests\\start-session-stream.bat",
+    "start-live-stream": "tests\\start-live-stream.bat"
   },
   "dependencies": {
     "@fancyapps/ui": "^4.0.26",

@@ -51,3 +51,19 @@
 [x] UI focus/blur textfield try different method (wait for unfocus then update instead of root.update())
 [ ] Keep alive media server rtmp streams for 2 mins unless explicitly shutdown by system. Allowing streams to stop/start without starting a new streamtarget
 [ ] auto detect crop offset time textbox, auto detect crop its own modal?
+
+[x] GUI target AND a GUI alternative to streaming (a button next to TEST, 'GUI')
+    Or if GUI target AND encode target, GUI target must be RTMP based (because it wont display otherwise) <---- DO THIS
+
+[ ] determine when a connection exits cleanly or is disconnected. How long should a live session remain alive after disconnect?
+    should be explicitly ended (#EXT-X-ENDLIST) when the user stops stream, not restarting stream targets, but how it works for external sessions not sure?
+    if (external) all detected stops are explicit?
+[ ] player auto crop / crop was all screwy at first. Double check
+
+[ ] main app still issue with nueruc steppy holding down up it flickers as server updates are fed back.
+[ ] bizarre nms 480p fuck up...
+[ ] show live feed /internal/123-123-123-123 in flv player on livestreamer?
+[ ] ui Precise Volume Adjustment apply disabled not updating fast enough on input change
+[ ] changing sessions, playlist slight hiccup, number of items chaneg (sub playlists weirdness?)
+
+[ ] configure running stream -> targets shows none, mid changing ids/opts of targets props....

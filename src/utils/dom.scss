@@ -1,0 +1,22 @@
+@use "_mixins.scss" as *;
+
+:host, :root {
+	--thin-scrollbar-width:6px;
+	--gap: 10px;
+}
+
+.thin-scrollbar {
+	@include thin-scrollbar();
+}
+
+.os-scrollbar {
+    --os-size: 6px;
+    --os-padding-perpendicular: 2px;
+    --os-padding-axis: 2px;
+    --os-track-border-radius: 10px;
+    --os-handle-interactive-area-offset: 2px;
+    --os-handle-border-radius: 10px;
+    --os-handle-bg: rgba(255, 255, 255, 0.3);
+    --os-handle-bg-hover: rgba(255, 255, 255, 0.45);
+    --os-handle-bg-active: rgba(255, 255, 255, 0.6);
+}

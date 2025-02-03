@@ -1,17 +1,14 @@
-import tippy from 'tippy.js';
-import "tippy.js/dist/tippy.css";
 import Cookies from 'js-cookie';
 import 'resize-observer-polyfill';
 import { OverlayScrollbars,  ScrollbarsHidingPlugin,  SizeObserverPlugin,  ClickScrollPlugin } from 'overlayscrollbars';
 import 'overlayscrollbars/overlayscrollbars.css';
+import tippy from 'tippy.js';
+import "tippy.js/dist/tippy.css";
 import * as utils from './utils.js';
-import "./style.scss";
+import "./dom.scss";
 
 var _temp_div = document.createElement('div');
 var _div2 = document.createElement('div');
-const $ = render_html;
-const textarea_input_events = ["input", "propertychange", "paste"];
-const { debounce } = utils;
 
 const entity_table = {
     34 : 'quot', 
@@ -354,7 +351,7 @@ export class AutoSizeController extends utils.EventEmitter {
             this.update();
         };
         this.debounced_update = utils.debounce(()=>this.update(), 50);
-        textarea_input_events.forEach(ev=>this.elem.addEventListener(ev, this.on_change));
+        ["input", "propertychange", "paste"].forEach(ev=>this.elem.addEventListener(ev, this.on_change));
         if (auto_update) {
             window.addEventListener("resize", this.debounced_update);
             var fs;
@@ -368,7 +365,7 @@ export class AutoSizeController extends utils.EventEmitter {
         this.update();
     }
     update() {
-        this.emit("pre-update");
+        this.emit("pre_update");
         autosize(this.elem, this.min_rows);
         this.emit("post_update");
     }
@@ -388,6 +385,7 @@ export class LocalStorageBucket extends utils.EventEmitter
 
     #name;
     #data = {};
+    #hashes = {};
     #defaults;
     #last_data_hash;
     #interval;
@@ -400,6 +398,7 @@ export class LocalStorageBucket extends utils.EventEmitter
         // in case it is altered in another window.
         this.#interval = setInterval(()=>this.load(), 5000);
         this.load();
+        this.#save();
     }
     get(k) {
         return (k in this.#data) ? this.#data[k] : this.#defaults[k];
@@ -407,11 +406,11 @@ export class LocalStorageBucket extends utils.EventEmitter
     set(k, new_value) {
         var new_hash = JSON.stringify(new_value);
         var old_value = this.#data[k];
-        var old_hash = JSON.stringify(old_value);
         var default_hash = JSON.stringify(this.#defaults[k]);
-        if (new_hash === old_hash) return;
+        if (new_hash === this.#hashes[k]) return;
         if (new_hash === default_hash) delete this.#data[k];
         else this.#data[k] = new_value;
+        this.#hashes[k] = new_hash;
         this.emit("change", {name:k, old_value, new_value});
         this.save();
     }
@@ -550,1168 +549,6 @@ class _WebSocket extends utils.EventEmitter
     }
 }
 export {_WebSocket as WebSocket}
-
-// depends on tippy js
-export class UI extends utils.EventEmitter {
-    get disabled() { return !!this.get_setting("disabled"); }
-    set disabled(value) {
-        if (this.settings.disabled == value) return;
-        this.settings.disabled = value;
-        this.update();
-    }
-    get disabled_parent() {
-        var parent = this.parent;
-        return (parent ? parent.disabled || parent.disabled_parent : false);
-    }
-    get hidden() { return !!this.get_setting("hidden") }
-    set hidden(value) {
-        if (this.settings.hidden == value) return;
-        this.settings.hidden = value;
-        this.update();
-    }
-    get root() { return this.get_closest(UI.Root); }
-    get visible() { return is_visible(this.elem); } // not the opposite of hidden
-    get children() { return [...this.get_children()]; }
-    get descendents() { return [...this.get_descendents()]; }
-    get parents() { return [...this.get_parents()]; }
-    get parent() { return this._parent; }
-    get id() { return this.__UID__; }
-    get style() { return this.elem.style; }
-
-    /** @type {Set<UI>} */
-    _children = new Set();
-    /** @type {UI} */
-    _parent;
-    *get_children() {
-        for (var c of this._children) {
-            yield c;
-        }
-    }
-    /** @return {Generator<UI>} */
-    *get_descendents() {
-        for (var c of this._children) {
-            yield c;
-            for (var gc of c.get_descendents()) yield gc;
-        }
-    }
-    *get_parents() {
-        var p = this._parent
-        while(p) {
-            yield p;
-            p = p._parent;
-        }
-    }
-    /** @template [T=UI] @param {new() => T} type @returns {T} */
-    get_closest(type=UI) {
-        return UI.closest(this.elem, type);
-    }
-
-    // get_children() { return UI.find(this.elem, UI, false); }
-    // get_descendents() { return UI.find(this.elem, UI, true); }
-    // get_parents() { return UI.parents(this.elem); }
-
-    constructor(elem, settings) {
-        super();
-        this.__UID__ = ++UI.id;
-        if (typeof elem === "string") elem = $(elem)[0];
-        if (elem instanceof Document) elem = elem.body;
-        if (!(elem instanceof Element) && !settings) {
-            settings = elem;
-            elem = null;
-        }
-        if (!elem) elem = document.createElement('div');
-        /** @type {HTMLElement} */
-        this.elem = elem;
-        this.elem[UI.expando] = this;
-        this.elem.classList.add(UI.pre);
-
-        this.settings = Object.assign({}, settings);
-
-        if ("class" in this.settings) {
-            var classes = this.get_setting("class");
-            if (typeof classes === "string") classes = classes.split(/\s+/);
-            this.elem.classList.add(...classes)
-        }
-        if ("style" in this.settings) {
-            Object.assign(this.elem.style, this.get_setting("style"));
-        }
-
-        // this.__update_display();
-
-        this.update = debounce_next_frame(()=>{
-            this.__update();
-            this.__render();
-        });
-        // this.render = debounce_next_frame(()=>this.__render());
-        
-        if (this.elem.isConnected) {
-            this.root.register(this);
-        }
-        
-        this.init();
-        this.get_setting("init");
-    }
-
-    init(){}
-
-    __update() {
-        this.emit("pre_update");
-
-        this.get_setting("update");
-        this.emit("update");
-
-        for (var c of this._children) {
-            c.__update();
-        }
-
-        this.get_setting("post_update");
-        this.emit("post_update");
-
-        // this.render(); // necessary to use a delayed render because certain settings' values (e.g. disabled) may depend on other siblings.
-    }
-
-    update_settings(settings) {
-        Object.assign(this.settings, settings);
-        return this.update();
-    }
-    
-    __render() {
-        var hidden = this.hidden;
-        if (hidden !== undefined) toggle_class(this.elem, "d-none", hidden);
-        toggle_attribute(this.elem, "disabled", this.disabled || this.disabled_parent);
-
-        if ("gap" in this.settings) {
-            var gap = this.get_setting("gap");
-            if (typeof gap !== "string" || gap.match(/^[0-9.]+$/)) gap = `${parseFloat(gap)}px`;
-            this.elem.style.setProperty("gap", gap);
-        }
-        if ("title" in this.settings) this.elem.title = this.get_setting("title");
-        if ("display" in this.settings) this.elem.style.display = this.get_setting("display");
-        if ("align" in this.settings) this.elem.style.alignItems = this.get_setting("align");
-        if ("justify" in this.settings) this.elem.style.justifyContent = this.get_setting("justify");
-        if ("flex" in this.settings) this.elem.style.flex = this.get_setting("flex");
-        if ("id" in this.settings) this.elem.id = this.get_setting("id");
-        if ("children" in this.settings) set_children(this.elem, this.get_setting("children"));
-        if ("content" in this.settings) set_inner_html(this.elem, this.get_setting("content"));
-        
-        if ("click" in this.settings) this.elem.onclick = (e)=>{ var r = this.get_setting("click", e); this.emit("click"); return r; }
-        if ("mousedown" in this.settings) this.elem.onmousedown = (e)=>{ var r = this.get_setting("mousedown", e); this.emit("mousedown"); return r; }
-        if ("mouseup" in this.settings) this.elem.onmouseup = (e)=>{ var r = this.get_setting("mouseup", e); this.emit("mouseup"); return r; }
-        if ("dblclick" in this.settings) this.elem.ondblclick = (e)=>{ var r = this.get_setting("dblclick", e); this.emit("dblclick"); return r; }
-
-        this.emit("render");
-        
-        for (var c of this._children) {
-            c.__render();
-        }
-    }
-
-    get_setting(key, ...args) {
-        var setting = this.settings[key];
-        if (typeof setting === "function") {
-            setting = setting.apply(this, args);
-        }
-        return setting;
-    }
-
-    get_settings_group(key) {
-        return Object.fromEntries(Object.entries(this.settings).filter(([k,v])=>k.startsWith(key+".")).map(([k,v])=>[k.slice(key.length+1),v]));
-    }
-    empty() {
-        empty(this.elem);
-        return this;
-    }
-    /** @template T @param {T} el @returns {T} */
-    append(el) {
-        this.elem.append(...arguments);
-        return el;
-    }
-    /** @template T @param {T} el @returns {T} */
-    prepend(el) {
-        this.elem.prepend(...arguments);
-        return el;
-    }
-    destroy() {
-        if (this.elem) this.elem.remove();
-        this.emit("destroy");
-    }
-
-    update_layout(layout) {
-        var hash = JSON.stringify(layout, (k,p)=>p instanceof UI ? p.id : p);
-        if (hash !== this._layout_hash) {
-            this._layout_hash = hash;
-            this.elem.innerHTML = "";
-            var process = (parent, layout)=>{
-                for (var o of layout) {
-                    if (Array.isArray(o)) {
-                        var r = this.append(new UI.FlexRow({"hidden":function(){ return this.children.every(c=>c.hidden); }}));
-                        process(r, o);
-                    } else if (typeof o === "string" && o.startsWith("-")) {
-                        this.append(new UI.Separator());
-                    } else if (o) {
-                        parent.append(o);
-                    }
-                }
-            }
-            process(this, layout);
-        }
-        this.update();
-    }
-
-    /* clone() {
-        return new this.constructor(elem, settings);
-    } */
-}
-
-UI.id = 0;
-UI.pre = "uis";
-UI.expando = `${UI.pre}-${Date.now()}`;
-var old_append = Element.prototype.append;
-var old_prepend = Element.prototype.prepend;
-
-// UI.creating = 0;
-/* UI.create = function(...args) {
-    var oc = ++UI.creating;
-    var ui = new this();
-    if (UI.creating != oc) {
-        throw new Error("Cannot initialize new UI in constructor function");
-    }
-    --UI.creating;
-    ui.init(...args);
-    return ui;
-} */
-
-/** @template [T=UI] @param {Element} elem @param {new() => T} type @param {function(UI):boolean|boolean} cb @param {boolean} include_self @returns {Generator<T>} */
-UI.find = function*(elem, type=UI, cb=false, include_self=false) {
-    if (!type) type = UI;
-    if (include_self && elem[UI.expando] && elem[UI.expando] instanceof type) yield elem[UI.expando];
-    if (!elem.children) return;
-    for (var c of elem.children) {
-        var found = c[UI.expando] && c[UI.expando] instanceof type;
-        if (found) yield c[UI.expando];
-        var check = typeof cb === "function" ? cb(c[UI.expando]) : !!cb;
-        if (!found || check) {
-            for (var sc of UI.find(c, type, cb)) {
-                yield sc;
-            }
-        }
-    }
-}
-
-// /** @template [T=UI] @param {Element} elem @param {function(UI):boolean} cb @param {boolean} recursive @param {boolean} include_self @returns {Generator<T>} */
-// UI.walk = function(elem, type=UI, cb=null, include_self=false) {
-//     var r;
-//     if (include_self && elem[UI.expando]) {
-//         r = cb(elem[UI.expando]);
-//         if (r==true) yield elem[UI.expando];
-//         if (r==false) return;
-//     }
-//     if (!elem.children) return;
-//     for (var c of elem.children) {
-//         if (c[UI.expando]) {
-//             r = cb(c[UI.expando]);
-//             if (r==true) yield c[UI.expando];
-//             if (r==false) continue;
-//         }
-//         for (var ui of UI.walk(c, cb)) yield ui;
-//     }
-// }
-/** @returns {Generator<UI>} */
-UI.parents = function*(elem, include_self=false) {
-    if (!include_self) elem = elem.parentElement;
-    while(elem) {
-        if (elem[UI.expando]) yield elem[UI.expando];
-        elem = elem.parentElement;
-    }
-}
-/** @template [T=UI] @param {Element} elem @param {new() => T} type @returns {T}
- * @description Returns the closest UI element (including if the element itself matches) */
-UI.closest = function(elem, type=UI) {
-    for (var ui of UI.parents(elem, true)) {
-        if (ui instanceof type) return ui;
-    }
-}
-
-/* UI.merge_settings = function(...settings) {
-    var o = {};
-    for (var s of settings) {
-        if (!s || typeof s !== "object") continue;
-        for (var k in s) {
-            let value = s[k];
-            if (k === "class") {
-                if (typeof value === "string") {
-                    value = value.split(/\s+/).filter(s=>s);
-                }
-            } else if (k === "style") {
-                if (typeof value === "string") {
-                    value = parse_style(value);
-                }
-            }
-            if (k in o) {
-                if (utils.is_plain_object(o[k])) {
-                    Object.assign(o[k], value);
-                    continue;
-                } else if (Array.isArray(o[k])) {
-                    o[k].push(...value);
-                    continue;
-                }
-            }
-            o[k] = value;
-        }
-    }
-    return o;
-} */
-
-/** @return {Iterable<HTMLElement>} */
-var handle_els = function*(o) {
-    if (Array.isArray(o)) for (var c of o) for (var c2 of handle_els(c)) yield c2;
-    else if (o instanceof UI) yield o.elem;
-    else if (typeof o === "string") for (var c of $(o)) yield c;
-    else if (o) yield o;
-}
-
-Element.prototype.append = function(...children) {
-    old_append.apply(this, [...handle_els(children)]);
-}
-Element.prototype.prepend = function(...children) {
-    old_prepend.apply(this, [...handle_els(children)]);
-}
-
-UI.Column = class Column extends UI {
-    init() {
-        super.init();
-        this.elem.classList.add("column");
-    }
-}
-UI.FlexColumn = class FlexColumn extends UI {
-    init() {
-        super.init();
-        this.elem.classList.add("flex", "column");
-    }
-}
-UI.Row = class Row extends UI {
-    init() {
-        super.init();
-        this.elem.classList.add("row");
-    }
-}
-UI.FlexRow = class FlexRow extends UI {
-    init() {
-        super.init();
-        this.elem.classList.add("flex", "row");
-    }
-}
-UI.Separator = class Separator extends UI {
-    constructor(settings) { super("<hr>", settings) }
-}
-UI.Label = class Label extends UI {
-    constructor(content, settings) {
-        super("<label></label>", {
-            content,
-            ...settings,
-        });
-    }
-}
-
-UI.Link = class Link extends UI {
-    constructor(content, settings) {
-        var el = $(`<a>`)[0];
-        el.innerHTML = content;
-        super(el, {...settings});
-        this.on("update", ()=>{
-            if ("href" in this.settings) this.elem.href = this.get_setting("href");
-            if ("target" in this.settings) this.elem.target = this.get_setting("target");
-        });
-    }
-}
-UI.Button = class Button extends UI {
-    constructor(label, settings) {
-        var el = $(`<button>`)[0];
-        el.innerHTML = label;
-        super(el, { ...settings });
-    }
-    init() {
-        super.init();
-        this.elem.classList.add("button");
-    }
-}
-UI.Root = class Root extends UI {
-    /** @type {Set<UI>} */
-    // connected_uis = new Set();
-    constructor(root) {
-        if (!root) root = document.body;
-
-        super(root);
-
-        this.ui_interval = setInterval(()=>{
-            this.update();
-        }, 1000);
-
-        this.ui_observer = new MutationObserver(mutations=>{
-            for (var mutation of mutations) {
-                for (var node of mutation.addedNodes) {
-                    for (var ui of UI.find(node, UI, true, true)) { // [...UI.find(node, UI, true, true)]].reverse()
-                        this.register(ui);
-                    }
-                }
-                for (var node of mutation.removedNodes) {
-                    for (var ui of UI.find(node, UI, true, true)) {
-                        this.unregister(ui);
-                    }
-                }
-            }
-        });
-
-        /* var events = ["keydown","keyup","mousedown","mouseup","click"];
-        var update = this.update.bind(this);
-        for (var ev of events) {
-            root.addEventListener(ev, update)
-            this.on("destroy", ()=>root.removeEventListener(ev, update));
-        } */
-
-        this.ui_observer.observe(root, { childList:true, subtree:true }); //, attributes:true
-    }
-    /** @param {UI} ui */
-    register(ui) {
-        this.unregister(ui);
-        ui._parent = UI.closest(ui.elem.parentElement);
-        if (ui instanceof UI.Property) {
-            ui._container = UI.closest(ui.elem, UI.PropertyContainer);
-            if (ui._container) ui._container._properties.add(ui);
-        }
-        if (ui._parent) ui._parent._children.add(ui);
-        ui.__update();
-        ui.__render();
-        ui.emit("register");
-    }
-    /** @param {UI} ui */
-    unregister(ui) {
-        if (ui._parent) {
-            ui._parent._children.delete(ui);
-            ui._parent = null;
-        }
-        if (ui._container) {
-            ui._container._properties.delete(ui);
-            ui._container = null;
-        }
-        ui.emit("unregister");
-    }
-    destroy() {
-        super.destroy();
-        clearInterval(this.ui_interval);
-        this.ui_observer.disconnect();
-    }
-}
-
-UI.PropertyContainer = class PropertyContainer extends UI {
-    _datas = [null];
-    get datas() { return this._datas.map(data=>this.get_setting("data", data)); }
-    /** @type {object[]} */
-    set datas(datas) {
-        if (!Array.isArray(datas)) datas = [datas];
-        if (!datas.length) datas = [null];
-        this._datas = [...datas];
-        this.__update_values();
-    }
-    get data() { return this.datas[0]; }
-    set data(value) { this.datas = [value]; }
-    get valid() { return this.properties.filter(p=>!p.hidden).every(p=>p.valid); }
-    /** @type {object} */
-    get property_lookup() { return Object.fromEntries(this.properties.map(p=>[p.id, p._value])); }
-    /** @type {object} */
-    get named_property_lookup() { return Object.fromEntries(this.properties.filter(p=>!p.is_indeterminate && p.name).map(p=>[p.name, p._value])); }
-    /** @type {object} */
-    get named_property_lookup_not_null() { return Object.fromEntries(Object.entries(this.named_property_lookup).filter(([k,v])=>v!==null)); }
-    get properties() { return [...this.iterate_properties()]; }
-    *iterate_properties() {
-        if (!this._properties) return;
-        for (var p of this._properties) {
-            yield p;
-        }
-        //return UI.find(this.elem, UI.Property, (ui)=>!(ui instanceof UI.PropertyContainer));
-    }
-    get_properties_by_name(name) { return this.properties.filter(p=>p.name===name); }
-    get_property_by_name(name) {return this.get_properties_by_name(name)[0]; }
-    
-    /** @type {Set<UI.Property>} */
-    _properties = new Set();
-
-    constructor(settings) {
-        super(null, Object.assign({
-            data: (a)=>a,
-            nullify_defaults: false,
-            disabled: false,
-            // autoregister: true,
-        }, settings));
-
-        this.elem.classList.add("property-container");
-
-        this.datas = [null]; // necessary so update(null, {...}) can work
-
-        this.elem.addEventListener("keydown", (e)=>{
-            if (e.key === "Enter" && e.target.matches("input,select")) {
-                e.target.blur();
-                e.preventDefault();
-                e.stopPropagation();
-            }
-        })
-        this.addEventListener("property-change", ()=>{
-            this.update();
-        })
-    }
-
-    reset() {
-        for (var p of this.iterate_properties()) p.reset(true);
-    }
-
-    __update_values() {
-        for (var p of this.iterate_properties()) {
-            if (p.settings["data"] !== undefined) {
-                var values = this.datas.map(d=>p.get_setting("data", d));
-                p.set_values(values);
-            } else if (p.name) {
-                var path = p.name.split("/");
-                var values = this.datas.map(d=>{
-                    if (!d) return null;
-                    return utils.try(()=>utils.get(d, path));
-                });
-                var hash = JSON.stringify(values);
-                if (p._last_values_on_property_update !== hash) {
-                    p._last_values_on_property_update = hash;
-                    p.set_values(values);
-                }
-            }
-        }
-    }
-
-    __update() {
-        this.__update_values();
-        super.__update();
-    }
-}
-
-/** @typedef {HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement} Input */
-
-UI.Property = class Property extends UI {
-    get content() { return this.contents[0]; }
-    get input() { return this.inputs[0]; }
-    get _value() { return this._values[0]; }
-    get value() { return this.iterate_values().next().value; } // this.indeterminate ? UI.Indeterminate : 
-    get values() { return Array.from(this.iterate_values()); }
-    /** @type {boolean} */
-    get is_indeterminate() { return !utils.all_equal(this.values); }
-    /** @type {boolean} */
-    get is_default() {
-        if (this.nullify_defaults) return this._values.every((v)=>v==null);
-        return this.datas.every((item,i)=>JSON.stringify(this.get_setting("default",item))===JSON.stringify(this.values[i])); // was this._values[i]
-    }
-    /** @type {boolean} */
-    get nullify_defaults() { return this.get_setting("nullify_defaults"); }
-    get data() { return this.datas[0]; }
-    get datas() {
-        var container = this.container;
-        if ("data" in this.settings) return [this.get_setting("data")];
-        return container ? container._datas : [null];
-    }
-    /** @type {UI.PropertyContainer} */
-    get container() {
-        return this._container;
-        // return this.get_closest(UI.PropertyContainer);
-    }
-    get hidden() {
-        return this.datas.some(item=>this.get_setting("hidden", item)); // (this.parent||{}).hidden || 
-    }
-    get disabled() {
-        return this.datas.some(item=>this.get_setting("disabled", item)) || this.disabled_parent || !this.options_consistant;
-    }
-    get valid() {
-        return this.inputs.every(i=>i._last_valid === true || i._last_valid === undefined);
-    }
-    
-    /** @param {string} name @param {string} label @param {string|Element[]} contents @param {object} settings */
-    constructor(name, label, contents, settings) {
-        settings = {
-            "setup": ()=>{
-                var inputs_selector = `input,select,textarea`;
-                var inputs = this.contents.map(e=>{
-                    if (e.matches(inputs_selector)) return [e];
-                    return Array.from(e.querySelectorAll(inputs_selector));
-                }).flat();
-                this.setup_generic_input(inputs);
-                return inputs;
-            },
-            "label": label,
-            // "event":(e)=>e.type === "change",
-            "placeholder": "",
-            "invalid_class": "invalid",
-            "default": null,
-            "readonly": undefined,
-            "spinner": undefined,
-            "min": undefined,
-            "max": undefined,
-            "step": undefined,
-            "round": undefined,
-            "precision": undefined,
-            "disabled": false,
-            "reset": true,
-            "hidden": false,
-            "info": undefined,
-            "options": undefined,
-            "copy":false,
-            "reset_on_dblclick": false,
-            "nullify_defaults": ()=>{
-                var container = this.container;
-                return container ? container.get_setting("nullify_defaults") : false;
-            },
-            ...settings
-        };
-
-        super(null, settings);
-
-        this.elem.classList.add("property");
-        
-        this._values = [null];
-        /** @type {Element[]} */
-        this.contents = [];
-        /** @type {Input[]} */
-        this.inputs = [];
-        /** @type {Function(any):string[]} */
-        this.modifiers = [];
-        /** @type {Function(any):string[]} */
-        this.input_modifiers = [];
-        /** @type {Function(any):any[]} */
-        this.output_modifiers = [];
-        /** @type {Function(any,Input):any[]} */
-        this.validators = [];
-        this.options_consistant = true;
-        // this.values_valid = true;
-        this.name = name;
-        this.name_id = `${this.name}-${this.id}`;
-
-        this.inner = new UI();
-        this.inner.elem.classList.add("property-inner");
-        this.append(this.inner);
-        
-        contents = (typeof contents === "string") ? $(contents) : contents;
-        if (!Array.isArray(contents)) contents = [contents];
-        contents.forEach(e=>this.inner.append(e));
-        this.contents = contents;
-
-        var inputs = this.get_setting("setup") || [];
-        if (!Array.isArray(inputs)) inputs = [inputs];
-        
-        this.inputs = inputs;
-
-        if (this.input) {
-            if (this.settings["placeholder"] === undefined) this.settings["placeholder"] = this.input.placeholder;
-            if (this.settings["readonly"] ===undefined) this.settings["readonly"] = this.input.readOnly;
-            if (this.settings["default"] === undefined) this.settings["default"] = this.input.value;
-            if (this.settings["min"] === undefined && this.input.min) this.settings["min"] = ()=>+this.input.min;
-            if (this.settings["max"] === undefined && this.input.max) this.settings["max"] = ()=>+this.input.max;
-            if (this.settings["step"] === undefined && this.input.step) this.settings["step"] = ()=>+this.input.step;
-        }
-        var multiple = this.get_setting("multiple");
-        if ((!multiple && this.input && this.input.type === "number") || this.settings["step"] !== undefined || this.settings["precision"] !== undefined || this.settings["round"] !== undefined || this.settings["min"] !== undefined || this.settings["max"] !== undefined || this.settings["spinner"] !== undefined) {
-            this.is_numeric = true;
-            this.settings["step"] = this.settings["step"] || 1;
-            
-            if (this.settings["spinner"] !== false && this.input.type !== "range") {
-                this.spinner_elem = new UI().elem;
-                this.spinner_elem.classList.add("spinner");
-                this.up_button = new UI.Button(`<i class="fas fa-caret-up"></i>`, {
-                    "click":(e)=>this.set_values(this.value + this.get_setting("step"), {trigger_if_changed:true}),
-                    "disabled":()=>this.value>=this.get_setting("max"),
-                });
-                this.down_button = new UI.Button(`<i class="fas fa-caret-down"></i>`, {
-                    "click":(e)=>this.set_values(this.value - this.get_setting("step"), {trigger_if_changed:true}),
-                    "disabled":()=>this.value<=this.get_setting("min"),
-                });
-                this.spinner_elem.append(this.up_button, this.down_button);
-                this.inner.append(this.spinner_elem);
-            }
-        }
-        
-        var label_elem = this.elem.querySelector("label");
-        if (!label_elem) {
-            label_elem = $(`<label><span></span></label>`)[0];
-            this.label = new UI(label_elem, {
-                hidden: ()=>!this.get_setting("label", this.data),
-                update: ()=>{
-                    set_inner_html(this.label.elem.firstChild, this.get_setting("label", this.data));
-                    var info = this.get_setting("info", this.data);
-                    if (info) {
-                        if (!this.info_elem) {
-                            this.info_elem = $(`<span><i class="fas fa-question-circle info"></i></span>`)[0];
-                            this.label.append(this.info_elem);
-                            this.tooltip = new UI.Tooltip(this.info_elem);
-                        }
-                        this.tooltip.set_content(info);
-                    }
-                    if (this.info_elem) toggle_class(this.info_elem, "d-none", !info);
-                }
-            });
-            this.prepend(this.label);
-        }
-        set_attribute(label_elem, "for", this.name_id);
-
-        if (this.get_setting("copy")) {
-            var copy_hide_timeout;
-            var copy_tippy;
-            this.copy_button = new UI.Button(`<i class="fas fa-copy"></i>`, {
-                "click":(e)=>{
-                    e.preventDefault();
-                    this.input.select();
-                    window.navigator.clipboard.writeText(this.input.value);
-                    if (!copy_tippy) {
-                        copy_tippy = tippy(this.input, {
-                            content:"Copied!",
-                            trigger:"manual",
-                            zIndex: 999999,
-                            onShow:(instance)=>{
-                                clearTimeout(copy_hide_timeout);
-                                copy_hide_timeout = setTimeout(()=>instance.hide(),1500);
-                            }
-                        });
-                    }
-                    copy_tippy.show();
-                },
-                "title": "Copy",
-            });
-            this.inner.append(this.copy_button);
-
-            for (let input of this.inputs) {
-                input.addEventListener("mousedown",e=>{
-                    input.select();
-                    if (e.button == 0) e.preventDefault();
-                });
-            }
-        }
-        
-        this.reset_button = new UI.Button(`<i class="fas fa-undo"></i>`, {
-            "click":()=>this.reset(true),
-            "title": "Reset",
-            "hidden": ()=>!this.get_setting("reset"),
-        });
-        this.inner.append(this.reset_button);
-        
-        /* requestAnimationFrame(()=>{
-            this.update_inputs(true);
-        }); */
-    }
-
-    setup_generic_input(inputs) {
-        inputs.forEach((input, i)=>{
-            set_attribute(input, "id", this.name_id);
-            // set_attribute(input, "name", this.name);
-            ["change", "input"].forEach(ev_type=>{
-                input.addEventListener(ev_type, (e)=>{
-                    if (ev_type == "input") this.emit("input", e);
-                    var value = (this.get_setting("multiple")) ? inputs.map(input=>get_value(input)) : get_value(input);
-                    value = this.apply_input_modifiers(value);
-                    this.set_value(value, {trigger_if_changed: e.type == "change"});
-                });
-            });
-            /* input.addEventListener("blur", (e)=>{
-                this.root.update();
-            });
-            input.addEventListener("focus", (e)=>{
-                this.root.update();
-            }); */
-            input.addEventListener("blur", (e)=>{
-                this.update();
-            });
-            input.addEventListener("focus", (e)=>{
-                this.update();
-            });
-            if (input.nodeName === "INPUT") {
-                input.addEventListener("keydown", (e)=>{
-                    if (e.key === "Enter") {
-                        e.preventDefault();
-                        e.target.blur();
-                    }
-                    if (input.type !== "number" && this.is_numeric) {
-                        var new_value;
-                        if (e.key == "ArrowUp") new_value = this.value + this.get_setting("step");
-                        else if (e.key == "ArrowDown") new_value = this.value - this.get_setting("step");
-                        if (new_value !== undefined) {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            this.set_values(new_value, {trigger_if_changed:true});
-                        }
-                    }
-                });
-            }
-            input.addEventListener("dblclick", (e)=>{
-                if (this.get_setting("reset_on_dblclick")) {
-                    this.set_values(null, {trigger_if_changed:true});
-                }
-            });
-            
-            /* Object.defineProperty(input, 'value', {
-                get () { return this.get_value(); },
-                set (value) { this.set_value(value, false); }
-            }); */
-        });
-    }
-
-    reset(trigger=false) {
-        this.set_values(null, {trigger_if_changed:trigger});
-    }
-
-    /** @typedef {{trigger:boolean, trigger_if_changed:boolean}} SetValueOptions */
-    /** @param {SetValueOptions} options */
-    set_value(value, options) {
-        return this.set_values(this.datas.map(_=>value), options);
-    }
-
-    /** @param {SetValueOptions} options */
-    set_values(values, options) {
-        options = Object.assign({
-            trigger: false,
-            trigger_if_changed: false,
-        }, options);
-        // console.trace(this.name, values, trigger);
-        // if (!Array.isArray(values)) throw new Error("Values must be array...");
-
-        var datas = this.datas;
-        if (!Array.isArray(values)) values = datas.map(item=>values);
-        if (values.length != datas.length) {
-            throw new Error(`Values length (${values.length}) mismatch datas length (${datas.length})...`);
-        }
-
-        var fix_value = (value)=>{
-            if (typeof(value) == "number") {
-                var min = this.get_setting("min");
-                var max = this.get_setting("max");
-                var round = this.get_setting("round");
-                var precision = this.get_setting("precision");
-                if (max !== undefined) value = Math.min(value, +max);
-                if (min !== undefined) value = Math.max(value, +min);
-                if (round !== undefined) value = utils.round_to_factor(value, round);
-                if (precision !== undefined) value = +value.toFixed(precision)
-            }
-            for (var m of this.modifiers) {
-                value = m.apply(this, [value]);
-            }
-            return value;
-        };
-
-        values = values.map((v)=>fix_value(v));
-        
-        this._values = datas.map((data,i)=>{
-            var default_value = fix_value(this.get_setting("default", data));
-            if (this.nullify_defaults) return JSON.stringify(values[i]) === JSON.stringify(default_value) ? null : values[i];
-            return (values[i] == null) ? default_value : values[i];
-        });
-
-        // --------------- DO NOT TOUCH ---------------
-        // -------- THIS IS A DELICATE MACHINE --------
-
-        var values_hash = JSON.stringify([this.values, this._values, options.trigger_if_changed, options.trigger]);
-        var changed = values_hash !== this._last_changed_values_hash;
-        if (changed) this._last_changed_values_hash = values_hash;
-        var trigger = options.trigger || (options.trigger_if_changed && changed)
-
-        // --------------------------------------------
-
-        this.update();
-
-        var e = {
-            "datas": [...this.datas],
-            "name": this.name,
-            "_value": this._value,
-            "_values": this._values,
-            "value": this.value,
-            "values": this.values,
-            "trigger": trigger,
-        };
-        var container = this.container;
-        if (changed || trigger) {
-            this.emit("change", e);
-            if (container) container.emit("property-change", e);
-        }
-        return changed;
-    }
-
-    __render() {
-        super.__render();
-
-        var is_default = this.is_default;
-        var is_indeterminate = this.is_indeterminate;
-        var default_value = this.get_setting("default", this.data);
-        var readonly = this.get_setting("readonly");
-        var disabled = this.disabled;
-        var style_not_default = !!this.get_setting("reset");
-        var is_multiple = !!this.get_setting("multiple");
-
-        this.options_consistant = true;
-        if (this.settings["options"] !== undefined) {
-            var options = [];
-            var items_options = this.datas.map((item)=>this.get_setting("options",item)||[]);
-            this.options_consistant = (()=>{
-                if (this.datas.length <= 1) return true;
-                var last;
-                for (var o of items_options) {
-                    var curr = JSON.stringify(o)
-                    if (last && curr != last) return false;
-                    last = curr;
-                }
-                return true;
-            })();
-            if (!this.options_consistant) is_indeterminate = true;
-            if (!this.options_consistant || is_indeterminate) options = [{value:"", text:"Multiple values", style:{"display":"none"}}];
-            if (this.options_consistant) {
-                options.push(...utils.deep_copy(items_options[0]));
-            }
-
-            options = fix_options(options);
-            if (style_not_default) {
-                options.forEach((o)=>{
-                    if (String(o.value) === String(default_value)) o.text += " *";
-                });
-            }
-            this.inputs.filter(e=>e.nodeName==="SELECT").forEach(e=>set_select_options(e, options));
-        }
-
-        var value = this.apply_output_modifiers(this.value);
-        
-        if (typeof value === "number" && this.settings["precision"] !== undefined) {
-            value = value.toFixed(this.get_setting("precision"));
-            if (value.includes(".")) value = value.replace(/\.?0+$/,"");
-        }
-
-        var update_value = (input, value)=>{
-            if (is_indeterminate) {
-                if (input.type == "color") value = "#000000";
-                else value = "";
-            }
-            set_value(input, value, {trigger:false});
-        };
-
-        var is_focused = this.inputs.some(input=>has_focus(input));
-        var is_text_field = this.inputs.some(input=>!input.readOnly && (input.type === "text" || input.type === "password" || input.nodeName === "TEXTAREA")) && !this.is_numeric;
-        
-        if (this.inputs.length) {
-            if (!is_text_field || !is_focused) {
-                if (is_multiple) {
-                    this.inputs.forEach((input,i)=>update_value(input, value[i]));
-                } else {
-                    update_value(this.input, value);
-                }
-            }
-        }
-
-        for (var input of this.inputs) {
-            // input.disabled = disabled;
-            toggle_attribute(input, "disabled", disabled===true);
-            if (readonly !== undefined) {
-                input.readOnly = readonly;
-                // set_attribute(input, "readonly", readonly);
-            }
-            var is_checkbox = input.nodeName === "INPUT" && input.type === "checkbox";
-            
-            toggle_class(input, "not-default", !is_default && style_not_default); // !is_focused && 
-            
-            if (is_checkbox) {
-                input.indeterminate = is_indeterminate;
-            }
-            
-            var placeholder = is_indeterminate ? "Multiple values" : this.get_setting("placeholder");
-            if (input.placeholder !== placeholder) input.placeholder = placeholder;
-
-            var title = is_indeterminate ? "Multiple values" : this.get_setting("title") || "";
-            if (title) set_attribute(input, "title", title);
-            else remove_attribute(input, "title");
-            
-            var valid = disabled || is_indeterminate || (()=>{
-                for (var validator of this.validators) {
-                    valid = validator.apply(this, [this.value, input]);
-                    if (valid !== true) return valid;
-                }
-                return true;
-            })();
-            
-            var invalid_class = this.get_setting("invalid_class");
-            if (invalid_class) toggle_class(input, invalid_class, valid !== true);
-
-            if (valid === false) valid = "Invalid input";
-            if (input._last_valid !== valid) {
-                if (typeof valid === "string") {
-                    if (!input._tooltip) new UI.Tooltip(input);
-                    input._tooltip.set_content(valid);
-                } else {
-                    if (input._tooltip) input._tooltip.destroy();
-                }
-                input._last_valid = valid;
-            }
-        }
-    }
-
-    apply_input_modifiers(v) {
-        for (var m of this.input_modifiers) {
-            v = m.apply(this, [v]);
-        }
-        return v;
-    }
-
-    apply_output_modifiers(v) {
-        for (var m of this.output_modifiers) {
-            v = m.apply(this, [v]);
-        }
-        return v;
-    }
-    
-    *iterate_values() {
-        var datas = this.datas;
-        for (var i = 0; i < this._values.length; i++) {
-            yield (this._values[i] == null) ? this.get_setting("default",datas[i]) : this._values[i];
-        }
-    }
-
-    /* destroy() {
-        if (this.container) this.container.unregister_properties(this);
-        super.destroy();
-    } */
-}
-UI.DateTimeProperty = class DateTimeProperty extends UI.Property {
-    get today_str() { return new Date().toISOString().split("T")[0]; }
-
-    constructor(name, label, settings = {}) {
-        var inputs = $(`<input type="date"><input type="time">`);
-
-        super(name, label, inputs, Object.assign({
-            "datetime.apply_timezone": true,
-            "default": null,
-            "multiple": true,
-        }, settings));
-
-        this.modifiers.push(value=>{
-            return new Date(value ? value : NaN);
-        })
-        this.input_modifiers.push((values)=>{
-            if (values.every(v=>v==="")) return NaN;
-            if (!values[0]) values[0] = this.today_str
-            if (!values[1]) values[1] = "00:00";
-            return utils.join_datetime(values, this.get_setting("datetime.apply_timezone"));
-        });
-
-        this.output_modifiers.push((value)=>{
-            var parts = ["",""];
-            if (value) {
-                parts = utils.split_datetime(value, this.get_setting("datetime.apply_timezone"));
-            }
-            return [parts[0], parts[1].slice(0,5)];
-        });
-        
-        this.validators.push((_,input)=>{
-            if (!this.get_setting("datetime.after_now")) return true;
-            if (!inputs.some(input=>input.value)) return true;
-            // inputs[0].min = utils.split_datetime(new Date())[0];
-            var before_now = this.value < Math.floor(Date.now()/1000)*1000;
-            var before_today = new Date(inputs[0].value) < new Date(this.today_str);
-            if (before_today && input.type == "date") return "Scheduled date is in the past.";
-            else if (!before_today && before_now && input.type == "time") return "Scheduled time is in the past.";
-            return true;
-        });
-    }
-}
-UI.TimeSpanProperty = class TimeSpanProperty extends UI.Property {
-    constructor(name, label, settings = {}) {
-        var input = $(`<input type="text">`)[0];
-        super(name, label, input, Object.assign({
-            "timespan.format": "hh:mm:ss",
-            "timespan.zero_infinity": false,
-            "step": 1.0,
-            "default": 0,
-        }, settings));
-        this.input_modifiers.push((v)=>{
-            var zero_infinity = this.get_setting("timespan.zero_infinity");
-            if (zero_infinity && v.toLowerCase() === "infinity") return 0;
-            v = utils.timespan_str_to_seconds(v, this.get_setting("timespan.format"));
-            return v
-        });
-        this.output_modifiers.push((v)=>{
-            var zero_infinity = this.get_setting("timespan.zero_infinity");
-            if (zero_infinity && v == 0) return "Infinity";
-            return utils.ms_to_timespan_str(v * 1000, this.get_setting("timespan.format"))
-        });
-    }
-}
-UI.TextArea = class TextArea extends UI.Property {
-    constructor(name, label, settings = {}) {
-        var input = $(`<textarea style="resize:none"></textarea>`)[0];
-        super(name, label, input, Object.assign({
-            "default": "",
-            "textarea.rows": 4,
-            "textarea.min_rows": null,
-            "textarea.return_blur": false,
-        }, settings));
-        /** @type {AutoSizeController} */
-        var asc;
-        var rows = this.get_setting("textarea.rows");
-        var min_rows = this.get_setting("textarea.min_rows");
-        if (min_rows) {
-            asc = new AutoSizeController(input, min_rows, false);
-        } else if (rows) {
-            this.input.rows = rows;
-        }
-        var max_length = this.get_setting("textarea.max_length");
-        if (max_length) input.maxLength = max_length;
-        if (this.get_setting("textarea.show_count")) {
-            textarea_input_events.forEach(ev=>input.addEventListener(ev, ()=>this.update_char_count()));
-            this.char_count = $(`<div style="text-align:right"></div>`)[0];
-            this.append(this.char_count);
-            this.update_char_count();
-        }
-        input.addEventListener("keydown", (e)=>{
-            if (e.key == "Enter") {
-                if (this.get_setting("textarea.return_blur")) {
-                    e.preventDefault();
-                    input.blur();
-                }
-            }
-        })
-        this.on("update", ()=>{
-            if (asc) asc.update();
-        });
-    }
-    update_char_count() {
-        this.char_count.innerHTML = `(${this.input.value.length}/${this.get_setting("textarea.max_length")||"-"})`
-    }
-}
-
-UI.Tooltip = class {
-    constructor(elem, content){
-        this._tippy = tippy(elem, {
-            allowHTML:true,
-            zIndex:99999,
-            appendTo: "parent",
-        });
-        this.elem = elem;
-        if (content) this.set_content(content);
-        elem._tooltip = this;
-    }
-    set_content(content) {
-        if (this._content === content) return;
-        this._content = content;
-        this._tippy.setContent(content);
-    }
-    destroy() {
-        if (!this._tippy) return;
-        this._tippy.destroy();
-        this._tippy = null;
-        this.elem._tooltip = null;
-    }
-};
-
-UI.VALIDATORS = {
-    not_empty: (v)=>!!v||"Field cannot be empty",
-    rtmp: (v)=>utils.is_valid_rtmp_url(v)||"Invalid RTMP URL",
-    url: (v)=>utils.is_valid_url(v)||"Invalid URL",
-    json: (v)=>{
-        try { JSON.parse(v); return true; } catch { return false; }
-    },
-};
 
 export function is_visible(elem) {
     if (!elem.isConnected) return false;
@@ -2008,11 +845,13 @@ export function read_file(file, options) {
         reader.readAsText(file, options.encoding);
     });
 }
+/** @return {ChildNode[]} */
 export function render_html(htmlString) {
     if (typeof htmlString !== "string") return null;
     _temp_div.innerHTML = htmlString.trim();
     return Array.from(_temp_div.childNodes);
 }
+export const $ = render_html;
 export function get_value(elem) {
     if (elem.type === "checkbox") {
         return elem.checked;
@@ -2063,7 +902,7 @@ export function get_index(element) {
     if (!element.parentNode) return -1;
     return Array.from(element.parentNode.children).indexOf(element);
 }
-/** @template T @param {{selector:string, auto_insert:boolean, remove:function(Element):void, add:function(T,Element,Number):Element }} opts @param {T[]} items */
+/** @template T @param {HTMLElement} container @param {{selector:string, auto_insert:boolean, remove:function(Element):void, add:function(T,Element,Number):Element }} opts @param {T[]} items */
 export function rebuild(container, items, opts) {
     if (!opts) opts = {};
     opts = Object.assign({
@@ -2082,7 +921,9 @@ export function rebuild(container, items, opts) {
         elem = opts.add(item, elem, i) || elem;
         elem.dataset.id = id;
         if (opts.auto_insert) {
-            insert_at(container, elem, i);
+            if (elem.parentElement != container || get_index(elem) != i) {
+                insert_at(container, elem, i);
+            }
         }
         leftovers.delete(elem);
     }
@@ -2109,6 +950,7 @@ export function restart_animation(elem) {
     }
 }
 
+/** @return {HTMLTableElement} */
 export function build_table(datas, opts) {
     opts = Object.assign({
         header: true,
@@ -2319,7 +1161,7 @@ export function on_click_and_hold(elem, callback) {
     }
 }
 /** @param {HTMLSelectElement} elem */
-export function cycle_select(elem, trigger_change = false) {
+export function cycle_select(elem, trigger = false) {
     var value = elem.value;
     var options = Array.from(elem.options);
     var i = 0;
@@ -2330,7 +1172,7 @@ export function cycle_select(elem, trigger_change = false) {
         }
     }
     elem.value = options[i % options.length].value;
-    if (trigger_change) elem.dispatchEvent(new Event("change"));
+    if (trigger) elem.dispatchEvent(new Event("change"));
 }
 /** @return {Window} */
 export function get_owner_window(node) {
@@ -2368,10 +1210,17 @@ export function autosize(elem, min_rows = 3) {
     // }
 }
 
-export function has_focus(el, ancestors=false) {
-    var active = el.getRootNode().activeElement;
-    if (!ancestors) return active === el;
-    return closest(el, (e)=>e===active);
+/** @param {HTMLElement} el */
+export function has_focus(el, ancestors=false, descendents=false) {
+    /** @type {Document|ShadowRoot} */
+    var root = el.getRootNode();
+    var active_el = root.activeElement;
+    if (active_el === el) return true;
+    if (root.body !== active_el) {
+        if (ancestors && closest(el, (e)=>e===active_el)) return true;
+        if (descendents && walk(el, (e)=>e===active_el)) return true;
+    }
+    return false;
 }
 
 export function has_touch_screen() {
@@ -2459,6 +1308,7 @@ export async function on_stylesheet_load(elem) {
     });
 }
 
+/** @param {HTMLElement} elem @param {function(Element):any} delegate */
 export function closest(elem, delegate) {
     var p = elem;
     while (p) {
@@ -2467,6 +1317,24 @@ export function closest(elem, delegate) {
         p = p.parentElement;
     }
 }
+
+/** @param {HTMLElement} elem @param {function(Element):any} delegate */
+export function walk(elem, delegate) {
+    var r,c;
+    var _walk = (elem)=>{
+        r = delegate.apply(elem, [elem]);
+        if (r) return r;
+        for (c of elem.children) {
+            r = _walk(c);
+            if (r) return r;
+        }
+    }
+    for (c of elem.children) {
+        r = _walk(c);
+        if (r) return r;
+    }
+}
+
 
 export function is_scrollbar_visible(elem) {
     var doc = elem.ownerDocument
@@ -2482,8 +1350,8 @@ export function is_scrollbar_visible(elem) {
 export function debounce_next_frame(func) {
     var timeout_id, args, context, promise, resolve;
     var later = ()=>{
-        resolve(func.apply(context, args));
         promise = null;
+        resolve(func.apply(context, args));
     };
     var debounced = function(...p) {
         context = this;
@@ -2494,8 +1362,8 @@ export function debounce_next_frame(func) {
         });
     };
     debounced.cancel = ()=>{
-        cancelAnimationFrame(timeout_id);
         promise = null;
+        cancelAnimationFrame(timeout_id);
     };
     return debounced;
 }
@@ -2683,7 +1551,7 @@ class ScrollOverlay {
         if (opts.flex) this.viewport.style.display = "flex";
     }
 }
-export {ScrollOverlay};
+export { ScrollOverlay };
 
 export { OverlayScrollbars,  ScrollbarsHidingPlugin,  SizeObserverPlugin,  ClickScrollPlugin };
 
@@ -2717,5 +1585,25 @@ export function get_url(uri, sub, ws=false) {
     parts.unshift(sub);
     url.host = parts.filter(a=>a).join(".");
     if (ws) url.protocol = window.location.protocol === "https:"?"wss:":"ws:";
-    return url.toString().slice(0,-1);
+    return url;
 }
+
+/** @param {HTMLElement} elem */
+export function convert_to_camel_case(key) {
+    return key.replace(/-([a-z])/g, (_, char)=>char.toUpperCase());
+}
+
+/** @param {HTMLElement} elem */
+export function get_dataset(elem, key) {
+    if (key) {
+        return elem.dataset[convert_to_camel_case(key)];
+    }
+    return Object.fromEntries(Array.from(elem.attributes).filter(attr=>attr.nodeName.match(/^data-/)).map(attr=>attr.nodeName.slice(5)).map(k=>[k, get_dataset(elem, k)]));
+}
+
+/** @param {HTMLElement} elem */
+export function set_dataset_value(elem, key, value) {
+    return elem.dataset[convert_to_camel_case(key)] = value;
+}
+
+export * as ui from './ui.js';

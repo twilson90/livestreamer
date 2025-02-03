@@ -64,7 +64,6 @@ export const PerFileProps = {
 
 const background_mode_options = [["logo",`Logo`], ["color", "Color"], ["embedded", "Embedded Artwork"], ["external", "External Artwork"]];
 
-/** @type {Record<string,Property>} */
 export const PlaylistItemProps = {
     id: {
         __default__: "",
@@ -81,6 +80,9 @@ export const PlaylistItemProps = {
     parent_id: {
         __default__: "0",
     },
+    upload: {
+        __default__: undefined,
+    },
     props: {
         ...PerFileProps,
         clip_start: {
@@ -89,15 +91,15 @@ export const PlaylistItemProps = {
         clip_end: {
             __default__: null,
         },
-        /* clip_loops: {
+        clip_loops: {
             __default__: 1,
-        }, */
+        },
         clip_offset: {
             __default__: 0,
         },
-        clip_duration: {
+        /* clip_duration: {
             __default__: null,
-        },
+        }, */
         fade_in: {
             __default__: 0,
         },
@@ -277,10 +279,6 @@ export const Props = {
         __save__:false,
     },
     playlist_info: {
-        __default__: {},
-        __save__: false,
-    },
-    last_stream: {
         __default__: {},
         __save__: false,
     },

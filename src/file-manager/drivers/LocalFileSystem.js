@@ -3,7 +3,7 @@ import path from "node:path";
 import Mime from "mime";
 import fs from "fs-extra";
 import stream from "node:stream";
-import * as constants from "../constants.js";
+import * as constants from "../../core/constants.js";
 import Driver from "../Driver.js";
 
 /**

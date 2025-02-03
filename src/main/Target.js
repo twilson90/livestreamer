@@ -1,11 +1,27 @@
 import fs from "fs-extra";
 import path from "node:path";
 import DataNode from "../core/DataNode.js";
+import * as utils from "../core/utils.js";
 import globals from "./globals.js";
-/** @import { SessionBase, Stream, StreamTarget } from './types.d.ts' */
+/** @import { StreamTarget } from './types.d.ts' */
+
+// stream_targets
+// streams
+// name
+// description
+// rtmp_host
+// rtmp_key
+// title
+// url
+// access_control
+// ts
+// limit
+// locked
 
 export class Target extends DataNode {
-    get streams() { return Object.values(globals.app.streams).filter(s=>s.stream_targets[this.id]); }
+    #data;
+    get stream_targets() { return Object.values(globals.app.streams).map(s=>s.stream_targets[this.id]).filter(st=>st); }
+    get streams() { return this.stream_targets.map(st=>st.stream); }
     get name() { return this.$.name; }
     get description() { return this.$.description; }
     get rtmp_host() { return this.$.rtmp_host; }
@@ -16,6 +32,8 @@ export class Target extends DataNode {
     get ts() { return this.$.ts; }
     get limit() { return this.$.limit; } // number of streams that can be done concurrently
     get locked() { return this.$.locked; }
+    /** @param {StreamTarget} st */
+    config(data, st) { return (this.#data.config || (()=>{}))(data, st); }
 
     constructor(data) {
         data = {
@@ -23,34 +41,20 @@ export class Target extends DataNode {
             ...data
         };
         super(data.id);
-        // this.config = config;
+        this.#data = data;
+        
         globals.app.targets[this.id] = this;
         globals.app.$.targets[this.id] = this.$;
 
-        this.user_config = data.config || (()=>{});
-        delete data.config;
-        delete data.stream_priority;
-        delete data.stream_id;
         this.#update(data);
     }
 
-    /** @param {StreamTarget} st */
-    evaluate(st) {
-        var data = { ...this.$, ...this.user_config(st), opts: { ...st.stream.session.$.target_opts[st.target.id] } };
-        var {rtmp_url, rtmp_host, rtmp_key, opts} = data;
-        if (!rtmp_url) {
-            rtmp_url = rtmp_key ? rtmp_host.replace(/\/+$/, "") + "/" + rtmp_key.replace(/^\/+/, "") : rtmp_host;
-        }
-        rtmp_url = new URL(rtmp_url);
-        for (var k in opts) {
-            var v = opts[k];
-            rtmp_url.searchParams.append(k, (typeof v === "boolean") ? Number(v) : String(v));
-        }
-        data.rtmp_url = rtmp_url.toString();
-        return data;
-    }
-
     #update(data) {
+        data = {...data};
+        delete data.config;
+        delete data.stream_priority;
+        delete data.stream_id;
+        // utils.rename_property(data, "url", "view_url");
         Object.assign(this.$, data);
         if (!this.$.locked) this.$.ts = Date.now();
         if (!this.$.ts) this.$.ts = Date.now();
@@ -73,6 +77,9 @@ export class Target extends DataNode {
     
     async destroy() {
         super.destroy();
+        for (var st of this.stream_targets) {
+            await st.destroy();
+        }
         delete globals.app.targets[this.id];
         delete globals.app.$.targets[this.id];
         if (!this.locked) {

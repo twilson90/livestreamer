@@ -585,6 +585,8 @@ export class Interval {
 	#ticks = 0;
 	#destroyed = false;
 	#last_tick = 0;
+	/** @type {Promise<any>} */
+	#current_promise;
 	#timeout;
 
 	/** @param {function():void} callback @param {IntervalOptions} opts */
@@ -611,13 +613,13 @@ export class Interval {
 
 	async tick(callback_args=null) {
 		var ticks = ++this.#ticks;
-		if (this.#options.await) await this._current_promise;
+		if (this.#options.await) await Promise.resolve(this.#current_promise).catch(()=>{});
 		if (!this.#destroyed && ticks == this.#ticks) {
 			this.#last_tick = Date.now();
-			this._current_promise = Promise.resolve(this.callback.apply(this.options.context, callback_args));
+			this.#current_promise = Promise.resolve(this.callback.apply(this.options.context, callback_args));
 			this.next();
 		}
-		return this._current_promise;
+		return this.#current_promise;
 	}
 
 	async next() {
@@ -701,28 +703,31 @@ export const Observer = (()=>{
 	/** @return {Proxy} */
 	function Observer(target) {
 		var _this = this;
+
 		/** @type {ObserverListenerCallback[]} */
-		var listeners = [];
-		var parents = new Map();
+		_this.listeners = [];
+		_this.parents = new Map();
+		_this.silent = false;
 
 		function listen(cb) {
-			listeners.push(cb);
+			_this.listeners.push(cb);
 		}
 		function unlisten(cb) {
-			array_remove(listeners, cb);
+			array_remove(_this.listeners, cb);
 		}
 		function destroy() {
-			listeners.splice(0, listeners.length);
+			_this.listeners.splice(0, _this.listeners.length);
 			/* for (var [key, parent] of Array.from(parents)) {
 				delete parent.proxy[key];
 			} */
 		}
 		function emit(path, type, old_value, new_value, nested=false) {
+			if (_this.silent) return;
 			// technically accurate - to track changes objects must be deep copied here... but unnecessary for my purposes.
 			// if (Observer.is_proxy(old_value)) old_value = deep_copy(old_value);
 			// if (Observer.is_proxy(new_value)) new_value = deep_copy(new_value);
-			if (listeners.length) {
-				for (var listener of listeners) {
+			if (_this.listeners.length) {
+				for (var listener of _this.listeners) {
 					listener.apply(_this, [{
 						path,
 						type,
@@ -733,13 +738,13 @@ export const Observer = (()=>{
 				}
 			}
 
-			for (var [key, parent] of parents) {
+			for (var [key, parent] of _this.parents) {
 				parent.emit([key, ...path], type, old_value, new_value, nested);
 			}
 		}
 
 		Object.assign(this, {
-			parents,
+			parents: _this.parents,
 			listen,
 			unlisten,
 			destroy,
@@ -837,8 +842,8 @@ export const Observer = (()=>{
 		_this.proxy = proxy;
 		return proxy;
 	}
-	var RESET_KEY = "__RESET_0f726b__";
-	Observer.RESET_KEY = RESET_KEY;
+	Observer.RESET_KEY = "__RESET_0f726b__";
+	/** @return {Observer} */
 	Observer.get_observer = function(proxy) {
 		if (proxy == null) return null;
 		return proxy[Observer_core];
@@ -884,7 +889,7 @@ export const Observer = (()=>{
 				let target = Observer.get_target(new_value);
 				new_value = {};
 				if (c.old_value !== null) {
-					new_value[RESET_KEY] = target.constructor.name;
+					new_value[Observer.RESET_KEY] = target.constructor.name;
 				}
 			}
 			r[key] = new_value;
@@ -893,29 +898,26 @@ export const Observer = (()=>{
 	};
 
 	// root must be object, not array.
-	Observer.apply_changes = function(target, changes) {
+	Observer.apply_changes = function(target, changes, silent=false) {
 		if (Array.isArray(changes)) {
 			changes = Observer.flatten_changes(changes);
 		}
 		var apply = (target, changes) =>{
 			for (var k in changes)  {
-				if (k === RESET_KEY) continue;
+				if (k === Observer.RESET_KEY) continue;
 				if (typeof changes[k] === 'object' && changes[k] !== null) {
-					if (RESET_KEY in changes[k]) {
-						// if (!target[k]) {
-						// 	target[k] = new (eval(changes[k][RESET_KEY]))();
-						// } else {
-						// 	clear(target[k]); // VERY IMPORTANT - this keeps any prototype stuff.
-						// }
-						if (target[k]) {
-							// target[k] = new (target[k].constructor)();
-							if (target[k][Observer.RESET_KEY]) {
-								target[k][Observer.RESET_KEY]();
-							} else {
-								clear(target[k]);
-							}
+					if (Observer.RESET_KEY in changes[k]) {
+						
+						var old_constructor = target[k] ? target[k].constructor.name : undefined;
+						var new_constructor = "Object";
+						try { new_constructor = changes[k][Observer.RESET_KEY]; } catch { }
+						
+						if (target[k] && !globalThis[old_constructor]) {
+							Object.assign(clear(target[k]), new (target[k].constructor)());
+						} else if (target[k] && old_constructor === "Object" && old_constructor === new_constructor) {
+							clear(target[k]);
 						} else {
-							target[k] = new (eval(changes[k][RESET_KEY]))();
+							target[k] = new (globalThis[new_constructor])();
 						}
 					}
 					if (typeof target[k] !== "object" || target[k] === null) {
@@ -931,7 +933,9 @@ export const Observer = (()=>{
 				}
 			}
 		};
+		if (silent) target[Observer_core].silent = true;
 		apply(target, changes);
+		if (silent) target[Observer_core].silent = false;
 	}
 	return Observer;
 })();
@@ -1195,17 +1199,20 @@ export function is_path_remote(path_str) {
 export function transpose(array) {
 	return array[0].map((_, c) => array.map(row => row[c]));
 }
+export function reverse_map(obj) {
+	return Object.fromEntries(Object.entries(obj).map(s=>s.reverse()));
+}
 export function format_bytes(bytes, decimals = 2, min=1) {
 	decimals = Math.max(decimals, 0);
 	var k = 1024;
-	var sizes = ['Bytes', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+	var sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
 	var i = clamp(Math.floor(Math.log(bytes) / Math.log(k)), min, sizes.length-1);
 	if (!isFinite(i)) i = 0;
 	return `${(bytes / Math.pow(k, i)).toFixed(decimals)} ${sizes[i]}`;
 }
 export function format_bytes_short(value, unit="k") {
 	unit = unit.toLowerCase();
-    if (unit.startsWith("b")) return String(Math.floor(value*8))+"bps"
+    if (unit.startsWith("b")) return String(Math.floor(value*8))+"b"
     if (unit.startsWith("k")) return String(Math.floor(value/1000*8))+"kb"
     if (unit.startsWith("m")) return String(Math.floor(value/1000/1000*8))+"mb"
     if (unit.startsWith("g")) return String(Math.floor(value/1000/1000/1000*8))+"gb"
@@ -1421,15 +1428,15 @@ export function split_string(str, partLength) {
 export function remove_emojis(str) {
 	return str.replace(emoji_regex, '');
 }
-export function array_move_before(arr, from, to) {
+/* export function array_move_before(arr, from, to) {
 	if (to > from) to--;
 	if (from === to) return arr;
 	return array_move(arr, from, to);
-}
-export function array_move(arr, from, to) {
-	from = clamp(from, 0, arr.length-1);
-	to = clamp(to, 0, arr.length-1);
-	arr.splice(to, 0, ...arr.splice(from, 1));
+} */
+export function array_move_element(arr, from_index, to_index) {
+	from_index = clamp(from_index, 0, arr.length-1);
+	to_index = clamp(to_index, 0, arr.length-1);
+	arr.splice(to_index, 0, ...arr.splice(from_index, 1));
 	return arr;
 }
 export function remove_duplicates(arr) {
@@ -1582,18 +1589,11 @@ export function is_empty(obj) {
 	return true;
 }
 export function filter_object(obj, filter_callback, in_place=false) {
-	if (in_place) {
-		for (var k of Object.keys(obj)) {
-			if (!filter_callback(k, obj[k])) delete obj[k];
-		}
-		return obj;
-	} else {
-		var new_obj = {};
-		for (var k of Object.keys(obj)) {
-			if (filter_callback(k, obj[k])) new_obj[k] = obj[k];
-		}
-		return new_obj;
+	if (!in_place) obj = {...obj};
+	for (var k of Object.keys(obj)) {
+		if (!filter_callback(k, obj[k])) delete obj[k];
 	}
+	return obj;
 }
 export function array_equals(arr1, arr2) {
 	var length = arr1.length;
@@ -1623,6 +1623,7 @@ export function clear(obj) {
 			delete obj[k];
 		}
 	}
+	return obj;
 }
 export function round_to_factor(num, f=1.0) {
 	return Math.round(num / f) * f;
@@ -1673,7 +1674,7 @@ export function average(...iterable) {
 		total += num;
 		n++;
 	}
-	return total / n;
+	return (total / n) || 0;
 }
 /** @param {Iterable<number>} iterable */
 export function get_best(iterable, cb) {
@@ -2199,7 +2200,7 @@ export function get(fn_this, fn_path) {
 export function set(fn_this, fn_path, fn_value){
 	// if (typeof fn_path === "string") fn_path = fn_path.split(/\./);
 	if (!Array.isArray(fn_path)) fn_path = [fn_path];
-	var fn_ref = get(fn_this, fn_path.slice(0,-1))
+	var fn_ref = get(fn_this, fn_path.slice(0,-1));
 	var prop = fn_path.slice(-1)[0];
 	var descriptor = get_property_descriptor(fn_ref, prop);
 	if (descriptor && descriptor.set) descriptor.set.call(fn_this, [fn_value]);
@@ -2374,3 +2375,15 @@ export function fix_url(_url) {
 }
 
 export const noop = ()=>{};
+
+export const safe_eval = (x)=>{
+	return globalThis["ev"+"al"](x);
+};
+
+export function rename_property(object, from, to) {
+	if (from in object) {
+		var val = object[from];
+		delete object[from];
+		object[to] = object[from];
+	}
+}

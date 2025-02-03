@@ -1,0 +1,217 @@
+@use "./mixins.scss";
+
+:root {
+	--gap: 10px;
+	--padding: 5px;
+	--orientation1: column;
+	--orientation2: row;
+	--item-size: 0;
+	--input-height: 30px;
+	--property-icon-padding: 0 8px;
+	--border-color: #aaa;
+	--border: 1px solid var(--border-color);
+}
+
+label.uis {
+	display: flex;
+	margin-bottom: 0;
+}
+.uis.property {
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	&[disabled], &:disabled {
+  	pointer-events: none;
+		opacity: 0.6;
+	}
+	&>* {
+		flex-direction: row;
+	}
+	&>.property-header {
+		display:flex;
+		margin-bottom: 0;
+		line-height: 1.2;
+		margin-bottom: 0.2em;
+		align-items: center;
+		&>*:not(:first-child) {
+			margin-left:5px;
+		}
+	}
+	&>.property-outer {
+		display: flex;
+		position: relative;
+		&.vertical {
+			flex-direction: column;
+		}
+		select>option {
+			font-weight:normal;
+		}
+		&>*:not(:first-child) {
+			margin-left:-1px;
+		}
+		&>.button {
+			height: auto;
+			display: flex;
+			flex: none;
+		}
+		&>.property-inner {
+			display: flex;
+			position: relative;
+			flex: 1;
+			min-width: 100px;
+
+			&>.property-input-icon,&>.property-input-suffix {
+				flex: 0;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				padding: var(--property-icon-padding);
+			}
+			&>.property-input-wrapper {
+				min-width: 100px;
+				width: 100%;
+				position:relative;
+				&>input, &>select, &>textarea, &>.fake-input {
+					display: block;
+					width: 100%;
+				}
+			}
+			/* &>.property-input-suffix {
+				position: absolute;
+				pointer-events: none;
+				white-space: nowrap;
+				top: 50%;
+				transform: translateY(-50%);
+				margin-top: -1px;
+				right: .5em;
+				transition: all .05s ease-in-out;
+				opacity: 0.6;
+				font-weight: normal !important;
+				font-style: normal !important;
+				z-index: 2;
+			} */
+		}
+	}
+}
+.uis.property-list-wrapper {
+	display:flex;
+	flex-direction: var(--orientation1);
+	overflow: hidden;
+	min-height: var(--input-height);
+    width: 100%;
+	padding: 0;
+	--padding: 5px;
+	--gap: 5px;
+
+	&.horizontal {
+		--orientation1: row;
+		--orientation2: column;
+	}
+	&>.empty {
+		display:flex;
+		flex:1;
+		align-items: center;
+		justify-content: center;
+		user-select: none;
+	}
+	.uis.property-list {
+		display:flex;
+		gap: var(--gap);
+		flex-direction: var(--orientation1);
+		padding: var(--padding);
+		overflow: auto;
+		&>.property-list-item {
+			display:flex;
+			flex-direction: var(--orientation2);
+			flex: 1 0 var(--item-size);
+			border: var(--border);
+			&>*:first-child {
+				display:flex;
+				padding: var(--padding);
+				flex: 1;
+				gap: var(--gap);
+				border: var(--border);
+			}
+			&>.buttons {
+				display: flex;
+				flex-direction: var(--orientation1);
+			}
+		}
+	}
+}
+.uis.property-container {
+	display: flex;
+	flex-direction: column;
+	gap: var(--gap);
+
+	&>* {
+		margin:0;
+	}
+	hr {
+		margin: 5px 0;
+		border-top-width: 2px;
+	}
+}
+.uis.box {
+	display: flex;
+	flex-direction: column;
+	gap: var(--gap);
+	padding: 5px;
+	border: var(--border);
+}
+.uis.header {
+	margin: 0;
+	padding-bottom: 5px;
+	border-bottom: var(--border);
+}
+.uis.spinner {
+	display: flex;
+	flex-direction: column;
+	width: 16px;
+	flex: none;
+	&>* {
+		font-size:60%;
+		flex: 1;
+		padding: 0;
+		&:not(:first-child) {
+			margin-top:-1px;
+		}
+	}
+	button {
+		font-size: 11px;
+		padding: 0 !important;
+		min-height: auto;
+		height: auto;
+	}
+}
+.uis.column, .uis.row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--gap);
+	&.flex>* {
+		flex:1;
+	}
+}
+.uis.row {
+	flex-direction: row;
+	&>* { max-width: 100%; }
+}
+.uis.column {
+	flex-direction: column;
+	&>* { max-height: 100%; }
+}
+.uis.button {
+	text-align: center;
+	justify-content: center;
+	display: flex;
+	align-items: center;
+	gap: var(--gap);
+}
+select,input,textarea,.fake-input {
+	&.invalid, .invalid & {
+		&:not(:focus) {
+			border-color: red;
+			box-shadow: inset 0 0 3px red;
+		}
+	}
+}

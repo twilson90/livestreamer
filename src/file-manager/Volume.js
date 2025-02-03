@@ -12,7 +12,7 @@ import mime from "mime";
 import https from "node:https";
 import * as utils from "./utils.js";
 import * as errors from "./errors.js";
-import * as constants from "./constants.js";
+import * as constants from "../core/constants.js";
 /** @import { ElFinder, Driver } from './types.d.ts' */
 
 const API_VERSION = "2.161";

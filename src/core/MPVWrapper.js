@@ -47,6 +47,7 @@ export class MPVWrapper extends events.EventEmitter {
         this.options = options = {
             executable: globals.core.conf["core.mpv_executable"],
             cwd: ".",
+            ipc: true,
             ...options,
         };
         
@@ -59,10 +60,10 @@ export class MPVWrapper extends events.EventEmitter {
     async start(args=[]) {
         args = [
             ...args,
-            `--input-ipc-server=${this.socket_path}`,
             "--idle",
             "--msg-level=all=status,ipc=v" //all=no,
         ];
+        args.push(`--input-ipc-server=${this.socket_path}`);
         this.args = args;
         this.#message_id = 0;
         this.#observed_id = 0;
@@ -85,63 +86,33 @@ export class MPVWrapper extends events.EventEmitter {
             if (this.#closed) return;
             console.error(e);
         });
-        // this.#process.on("exit", () => {});
-        // this.#process.stderr.on("error", (e)=>console.error("mpv stderr error", e));
-        // this.#process.stdin.on("error",  (e)=>console.error("mpv stdin error", e));
-        // this.#process.stdout.on("error", (e)=>console.error("mpv stdout error", e));
-        // this.#process.stderr.on("close", (e)=>{});
-        // this.#process.stdin.on("close",  (e)=>{});
-        // this.#process.stdout.on("close", (e)=>{});
 
         globals.core.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
-        {
-            let stderr_listener = readline.createInterface(this.#process.stderr);
-            let stdout_listener = readline.createInterface(this.#process.stdout);
-            this.logger.info("Waiting for MPV IPC to signal open...");
-            await new Promise((resolve, reject)=>{
-                setTimeout(()=>{
-                    reject("Received no IPC signal.");
-                }, 5000);
-                let check = (line)=>{
-                    this.logger.info(line);
-                    if (line.match(/Listening to IPC (socket|pipe)/)) {
-                        resolve();
-                    } else if (line.match(/Could not bind IPC (socket|pipe)/)) {
-                        reject("Could not bind IPC");
-                    }
-                };
-                stderr_listener.on("line", check);
-                stdout_listener.on("line", check);
-            }).catch(e=>{                
-                this.logger.error(e);
-                this.quit();
-            })
-            stdout_listener.close();
-            stderr_listener.close();
-        }
-
-        this.logger.info(`MPV started successfully.`);
-
-        await this.#try_start_socket();
         
-        {
-            let msg_handler, timeout_id;
-            await new Promise((resolve, reject) => {
-                setTimeout(reject, 1000);
-                msg_handler = (message)=>{
-                    if ("event" in message && ["idle","idle-active","file-loaded"].includes(message.event)) {
-                        resolve();
-                    } else if ("data" in message && "error" in message && message.error === "success") { // ???
-                        resolve();
-                    }
+        let stderr_listener = readline.createInterface(this.#process.stderr);
+        let stdout_listener = readline.createInterface(this.#process.stdout);
+        this.logger.info("Waiting for MPV IPC to signal open...");
+        await new Promise((resolve, reject)=>{
+            setTimeout(()=>{
+                reject("Received no IPC signal.");
+            }, 5000);
+            let check = (line)=>{
+                this.logger.info(line);
+                if (line.match(/Listening to IPC (socket|pipe)/)) {
+                    resolve();
+                } else if (line.match(/Could not bind IPC (socket|pipe)/)) {
+                    reject("Could not bind IPC");
                 }
-                this.on("message", msg_handler);
-                this.get_property("idle-active");
-            }).catch(()=>{
-                this.logger.warn("No initial idle signal detected, attempting to start anyway...");
-            })
-            this.off("message", msg_handler);
-        }
+            };
+            stderr_listener.on("line", check);
+            stdout_listener.on("line", check);
+        }).catch(e=>{                
+            this.logger.error(e);
+            this.quit();
+        })
+        stdout_listener.close();
+        stderr_listener.close();
+        await this.#try_start_socket();
 
         for (var o of default_observes) {
             await this.observe_property(o).catch((e)=>this.logger.error(e));
@@ -149,8 +120,9 @@ export class MPVWrapper extends events.EventEmitter {
     }
 
     async stop() {
-        await this.command("stop");
+        if (this.#quitting) return;
         if (this.#observed_props["idle-active"]) return;
+        await this.command("stop");
         var handler;
         await new Promise((resolve)=>{
             handler = resolve;
@@ -159,37 +131,38 @@ export class MPVWrapper extends events.EventEmitter {
         this.off("idle", handler);
     }
 
+    destroy() {
+        return this.quit();
+    }
+
     async quit() {
         if (this.#quitting) return;
         this.#quitting = true;
         this.emit("before-quit");
         if (this.#process && !this.#closed) {
-            this.command("quit");
             await new Promise(resolve=>{
+                this.command("stop")
+                    .catch(()=>{})
+                    .then(()=>{
+                        this.command("quit").catch(()=>{})
+                    });
                 this.#process.once("close", resolve);
-                setTimeout(()=>{
+                setTimeout(async ()=>{
                     if (this.#closed) return;
                     this.logger.warn("Quit signal not working. Terminating MPV process tree with SIGKILL...");
-                    utils.tree_kill(this.#process.pid, "SIGKILL");
-                    setTimeout(()=>{
-                        if (this.#closed) return;
-                        this.logger.error("Process kill hasn't worked! Uh oh.");
-                        resolve();
-                    }, 5000);
-                }, 2000);
+                    await utils.tree_kill(this.#process.pid, "SIGKILL");
+                    resolve();
+                }, 1000);
             }).catch((e)=>{
                 this.logger.error("quit error:", e);
             });
         }
         this.emit("quit");
-        // this.removeAllListeners();
-        
         if (this.#socket) {
             this.#socket.destroy();
         }
         await fs.unlink(this.socket_path).catch(()=>{});
-        
-        this.logger.destroy();
+        // this.logger.destroy();
     }
 
     async #try_start_socket(){
@@ -201,6 +174,7 @@ export class MPVWrapper extends events.EventEmitter {
         });
         this.#socket.off("error", cb);
         if (success) this.#init_socket();
+        await this.command("get_version");
         return success;
     }
 
@@ -368,11 +342,11 @@ export class MPVWrapper extends events.EventEmitter {
 
     // ----------------------------------------------
 
-    command(...command) {
+    async command(...command) {
         return new Promise(async (resolve, reject)=>{
             if (this.#socket.closed) {
                 this.logger.warn(`Command '${command}' failed, socket is destroyed.`);
-                // setImmediate(()=>reject("Socket is destroyed."));
+                process.nextTick(()=>reject());
                 return;
             }
             const request_id = ++this.#message_id;
@@ -384,8 +358,13 @@ export class MPVWrapper extends events.EventEmitter {
             };
             try {
                 this.#socket.write(JSON.stringify(msg) + "\n", (e)=>{
-                    if (this.#socket.closed || this.#quitting) return;
-                    if (e instanceof Error) this.logger.error(e);
+                    if (!this.#socket.closed && !this.#quitting) {
+                        if (e) {
+                            this.logger.error(e);
+                            delete this.#socket_requests[request_id];
+                            reject();
+                        }
+                    }
                 });
             } catch (e) {
                 this.logger.error(e);

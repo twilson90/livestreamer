@@ -41,19 +41,19 @@ export class WebServer {
 
         this.socket_path = globals.core.get_socket_path(`${globals.core.name}_http`);
         globals.core.logger.info(`Starting HTTP server on socket ${this.socket_path}...`);
+        globals.core.logger.info(globals.core.get_urls().http);
         // console.info(globals.core.get_urls(globals.core.name).url);
         
         this.server = http.createServer(http_opts, async (req, res)=>{
             // accesslog(req, res, undefined, (l)=>core.logger.debug(l));
             if (opts.auth) {
                 var path = new URL(req.url, `http://localhost`).pathname;
-                /* if (path.match(/^\/logout$/)) {
+                if (path.match(/^\/logout$/)) {
                     await globals.core.unauthorise(req, res);
                     res.write('Logged out');
                     res.end();
                     return;
-                } else  */
-                if (path.match(/^\/$/) || path.match(/^\/index.html$/)) {
+                } else if (path.match(/^\/$/) || path.match(/^\/index.html$/)) {
                     let auth_res = await globals.core.authorise(req, res);
                     if (!auth_res) {
                         res.setHeader('WWW-Authenticate', 'Basic realm="Authorized"');

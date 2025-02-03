@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import bodyParser from "body-parser";
 import * as utils from "./utils.js";
 import * as errors from "./errors.js";
-import * as constants from "./constants.js";
+import * as constants from "../core/constants.js";
 import Volume from "./Volume.js";
 import globals from "./globals.js";
 /** @import { Driver } from './types.d.ts' */

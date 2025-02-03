@@ -2,6 +2,7 @@ import {Core} from "./index.js";
 import globals from "./globals.js";
 import * as utils from "./utils.js";
 
+export {default as config} from "../config.default.js";
 export {Blocklist} from "./Blocklist.js";
 export {Cache} from "./Cache.js";
 export {ClientBase} from "./ClientBase.js";

@@ -3,7 +3,10 @@ import * as utils from "./utils.js";
 
 export class DataNode extends events.EventEmitter {
     $ = new utils.Observer();
+    /** @type {string} */
     get id() { return this.$.id; } // always a string
+    #destroyed = false;
+    get destroyed() { return this.#destroyed; }
 
     constructor(id) {
         super();
@@ -25,6 +28,7 @@ export class DataNode extends events.EventEmitter {
     
     destroy() {
         // safe to call multiple times.
+        this.#destroyed = true;
         utils.Observer.destroy(this.$);
     }
 

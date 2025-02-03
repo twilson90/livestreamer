@@ -6,6 +6,7 @@ import globals from "./globals.js";
 
 export class Client extends ClientBase {
     get session() { return globals.app.sessions[this.$.session_id]; }
+    get stream() { return this.session.stream; }
     get sessions() { return globals.app.sessions; }
     get app() { return globals.app; }
     get core() { return globals.app; }
@@ -18,10 +19,11 @@ export class Client extends ClientBase {
         $.conf = {
             // ["auth"]: globals.app.auth,
             ["debug"]: globals.app.debug,
-            ["media-server.name"]: globals.app.conf["media-server.name"],
-            ["media-server.rtmp_port"]: globals.app.conf["media-server.rtmp_port"],
-            ["session_order_client"]: globals.app.conf["session_order_client"],
+            ["test_stream_low_settings"]: globals.app.conf["main.test_stream_low_settings"],
+            ["rtmp_port"]: globals.app.conf["media-server.rtmp_port"],
+            ["session_order_client"]: globals.app.conf["main.session_order_client"],
         };
+        $.hostname = globals.app.hostname;
         this.send({ $ });
     }
 
@@ -33,7 +35,7 @@ export class Client extends ClientBase {
 
     rearrange_sessions(old_index, new_index) {
         var sessions = utils.sort(Object.values(globals.app.sessions), s=>s.$.index);
-        utils.array_move(sessions, old_index, new_index);
+        utils.array_move_element(sessions, old_index, new_index);
         sessions.forEach((s,i)=>s.$.index = i);
     }
 
@@ -45,8 +47,8 @@ export class Client extends ClientBase {
         // if (this.session) this.session.emit("attach", this);
     }
 
-    async save_file(dir, file, data) {
-        var fullpath = await globals.app.evaluate_filename(dir, file).catch(e=>globals.app.logger.error(e.message));
+    async save_file(file, data) {
+        var fullpath = this.session.evaluate_and_sanitize_filename(file);
         if (fullpath) await fs.writeFile(fullpath, data);
     }
     destroy() {

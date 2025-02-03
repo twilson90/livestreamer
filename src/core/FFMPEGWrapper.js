@@ -19,20 +19,21 @@ export class FFMPEGWrapper extends events.EventEmitter {
     constructor(opts) {
         super();
         this.opts = {
+            exec: "ffmpeg",
             info_interval: 1000,
             ...opts
         }
-        this.#logger = new Logger("ffmpeg");
+        this.#logger = new Logger(this.opts.exec);
     }
 
-    /** @param {string[]} args @param {child_process.SpawnOptionsWithoutStdio} opts */
-    start(args, opts) {
+    /** @param {string[]} args @param {child_process.SpawnOptionsWithoutStdio} spawn_opts */
+    start(args, spawn_opts) {
         this.#closed = false;
         
-        this.#logger.info("Starting FFMPEG...");
-        this.#logger.debug("FFMPEG args:", args);
+        this.#logger.info(`Starting ${this.opts.exec}...`);
+        this.#logger.debug(`${this.opts.exec} args:`, args);
         
-        this.#process = child_process.spawn(globals.core.conf["core.ffmpeg_executable"], args, {windowsHide: true, ...opts});
+        this.#process = child_process.spawn(this.opts.exec === "ffmpeg" ? globals.core.conf["core.ffmpeg_executable"]: globals.core.conf["core.ffplay_executable"], args, {windowsHide: true, ...spawn_opts});
 
         globals.core.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
 
@@ -61,7 +62,7 @@ export class FFMPEGWrapper extends events.EventEmitter {
         listener.on("line", line=>{
             this.#logger.debug(line);
             this.emit("line", line);
-            var m = line.match(/^(?:frame=\s*(.+?) )?(?:fps=\s*(.+?) )?(?:q=\s*(.+?) )?size=\s*(.+?) time=\s*(.+?) bitrate=\s*(.+?) speed=(.+?)x/);
+            var m = line.match(/^(?:frame=\s*(.+?)\s+)?(?:fps=\s*(.+?)\s+)?(?:q=\s*(.+?)\s+)?(?:size=\s*(.+?)\s+)(?:time=\s*(.+?)\s+)(?:bitrate=\s*(.+?)\s+)(?:speed=(.+?)x\s+)/);
             if (m) {
                 var ts = Date.now();
                 var info = {
@@ -107,9 +108,9 @@ export class FFMPEGWrapper extends events.EventEmitter {
         })
     }
 
-    destroy() {
-        this.stop();
-        this.#logger.destroy();
+    async destroy() {
+        await this.stop();
+        // this.#logger.destroy();
     }
 }
 

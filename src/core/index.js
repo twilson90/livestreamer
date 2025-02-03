@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "fs-extra";
 import events from "node:events";
+// import inspector from "node:inspector";
 import readline from "node:readline";
 import cron from "node-cron";
 import os from "node:os";
@@ -16,14 +17,14 @@ import Logger from "./Logger.js";
 import IPC from "./IPC.js";
 import * as utils from "./utils.js";
 import globals from "./globals.js";
-import config_default from "./config.default.js";
+import config_default from "../config.default.js";
 import {minimatch} from "minimatch";
 import express from "express";
 import which from "which";
 import osInfo from "linux-os-info";
-/** @import {BuildOptions} from "vite" */
 
-/** @typedef {typeof import("./config.default.js").default & typeof import("../file-manager/config.default.js").default & typeof import("../media-server/config.default.js").default & typeof import("../main/config.default.js").default} Conf */
+/** @import {BuildOptions} from "vite" */
+/** @typedef {typeof import("../config.default.js").default} Conf */
 /** @import {StartOptions} from "pm2" */
 
 const pm2 = async (func, ...args)=>{
@@ -80,7 +81,8 @@ export class Core extends events.EventEmitter {
     get is_electron() { return !!(process.versions['electron']); }
     get use_pm2() { return !!(this.#opts.pm2 || "pm_id" in process.env || this.conf["core.pm2"]); }
     get hostname() { return this.conf["core.hostname"] || os.hostname(); }
-
+    get change_log_path() { return path.resolve(this.conf["core.changelog"] || "changes.md"); }
+    
     constructor(name, master_opts) {
         super();
         globals.core = this;
@@ -93,6 +95,8 @@ export class Core extends events.EventEmitter {
         this.logger.console_adapter();
         this.appspace = process.env.LIVESTREAMER_APPSPACE || "livestreamer";
         
+        this.$ = new utils.Observer();
+
         this.cwd = process.cwd();
         this.ready = this.#init();
     }
@@ -167,9 +171,16 @@ export class Core extends events.EventEmitter {
         this.modules = Object.fromEntries(resolved_modules.map(p=>[path.basename(path.dirname(p)), p]));
         
         var exit_handler = async ()=>{
+            console.log(`Handling exit...`);
             await this.shutdown();
             process.exit(0);
         };
+
+        /* const session = new inspector.Session();
+        session.connect();
+        session.on('disconnect', () => {
+            console.log('Debugger disconnected – running cleanup');
+        }); */
         process.on('beforeExit', exit_handler);
         process.on('SIGINT', exit_handler);
         process.on('SIGTERM', exit_handler);
@@ -240,14 +251,6 @@ export class Core extends events.EventEmitter {
             this.ipc.on("core:module_start", (m)=>this.module_start(m));
             this.ipc.on("core:module_stop", (m)=>this.module_stop(m));
             
-            for (let m of Object.values(this.modules)) {
-                let conf_path = path.join(m, "..", "config.default.js");
-                if (await fs.exists(conf_path)) {
-                    this.#conf_paths.push(conf_path);
-                } else {
-                    console.warn(`'${conf_path}' does not exist.`)
-                }
-            }
             if (process.env.LIVESTREAMER_CONF_PATH) this.#conf_paths.push(process.env.LIVESTREAMER_CONF_PATH);
             if (this.#opts.configs) {
                 this.#conf_paths.push(...this.#opts.configs);
@@ -421,7 +424,9 @@ export class Core extends events.EventEmitter {
                     })
                 }
                 proxy = proxies[name];
-                target = { socketPath: this.get_socket_path(`${name}_http`) };
+                target = {
+                    socketPath: this.get_socket_path(`${name}_http`)
+                };
             }
             return { proxy, target };
         };

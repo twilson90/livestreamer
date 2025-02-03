@@ -3,7 +3,7 @@ import mime from "mime-types";
 import fs from "fs-extra";
 import stream from "node:stream";
 import ftp from "basic-ftp"
-import * as constants from "../constants.js";
+import * as constants from "../../core/constants.js";
 import Driver from "../Driver.js";
 
 /** @inheritDoc */

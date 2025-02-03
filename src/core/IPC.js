@@ -2,8 +2,7 @@ import events from "node:events";
 import net from "node:net";
 import readline from "node:readline";
 import * as utils from "./utils.js";
-
-var _ignore_data_changes = false;
+import globals from "./globals.js";
 
 /** @typedef {{name:string,pid:number,ppid:number,sock:net.Socket}} Process */
 export class IPC extends events.EventEmitter {
@@ -19,10 +18,11 @@ export class IPC extends events.EventEmitter {
     #rid = 0;
     /** @type {Promise<void>} */
     #ready_resolve;
+    #ready;
     /** @type {net.Server} */
     #server;
     #destroyed = false;
-    $ = new utils.Observer();
+    // $ = new utils.Observer();
 
     constructor(is_master, name, socket_path) {
         super();
@@ -39,11 +39,10 @@ export class IPC extends events.EventEmitter {
         };
         this.processes[this.pid] = this.process;
         
-        utils.Observer.listen(this.$, c=>{
-            if (_ignore_data_changes) return;
-            if (c.nested) return;
-            this.emit("internal:data-change", c);
-        });
+        // utils.Observer.listen(this.$, c=>{
+        //     if (c.nested) return;
+        //     this.emit("internal:data-change", c);
+        // });
         
         if (this.is_master) {
             this.#server = net.createServer((sock)=>{
@@ -75,8 +74,13 @@ export class IPC extends events.EventEmitter {
                 });
             }).listen(socket_path);
         } else {
-            this.ready = new Promise(resolve=>{this.#ready_resolve=resolve});
+            this.#ready = new Promise((resolve)=>{
+                this.#ready_resolve = resolve;
+            });
         }
+        this.respond("internal:get", (...paths)=>{
+            return paths.map(p=>utils.get(globals.core, p));
+        });
     }
     async connect() {
         if (this.is_master) return;
@@ -95,32 +99,31 @@ export class IPC extends events.EventEmitter {
                     .then((result)=>[result, null])
                     .catch((err)=>[null, err]);
                 this.send(origin, `internal:response:${rid}`, [result, error]);
-            } else if (event === "internal:data-change") {
-                _ignore_data_changes = true;
-                utils.Observer.apply_changes(this.$, [data]);
-                _ignore_data_changes = false;
             }
+            /* else if (event === "internal:data-change") {
+                utils.Observer.apply_changes(this.$, [data], true);
+            } */
             super.emit(event, data);
         });
-        return this.ready;
+        await this.#ready;
     }
     async emit(event, data) {
+        await this.#ready;
+        super.emit(event, data);
         if (this.is_master) {
-            super.emit(event, data);
             return Promise.all(Object.values(this.#socks).map(sock=>write(sock, event, data)));
         } else {
-            await this.ready;
             return write(this.#master_sock, `internal:emit`, {event, data});
         }
     }
     async send(pid, event, data) {
+        await this.#ready;
         if (this.is_master) {
             return utils.retry_until(async()=>{
                 let p = await this.wait_for_process(pid);
                 return write(p.sock, event, data);
             }, 5, 1000, `IPC.send ${pid} ${event}`);
         } else {
-            await this.ready;
             return write(this.#master_sock, `internal:send`, {pid, event, data});
         }
     }
@@ -146,7 +149,7 @@ export class IPC extends events.EventEmitter {
     async request(pid, request, args, timeout=10000) {
         return new Promise(async (resolve,reject)=>{
             let rid = ++this.#rid;
-            if (!args) args = [];
+            if (!Array.isArray(args)) args = [args];
             setTimeout(()=>reject(`internal:request ${rid} ${request} timed out.`), timeout);
             this.send(pid, "internal:request", { rid, request, args, origin: this.pid });
             this.once(`internal:response:${rid}`, ([result,err])=>{
@@ -154,6 +157,11 @@ export class IPC extends events.EventEmitter {
                 else resolve(result ?? _default);
             });
         });
+    }
+    async get(pid, ...paths) {
+        var res = await this.request(pid, "internal:get", [...paths]).catch(()=>{});
+        if (res && paths.length == 1) return res[0];
+        return res;
     }
     async destroy() {
         if (this.#destroyed) return;

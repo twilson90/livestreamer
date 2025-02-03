@@ -1,1 +1,1 @@
-export type {MediaServerApp} from "./index.js";
+export type * from "./App.js";
