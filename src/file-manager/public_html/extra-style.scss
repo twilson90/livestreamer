@@ -116,9 +116,9 @@ body, html {
 		}
 		&>table {
 			padding:0 !important;
-			tbody td:first-child {
-				position: static;
-			}
+			// tbody td:first-child {
+			// 	position: static;
+			// }
 		}
 	}
 	.elfinder-statusbar {

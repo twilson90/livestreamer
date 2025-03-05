@@ -16,6 +16,7 @@ export class Log {
 	message = "";
 	prefix = [];
 	ts = 0;
+
 	constructor(...args) {
 		if (args.length == 1 && typeof args[0] === "object") {
 			/** @type {Log} */
@@ -38,22 +39,30 @@ export class Log {
 				return m;
 			}).join(" ");
 		}
+		this.message = this.message.trim();
 		this.prefix = this.prefix || [];
 		this.ts = this.ts || Date.now();
 		this.level = this.level || Logger.INFO;
-	}
-	toString() {
-		var now = new Date();
-		let t = `${now.toLocaleTimeString(undefined,{hour12:false})}.${now.getMilliseconds().toString().padStart(3,"0")}`;
-		return `${Log.format_prefix([t, this.level[0], ...this.prefix])} ${this.message}`;
 	}
 
 	static format_prefix(prefix) {
 		if (!Array.isArray(prefix)) prefix = [prefix];
 		return prefix.map(p=>`[${p}]`).join("");
 	}
+
+	toString() {
+		var now = new Date();
+		let t = `${now.toLocaleTimeString(undefined, {hour12:false})}.${now.getMilliseconds().toString().padStart(3,"0")}`;
+		return `${Log.format_prefix([t, this.level[0], ...this.prefix])} ${this.message}`;
+	}
+
+	toJSON() {
+		var {level, message, prefix, ts} = this;
+		return {level, message, prefix, ts};
+	}
 }
 
+/** @extends {utils.EventEmitter<{log:Log}>} */
 export class Logger extends events.EventEmitter {
 	static ERROR = "error";
 	static WARN = "warn";
@@ -85,32 +94,28 @@ export class Logger extends events.EventEmitter {
 		return log;
 	}
 
-	warn() { this.log(Logger.WARN, ...arguments); }
-	info() { this.log(Logger.INFO, ...arguments); }
-	error() { this.log(Logger.ERROR, ...arguments); }
-	debug() { this.log(Logger.DEBUG, ...arguments); }
-	trace() { this.log(Logger.TRACE, ...arguments); }
+	warn() { return this.log(Logger.WARN, ...arguments); }
+	info() { return this.log(Logger.INFO, ...arguments); }
+	error() { return this.log(Logger.ERROR, ...arguments); }
+	debug() { return this.log(Logger.DEBUG, ...arguments); }
+	trace() { return this.log(Logger.TRACE, ...arguments); }
 
 	log() {
 		let log = this.#process_log(...arguments);
-		if (this.#settings.file && log.level !== Logger.TRACE) this.#log_to_file(log);
-		if (this.#settings.stdout && log.level !== Logger.TRACE) this.#log_to_stdout(log);
+		this.log_to_file(log);
+		this.log_to_stdout(log);
 		this.emit("log", log);
+		return log;
 	}
 	log_to_stdout() {
-		this.#log_to_stdout(this.#process_log(...arguments));
+		let log = this.#process_log(...arguments);
+		this.log_to_stdout(log);
+		return log;
 	}
 	log_to_file() {
-		this.#log_to_file(this.#process_log(...arguments));
-	}
-	
-	/** @param {Log} log */
-	#log_to_stdout(log) {
-		var message_str = log.toString();
-		if (log.level === Logger.WARN) warn.apply(null, [message_str]);
-		else if (log.level === Logger.ERROR) error.apply(null, [message_str]);
-		else if (log.level === Logger.DEBUG) debug.apply(null, [message_str]);
-		else info.apply(null, [message_str]);
+		let log = this.#process_log(...arguments);
+		this.log_to_file(log);
+		return log;
 	}
 	#end() {
 		if (!this.#stream) return;
@@ -125,8 +130,19 @@ export class Logger extends events.EventEmitter {
 	}
 	
 	/** @param {Log} log */
-	#log_to_file(log) {
+	log_to_stdout(log) {
+		if (!this.#settings.stdout || !log.level) return;
+		var message_str = log.toString();
+		if (log.level === Logger.WARN) warn.apply(null, [message_str]);
+		else if (log.level === Logger.ERROR) error.apply(null, [message_str]);
+		else if (log.level === Logger.DEBUG) debug.apply(null, [message_str]);
+		else info.apply(null, [message_str]);
+	}
+	
+	/** @param {Log} log */
+	log_to_file(log) {
 		if (!globals.core.logs_dir) return;
+		if (!this.#settings.file || !log.level) return;
 		let filename = path.join(globals.core.logs_dir, `${this.name}-${utils.date_to_string(undefined, {time:false})}.log`);
 		if (this.#filename != filename) {
 			this.#end();
@@ -137,11 +153,11 @@ export class Logger extends events.EventEmitter {
 	}
 
 	console_adapter() {
-		console.log = (...args)=>this.info(...args);
-		console.info = (...args)=>this.info(...args);
-		console.warn = (...args)=>this.warn(...args);
-		console.error = (...args)=>this.error(...args);
-		console.debug = (...args)=>this.debug(...args);
+		console.log = (...args)=>this.log(Logger.INFO, ...args);
+		console.info = (...args)=>this.log(Logger.INFO, ...args);
+		console.warn = (...args)=>this.log(Logger.WARN, ...args);
+		console.error = (...args)=>this.log(Logger.ERROR, ...args);
+		console.debug = (...args)=>this.log(Logger.DEBUG, ...args);
 	}
 
 	destroy() {
@@ -151,13 +167,10 @@ export class Logger extends events.EventEmitter {
 	}
 
 	/** @param {function(Log):Log} cb */
-	register_observer(cb) {
-		let $ = new utils.Observer();
+	register_changes(cb) {
+		let $ = new utils.Observer().$;
 		let logs = {};
 		let _id = 0;
-		this.on("destroy", ()=>{
-			utils.Observer.destroy($);
-		});
 		this.on("log", (log)=>{
 			if (log.level === Logger.TRACE) return;
 			log = (cb ? cb(log) : log) || log

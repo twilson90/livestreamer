@@ -142,9 +142,9 @@ export class MPVWrapper extends events.EventEmitter {
         if (this.#process && !this.#closed) {
             await new Promise(resolve=>{
                 this.command("stop")
-                    .catch(()=>{})
+                    .catch(utils.noop)
                     .then(()=>{
-                        this.command("quit").catch(()=>{})
+                        this.command("quit").catch(utils.noop)
                     });
                 this.#process.once("close", resolve);
                 setTimeout(async ()=>{
@@ -161,7 +161,7 @@ export class MPVWrapper extends events.EventEmitter {
         if (this.#socket) {
             this.#socket.destroy();
         }
-        await fs.unlink(this.socket_path).catch(()=>{});
+        await fs.unlink(this.socket_path).catch(utils.noop);
         // this.logger.destroy();
     }
 
@@ -396,24 +396,25 @@ export class MPVWrapper extends events.EventEmitter {
     async on_load_promise(promise) {
         var handler;
         let started = false;
-        await new Promise((resolve, reject)=>{
+        return new Promise((resolve, reject)=>{
             handler = (msg)=>{
+                // console.log(msg);
                 if ("event" in msg) {
                     if (msg.event === "start-file") {
                         started = true;
-                    } else if(msg.event === "file-loaded" && started) {
+                    } else if (msg.event === "file-loaded" && started) {
                         resolve();
                     } else if (msg.event === "end-file" && started) {
-                        reject("Error");
+                        reject("File immediately ended.");
                     }
                 }
             };
             if (promise) promise.catch(reject);
-            setTimeout(()=>reject(`on_load_promise timed out`), TIMEOUT);
+            setTimeout(()=>reject(`File load timed out`), TIMEOUT);
             this.on("message", handler);
-        }).catch((e)=>this.logger.error(e));
-        this.off("message", handler);
-        return true;
+        }).finally(()=>{
+            this.off("message", handler);
+        });
     }
 }
 

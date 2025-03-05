@@ -79,7 +79,7 @@ export class IPC extends events.EventEmitter {
             });
         }
         this.respond("internal:get", (...paths)=>{
-            return paths.map(p=>utils.get(globals.core, p));
+            return paths.map(p=>utils.ref.get(globals.core, p));
         });
     }
     async connect() {
@@ -100,9 +100,9 @@ export class IPC extends events.EventEmitter {
                     .catch((err)=>[null, err]);
                 this.send(origin, `internal:response:${rid}`, [result, error]);
             }
-            /* else if (event === "internal:data-change") {
-                utils.Observer.apply_changes(this.$, [data], true);
-            } */
+            // else if (event === "internal:data-change") {
+            //     utils.Observer.apply_changes(this.$, [data], true);
+            // }
             super.emit(event, data);
         });
         await this.#ready;
@@ -159,7 +159,7 @@ export class IPC extends events.EventEmitter {
         });
     }
     async get(pid, ...paths) {
-        var res = await this.request(pid, "internal:get", [...paths]).catch(()=>{});
+        var res = await this.request(pid, "internal:get", [...paths]).catch(utils.noop);
         if (res && paths.length == 1) return res[0];
         return res;
     }

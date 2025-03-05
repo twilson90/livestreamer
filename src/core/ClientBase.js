@@ -1,5 +1,7 @@
 import http from "node:http";
 import WebSocket from "ws";
+import fs from "fs-extra";
+import path from "node:path";
 import * as utils from "./utils.js";
 import globals from "./globals.js";
 import Logger from "./Logger.js";
@@ -14,13 +16,11 @@ export class ClientBase extends DataNode {
     get is_admin() { return !!this.$.is_admin; }
     #initialized = false;
 
-    /**
-     * @param {ClientServer} server
-     * @param {http.IncomingMessage} req
-     * @param {WebSocket} ws
-     */
-    constructor(id, server, ws, req, userdata) {
-        super(id);
+    /** @param {ClientServer<ClientBase>} server @param {http.IncomingMessage} req @param {WebSocket} ws */
+    constructor(server, ws, req, userdata) {
+        super();
+
+        server.clients[this.id] = this;
         
         this.server = server;
         this.ws = ws;
@@ -29,20 +29,50 @@ export class ClientBase extends DataNode {
         
         var ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress).split(",")[0];
 
-        this.logger = new Logger(`client-${id}`);
+        this.logger = new Logger(`client-${this.id}`);
         this.logger.on("log", (log)=>server.logger.log(log));
         
         Object.assign(this.$, {
             ip: ip,
             ip_hash: utils.md5(ip),
             init_ts: Date.now(),
+            client_id: this.id,
+            ts: Date.now(),
         });
         if (userdata && typeof userdata === "object") {
             Object.assign(this.$, userdata);
         }
         this.logger.info(`${JSON.stringify(this.$)} connected`);
-        this.init();
+        
+        this.client_history_path = path.join(server.clients_dir, `${this.ip_hash}.json`);
     }
+
+    _init() { throw new Error("not implemented"); }
+
+    async init() {
+        await utils.append_line_truncate(this.client_history_path, JSON.stringify(this.$), 32);
+        this.send({
+            $: {
+                client_id: this.id,
+                ts: Date.now(),
+            }
+        });
+        this._init();
+    }
+
+    async get_client_info(id) {
+        var c = this.server.clients[id];
+        if (c) return c.get_info();
+    }
+
+    async get_info() {
+        var lines = (await fs.exists(this.client_history_path)) ? (await utils.read_last_lines(this.client_history_path, 512, "utf8")) : [];
+        return Object.fromEntries(lines.map((line)=>{
+            var data = JSON.parse(line.trim());
+            return [data.id, data];
+        }));
+    }
+
     _onclose(code) {
         this.logger.info(`disconnected.`);
         this.destroy();
@@ -61,9 +91,10 @@ export class ClientBase extends DataNode {
         var result, error;
         // var fn_path = Array.isArray(request.path) ? request.path : String(request.path).split(/[\.\/]+/);
         var run = ()=>{
-            if (request.call) result = utils.call(this, request.call, request.arguments);
-            else if (request.get) result = utils.get(this, request.get);
-            else if (request.set) result = utils.set(this, request.set, request.value);
+            if (request.call) result = utils.ref.call(this, request.call, request.arguments);
+            else if (request.get) result = utils.ref.get(this, request.get);
+            else if (request.set) result = utils.ref.set(this, request.set, request.value);
+            else if (request.delete) result = utils.ref.deleteProperty(this, request.delete);
             else error = `Invalid request: ${JSON.stringify(request)}`;
         };
         if (globals.core.debug) {
@@ -73,6 +104,7 @@ export class ClientBase extends DataNode {
         }
         result = await Promise.resolve(result).catch(e=>{
             error = e;
+            if (globals.core.debug) throw e;
         });
         result = {
             __id__: request_id,
@@ -91,22 +123,14 @@ export class ClientBase extends DataNode {
     }
 
     send(d) {
-        if (!this.#initialized) {
-            this.#initialized = true;
-            Object.assign(d.$, {
-                client_id: this.id,
-                ts: Date.now(),
-            });
-        }
         this.ws.send(JSON.stringify(d, (k,v)=>(v===undefined)?null:v));
     }
+    ping(){ return 1; }
 
     destroy() {
         super.destroy();
         this.ws.close();
     }
-
-    init() { throw new Error("not implemented"); }
 }
 
 export default ClientBase;

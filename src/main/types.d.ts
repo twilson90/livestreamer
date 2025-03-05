@@ -9,7 +9,7 @@ export type * from "./Plugin.js";
 export type * from "./Target.js";
 export type * from "./Download.js";
 export type * from "./Upload.js";
-export type * from "./App.js";
+export type * from "./MainApp.js";
 export type EvaluatedTarget = {
     url:string,
     output_url:string,

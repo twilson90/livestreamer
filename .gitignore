@@ -3,3 +3,6 @@
 /out/
 /dist/
 /.old/
+src/resources/win32/
+src/resources/linux/
+src/resources/macos/

@@ -11,11 +11,18 @@ export class Client extends ClientBase {
     get app() { return globals.app; }
     get core() { return globals.app; }
 
-    init() {
+    _init() {
         globals.app.$.clients[this.id] = this.$;
         var session_id = this.url.searchParams.get("session_id");
         if (session_id) this.attach_to(session_id);
-        var $ = utils.deep_copy(globals.app.$);
+        var $ = utils.json_copy(globals.app.$, (k, v)=>{
+            if (v === globals.app.$.sessions) {
+                return Object.fromEntries(Object.entries(v).map(([k,s])=>{
+                    return [k, utils.deep_filter(s, globals.app.SESSION_PUBLIC_PROPS)];
+                }));
+            }
+            return v;
+        });
         $.conf = {
             // ["auth"]: globals.app.auth,
             ["debug"]: globals.app.debug,
@@ -29,7 +36,7 @@ export class Client extends ClientBase {
 
     new_session() {
         var s = new InternalSession();
-        s.$.access_control[this.username] = {"access":"owner"}
+        s.$.access_control[this.username] = {"access":"owner"};
         this.attach_to(s.id);
     }
 
@@ -44,6 +51,9 @@ export class Client extends ClientBase {
         // if (this.session) this.session.emit("detach", this);
         if (!globals.app.sessions[session_id]) session_id = null;
         this.$.session_id = session_id;
+        var session = this.session;
+        var $ = {session:(session)?session.$:{[utils.Observer.RESET_KEY]:"Object"}};
+        this.send({$});
         // if (this.session) this.session.emit("attach", this);
     }
 
@@ -51,6 +61,7 @@ export class Client extends ClientBase {
         var fullpath = this.session.evaluate_and_sanitize_filename(file);
         if (fullpath) await fs.writeFile(fullpath, data);
     }
+    
     destroy() {
         super.destroy();
         delete globals.app.$.clients[this.id];

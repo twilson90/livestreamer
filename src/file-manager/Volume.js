@@ -818,7 +818,7 @@ export class Volume {
 						result._chunkfailure = true;
 						result.error = `Chunked Upload failed. Size mismatch (${stat.size} != ${total})`;
 					}
-					await fs.rm(chunkdir, {recursive:true}).catch(()=>{});
+					await fs.rm(chunkdir, {recursive:true}).catch(utils.noop);
 					result._chunkmerged = mergedname;
 					result._name = filename;
 					delete uploads[cid];
@@ -855,7 +855,7 @@ export class Volume {
 						filename = await driver.unique(dstdir, file.originalname, opts.suffix);
 					}
 					var dstid = await driver.upload(tmpfile, dstdir, filename);
-					await fs.unlink(tmpfile).catch(()=>{});
+					await fs.unlink(tmpfile).catch(utils.noop);
 					added.push(await driver.file(dstid));
 					f++;
 				}

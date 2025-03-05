@@ -1,1 +1,1 @@
-export type * from "./App.js";
+export type * from "./MediaServerApp.js";

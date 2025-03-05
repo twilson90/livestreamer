@@ -17,6 +17,7 @@ export const src = path.resolve(dirname, "../src");
 export const node_version = process.versions.node.split(".")[0];
 export const target = `node${node_version}`;
 export const format = "cjs";
+const platforms = ["linux", "win32"];
 
 export function normalizePath(...args) {
     return path.resolve(...args).replace(/\\/g, "/");
@@ -184,12 +185,8 @@ export default class {
                 viteStaticCopy({
                     targets: [
                         {
-                            src: [normalizePath(src, "resources"), "!**/.*"],
+                            src: [normalizePath(src, "resources"), platforms.filter(p=>p!=platform).map(p=>`!**/${p}`)],
                             dest: path.resolve(dist)
-                        },
-                        {
-                            src: [normalizePath(src, "resources", `.${platform}`)],
-                            dest: path.resolve(dist, "resources")
                         },
                         {
                             src: [normalizePath(src, 'pm2.config.cjs')],

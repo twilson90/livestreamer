@@ -2,7 +2,8 @@
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <title>Live Streamer</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+    
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
     <script src="index.js" type="module"></script>
 </head>
@@ -21,9 +22,13 @@
                     <button class="new-session" title="New Session"><i class="fas fa-plus"></i></button>
                 </div>
                 <div class="right">
-                    <button class="icon-button" title="Admin" id="show-admin"><i class="fas fa-users-cog"></i></button>
-                    <button class="icon-button" title="Client Configuration" id="show-config"><i class="fas fa-user-cog"></i></button>
-                    <a class="icon-button" title="Help" id="show-help" href="./help.html" target="_blank"><i class="far fa-question-circle"></i></a>
+                    <div class="buttons">
+                        <button class="icon" title="Admin" id="show-admin"><i class="fas fa-users-cog"></i></button>
+                        <button class="icon" title="Client Configuration" id="show-config"><i class="fas fa-user-cog"></i></button>
+                    </div>
+                    <div class="buttons">
+                        <a class="button icon" title="Help" id="show-help" href="./help.html" target="_blank"><i class="far fa-question-circle"></i></a>
+                    </div>
                 </div>
             </div>
 
@@ -33,17 +38,17 @@
                 <div class="session-controls-wrapper">
                     <div>
                         <div id="session-controls">
-                            <div class="session-control-buttons border-group">
-                                <button id="minimize-session" title="Minimize Session"><i class="fas fa-window-minimize"></i></button>
-                                <button id="sign-out-session" title="Sign out"><i class="fas fa-sign-out-alt"></i></button>
-                                <button id="config-session" title="Configure Session"><i class="fas fa-cog"></i></button>
-                                <button id="destroy-session" title="End Session"><i class="fas fa-trash"></i></button>
+                            <div class="buttons border-group">
+                                <button id="minimize-session" class="icon" title="Minimize Session"><i class="fas fa-window-minimize"></i></button>
+                                <button id="sign-out-session" class="icon" title="Sign out"><i class="fas fa-sign-out-alt"></i></button>
+                                <button id="config-session" class="icon" title="Configure Session"><i class="fas fa-cog"></i></button>
+                                <button id="destroy-session" class="icon" title="End Session"><i class="fas fa-trash"></i></button>
                             </div>
                         </div>
-                        <div id="session-load-save" class="border-group">
-                            <button id="load-session" title="Load">Load</button>
-                            <button id="save-session" title="Save">Save</button>
-                            <button id="history-session" title="History">History</button>
+                        <div id="session-load-save" class="buttons border-group">
+                            <button id="load-session" class="mini" title="Load">Load</button>
+                            <button id="save-session" class="mini" title="Save">Save</button>
+                            <button id="history-session" class="mini" title="History">History</button>
                         </div>
                         <div id="users"></div>
                     </div>

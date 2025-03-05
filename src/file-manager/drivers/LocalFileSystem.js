@@ -4,6 +4,7 @@ import Mime from "mime";
 import fs from "fs-extra";
 import stream from "node:stream";
 import * as constants from "../../core/constants.js";
+import * as utils from "../utils.js";
 import Driver from "../Driver.js";
 
 /**
@@ -19,7 +20,7 @@ class LocalFileSystem extends Driver {
 	}
 	__destroy() { }
 	async __init() {
-		var stat = await fs.stat(this.volume.root).catch(()=>{});
+		var stat = await fs.stat(this.volume.root).catch(utils.noop);
 		if (!stat || !stat.isDirectory()) {
 			console.error(`LocalFileSystem Volume '${this.volume.config.name}' does not exist.`);
 			return false;
@@ -28,7 +29,7 @@ class LocalFileSystem extends Driver {
 	}
 	async __fix_permissions(id) {
 		var p = this.abspath(id);
-		var stat = await fs.stat(p).catch(()=>{});
+		var stat = await fs.stat(p).catch(utils.noop);
 		if (!stat) return;
 		var is_dir = stat.isDirectory();
 		

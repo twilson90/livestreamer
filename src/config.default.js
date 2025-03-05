@@ -2,6 +2,7 @@ import path from "node:path";
 
 export default {
 	"core.hostname": "livestreamer.localhost",
+	"core.appdata_dir": undefined,
 	"core.logs_max_length": 64,
 	"core.logs_max_msg_length": 128 * 1024, // 128 kb
 	"core.ssl_key": "",
@@ -18,7 +19,8 @@ export default {
 	"core.ffmpeg_hwenc": null,
 	"core.ffplay_executable": "ffplay",
 	"core.pm2": false,
-	"core.changelog": null,
+	"core.debug": false,
+	"core.changelog": "changes.md",
 	
 	"file-manager.title": "File Manager",
 	"file-manager.description": "File manager server and interface.",

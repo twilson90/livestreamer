@@ -1,10 +1,11 @@
 import path from "node:path";
 import stream from "node:stream";
 import crypto from "node:crypto";
-import fs from "node:fs";
+import fs from "fs-extra";
 import MultiStream from "multistream";
 import { Writable } from "node:stream";
 
+export const noop = ()=>{};
 export function suffix(name, suff) {
 	var ext = path.extname(name);
 	var fil = path.basename(name, ext);

@@ -9,15 +9,14 @@ import SessionTypes from "./SessionTypes.js";
 import StreamTarget from "./StreamTarget.js";
 import MPVSessionWrapper from "./MPVSessionWrapper.js";
 import * as constants from "../core/constants.js";
+import StopStartStateMachine from "../core/StopStartStateMachine.js";
 /** @import { SessionBase, InternalSession, ExternalSession } from './types.d.ts' */
 
 const WARNING_MPV_LOG_SIZE = 1 * 1024 * 1024 * 1024;
 const MAX_MPV_LOG_SIZE = 8 * 1024 * 1024 * 1024;
 
-export class Stream extends DataNode {
-    get time_running() { return Date.now() - this.$.start_time } // in ms
+export class Stream extends StopStartStateMachine {
     /** @return {any[]} */
-    get state() { return this.$.state; }
     get is_gui() { return !!this.$.targets["gui"]; }
     get is_single_target() { return Object.keys(this.$.targets).length == 1; }
     get is_only_gui() { return this.is_single_target && this.is_gui; }
@@ -36,26 +35,21 @@ export class Stream extends DataNode {
     /** @type {Record<PropertyKey,StreamTarget>} */
     stream_targets = {};
     keys = {};
-    ticks = 0;
-    #reconnect_timeout;
+    #ticks = 0;
     #tick_interval;
 
     /** @param {SessionBase} session */
     constructor(session) {
         super();
-        Object.assign(this.$, {
-            state: constants.State.STOPPED,
-        });
         this.logger = new Logger("stream");
         this.logger.on("log", (log)=>(this.session||session).logger.log(log))
         this.attach(session);
     }
 
-    async start(settings) {
-        if (this.state !== constants.State.STOPPED) return;
-        
+    async _start(settings) {
+        this.#ticks = 0;
         if (settings) {
-            settings = utils.deep_copy(settings);
+            settings = utils.json_copy(settings);
             settings.targets = Object.fromEntries(Object.entries(settings.targets).filter(([id,opts])=>opts.enabled).map(([id,opts])=>{
                 var target = globals.app.targets[id];
                 var defaults = target ? target.$.opts : {};
@@ -65,19 +59,8 @@ export class Stream extends DataNode {
         }
 
         this.logger.info(`Starting stream...`);
-        this.$.state = constants.State.STARTING;
         this.$.scheduled = !!this.session.$.schedule_start_time;
-
-        var try_restart_soon = async ()=>{
-            if (this.state !== constants.State.STOPPING && this.state !== constants.State.STOPPED) {
-                this.logger.warn(`Ended unexpectedly, attempting restart soon...`);
-                await this.stop(false);
-                this.$.state = constants.State.RESTARTING;
-                this.#reconnect_timeout = setTimeout(async ()=>{
-                    await this.start();
-                }, globals.app.conf["main.stream_restart_delay"] * 1000);
-            }
-        }
+        this.$.is_encode = this.is_encode;
 
         if (this.$.test) {
             if (globals.app.conf["main.test_stream_low_settings"]) {
@@ -90,7 +73,6 @@ export class Stream extends DataNode {
         }
 
         this.$.title = this.$.title || this.session.name; // this.session.$.default_stream_title || 
-        this.$.start_time = Date.now();
         this.$.metrics = {};
         this.$.stream_targets = {};
         this.$.bitrate = 0;
@@ -102,7 +84,7 @@ export class Stream extends DataNode {
         
         if (error) {
             this.logger.error(`Start stream error: ${error}`)
-            await this.stop();
+            await this.stop("start_error");
             return false;
         }
         
@@ -215,19 +197,20 @@ export class Stream extends DataNode {
                 this.output_url
             );
 
+            var key = this.session.type === SessionTypes.EXTERNAL ? `upstream` : `trans`;
             this.ffmpeg = new FFMPEGWrapper();
-            this.ffmpeg.logger.on("log", (log)=>{
-                // log = {...log};
+            /* this.ffmpeg.logger.on("log", (log)=>{
+                log.level = Logger.DEBUG;
                 this.logger.log(log);
-            });
+            }); */
+            this.ffmpeg.on("error", (e)=>this.logger.error(e));
             this.ffmpeg.on("info", (info)=>{
                 this.$.bitrate = info.bitrate;
-                var key = this.session.type === SessionTypes.EXTERNAL ? `upstream` : `trans`;
                 this.register_metric(`${key}:speed`, this.time_running, info.speed_alt);
                 this.register_metric(`${key}:bitrate`, this.time_running, info.bitrate);
             })
             this.ffmpeg.on("end", ()=>{
-                try_restart_soon();
+                this._handle_end();
             });
             this.ffmpeg.start(ffmpeg_args);
         }
@@ -417,36 +400,28 @@ export class Stream extends DataNode {
         }
 
         this.mpv.on("quit", async ()=>{
-            if (this.is_only_gui) await this.stop();
-            else try_restart_soon();
+            if (this.is_only_gui) await this.stop("quit");
+            else this._handle_end();
         });
-
-        this.$.state = constants.State.STARTED;
-
-        await this.try_start_playlist();
         
         this.#tick_interval = setInterval(()=>this.tick(), 1000);
-        await this.tick();
-        
-        globals.app.ipc.emit("main.stream.started", this.id);
-        this.emit("started");
 
-        /* utils.Observer.listen(this.$, c=>{
-            if (c.path[0] === "targets") this.update_targets();
-        }); */
-        // this.update_targets();
-
-        return true;
+        process.nextTick(async ()=>{
+            await this.try_start_playlist();
+            globals.app.ipc.emit("main.stream.started", this.id);
+            this.emit("started");
+            this.tick()
+        });
     }
     async tick() {
-        this.ticks++;
-        if (this.ticks%60 == 0) {
+        this.#ticks++;
+        if (this.#ticks%60 == 0) {
             if (this.mpv_log_file) {
                 let stat = await fs.stat(this.mpv_log_file);
                 if (stat) {
                     if (stat.size > MAX_MPV_LOG_SIZE) {
                         this.logger.error(`mpv log file limit reached (${utils.format_bytes(MAX_MPV_LOG_SIZE)}), stopping stream...`)
-                        this.stop();
+                        this.stop("mpv_log_limit");
                     } else if (stat.size > WARNING_MPV_LOG_SIZE) {
                         this.logger.error(`mpv log file is producing excessive logs (${utils.format_bytes(WARNING_MPV_LOG_SIZE)}), consider stopping...`)
                     }
@@ -479,10 +454,7 @@ export class Stream extends DataNode {
         }
     }
 
-    async stop(detach=true) {
-        if (this.state === constants.State.STOPPING || this.state === constants.State.STOPPED) return;
-        this.$.state = constants.State.STOPPING;
-
+    async _stop() {
         clearInterval(this.#tick_interval);
         
         this.logger.info(`Stopping stream...`);
@@ -500,20 +472,11 @@ export class Stream extends DataNode {
             this.ffmpeg.destroy();
         }
 
-        this.$.state = constants.State.STOPPED;
-
         globals.app.ipc.emit("main.stream.stopped", this.id);
         
         this.emit("stopped");
         
         this.logger.info(`Stream stopped, total duration was ${utils.ms_to_timespan_str(Math.round(Date.now()-this.$.start_time))}`);
-        
-        if (detach) this.attach(null, true);
-    }
-
-    async destroy() {
-        clearTimeout(this.#reconnect_timeout);
-        await this.stop();
     }
 
     register_metric(key, x, y) {
@@ -522,16 +485,11 @@ export class Stream extends DataNode {
     }
     
     /** @param {SessionBase} session */
-    attach(session, allow_null=false) {
-        let last_session = this.session;
+    attach(session) {
         session = (typeof session === "string") ? globals.app.sessions[session] : session;
-        if (!session && !allow_null) {
-            this.logger.warn(`Attach error: Session does not exist.`);
-            return;
-        }
-        var stream = session && session.stream;
-        if (stream && stream.state !== constants.State.STOPPED) {
-            this.logger.warn(`Attach error: Session '${session.name}' is already streaming.`)
+        let last_session = this.session;
+        if (session && session.stream && session.stream.state !== constants.State.STOPPED) {
+            this.logger.warn(`Attach error: Session '${session.name}' already has an active stream.`)
             return;
         }
         if (session === last_session) {
@@ -541,19 +499,20 @@ export class Stream extends DataNode {
 
         if (last_session) {
             // do not set this.session to null, need somewhere to write logs to. It should eventually get garbaged.
-            last_session.$.stream = utils.deep_copy(this.$);
-            last_session.$.stream.state = constants.State.STOPPED;
+            last_session.$.stream = utils.json_copy(this.$);
             last_session.stream = null;
         }
 
         if (session) {
             this.$.session_id = session.id;
             this.session = session;
-            this.session.stream = this;
+            session.stream = this;
             session.$.stream = this.$;
         }
 
-        this.try_start_playlist();
+        process.nextTick(()=>{
+            this.try_start_playlist();
+        });
     }
     
     async try_start_playlist() {
@@ -568,6 +527,7 @@ export class Stream extends DataNode {
         return Object.values(this.stream_targets).filter(st=>st.id == id || st.target.id == id || st.stream.id == id);
     }
 
+    /** @param {string[]} ids */
     restart(ids) {
         if (!ids || !ids.length) ids = Object.keys(this.stream_targets);
         var stream_targets = ids.map(id=>this.stream_targets[id]).filter(st=>st);

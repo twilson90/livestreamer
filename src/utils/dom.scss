@@ -20,3 +20,137 @@
     --os-handle-bg-hover: rgba(255, 255, 255, 0.45);
     --os-handle-bg-active: rgba(255, 255, 255, 0.6);
 }
+
+.list-menu {
+	display: flex;
+	flex-direction: column;
+	padding: 0;
+    margin:0;
+	&>* {
+		display: flex;
+		margin: 0;
+		border: none;
+		background: none;
+		width: 100%;
+		text-align: left;
+		white-space: nowrap;
+		align-items: center;
+		&.disabled {
+			pointer-events: none;
+			opacity:0.5;
+			background: rgba(0,0,0, 0.05);
+		}
+		&.item {
+			padding: 3px 5px;
+			&:not(.disabled) {
+				cursor: pointer;
+				&:hover{
+					background: rgba(123, 185, 255, 0.2);
+				}
+				&:active{
+					background: rgba(123, 185, 255, 0.6);
+				}
+			}
+			.shortcut {
+				margin-left: auto;
+				padding-left: 5px;
+				body.is-touch & {
+					display:none;
+				}
+				&>*{
+					background-color: #ddd;
+					border-radius: 3px;
+					color: #444;
+					font-size: 80%;
+					min-width: 20px;
+					padding: 0 3px;
+					text-align: center;
+					// font-family: monospace;
+				}
+			}
+			.icon {
+				font-size: 12px;
+				margin-right: 4px;
+				width: 18px;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+			}
+
+			&.color {
+				padding: 2px;
+				.color {
+					height: 18px;
+					width: 18px;
+					border: 1px solid var(--ui-border);
+				}
+			}
+		}
+		&.separator {
+			padding:0;
+			margin: 4px 0;
+		}
+		&.list-menu {
+			display: flex;
+			flex-direction: row;
+			padding: 0 2px;
+			flex:1;
+			&>* {
+				justify-content: center;
+			}
+		}
+	}
+	hr {
+		margin:0;
+		width:100%;
+		border-bottom: none;
+	}
+}
+
+.tippy-box {
+	background-color: white;
+	color: #333;
+	line-height: normal;
+	color: #111 !important;
+	background-color: #fff !important;
+	// border: var(--ui-border);
+	background-clip: padding-box;
+	box-shadow: 0 3px 5px -.5px rgba(0,8,16,.2);
+	width: max-content;
+	font-size: 1rem;
+	
+	.tippy-arrow{
+		color: white;
+	}
+
+	&:not([data-theme]) {
+		.tippy-content {
+			padding:6px;
+		}
+	}
+
+	&[data-theme="list"] {
+		padding: 0;
+		border-radius: 6px;
+		overflow: hidden;
+		background-color: transparent;
+		box-shadow:0 3px 5px -.5px rgba(0,8,16,.2);
+		.tippy-arrow {
+			color: white;
+			z-index: 5;
+			display:none;
+		}
+		.tippy-content {
+			z-index: 1000;
+			max-height: calc(100vh - 20px);
+			color: #212529;
+			// margin: 0.125rem 0 0;
+			min-width: 10rem;
+			padding: 0.25rem 0;
+			color: #212529;
+			background: #fff;
+			background-clip: padding-box;
+			border-radius: .25rem;
+		}
+	}
+}

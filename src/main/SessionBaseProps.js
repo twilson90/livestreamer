@@ -1,13 +1,12 @@
 export const Props = {
+    // id: {
+    //     __default__: "-1",
+    // },
     index: {
         __default__: -1,
     },
     name: {
         __default__: "",
-    },
-    type: {
-        __default__: "",
-        __save__: false
     },
     creation_time: {
         __default__: 0,
@@ -17,16 +16,17 @@ export const Props = {
     },
     stream_settings: {
         targets: {
-            __default__: {},
-            __custom__: true,
+            __default__: {
+                "local": {
+                    enabled:true
+                }
+            },
             __enumerable__: {
+                __custom__: true,
                 enabled: {
                     __default__: false
                 }
             },
-        },
-        test: {
-            __default__: false,
         },
         title: {
             __default__: "",
@@ -59,17 +59,11 @@ export const Props = {
             __default__: 160
         },
     },
-    stream: {
-        __default__: {},
-        __save__: false,
-    },
-    logs: {
-        __default__: {},
-        __save__: false,
-    },
     access_control: {
         __default__: { "*": { "access":"allow" } },
-        __custom__:true,
+        __enumerable__:{
+            __custom__:true,
+        }
     },
 }
 export default Props;

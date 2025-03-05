@@ -394,11 +394,10 @@ export class LocalStorageBucket extends utils.EventEmitter
         super();
         this.save = utils.debounce(this.#save, 0);
         this.#name = name;
-        this.#defaults = defaults ? utils.deep_copy(defaults) : {};
+        this.#defaults = defaults ? utils.json_copy(defaults) : {};
         // in case it is altered in another window.
-        this.#interval = setInterval(()=>this.load(), 5000);
-        this.load();
-        this.#save();
+        // this.load();
+        // this.#save();
     }
     get(k) {
         return (k in this.#data) ? this.#data[k] : this.#defaults[k];
@@ -422,18 +421,16 @@ export class LocalStorageBucket extends utils.EventEmitter
         this.set(k, !this.get(k));
     }
     load() {
-        var new_values;
+        var new_values = {...this.#defaults};
         try {
-            new_values = JSON.parse(localStorage.getItem(this.#name));
+            Object.assign(new_values, JSON.parse(localStorage.getItem(this.#name)));
         } catch {
             return;
         }
         for (var k in new_values) {
             this.set(k, new_values[k]);
-            // if (!(k in this.#defaults)) {
-            //     console.warn(`LocalStorageBucket '${this.#name}' key '${k}' not defined in defaults.`);
-            // }
         }
+        if (!this.#interval) this.#interval = setInterval(()=>this.load(), 5000);
     }
     #save() {
         this.#last_data_hash = JSON.stringify(this.#data);
@@ -446,6 +443,7 @@ export class LocalStorageBucket extends utils.EventEmitter
 
 class _WebSocket extends utils.EventEmitter
 {
+    last_ping = 0;
     get requests() { return this._requests; }
 
     constructor(url, options={}) {
@@ -492,6 +490,7 @@ class _WebSocket extends utils.EventEmitter
         this._request_ids = {};
         this._requests = 0;
 
+        var heartbeat_interval_id, last_ping_ts;
         var url = this.url;
         var protocols = this.protocols;
         if (typeof url === "function") url = url();
@@ -510,11 +509,18 @@ class _WebSocket extends utils.EventEmitter
             open = true;
             clearTimeout(this._reconnect_timeout);
             this.emit("open", e);
+            heartbeat_interval_id = setInterval(send_ping, 30*1000);
+            send_ping();
         });
+        var send_ping = ()=>{
+            last_ping_ts = Date.now();
+            this.ws.send("ping");
+        }
+
         this.ws.addEventListener("message", (e)=>{
             this.emit("message", e);
-            if (e.data === "ping") {
-                this.ws.send("pong");
+            if (e.data === "pong") {
+                this.last_ping = Date.now() - last_ping_ts;
                 return;
             }
             var data;
@@ -524,10 +530,12 @@ class _WebSocket extends utils.EventEmitter
                 console.error(ex);
                 return;
             }
-            if (data && data.__id__ !== undefined) {
-                var cb = this._request_ids[data.__id__];
-                delete this._request_ids[data.__id__];
-                cb(data);
+            if (data) {
+                if (data.__id__ !== undefined) {
+                    var cb = this._request_ids[data.__id__];
+                    delete this._request_ids[data.__id__];
+                    cb(data);
+                }
             }
             this.emit("data", data)
             // this event always runs before cb() promise as promises resolve later in another (pseudo) thread.
@@ -535,6 +543,7 @@ class _WebSocket extends utils.EventEmitter
         });
         this.ws.addEventListener("close", (e)=>{
             open = false;
+            clearInterval(heartbeat_interval_id);
             this.emit("close", e);
             if (e.code == 1014) {
                 // bad gateway, don't bother.
@@ -546,6 +555,14 @@ class _WebSocket extends utils.EventEmitter
         this.ws.addEventListener("error", (e)=>{
             this.emit("error", e);
         });
+    }
+
+    async ping() {
+        var ts = Date.now();
+        if (await this.request({call:"ping"}, 5000)) {
+            this.last_ping = Date.now() - ts;
+        }
+        return this.last_ping;
     }
 }
 export {_WebSocket as WebSocket}
@@ -867,16 +884,21 @@ export function get_value(elem) {
 }
 // sets value and triggers change (only if value is different to previous value)
 export function set_value(elem, new_value, opts) {
+    if (typeof elem.value === "undefined") throw new Error();
+    
     opts = {
-        trigger: false,
+        trigger: "change",
         ...opts
     };
+    var changed = false;
     // var curr_val = get_value(elem);
     // if (curr_val === val) return;
     if (elem.type === "checkbox") {
         new_value = !!new_value;
-        if (elem.checked === new_value) return false;
-        elem.checked = !!new_value;
+        if (elem.checked !== new_value) {
+            changed = true;
+            elem.checked = !!new_value;
+        }
     } else {
         if (elem.nodeName === "SELECT") {
             var json = JSON.stringify(new_value);
@@ -890,13 +912,19 @@ export function set_value(elem, new_value, opts) {
             new_value = String(new_value)
         }
         var old_value = elem.value;
-        if (old_value === new_value) return false;
-        var position = elem.selectionStart;
-        elem.value = new_value;
-        if (position !== undefined && elem.selectionEnd != null) elem.selectionEnd = position;
+        if (old_value !== new_value) {
+            var pos = elem.selectionStart;
+            var at_end = pos == elem.value.length;
+            changed = true;
+            elem.value = new_value;
+            if (at_end) pos = elem.size;
+            if (pos !== undefined && elem.selectionEnd != null) elem.selectionEnd = pos;
+        }
     }
-    if (opts.trigger) elem.dispatchEvent(new Event("change"));
-    return true;
+    if (opts.trigger === "change" && changed || opts.trigger == true) {
+        elem.dispatchEvent(new Event("change"));
+    }
+    return changed;
 }
 export function get_index(element) {
     if (!element.parentNode) return -1;
@@ -963,8 +991,9 @@ export function build_table(datas, opts) {
         else header = {};
     }
     header = Object.fromEntries(Object.entries(header).map(([k,h])=>[k,(typeof h === "string")?{name:h}:h]));
-    thead = `<thead><tr>${Object.values(header).map((h)=>`<th style="${h.style||""}">${h.name}</th>`).join("")}</tr></thead>`;
-    var tbody = `<tbody>${datas.length?datas.map(d=>`<tr>${Object.keys(header).map((k)=>`<td style="${header[k].style||""}">${d[k]}</td>`).join("")}</tr>`).join(""):`<td colspan="${Object.keys(header).length}" style="text-align:center">${opts.empty}</td>`}</tbody>`;
+    var num_headers = Object.keys(header).length;
+    thead = num_headers ? `<thead><tr>${Object.values(header).map((h)=>`<th style="${h.style||""}">${h.name}</th>`).join("")}</tr></thead>` : ``;
+    var tbody = `<tbody>${datas.length?datas.map(d=>`<tr>${Object.keys(header).map((k)=>`<td style="${header[k].style||""}">${d[k]}</td>`).join("")}</tr>`).join(""):`<td class="empty" colspan="${num_headers||1}" style="text-align:center">${opts.empty}</td>`}</tbody>`;
     var html = `<table>${thead}${tbody}</table>`;
     return $(html)[0];
 }
@@ -1248,28 +1277,48 @@ export function get_top_position(el) {
     return top - parseInt(marginTop, 10);
 }
 
-export function detect_wrapped_elements(parent, opts) {
-    opts = Object.assign({
-        isChildrenWrappedClassName:"is-wrapped",
-        isSiblingWrappedClassName:"sibling-is-wrapped",
-        isSelfWrappedClassName:"self-is-wrapped",
-        nextIsWrappedClassName:"next-is-wrapped",
-    }, opts);
-    var any_wrapping = false;
-    for (let i = 0; i < parent.children.length; i++) {
-        const child = parent.children[i];
-        const prev = parent.children[i-1];
-        const top = get_top_position(child);
-        const prevTop = prev ? get_top_position(prev) : top;
-        var is_wrapped = top > prevTop;
-        toggle_class(child, opts.isSelfWrappedClassName, is_wrapped);
-        if (prev) toggle_class(prev, opts.nextIsWrappedClassName, is_wrapped);
-        if (is_wrapped) any_wrapping = true;
+export class WrapDetector extends utils.EventEmitter {
+    /** @param {HTMLElement} elem */
+    constructor(elem, opts) {
+        super();
+        opts = {
+            isChildrenWrappedClassName:"is-wrapped",
+            isSiblingWrappedClassName:"sibling-is-wrapped",
+            isSelfWrappedClassName:"self-is-wrapped",
+            nextIsWrappedClassName:"next-is-wrapped",
+            ...opts,
+        };
+        this.elem = elem;
+        this.opts = opts;
+        var detect_wrap = debounce_next_frame(()=>this.detect_wrap());
+        this.resize_observer = new ResizeObserver(()=>detect_wrap());
+        this.resize_observer.observe(elem);
     }
-    toggle_class(parent, opts.isChildrenWrappedClassName, any_wrapping);
-    [...parent.children].forEach(e=>{
-        toggle_class(e, opts.isSiblingWrappedClassName, !e.classList.contains(opts.isSelfWrappedClassName) && any_wrapping)
-    });
+    detect_wrap() {
+        var old_wrapped = this.is_wrapped;
+        this.is_wrapped = false;
+        for (let i = 0; i < this.elem.children.length; i++) {
+            const child = this.elem.children[i];
+            const prev = this.elem.children[i-1];
+            const top = get_top_position(child);
+            const prevTop = prev ? get_top_position(prev) : top;
+            var is_wrapped = top > prevTop;
+            toggle_class(child, this.opts.isSelfWrappedClassName, is_wrapped);
+            if (prev) toggle_class(prev, this.opts.nextIsWrappedClassName, is_wrapped);
+            if (is_wrapped) this.is_wrapped = true;
+        }
+        toggle_class(this.elem, this.opts.isChildrenWrappedClassName, this.is_wrapped);
+        [...this.elem.children].forEach(e=>{
+            toggle_class(e, this.opts.isSiblingWrappedClassName, !e.classList.contains(this.opts.isSelfWrappedClassName) && this.is_wrapped)
+        });
+        if (this.is_wrapped !== old_wrapped) {
+            this.emit("change");
+        }
+        console.log(this.is_wrapped);
+    }
+    destroy() {
+        this.resize_observer.disconnect();
+    }
 }
 
 export function load_image(src) {
@@ -1533,25 +1582,25 @@ export class WindowCommunicator {
     }
 }
 
-class ScrollOverlay {
-    constructor(el, opts) {
-        /** @type {import("overlayscrollbars").Options} */
-        var os_opts = {};
-        if (opts.hide) {
-            os_opts.scrollbars = {};
-            os_opts.scrollbars.autoHide = "move";
-        }
-        if (opts.x || opts.y) {
-            os_opts.overflow = {}
-            os_opts.overflow.x = opts.x ? "scroll" : "hidden";
-            os_opts.overflow.y = opts.y ? "scroll" : "hidden";
-        }
-        this.overlayScrollbars = OverlayScrollbars(el, os_opts);
-        this.viewport = this.overlayScrollbars.elements().viewport;
-        if (opts.flex) this.viewport.style.display = "flex";
-    }
-}
-export { ScrollOverlay };
+// class ScrollOverlay {
+//     constructor(el, opts) {
+//         /** @type {import("overlayscrollbars").Options} */
+//         var os_opts = {};
+//         if (opts.hide) {
+//             os_opts.scrollbars = {};
+//             os_opts.scrollbars.autoHide = "move";
+//         }
+//         if (opts.x || opts.y) {
+//             os_opts.overflow = {}
+//             os_opts.overflow.x = opts.x ? "scroll" : "hidden";
+//             os_opts.overflow.y = opts.y ? "scroll" : "hidden";
+//         }
+//         this.overlayScrollbars = OverlayScrollbars(el, os_opts);
+//         this.viewport = this.overlayScrollbars.elements().viewport;
+//         if (opts.flex) this.viewport.style.display = "flex";
+//     }
+// }
+// export { ScrollOverlay };
 
 export { OverlayScrollbars,  ScrollbarsHidingPlugin,  SizeObserverPlugin,  ClickScrollPlugin };
 
@@ -1604,6 +1653,108 @@ export function get_dataset(elem, key) {
 /** @param {HTMLElement} elem */
 export function set_dataset_value(elem, key, value) {
     return elem.dataset[convert_to_camel_case(key)] = value;
+}
+
+
+
+/** @param {HTMLElement} target @param {HTMLElement} elem @param {MouseEvent} e @return {import("tippy.js").Props} */
+export function contextmenu_tippy_opts(x,y) {
+    return {
+        appendTo: document.body,
+        getReferenceClientRect: () => ({
+            width: 0,
+            height: 0,
+            top: y,
+            bottom: y,
+            left: x,
+            right: x,
+        }),
+        placement: "right-start",
+        trigger: "manual",
+        hideOnClick: true,
+        interactive: true,
+        offset: [0, 0],
+        theme: "list",
+        content:"",
+    }
+}
+
+/** @return {import("tippy.js").Props} */
+export function dropdown_tippy_opts() {
+    return {
+        trigger: "click",
+        hideOnClick: true,
+        placement: "top-start",
+        interactive: true,
+        arrow: false,
+        appendTo: document.body,
+        theme: "list",
+        offset: [0, 5],
+        content: "",
+    }
+}
+
+export function create_menu(items, opts={}) {
+    opts = {
+        click: utils.noop,
+        params: [],
+        ...opts
+    };
+    var list = $(`<div class="list-menu"></div>`)[0];
+
+    var process_item = (item, list)=>{
+        let elem;
+        var is_separator = (typeof item === "string" && item.slice(0,3) === "---");
+        if (is_separator) {
+            elem = $(`<div class="separator"><hr></div>`)[0];
+        } else if (Array.isArray(item)) {
+            elem = $(`<div class="list-menu"></div>`)[0];
+            item.forEach(i=>process_item(i, elem));
+        } else {
+            var get = (p) => {
+                if (typeof item[p] === "function") return item[p].apply(item, [...opts.params, elem]);
+                return item[p];
+            }
+            var icon = get("icon");
+            var label = get("label");
+            var disabled = get("disabled");
+            var shortcut = get("shortcut");
+            var visible = get("visible");
+            var href = get("href");
+            var description = get("description_or_label");
+            var t = (href) ? "a" : "div";
+            elem = $(`<${t} class="item"></${t}>`)[0];
+
+            elem.title = [label, description].filter(s=>s).join(" | ");
+            if (href) {
+                elem.href = href;
+                elem.target = "_blank";
+            }
+
+            if (icon) elem.append(...$(`<span class="icon">${icon}</span>`));
+            if (label) elem.append(...$(`<span class="label">${label}</span>`));
+            if (shortcut) {
+                shortcut = shortcut.replace("ArrowUp","↑").replace("ArrowDown","↓").replace("ArrowLeft","←").replace("ArrowRight","→")
+                elem.append(...$(`<span class="shortcut"><span>${shortcut}</span></span>`));
+            }
+            if (disabled) {
+                elem.disabled = true;
+                add_class(elem, "disabled");
+            } else {
+                elem.addEventListener("click", (e)=>{
+                    get("click");
+                    opts.click();
+                });
+            }
+            if (visible === false) add_class(elem, "d-none");
+            get("render");
+        }
+        list.appendChild(elem);
+    }
+    items.forEach(i=>process_item(i, list));
+    list.addEventListener("mousedown", (e)=>e.preventDefault());
+    list.addEventListener("mouseup", (e)=>e.preventDefault());
+    return list;
 }
 
 export * as ui from './ui.js';

@@ -22,6 +22,7 @@ import {minimatch} from "minimatch";
 import express from "express";
 import which from "which";
 import osInfo from "linux-os-info";
+import stringArgv from "string-argv";
 
 /** @import {BuildOptions} from "vite" */
 /** @typedef {typeof import("../config.default.js").default} Conf */
@@ -38,20 +39,6 @@ const filename = import.meta.filename;
 const root = path.dirname(dirname);
 const js_exts = [`js`,`ts`,`cjs`,`mjs`,`cts`,`mts`];
 
-program
-    .name('Live Streamer')
-    .description('Live Streamer CLI')
-    // .version(pkg.version);
-
-program
-    .argument(`[script]`, "(Internal) Script path to module")
-    .option(`-m --modules --module [string...]`, "Module paths", [])
-    .option(`-c --configs --config [string...]`, "Config paths", [])
-    .option(`-d --debug`, "Debug")
-    .option(`--pm2`, "Use PM2")
-
-program.parse();
-
 // import pkg from "./package.json" with { type: "json" };
 
 export class Core extends events.EventEmitter {
@@ -67,35 +54,65 @@ export class Core extends events.EventEmitter {
     #servers = [];
     /** @type {Record<PropertyKey,ChildProcess>} */
     #subprocesses = {};
-    /** @type {{modules:string[],configs:{string}[],config:{Conf}[]}} */
-    #opts = {};
+    #opts = new class {
+        /** @type {string[]} */
+        modules = [];
+        /** @type {string[]} */
+        configs = [];
+        /** @type {Conf} */
+        config = null;
+    };
     /** @type {string[]} */
     #conf_paths = [];
     #ssl_certs;
     /** @type {Conf} */
     conf = {};
+    observer = new utils.Observer();
     
-    #portable_file = fs.existsSync("portable");
-    get portable() { return !!(process.env.LIVESTREAMER_PORTABLE || this.#portable_file); }
-    get debug() { return !!(process.env.LIVESTREAMER_DEBUG || this.#opts.debug || false); }
+    #portable_file;
+    get appspace() { return process.env.LIVESTREAMER_APPSPACE || "livestreamer"; }
+    get portable() {
+        if (this.#portable_file === undefined) this.#portable_file = fs.existsSync("portable");
+        return !!(process.env.LIVESTREAMER_PORTABLE || this.#portable_file);
+    }
+    get debug() { return !!(process.env.LIVESTREAMER_DEBUG || this.conf["core.debug"]); }
     get is_electron() { return !!(process.versions['electron']); }
-    get use_pm2() { return !!(this.#opts.pm2 || "pm_id" in process.env || this.conf["core.pm2"]); }
+    get use_pm2() { return !!("pm_id" in process.env || this.conf["core.pm2"]); }
     get hostname() { return this.conf["core.hostname"] || os.hostname(); }
-    get change_log_path() { return path.resolve(this.conf["core.changelog"] || "changes.md"); }
+    get change_log_path() { return path.resolve(this.conf["core.changelog"]); }
+    get $() { return this.observer.$; }
     
     constructor(name, master_opts) {
         super();
+        globalThis.app = globalThis.core = this;
         globals.core = this;
         if (!name || typeof name !== "string") throw new Error("Bad init()");
         this.name = name || "livestreamer";
         this.#is_master = !!master_opts;
-        this.#opts = Object.assign({}, program.opts(), typeof master_opts === "object" ? master_opts : null);
+
+        var opts = {};
+
+        if (this.#is_master) {
+            program
+                .name('Live Streamer')
+                .description('Live Streamer CLI')
+                // .version(pkg.version);
+
+            program
+                .argument(`[script]`, "(Internal) Script path to module")
+                .option(`-m --modules [string...]`, "Module paths", [])
+                .option(`-c --configs [string...]`, "Config paths", [])
+                .option(`-d --debug`, "Debug")
+                .option(`--pm2`, "Use PM2")
+
+            program.parse();
+            Object.assign(opts, program.opts());
+        }
+
+        Object.assign(this.#opts, opts, typeof master_opts === "object" ? master_opts : null);
 
         this.logger = new Logger(this.name, {stdout:true, file:true, prefix:this.#is_master?"":this.name});
         this.logger.console_adapter();
-        this.appspace = process.env.LIVESTREAMER_APPSPACE || "livestreamer";
-        
-        this.$ = new utils.Observer();
 
         this.cwd = process.cwd();
         this.ready = this.#init();
@@ -119,21 +136,23 @@ export class Core extends events.EventEmitter {
         this.resources_dir = path.resolve((process.versions.electron && process.env.BUILD) ? process.resourcesPath : path.join(root, "resources"));
         let bin_dirs = [...glob.sync("**/bin", { cwd: this.resources_dir, absolute:true, dot:true })];
         this.mpv_lua_dir = path.resolve(this.resources_dir, "mpv_lua");
-        process.env.PATH = [...new Set([...bin_dirs, ...process.env.PATH.split(path.delimiter)])].join(path.delimiter);
+        process.env.PATH = [...new Set([...bin_dirs, ...process.env.PATH.split(path.delimiter)].filter(p=>p))].join(path.delimiter);
 
         if (this.#is_master) {
             let os_info = osInfo({ mode:"sync" });
             let linux_re = /(debian|ubuntu)/i;
             let is_debian = process.platform === "linux" && os_info.id.match(linux_re);
             let is_windows = utils.is_windows();
-            let ffmpeg_path = which.sync("ffmpeg", { nothrow: true });
-            let mpv_path = which.sync("mpv", { nothrow: true });
             if (!is_windows && !is_debian) {
                 console.log("This system is not supported. Exiting.");
                 console.log(process.platform, os_info.id, os_info.id_like);
                 process.exit(1);
             }
-            if (is_windows) {
+
+            // let ffmpeg_path = which.sync("ffmpeg", { nothrow: true });
+            // let mpv_path = which.sync("mpv", { nothrow: true });
+
+            /* if (is_windows) {
                 if (!mpv_path) {
                     throw new Error("mpv cannot be installed.");
                 }
@@ -143,23 +162,15 @@ export class Core extends events.EventEmitter {
             } else if (is_debian) {
                 console.log("Installing prerequisites...");
                 await run("apt-get", ["update", "-y"]);
-                await run("apt-get", ["install", "ffmpeg", "nethogs", path.join(this.resources_dir, "mpv.deb"), "-fy"]);
+                await run("apt-get", ["install", "ffmpeg", "nethogs", path.join(this.resources_dir, "linux", "mpv.deb"), "-fy"]);
                 await run("python3", ["-m", "pip", "install", "-U", "yt-dlp[default]"]);
-            }
+            } */
         }
         
         let modules = [
             ...(process.env.LIVESTREAMER_MODULES ? [process.env.LIVESTREAMER_MODULES] : []),
             ...(this.#opts.modules)
         ].flatMap(p=>p.split(path.delimiter));
-
-        if (!modules.length) {
-            modules = [
-                "media-server",
-                "file-manager",
-                "main"
-            ];
-        }
             
         let resolved_modules = [...new Set(modules.map(p=>this.resolve_module(p)))].filter(p=>p);
 
@@ -169,58 +180,39 @@ export class Core extends events.EventEmitter {
         if (this.debug) process.env.LIVESTREAMER_DEBUG = 1
         
         this.modules = Object.fromEntries(resolved_modules.map(p=>[path.basename(path.dirname(p)), p]));
-        
-        var exit_handler = async ()=>{
-            console.log(`Handling exit...`);
-            await this.shutdown();
-            process.exit(0);
-        };
 
         /* const session = new inspector.Session();
         session.connect();
         session.on('disconnect', () => {
             console.log('Debugger disconnected – running cleanup');
         }); */
-        process.on('beforeExit', exit_handler);
-        process.on('SIGINT', exit_handler);
-        process.on('SIGTERM', exit_handler);
+
+        process.on('beforeExit', ()=>this.shutdown());
+        process.on('SIGINT', ()=>this.shutdown());
+        process.on('SIGTERM', ()=>this.shutdown());
+
         process.on('unhandledRejection', (e)=>{
             // is this a good idea?
             this.logger.error(`Unhandled Rejection:`, e);
         });
-        /* var handle_message = async (packet)=>{
-            if (packet === "shutdown") {
-                await this.shutdown();
-                process.exit(0);
-            }
-        };
-        if (process.parentPort) {
-            process.parentPort.on('message', (e)=>{
-                handle_message(e.data);
-            });
-        } else {
-            process.on('message', handle_message);
-        } */
 
-        var appdata_dir;
-        if (process.env.LIVESTREAMER_APPDATA_DIR) {
-            appdata_dir = process.env.LIVESTREAMER_APPDATA_DIR;
-        } else if (this.portable) {
+        var appdata_dir = config_default["core.appdata_dir"];
+        if (this.portable) {
             appdata_dir = "appdata";
         } else {
-            appdata_dir = path.join(utils.is_windows() ? process.env.PROGRAMDATA : "/var/opt/", this.appspace);
+            appdata_dir = path.join((utils.is_windows() ? process.env.PROGRAMDATA : "/var/opt"), this.appspace);
         }
         this.appdata_dir = path.resolve(appdata_dir);
         this.tmp_dir = path.resolve(appdata_dir, "tmp");
         this.logs_dir = path.resolve(appdata_dir, "logs");
         this.cache_dir = path.resolve(appdata_dir, "cache");
         this.clients_dir = path.resolve(appdata_dir, "clients");
-        this.conf_path = path.resolve(appdata_dir, "config.json");
         this.files_dir = path.resolve(appdata_dir, "files");
         this.saves_dir = path.resolve(appdata_dir, "saves");
         this.targets_dir = path.resolve(appdata_dir, "targets");
-        this.screenshots_dir = path.resolve(appdata_dir, "screenshots");
         this.socket_dir = path.join(this.tmp_dir, "socks");
+        this.conf_path = path.resolve(appdata_dir, "config");
+        this.screenshots_dir = path.resolve(this.cache_dir, "screenshots");
 
         if (this.#is_master) {
             await fs.mkdir(this.appdata_dir, { recursive: true });
@@ -231,8 +223,8 @@ export class Core extends events.EventEmitter {
             await fs.mkdir(this.files_dir, { recursive:true });
             await fs.mkdir(this.saves_dir, { recursive:true });
             await fs.mkdir(this.targets_dir, { recursive:true });
-            await fs.mkdir(this.screenshots_dir, { recursive:true });
             await fs.mkdir(this.socket_dir, { recursive:true });
+            await fs.mkdir(this.screenshots_dir, { recursive:true });
             await this.#cleanup_sockets();
         }
         this.ipc_socket_path = this.get_socket_path(`ipc`);
@@ -280,9 +272,23 @@ export class Core extends events.EventEmitter {
 
         this.stdin_listener = readline.createInterface(process.stdin);
         this.stdin_listener.on("line", (line)=>{
-            var parts = utils.split_spaces_exclude_quotes(line);
-            this.emit("input", parts);
+            var args = stringArgv(line);
+            if (this.#is_master) {
+                var [proc, ...command] = args;
+                if (proc in this.modules) {
+                    this.ipc.send(proc, "internal:input", {command})
+                } else {
+                    console.error(`${proc} is not a module`)
+                }
+            } else {
+                this.emit("input", args);
+            }
         });
+        if (!this.#is_master) {
+            this.ipc.on("internal:input", ({command})=>{
+                this.emit("input", command);
+            })
+        }
 
         if (this.#is_master) {
             await this.#setup_proxies();
@@ -641,8 +647,8 @@ export class Core extends events.EventEmitter {
     }
 
     async shutdown() {
-        console.info("Handling shutdown...");
         if (this.#is_master) {
+            console.info("Shutting down...")
             await this.ipc.emit("core:shutdown");
             await Promise.all(Object.values(this.#subprocesses).map(p=>new Promise(r=>p.on("exit", r))));
         }
@@ -664,7 +670,7 @@ export class Core extends events.EventEmitter {
     });
 } */
 
-let run = (command, args)=>{
+/* let run = (command, args)=>{
     let cp = child_process.spawn(command, args);
     return new Promise((resolve,reject)=>{
         readline.createInterface(cp.stdout).on("line", (line)=>{
@@ -676,6 +682,15 @@ let run = (command, args)=>{
         cp.on("close", resolve);
         cp.on("error", reject);
     });
+} */
+
+export function start(opts) {
+    class App extends Core {
+        constructor() {
+            super("livestreamer", {...opts});
+        }
+    }
+    return new App();
 }
 
 export default Core;

@@ -1,2 +1,2 @@
-import App from "./app.js";
-window.app = new App();
+import MainWebApp from "./MainWebApp.js";
+window.app = new MainWebApp();

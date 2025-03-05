@@ -15,8 +15,7 @@ export class Upload extends DataNode {
     #last_ts;
     #last_bytes;
     #speed_pointer=0;
-    /** @type {utils.Interval} */
-    #speed_check_interval;
+    #speed_check_interval_id;
 
     get finished() { return this.$.bytes >= this.$.total; }
     get bytes() { return this.$.bytes; }
@@ -73,7 +72,7 @@ export class Upload extends DataNode {
             
             this.$.status = Upload.Status.STARTED;
 
-            this.#speed_check_interval = new utils.Interval(()=>{
+            this.#speed_check_interval_id = setInterval(()=>{
                 var ts = Date.now();
                 let speed = Math.round((this.bytes - this.#last_bytes)/((ts - this.#last_ts)/1000)) || 0;
                 this.#speeds[(this.#speed_pointer++)%8] = speed;
@@ -161,7 +160,7 @@ export class Upload extends DataNode {
         super.destroy();
         delete globals.app.uploads[this.id];
         delete globals.app.$.uploads[this.id];
-        this.#speed_check_interval.destroy();
+        clearInterval(this.#speed_check_interval_id);
     }
 }
 

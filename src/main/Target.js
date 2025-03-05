@@ -33,7 +33,7 @@ export class Target extends DataNode {
     get limit() { return this.$.limit; } // number of streams that can be done concurrently
     get locked() { return this.$.locked; }
     /** @param {StreamTarget} st */
-    config(data, st) { return (this.#data.config || (()=>{}))(data, st); }
+    config(data, st) { return (this.#data.config || utils.noop)(data, st); }
 
     constructor(data) {
         data = {
@@ -54,10 +54,8 @@ export class Target extends DataNode {
         delete data.config;
         delete data.stream_priority;
         delete data.stream_id;
-        // utils.rename_property(data, "url", "view_url");
         Object.assign(this.$, data);
-        if (!this.$.locked) this.$.ts = Date.now();
-        if (!this.$.ts) this.$.ts = Date.now();
+        if (!this.$.locked || !this.$.ts) this.$.ts = Date.now();
         if (!this.$.access_control) this.$.access_control = {};
         globals.app.fix_access_control(this.$.access_control);
     }
@@ -69,10 +67,9 @@ export class Target extends DataNode {
     }
 
     async save() {
-        if (!this.locked) {
-            var data = {...this.$};
-            await fs.writeFile(path.resolve(globals.app.targets_dir, this.id), JSON.stringify(data, null, 4));
-        }
+        if (this.locked) return;
+        var data = {...this.$};
+        await fs.writeFile(path.resolve(globals.app.targets_dir, this.id), JSON.stringify(data, null, 4));
     }
     
     async destroy() {
@@ -83,7 +80,7 @@ export class Target extends DataNode {
         delete globals.app.targets[this.id];
         delete globals.app.$.targets[this.id];
         if (!this.locked) {
-            await fs.unlink(path.resolve(globals.app.targets_dir, this.id)).catch(()=>{});
+            await fs.unlink(path.resolve(globals.app.targets_dir, this.id)).catch(utils.noop);
         }
     }
 }

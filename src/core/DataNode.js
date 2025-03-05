@@ -2,7 +2,8 @@ import events from "node:events";
 import * as utils from "./utils.js";
 
 export class DataNode extends events.EventEmitter {
-    $ = new utils.Observer();
+    observer = new utils.Observer();
+    get $() { return this.observer.$; }
     /** @type {string} */
     get id() { return this.$.id; } // always a string
     #destroyed = false;
@@ -22,14 +23,16 @@ export class DataNode extends events.EventEmitter {
             else expanded.push(...Object.entries(data));
         }
         for (var [k,v] of expanded) {
-            utils.set(this.$, k.split("/"), v);
+            var path = k.split("/");
+            if (v == null) utils.ref.deleteProperty(this.$, path);
+            else utils.ref.set(this.$, path, v);
         }
     }
     
     destroy() {
         // safe to call multiple times.
         this.#destroyed = true;
-        utils.Observer.destroy(this.$);
+        this.observer.removeAllListeners();
     }
 
     toString() {

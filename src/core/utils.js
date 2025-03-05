@@ -1,5 +1,6 @@
 import fs from "fs-extra";
 import path from "node:path";
+import url from "node:url";
 import child_process from "node:child_process";
 import os from "node:os";
 import * as tar from "tar";
@@ -7,9 +8,11 @@ import * as uuid from "uuid";
 import is_image from "is-image";
 import { execa } from "execa";
 import pidtree from "pidtree";
+import { glob, Glob } from "glob";
 import * as utils from "../utils/utils.js";
 
 export * from "../utils/utils.js";
+/** @import { Path } from "glob"; */
 
 //command: string, args: ReadonlyArray<string>, options: SpawnOptions
 // /** @param {string} command @param {readonly string[]} args @param {child_process.SpawnOptions} options */
@@ -106,7 +109,7 @@ export async function unique_filename(filepath) {
     let filename = path.basename(filepath, ext);
     let dir = path.dirname(filepath);
     while (true) {
-        let stat = await fs.stat(filepath).catch(()=>{});
+        let stat = await fs.stat(filepath).catch(utils.noop);
         if (!stat) return filepath;
         let suffix = (n == 0) ? ` - Copy` : ` - Copy (${n+1})`;
         filepath = path.join(dir, filename + suffix + ext);
@@ -184,7 +187,7 @@ export async function  compress_logs_directory(dir){
             var t = Date.now();
             promises.push(
                 (async()=>{
-                    await tar.create({gzip:true, file:tar_path, cwd:dir, portable:true}, [filename]).catch(()=>{});
+                    await tar.create({gzip:true, file:tar_path, cwd:dir, portable:true}, [filename]).catch(utils.noop);
                     // core.logger.info(`Compressed '${fullpath}' in ${Date.now()-t}ms.`);
                     await fs.utimes(tar_path, stats.atime, stats.mtime);
                     await fs.unlink(fullpath);
@@ -221,39 +224,15 @@ export async function tree_kill(pid, signal) {
         await kill(pid, signal);
     }
 }
+  
+export const array_avg = function (arr) {
+    if (arr && arr.length >= 1) {
+        const sumArr = arr.reduce((a, b) => a + b, 0)
+        return sumArr / arr.length;
+    }
+}
 
-// export async function process_tree(parent_pid) {
-//     /** @type {Record<string,number[]>} */
-//     var tree = {};
-//     var pids_to_process = {[parent_pid]:1};
-//     var walk = async (parent_pid)=>{
-//         if (!tree[parent_pid]) tree[parent_pid] = [];
-//         var ps;
-//         if (process.platform === "darwin") {
-//             ps = child_process.spawn('pgrep', ['-P', parent_pid]);
-//         } else {
-//             ps = child_process.spawn('ps', ['-o', 'pid', '--no-headers', '--ppid', parent_pid]);
-//         }
-//         var all_data = '';
-//         ps.stdout.on('data', (data)=>{
-//             all_data += data.toString('ascii');
-//         });
-//         let code = await new Promise(resolve=>ps.on('close', resolve));
-//         delete pids_to_process[parent_pid];
-//         if (code == 0) {
-//             await Promise.all(all_data.match(/\d+/g).map(pid=>{
-//                 pid = parseInt(pid);
-//                 tree[parent_pid].push(pid);
-//                 pids_to_process[pid] = 1;
-//                 return walk(pid);
-//             }));
-//         }
-//         return tree;
-//     };
-//     return walk(parent_pid);
-// }import os from "node:os";
-
-export function cpuAverage() {
+export function cpu_average() {
     var totalIdle = 0, totalTick = 0;
     var cpus = os.cpus();
     for (var i = 0, len = cpus.length; i < len; i++) {
@@ -266,16 +245,9 @@ export function cpuAverage() {
     return {idle: totalIdle / cpus.length, total: totalTick / cpus.length};
 }
   
-export const array_avg = function (arr) {
-    if (arr && arr.length >= 1) {
-        const sumArr = arr.reduce((a, b) => a + b, 0)
-        return sumArr / arr.length;
-    }
-}
-  
 // load average for the past 1000 milliseconds calculated every 100
 /** @return {number} */
-export function getCPULoadAVG(avgTime = 1000, delay = 100) {
+export function get_cpu_load_avg(avgTime = 1000, delay = 100) {
     return new Promise((resolve, reject) => {
         const n = ~~(avgTime / delay);
         if (n <= 1) {
@@ -283,13 +255,13 @@ export function getCPULoadAVG(avgTime = 1000, delay = 100) {
         }
         let i = 0;
         let samples = [];
-        const avg1 = cpuAverage();
+        const avg1 = cpu_average();
         let interval = setInterval(() => {
             if (i >= n) {
                 clearInterval(interval);
                 resolve(array_avg(samples));
             }
-            const avg2 = cpuAverage();
+            const avg2 = cpu_average();
             const totalDiff = avg2.total - avg1.total;
             const idleDiff = avg2.idle - avg1.idle;
             samples[i] = (1 - idleDiff / totalDiff);
@@ -298,34 +270,138 @@ export function getCPULoadAVG(avgTime = 1000, delay = 100) {
     });
 }
 
-export function properties(def) {
-    var _process = (def)=>{
-        if (def.__default__ !== undefined) {
-            return utils.deep_copy(def.__default__);
-        }
-        var defaults = {};
-        for (var k in def) {
-            if (k.startsWith("__")) continue;
-            defaults[k] = _process(def[k]);
-        }
-        if (Object.keys(defaults).length) return defaults;
-    }
-    return _process(def);
-    // static get_defaults(pc) {
-    //     return Object.fromEntries(
-    //         Object.entries(pc)
-    //             .filter(([k,prop])=>prop.props || prop.default !== undefined)
-    //             .map(([k,prop])=>[k, PropertyCollection.get_default(pc, k)])
-    //     );
-    // }
-    // /** @param {PropertyCollection} pc */
-    // static get_default(pc, k) {
-    //     var prop = pc[k];
-    //     if (!prop) return;
-    //     if (prop.props && !("default" in prop)) return PropertyCollection.get_defaults(prop.props);
-    //     return utils.deep_copy(prop.default);
-    // }
-}
-
 export { promisify } from "node:util";
 export { pidtree, execa }
+
+export function build_hierarchy_from_indented_string(str) {
+    const lines = str.split('\n');
+    const root = {};
+    const stack = [{ level: -1, node: root }];
+
+    for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (trimmedLine === '') continue; // Skip empty lines
+
+        const leadingSpaces = line.match(/^ */)[0].length;
+        const key = trimmedLine;
+        const currentLevel = leadingSpaces;
+
+        // Pop stack until we find a parent level
+        while (stack.length > 0 && stack[stack.length - 1].level >= currentLevel) {
+            stack.pop();
+        }
+
+        // Get parent node and add new key
+        const parent = stack[stack.length - 1].node;
+        parent[key] = {};
+
+        // Push new node onto the stack
+        stack.push({ level: currentLevel, node: parent[key] });
+    }
+
+    return root;
+}
+
+/** @return {AsyncIterable<Path>} */
+export async function *find_symlinks(dir, broken=false) {
+    /** @type {AsyncGenerator<Path>} */
+    var g = new Glob("**", {cwd:dir, absolute:true, nodir:true, stat:true, withFileTypes:true});
+    for await (var f of g) {
+        if (!f.isSymbolicLink()) continue;
+        if (broken !== undefined) {
+            const targetPath = await f.readlink();
+            const resolvedTargetPath = path.resolve(path.dirname(f.fullpath()), targetPath);
+            const targetBroken = await fs.access(resolvedTargetPath).then(()=>true).catch(()=>false);
+            if (broken !== targetBroken) continue;
+        }
+        yield f;
+    }
+}
+
+export function ffmpeg_escape_file_path(str) {
+    // if (is_windows()) str = str.replace(/\\/g, "/");
+    return ffmpeg_escape(str);
+}
+
+export function ffmpeg_escape(str) {
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
+}
+
+export function ffmpeg_escape_av_file_path(str) {
+    // if (is_windows()) str = str.replace(/\\/g, "/");
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'\\''").replace(/:/g, '\\:');
+}
+
+/* export function ffmpeg_escape_av_file_path(str) {
+    if (is_windows()) str = str.replace(/\\/g, "/");
+    return str.replace(/\\/g, "\\\\\\\\").replace(/'/g, `\\\\'`).replace(/:/g, "\\:")
+} */
+
+// export function ffmpeg_escape(str) {
+//     return str.replace(/\\/g, "\\\\\\\\").replace(/'/g, `'\\\\''`).replace(/:/g, "\\:")
+// }
+
+export async function append_line_truncate(filePath, line, maxLines=512) {
+    var data = await fs.readFile(filePath, 'utf8').catch(utils.noop);
+    let lines = data ? data.split('\n') : [];
+    lines.push(line);
+    if (lines.length > maxLines) {
+        lines = lines.slice(lines.length - maxLines);
+    }
+    const updatedContent = lines.join('\n');
+    await fs.writeFile(filePath, updatedContent, 'utf8');
+}
+
+/** @template T */
+export class AsyncIteratorLoop {
+    /** @type {Function():Iterator<T>} */
+    #generator;
+    /** @type {Iterator<T>} */
+    #iterator;
+    /** @type {Iterator<any>} */
+    #looped_iterator;
+    constructor(generator, fn) {
+        this.#generator = generator;
+        this.#iterator = this.#generator();
+        this.#looped_iterator = this.#start_loop();
+    }
+
+    next() {
+        return this.#looped_iterator.next();
+    }
+    
+    async *#start_loop() {
+        while (true) {
+            var r = this.#iterator.next();
+            if (r.done === true) {
+                yield;
+                this.#iterator = this.#generator();
+            } else {
+                yield r.value;
+            }
+        }
+    }
+}
+
+/** @template T @param {(() => Iterable<T>) | Iterable<T>} generator */
+export function* infinite_iterator(generator) {
+    while (true) {
+        let hasItems = false;
+        var iterable = typeof generator === "function" ? generator() : generator;
+        for (const item of iterable) {
+            hasItems = true;
+            yield item;
+        }
+        if (!hasItems) {
+            yield undefined;
+        }
+    }
+}
+
+/** @param {string} filePath */
+export function urlify(filePath) {
+    if (/^[a-zA-Z]+:\/\//.test(filePath)) {
+        return new URL(filePath);
+    }
+    return url.pathToFileURL(path.resolve(filePath));
+}

@@ -24,3 +24,11 @@
         }
     }
 }
+@mixin single-line-ellpisis() {
+    display: inline;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    padding:0.25em 0;
+    margin:-0.25em 0;
+}

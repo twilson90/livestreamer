@@ -5,5 +5,4 @@ export const State = new class {
     STARTING = "starting";
     STOPPED = "stopped";
     STOPPING = "stopping";
-    RESTARTING = "restarting";
 };

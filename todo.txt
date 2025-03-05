@@ -60,10 +60,31 @@
     if (external) all detected stops are explicit?
 [ ] player auto crop / crop was all screwy at first. Double check
 
-[ ] main app still issue with nueruc steppy holding down up it flickers as server updates are fed back.
+[x] main app still issue with nueruc steppy holding down up it flickers as server updates are fed back.
 [ ] bizarre nms 480p fuck up...
-[ ] show live feed /internal/123-123-123-123 in flv player on livestreamer?
-[ ] ui Precise Volume Adjustment apply disabled not updating fast enough on input change
-[ ] changing sessions, playlist slight hiccup, number of items chaneg (sub playlists weirdness?)
+[x] show live feed /internal/123-123-123-123 in flv player on livestreamer?
+[x] ui Precise Volume Adjustment apply disabled not updating fast enough on input change
+[x] changing sessions, playlist slight hiccup, number of items chaneg (sub playlists weirdness?)
 
 [ ] configure running stream -> targets shows none, mid changing ids/opts of targets props....
+[ ] crop detect is serving sequential frames, not spaced by any time or key frames.
+[ ] crop detect fancybox make modalpropertycontainer with padding and title
+[ ] crop detect spat out 1 frame?
+[ ] recently destroyed sessions
+[ ] constrain subs to 4:3 or the original file aspect ratio
+[x] live media not getting deleted
+[ ] change filename of file, playlist not updating to show red X, unless make a copy
+[x] when itme is playing, modify prompted for saving changes when nothing changed first time.
+[x] Media Settings panel props disappear when dragging for some reason.
+[ ] playlist needs rebuilding more often...
+[ ] mpv got stuck... 
+        [2426.421][e][ffmpeg] NULL: Invalid NAL unit size (0 > 189).
+        [2426.421][e][ffmpeg] NULL: missing picture in access unit with size 193
+    and never recovered.
+[ ] mediaplayer on setting clip repeats the chapter text is 1 step behind, and the seekbar isnt rebuilt.
+[ ] seeking a file video background and subtitles:
+    [mpv] EDL: source file '/home/delete/web/cabtv.co.uk/livestreamer/.files/OTH/Solar System playlist.srt' has unknown duration.
+[ ] crop input filter is off.
+[ ] Apply changes prompt to modals that need require confirmation.
+[ ] chat data-pause too frequent, on mobile fullscreen it pauses for no reason.
+[ ] mini buttons under chat too packed, no wrap.

@@ -4,8 +4,13 @@ import * as utils from "../core/utils.js";
 import MPVWrapper from "../core/MPVWrapper.js";
 import globals from "./globals.js";
 import InternalSessionProps from './InternalSessionProps.js';
+import { stringify } from "node:querystring";
+import { MPVEDL, MPVEDLEntry, MAX_EDL_REPEATS } from "./MPVEDL.js";
 /** @import { InternalSession, Stream } from './types' */
 
+// const FORCE_NEXT_ITEM_TIMEOUT = 5 * 1000;
+const FORCE_NEXT_ITEM_TIMEOUT = Number.MAX_SAFE_INTEGER;
+const FORCE_ABORT_TIMEOUT = 10 * 1000;
 const DEFAULT_FPS = 30;
 const TICK_RATE = 30;
 const EDL_TRACK_TYPES = ["video", "audio", "sub"];
@@ -39,123 +44,11 @@ const STREAM_VOLUME_NORMALIZATION_CONFIGS = {
     "loudnorm": `loudnorm=dual_mono=true`
 };
 
-const MAX_EDL_REPEATS = 1024;
-const EDL_GENERAL_HEADERS = ["new_stream", "no_clip", "delay_open", "mp4_dash", "global_tags", "no_chapters", "track_meta"];
-
-class EDLEntry {
-    constructor(file_or_header, named_params) {
-        if (file_or_header instanceof EDLEntry) {
-            named_params = file_or_header.params;
-            file_or_header = file_or_header.file_or_header;
-        }
-        this.file_or_header = file_or_header;
-        this.params = Object.assign({}, named_params);
-    }
-    append(k, v) {
-        if (arguments.length === 1 && typeof k === "object") {
-            for (let j in k) this.params[j] = String(k[j]);
-        } else {
-            this.params[k] = v;
-        }
-    }
-    toString() {
-        let parts = [this.file_or_header.toString()];
-        for (var k in this.params) {
-            let v = String(this.params[k]);
-            v = EDL.escape(v, true);
-            parts.push(`${k}=${v}`);
-        }
-        return parts.join(",");
-    }
-}
-
-class EDL {
-    get duration() {
-        var d = [0];
-        for (var e of this.entries) {
-            if (e.file_or_header == "!new_stream") d.push(0);
-            if (e.params.length) d[d.length-1] += e.params.length;
-        }
-        return Math.max(...d);
-    }
-    /** @type {EDLEntry[]} */
-    entries = [];
-    get length() { return this.entries.length; }
-
-    constructor(entries=[]) {
-        /** @type {EDLEntry[]} */
-        this.append(...entries);
-    }
-
-    static escape(str, check=false) {
-        str = String(str);
-        if (check && !str.match(/[,;\n!]/)) return str;
-        // returns incorrect length if slanted apostrophe in string
-        return `%${Buffer.byteLength(str, "utf8")}%${str}`;
-    }
-
-    /** @param {string} filename @param {{start:number, end:number, duration:number, offset:number, loops:number}} opts */
-    static repeat(filename, opts) {
-        let edl = new EDL();
-        let clip_start = Math.max(0, opts.start || 0);
-        let clip_end = Math.max(0, opts.end || opts.duration || 0);
-        let clip_length = Math.max(0, clip_end - clip_start);
-        let clip_offset = opts.offset || 0;
-        if (clip_length < 0.01) clip_length = 0;
-        let duration = Math.max(0, opts.duration || (clip_length * (opts.loops || 1)));
-        for (let k of EDL_GENERAL_HEADERS) {
-            if (k in opts) {
-                let header = `!${k}`;
-                if (typeof opts[k] === "object") header.append(opts[k]);
-                edl.append(header);
-            }
-        }
-        if (filename) {
-            let t = utils.loop(clip_start + clip_offset, clip_start, clip_end);
-            if (clip_length == 0) {
-                edl.append(new EDLEntry(EDL.escape(filename), {
-                    start: t.toFixed(3)
-                }));
-            } else {
-                let d_left = duration;
-                let i = 0;
-                while (d_left > 0 && i < MAX_EDL_REPEATS) {
-                    let e = Math.min(t + clip_length, t + d_left, clip_end)
-                    let d = e - t;
-                    edl.append(new EDLEntry(EDL.escape(filename), {
-                        start:t.toFixed(3),
-                        length:d.toFixed(3)
-                    }));
-                    d_left -= d;
-                    i++;
-                    if (e == clip_end) t = clip_start;
-                }
-            }
-        }
-        return edl;
-    }
-
-    /** @param {EDLEntry[]} entries */
-    append(...entries) {
-        for (let e of entries) {
-            if (!(e instanceof EDLEntry)) e = new EDLEntry(e);
-            this.entries.push(e);
-        }
-    }
-    toString(full=false) {
-        var entries = this.entries.map(e=>e.toString());
-        if (full) return [`# mpv EDL v0`, ...entries].join("\n");
-        else return `edl://${entries.join(";")}`;
-    }
-    
-    [Symbol.iterator]() {
-        return this.entries[Symbol.iterator]();
-    }
-}
-
 export class MPVSessionWrapper extends MPVWrapper {
+    #load_id = 0;
     #mpv_last_speed_check = Date.now();
     #mpv_last_pts = 0;
+    #seekable_ranges_hash = "";
     #tick_interval;
     #long_tick_interval;
     #current_props_override = {};
@@ -166,14 +59,15 @@ export class MPVSessionWrapper extends MPVWrapper {
     #props = {};
     width = 0;
     height = 0;
-    $ = new utils.Observer();
+    observer = new utils.Observer();
+    #time_progressed = 0;
 
+    get $() { return this.observer.$; }
     get time_pos() { return (this.$.special_start_time + (this.#props["time-pos"] || 0)) || 0; }
-
-    get is_encoding() { return !!this.#props.o; }
     
     /** @type {InternalSession} */
     get session() { return this.stream.session; }
+    get is_encoding() { return this.stream.is_encode; }
     
     /** @param {Stream} stream */
     constructor(stream, opts) {
@@ -194,6 +88,7 @@ export class MPVSessionWrapper extends MPVWrapper {
             seeking: false,
             loaded: true,
             preloaded: true,
+            loads: 0,
             time: 0,
             duration: 0,
             is_special: false,
@@ -204,7 +99,7 @@ export class MPVSessionWrapper extends MPVWrapper {
             props: {}
         });
 
-        utils.Observer.listen(this.$, c=>{
+        this.observer.on("change", c=>{
             if (c.path[0] === "time") {
                 this.session.$.time = c.new_value;
             }
@@ -275,8 +170,6 @@ export class MPVSessionWrapper extends MPVWrapper {
             ["output-frames"]: 0,
         }
 
-        this.$.is_encoding = !!await this.get_property("o");
-
         for (let k in mpv_props) {
             this.#props[k] = mpv_props[k];
             this.$.props[k] = mpv_props[k];
@@ -324,6 +217,7 @@ export class MPVSessionWrapper extends MPVWrapper {
         
         this.on("file-loaded", async (e)=>{
             this.$.loaded = true;
+            this.$.loads++;
             Object.assign(this.#mpv_expected_props, this.#mpv_load_props);
         });
 
@@ -346,13 +240,14 @@ export class MPVSessionWrapper extends MPVWrapper {
                 this.session.playlist_next();
             }
         }); */
+        var last_time_pos_load_id;
 
         this.on("property-change", async (e)=>{
             let {name, data} = e;
             if (name === "eof-reached") {
                 if (data) {
                     this.logger.info("eof-reached");
-                    if (this.#props.loop_file) this.seek(0);
+                    if (this.#props.loop_file) this.seek(0); // weird, should use loop-file really, suppose it's needed for special files
                     else this.load_next();
                 }
             }
@@ -363,8 +258,13 @@ export class MPVSessionWrapper extends MPVWrapper {
             if (!(name in IGNORE_MPV_REALTIME_CHANGES)) {
                 this.$.props[name] = data;
             }
-            if (name === "time-pos" && this.$.seeking) {
-                this.update_time_pos();
+            if (name === "time-pos") {
+                if (this.$.seeking) this.update_time_pos();
+                if (this.#load_id == last_time_pos_load_id) {
+                    var delta = Math.max(0, (data - this.#props["time-pos"]) || 0);
+                    this.#time_progressed += delta;
+                }
+                last_time_pos_load_id = this.#load_id;
             }
             this.#props[name] = data;
         });
@@ -398,8 +298,100 @@ export class MPVSessionWrapper extends MPVWrapper {
 
         this.#mpv_last_pts = 0;
         this.#mpv_last_speed_check = Date.now();
-        this.#tick_interval = setInterval(()=>this.#tick(), 1000/TICK_RATE);
-        this.#long_tick_interval = setInterval(()=>this.#long_tick(), 1000);
+
+        this.#tick_interval = setInterval(()=>{
+            /* if (this.do_reload) {
+                this.do_reload = false;
+                this.reload(false);
+            } */
+            if (this.filters_dirty) {
+                this.rebuild_filters();
+            }
+            if (this.deinterlace_dirty) {
+                this.rebuild_deinterlace();
+            }
+            if (this.$.playing) {
+                this.update_volume();
+            }
+        }, 1000/TICK_RATE);
+
+        var last_hash1, last_hash2, last_ts1, last_ts2;
+        this.#long_tick_interval = setInterval(async()=>{
+            let ts = Date.now();
+
+            if (this.#props["output-pts"]) {
+                let diff_pts = (this.#props["output-pts"] - this.#mpv_last_pts) * 1000;
+                let diff_ts = ts - this.#mpv_last_speed_check;
+                let speed = (diff_pts / diff_ts);
+                if (isNaN(speed) || speed < 0) speed = 0;
+                // let f = this.$["output-frames"];
+                this.speed = speed;
+                this.$.speed = speed;
+                this.emit("speed", speed);
+                this.#mpv_last_pts = this.#props["output-pts"];
+                this.#mpv_last_speed_check = ts;
+            }
+    
+            (async ()=>{
+                let new_ranges;
+                let demuxer_cache_state = (await this.get_property("demuxer-cache-state").catch(()=>null));
+                // console.log(demuxer_cache_state);
+                if (demuxer_cache_state) {
+                    new_ranges = demuxer_cache_state["seekable-ranges"];
+                }
+                if (JSON.stringify(new_ranges) != this.#seekable_ranges_hash) {
+                    this.$.seekable_ranges = new_ranges || [];
+                    this.#seekable_ranges_hash = JSON>stringify(this.$.seekable_ranges);
+                }
+            })();
+    
+            if (!this.is_encoding) {
+                let interpolation_mode = this.session.$.interpolation_mode || false;
+                let curr_val = this.#props.interpolation;
+                let new_val = curr_val;
+                if (interpolation_mode == "auto") {
+                    let df = this.session.$.auto_interpolation_rate || 30;
+                    let vf = this.#props["estimated-vf-fps"];
+                    if (vf) {
+                        if (vf < df) {
+                            let r =  df % vf;
+                            new_val = r > 0.1;
+                        } else {
+                            new_val = false
+                        }
+                    }
+                } else {
+                    new_val = interpolation_mode;
+                }
+                if (curr_val != new_val) {
+                    this.set_property("interpolation", new_val);
+                }
+    
+    
+            }
+    
+            for (var k in IGNORE_MPV_REALTIME_CHANGES) {
+                this.$.props[k] = this.#props[k];
+            }
+    
+            this.update_time_pos();
+
+            if (!this.#props["pause"]) {
+                var hash1 = JSON.stringify([this.#load_id, this.#props["time-pos"]]);
+                if (hash1 != last_hash1) last_ts1 = ts;
+                if (ts > (last_ts1 + FORCE_NEXT_ITEM_TIMEOUT)) {
+                    this.load_next();
+                }
+                last_hash1 = hash1;
+
+                var hash2 = this.#time_progressed;
+                if (hash2 != last_hash2) last_ts2 = ts;
+                if (ts > (last_ts2 + FORCE_ABORT_TIMEOUT)) {
+                    this.quit();
+                }
+                last_hash2 = hash2;
+            }
+        }, 1000);
     }
 
     load_next() {
@@ -422,6 +414,7 @@ export class MPVSessionWrapper extends MPVWrapper {
     }
         
     /** @param {{offset:number, duration:number, media_type:string}} opts */
+    /** @return {{filename:string, duration:number}} */
     async #process(item, opts) {
         opts = Object.assign({}, opts);
         let is_root = item === this.loaded_item;
@@ -429,7 +422,7 @@ export class MPVSessionWrapper extends MPVWrapper {
         let duration = opts.duration || 0;
         let offset = opts.offset || 0;
         let is_playlist = item.filename && this.session.is_item_playlist(item.id);
-        let mi = await globals.app.probe_media(item.filename);
+        let mi = await this.session.get_media_info(item.filename);
         let exists = mi.exists;
         let is_image = mi.duration <= 0.04;
         let filename = item.filename;
@@ -439,7 +432,7 @@ export class MPVSessionWrapper extends MPVWrapper {
         if (is_playlist && (item.props.playlist_mode || !is_root)) {
             exists = true;
             let is_2track = item.props.playlist_mode == 2;
-            let edl = new EDL();
+            let edl = new MPVEDL();
             let tracks = [];
             let playlist_tracks = this.session.get_playlist_tracks(item.id);
             
@@ -474,7 +467,7 @@ export class MPVSessionWrapper extends MPVWrapper {
                         if (!is_2track || i == 1) this.loaded_item.fades.push(["a", "out", o-fade_out, fade_out])
                     }
                     if (tmp.duration > 0) {
-                        track.entries.push(new EDLEntry(EDL.escape(tmp.filename), {
+                        track.entries.push(new MPVEDLEntry(MPVEDL.escape(tmp.filename), {
                             length: tmp.duration.toFixed(3)
                         }));
                     }
@@ -501,14 +494,14 @@ export class MPVSessionWrapper extends MPVWrapper {
                     // add padding to track if necessary
                     if (pad_duration > 0.05) {
                         if (track.type == "audio" && item.props.playlist_revert_to_video_track_audio && tracks[0].duration > tracks[1].duration) {
-                            let tmp_filename = new EDL(tracks[0].entries).toString();
-                            track.entries.push(new EDLEntry(EDL.escape(tmp_filename), {
+                            let tmp_filename = new MPVEDL(tracks[0].entries).toString();
+                            track.entries.push(new MPVEDLEntry(MPVEDL.escape(tmp_filename), {
                                 start: (tracks[1].duration).toFixed(3),
                                 length: (tracks[0].duration - tracks[1].duration).toFixed(3)
                             }));
                         } else {
                             let tmp = await this.#process(null, {duration: pad_duration, media_type: track.type, offset});
-                            track.entries.push(new EDLEntry(EDL.escape(tmp.filename), {
+                            track.entries.push(new MPVEDLEntry(MPVEDL.escape(tmp.filename), {
                                 length: pad_duration.toFixed(3)
                             }));
                         }
@@ -516,7 +509,7 @@ export class MPVSessionWrapper extends MPVWrapper {
                     if (track.entries.length && track.type) {
                         edl.append(
                             "!new_stream",
-                            new EDLEntry("!delay_open", {
+                            new MPVEDLEntry("!delay_open", {
                                 media_type: track.type
                             })
                         );
@@ -534,7 +527,7 @@ export class MPVSessionWrapper extends MPVWrapper {
             // files, nulls and whatnot
             if (!exists || is_image) filename = null;
             let stream_map = {};
-            let edl = new EDL();
+            let edl = new MPVEDL();
             edl.append("!no_chapters");
             if (!duration) {
                 duration = (item.props.clip_end - item.props.clip_start) || item.props.title_duration || item.props.empty_duration || mi.duration;
@@ -554,7 +547,7 @@ export class MPVSessionWrapper extends MPVWrapper {
                             if (alt_filename.length < null_filename) null_filename = alt_filename;
                             edl.append(
                                 "!new_stream",
-                                ...EDL.repeat(null_filename, {end:globals.app.null_stream_duration, duration:duration})
+                                ...MPVEDL.repeat(null_filename, {end:globals.app.null_stream_duration, duration:duration})
                             );
                         }
                     }
@@ -562,7 +555,7 @@ export class MPVSessionWrapper extends MPVWrapper {
                 if (edl.length > 1) {
                     if (filename) {
                         edl.append("!new_stream");
-                        edl.append(new EDLEntry(EDL.escape(filename), {
+                        edl.append(new MPVEDLEntry(MPVEDL.escape(filename), {
                             length:duration.toFixed(3)
                         }));
                     }
@@ -582,7 +575,7 @@ export class MPVSessionWrapper extends MPVWrapper {
                     offset: item.props.clip_offset,
                     // duration: item.props.clip_duration,
                 };
-                let temp_edl = EDL.repeat(filename, opts);
+                let temp_edl = MPVEDL.repeat(filename, opts);
                 duration = temp_edl.duration;
                 filename = temp_edl.toString();
             }
@@ -594,23 +587,28 @@ export class MPVSessionWrapper extends MPVWrapper {
     // /** @param {InternalSession.PlaylistItem} item */
     async loadfile(item, opts) {
 
+        this.#load_id++;
+        var load_id = this.#load_id;
+
         opts = Object.assign({
             reload_props: true,
         }, opts);
 
         let last_id = this.loaded_item && this.loaded_item.id;
-        let last_props = utils.deep_copy(this.#props);
+        let last_props = utils.json_copy(this.#props);
 
-        // this.$.current_item_on_load = utils.deep_copy(item);
-        // this.$.current_descendents_on_load = utils.deep_copy(this.get_playlist_items(id, null, true));
+        // this.$.current_item_on_load = utils.json_copy(item);
+        // this.$.current_descendents_on_load = utils.json_copy(this.get_playlist_items(id, null, true));
 
-        item = utils.deep_copy(fix_item(item));
-        let mi = await globals.app.probe_media(item.filename)
+        item = utils.json_copy(fix_item(item));
+        let mi = await this.session.get_media_info(item.filename)
+        this.loaded_item = item;
         item.media_info = mi;
+        [item.width, item.height] = this.get_dimensions_from_stream(mi.streams ? mi.streams.find(s=>s.type == "video") : null);
         item.af_graph = [];
         item.vf_graph = [];
         item.fades = [];
-        this.loaded_item = item;
+        item.ignore_crop = false;
 
         let props_def = InternalSessionProps.playlist.__enumerable__.props;
         let props = {};
@@ -698,19 +696,33 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
                 // if localhost port is open and accepts request but stream is not live it breaks mpv completely. Can't figure it out.
                 // filename = "wss://localhost:8112/live/"..S.rtmp_key..".flv"
                 // filename = "https://localhost:8112/live/"..S.rtmp_key..".m3u8"
-                // low-latency profile:
-                // load_opts[audio-buffer", 0); // THIS FUCKS UP RTMP FILES (IF FAIL TO LOAD)
-
                 
+                // -------- low-latency profile --------
+                
+                // props[audio-buffer"] = 0; // THIS FUCKS UP RTMP FILES (IF FAIL TO LOAD)
                 // props["vd-lavc-threads"] = 1;
                 // props["cache-pause"] = false;
-                // // load_opts["demuxer-lavf-o"] = {fflags="+nobuffer"}; // PROBLEM?
+                // props["demuxer-lavf-o"] = {fflags:"+nobuffer"}; // PROBLEM?
                 // props["demuxer-lavf-probe-info"] = "nostreams";
                 // props["demuxer-lavf-analyzeduration"] = 0.1;
+                // props["analyzeduration"] = 0;
                 // props["video-sync"] = "audio";
                 // props["interpolation"] = false;
                 // props["video-latency-hacks"] = true;
                 // props["stream-buffer-size"] = "4k";
+
+                // ------------------------------------
+
+                // audio-buffer=0
+                // vd-lavc-threads=1
+                // cache-pause=no
+                // demuxer-lavf-o-add=fflags=+nobuffer
+                // demuxer-lavf-probe-info=nostreams
+                // demuxer-lavf-analyzeduration=0.1
+                // video-sync=audio
+                // interpolation=no
+                // video-latency-hacks=yes
+                // stream-buffer-size=4k
                 
                 // I added these for some reason:
                 // load_opts["demuxer-lavf-format"] = "flv";
@@ -751,7 +763,7 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         }
 
         const register_file_streams = async (file, type) =>{
-            let mi = utils.deep_copy(await globals.app.probe_media(file));
+            let mi = utils.json_copy(await this.session.get_media_info(file));
             if (!mi.streams) return;
             var streams = filter_streams(mi.streams, type);
             if (!streams.length) return;
@@ -765,7 +777,7 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         }
 
         if (mi.streams) {
-            let streams = utils.deep_copy(mi.streams);
+            let streams = utils.json_copy(mi.streams);
             if (is_image) streams.filter(s=>s.type==="video").forEach(s=>s.albumart=1);
             register_streams(...streams);
         } else if (is_rtmp || props.playlist_mode) {
@@ -787,8 +799,8 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         let audio_files = [];
         let subtitle_files = [];
 
-        const add_video = async (filename, start, end)=>{
-            let mi = await globals.app.probe_media(filename); // , true
+        const add_video_file = async (filename, start, end)=>{
+            let mi = await this.session.get_media_info(filename, {force:true});
             let video_ext = path.extname(filename);
             let video_name = path.basename(filename, video_ext);
             start = start || 0;
@@ -804,14 +816,14 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
                 albumart = true;
                 data = [filename, "select", video_name, "eng", "yes"];
             } else if (duration == 0 || !Number.isFinite(repeats) || repeats > MAX_EDL_REPEATS) {
-                data = [`av://lavfi:movie='${av_escape(filename).replace(/\\/g, "/")}':loop=0,setpts=N/FRAME_RATE/TB`, "select", video_name, "eng", "no"];
+                data = [`av://lavfi:movie='${utils.ffmpeg_escape_av_file_path(filename)}':loop=0,setpts=N/FRAME_RATE/TB`, "select", video_name, "eng", "no"];
                 // weird issue with gifs running way too fast with this method...
             } else {
-                data = [EDL.repeat(filename,  {start, end, duration}).toString(), "select", video_name, "eng", "no"];
+                data = [MPVEDL.repeat(filename,  {start, end, duration}).toString(), "select", video_name, "eng", "no"];
             }
             if (mi.streams) {
                 /** @type {object[]} */
-                let streams = utils.deep_copy(mi.streams);
+                let streams = utils.json_copy(mi.streams);
                 // video-add also adds audio and subs... we must register them
                 var first_video_stream = streams.find(s=>s.type === "video");
                 if (first_video_stream) {
@@ -822,18 +834,18 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
                 on_load_commands.push(["video-add", ...data]);
             }
         }
-        const add_subtitle = async (filename)=>{
-            var n = num_subtitles;
+
+        const add_subtitle_file = async (filename)=>{
             if (await register_file_streams(filename, "subtitle")) {
                 subtitle_files.push(filename);
-                sid_auto = n+1;
+                sid_auto = num_subtitles;
             }
         };
-        const add_audio = async (filename)=>{
-            var n = num_audios;
+
+        const add_audio_file = async (filename)=>{
             if (await register_file_streams(filename, "audio")) {
                 audio_files.push(filename);
-                aid_auto = n+1;
+                aid_auto = num_audios;
             }
         };
 
@@ -853,10 +865,10 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
                 let name = path.basename(f_lower, ext);
                 let similar_name = filename.startsWith(name);
                 if (similar_name && ext in SUBTITLE_EXTS) {
-                    await add_subtitle(path.join(dir, f));
+                    await add_subtitle_file(path.join(dir, f));
                 }
                 if (similar_name && ext in AUDIO_EXTS) {
-                    await add_audio(path.join(dir, f));
+                    await add_audio_file(path.join(dir, f));
                 }
                 if (ext in IMAGE_EXTS && (similar_name || name in ALBUMART_FILENAMES)) {
                     external_artworks.push(path.join(dir, f))
@@ -866,7 +878,7 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
 
         let fix_background_file = async (f)=>{
             if (f) {
-                var mi = await globals.app.probe_media(f);
+                var mi = await this.session.get_media_info(f);
                 if (!mi.streams) return null;
             }
             return f;
@@ -875,13 +887,9 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         let has_main_video = is_image || !!streams.find(s=>s.type==="video" && !s.albumart);
         let use_background = is_empty || is_intertitle || !!props.background_mode || !!props.background_file || !has_main_video;
         let background_mode = props.background_mode;
-        let background_color = props.background_color;
+        let background_color = props.background_color || "#000000";
         let background_file, background_file_start, background_file_end;
         
-        if (!background_mode) {
-            background_mode = "color";
-            background_color = "#000000";
-        }
         if (background_mode == "default") {
             background_mode = this.session.$.background_mode || "logo";
             background_color = this.session.$.background_color;
@@ -896,36 +904,35 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
             background_file_start = props.background_file_start;
             background_file_end = props.background_file_end;
         }
-        if (background_mode !== "color") background_color = "#000000";
         if (background_file) background_mode = "file";
 
         if (use_background) {
             if (background_mode == "embedded" || background_mode == "external") {
                 if (background_mode == "external") {
-                    for (var f of external_artworks) await add_video(f);
+                    for (var f of external_artworks) await add_video_file(f);
                 }
                 let artwork_stream;
                 let embedded_artwork_stream = streams.find(s=>s.type==="video" && !s.external && s.albumart)
-                let external_artwork_stream = streams.find(s=>s.type==="video" && s.externals.albumart)
-                if (background_mode == "embedded") artwork_stream = embedded_artwork_stream
+                let external_artwork_stream = streams.find(s=>s.type==="video" && s.externals && s.externals.albumart)
+                if (background_mode == "embedded") artwork_stream = embedded_artwork_stream;
                 if (background_mode == "external") artwork_stream = external_artwork_stream || embedded_artwork_stream;
                 if (artwork_stream) vid_auto = artwork_stream.type_id;
                 else background_mode = "logo";
             }
             if (background_mode == "file") {
-                await add_video(background_file, background_file_start, background_file_end);
+                await add_video_file(background_file, background_file_start, background_file_end);
             } else if (background_mode == "logo") {
-                await add_video(path.resolve(globals.app.conf["main.logo_path"]));
+                await add_video_file(path.resolve(globals.app.conf["main.logo_path"]));
             } else if (background_mode == "color") {
                 // vid_auto = 0; // ?
             }
         }
 
         if (props.subtitle_file) {
-            await add_subtitle(props.subtitle_file);
+            await add_subtitle_file(props.subtitle_file);
         }
         if (props.audio_file) {
-            await add_audio(props.audio_file);
+            await add_audio_file(props.audio_file);
         }
 
         if (is_intertitle || (!num_videos && num_subtitles)) {
@@ -935,6 +942,7 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         let vid = fix_stream_id(props.vid_override ?? vid_auto, streams, "video");
         let aid = fix_stream_id(props.aid_override ?? aid_auto, streams, "audio");
         let sid = fix_stream_id(props.sid_override ?? sid_auto, streams, "subtitle");
+        let secondary_sid = null;
 
         // -------------------------------------------------
         
@@ -944,23 +952,30 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         let ao = [];
 
         let show_waveform = !!(props.audio_visualization == "waveform" && aid);
-        let is_albumart = (get_stream_by_id(vid,streams)||{}).albumart;
+        var video_stream = get_stream_by_id(vid,streams);
+        let is_albumart = video_stream ? !!video_stream.albumart : false;
 
         if (use_background || !vid || show_waveform || is_albumart) {
             let overlay_center = "overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2";
             is_special = true;
-            vo.push(`color=c=${background_color}:s=${this.width}x${this.height}:r=${fps}`);
-            if (vid) {
+            let [w,h] = this.get_dimensions_from_stream(video_stream);
+            vo.push(`color=c=${background_color}:s=${w}x${h}:r=${fps}`);
+            if (background_mode === "color") {
+                item.ignore_crop = true;
+            } else if (vid) {
+                item.ignore_crop = true;
                 vo.push(
                     `${vo.pop()}[bg1]`,
-                    `[vid${vid||1}]scale=${this.width}x${this.height}:force_original_aspect_ratio=decrease[img1]`,
+                    `[vid${vid||1}]scale=${this.width}:${this.height}:force_original_aspect_ratio=decrease[img1]`,
                     `[bg1][img1]${overlay_center}`
-                )
+                );
                 // vid = "generated";
             }
             if (show_waveform) {
-                let wave_w = Math.min(1280, this.width) // cap it at 1280 or it lags.
-                let wave_h = Math.ceil(wave_w * (this.height / this.width));
+                item.ignore_crop = true;
+                let ar = this.width / this.height;
+                let wave_h = Math.min(720, this.height) // cap it at 1280 or it lags.
+                let wave_w = Math.ceil(wave_h * ar);
                 let h_scale = 0.5;
                 let wf_alpha = 1.0;
                 let showwaves = `showwaves=mode=line:scale=lin:s=${wave_w}x${wave_h*h_scale}:colors=white@${wf_alpha}:r=${fps}`;
@@ -999,10 +1014,12 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         
         const try_edlify = (filename)=>{
             if (special_start_time) {
-                filename = new EDL([
-                    new EDLEntry(EDL.escape(filename), {
-                        start: special_start_time.toFixed(3)
-                    })
+                var params = { start: special_start_time.toFixed(3) };
+                if (seekable) {
+                    params.length = (duration - special_start_time).toFixed(3);
+                }
+                filename = new MPVEDL([
+                    new MPVEDLEntry(MPVEDL.escape(filename), params)
                 ]).toString();
             }
             return filename;
@@ -1027,7 +1044,7 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         {
             let [w,h] = [this.width, this.height];
             let ass;
-            for (let [type,dir,offset,dur] of this.loaded_item.fades) {
+            for (let [type,dir,offset,dur] of item.fades) {
                 offset = Math.max(0, offset - (special_start_time || 0));
                 // if (type.startsWith("v")) vf_graph.push(`fade=enable='between(t,${offset},${offset+duration})':t=${dir}:st=${o}:d=${duration}`)
                 if (type.startsWith("v")) {
@@ -1058,11 +1075,12 @@ Format: Start,End,Style,Text`+"\n";
                     let c = `{\\p1}m 0 0 l ${w} 0 ${w} ${h} 0 ${h}{\\p0}`;
                     ass += `Dialogue: ${ass_time(start*1000)},${ass_time(end*1000)},F1,${f+c}\n`;
                 } else if (type.startsWith("a")) {
-                    this.loaded_item.af_graph.push(`afade=enable='between(t,${offset},${offset+dur})':t=${dir}:st=${offset}:d=${dur}`);
+                    item.af_graph.push(`afade=enable='between(t,${offset},${offset+dur})':t=${dir}:st=${offset}:d=${dur}`);
                 }
             }
             if (ass) {
-                subtitle_files = [{filename:"memory://"+ass, name:"__fades__"}];
+                subtitle_files.push({filename:"memory://"+ass, name:"__fades__", secondary: true});
+                secondary_sid = num_subtitles + 1;
             }
         }
 
@@ -1082,15 +1100,15 @@ Format: Start,End,Style,Text`+"\n";
             on_load_commands.push(["video-add", try_edlify(f.filename), "select", f.name]);
         }
         for (var f of subtitle_files) {
-            on_load_commands.push(["sub-add", try_edlify(f.filename), "select", f.name]);
+            on_load_commands.push(["sub-add", try_edlify(f.filename), f.secondary?"auto":"select", f.name]);
         }
         for (var f of audio_files) {
             on_load_commands.push(["audio-add", try_edlify(f.filename), "select", f.name]);
         }
 
-        props.vid_auto = vid_auto;
-        props.sid_auto = sid_auto;
-        props.aid_auto = aid_auto;
+        // props.vid_auto = vid_auto;
+        // props.sid_auto = sid_auto;
+        // props.aid_auto = aid_auto;
 
         /////////////////////////////////////////////////
         //                THE BIG APPLY                //
@@ -1116,18 +1134,25 @@ Format: Start,End,Style,Text`+"\n";
         this.rebuild_deinterlace();
         this.update_volume(true);
 
-        if (vid != null) this.#mpv_load_props.vid = vid || false;
-        if (aid != null) this.#mpv_load_props.aid = aid || false;
-        if (sid != null) this.#mpv_load_props.sid = sid || false;
-        if (this.$.seekable) this.#mpv_load_props.start = String(start_time);
+        var olp = {};
+        if (vid != null) olp.vid = vid || false;
+        if (aid != null) olp.aid = aid || false;
+        if (sid != null) olp.sid = sid || false;
+        if (secondary_sid != null) olp["secondary-sid"] = secondary_sid || false;
+        if (this.$.seekable) olp.start = String(start_time);
+        if (ls_path === "rtmp") olp.ytdl = false;
+        Object.assign(this.#mpv_load_props, olp);
         
         for (var k of Object.keys(this.#mpv_load_props)) {
             if (!this.allowed_mpv_props[k]) delete this.#mpv_load_props[k];
         }
 
-        await this.on_load_promise(this.lua_message("loadfile", filename, this.#mpv_load_props, on_load_commands));
-
-        return filename;
+        await this.on_load_promise(this.lua_message("loadfile", filename, this.#mpv_load_props, on_load_commands)).catch((e)=>{
+            this.logger.error(e);
+            if (load_id == this.#load_id) {
+                return this.load_next();
+            }
+        });
     }
 
     async set_property(key, value, current_file_override=false) {
@@ -1146,7 +1171,7 @@ Format: Start,End,Style,Text`+"\n";
             mpv_value = String(value);
         } else if (key === "deinterlace_mode") {
             this.deinterlace_dirty = true;
-        } else if (key === "audio_channels" || key === "volume_normalization" || key.startsWith("crop_")) { // || k === "force_fps"
+        } else if (key === "audio_channels" || key === "volume_normalization" || key === "crop") { // || k === "force_fps"
             this.filters_dirty = true;
         } else if (key === "audio_visualization") {
             reload = true;
@@ -1183,16 +1208,14 @@ Format: Start,End,Style,Text`+"\n";
     }
 
     lua_message(name, ...args) {
-        return this.command("script-message-to", "livestreamer", name, JSON.stringify(args)).catch(e=>{
-            this.logger.warn(`[mpv] ${JSON.stringify(e)}`);
-        })
+        return this.command("script-message-to", "livestreamer", name, JSON.stringify(args));
     }
     
     update_volume(immediate = false) {
-        let target_volume = this.session.$.volume_target * this.#props.volume_multiplier;
+        let target_volume = (this.session.$.volume_target ?? InternalSessionProps.volume_target.__default__) * this.#props.volume_multiplier;
         let curr_volume = this.#props.volume ?? 100;
         this.set_property("volume_target", target_volume);
-        let inc = this.session.$.volume_speed;
+        let inc = this.session.$.volume_speed ?? InternalSessionProps.volume_speed.__default__;
         if (inc == 0 || immediate) {
             curr_volume = target_volume;
         } else {
@@ -1205,83 +1228,6 @@ Format: Start,End,Style,Text`+"\n";
         if (this.#props.volume != curr_volume) {
             this.set_property("volume", curr_volume);
         }
-    }
-
-    async #tick() {
-        /* if (this.do_reload) {
-            this.do_reload = false;
-            this.reload(false);
-        } */
-        if (this.filters_dirty) {
-            this.rebuild_filters();
-        }
-        if (this.deinterlace_dirty) {
-            this.rebuild_deinterlace();
-        }
-        if (this.$.playing) {
-            this.update_volume();
-        }
-    }
-
-    async #long_tick() {
-
-        let ts = Date.now();
-        if (this.#props["output-pts"]) {
-            let diff_pts = (this.#props["output-pts"] - this.#mpv_last_pts) * 1000;
-            let diff_ts = ts - this.#mpv_last_speed_check;
-            let speed = (diff_pts / diff_ts);
-            if (isNaN(speed) || speed < 0) speed = 0;
-            // let f = this.$["output-frames"];
-            this.speed = speed;
-            this.$.speed = speed;
-            this.emit("speed", speed);
-        }
-        this.#mpv_last_pts = this.#props["output-pts"];
-        this.#mpv_last_speed_check = ts;
-
-        (async ()=>{
-            let new_ranges;
-            let demuxer_cache_state = (await this.get_property("demuxer-cache-state").catch(()=>null));
-            // console.log(demuxer_cache_state);
-            if (demuxer_cache_state) {
-                new_ranges = demuxer_cache_state["seekable-ranges"];
-            }
-            if (JSON.stringify(new_ranges) != JSON.stringify(this.$.seekable_ranges)) {
-                this.$.seekable_ranges = new_ranges || [];
-            }
-        })();
-
-        if (!this.is_encoding) {
-            let interpolation_mode = this.session.$.interpolation_mode || false;
-            let curr_val = this.#props.interpolation;
-            let new_val = curr_val;
-            if (interpolation_mode == "auto") {
-                let df = this.session.$.auto_interpolation_rate || 30;
-                let vf = this.#props["estimated-vf-fps"];
-                if (vf) {
-                    if (vf < df) {
-                        let r =  df % vf;
-                        new_val = r > 0.1;
-                    } else {
-                        new_val = false
-                    }
-                }
-            } else {
-                new_val = interpolation_mode;
-            }
-            if (curr_val != new_val) {
-                this.set_property("interpolation", new_val);
-            }
-        }
-
-        /* for (var k in this.#props) {
-            this.$.props[k] = this.#props[k];
-        } */
-
-        for (var k in IGNORE_MPV_REALTIME_CHANGES) {
-            this.$.props[k] = this.#props[k];
-        }
-        this.update_time_pos();
     }
 
     update_time_pos() {
@@ -1327,16 +1273,37 @@ Format: Start,End,Style,Text`+"\n";
                 `fps=${fps}`
             );
         }
+        
+        if (!this.loaded_item.ignore_crop) {
+            let left = utils.clamp(Math.abs(this.#props.crop[0] || 0));
+            let top = utils.clamp(Math.abs(this.#props.crop[1] || 0));
+            let right = utils.clamp(Math.abs(this.#props.crop[2] || 0));
+            let bottom = utils.clamp(Math.abs(this.#props.crop[3] || 0));
+            let x = left;
+            let y = top;
+            let w = utils.clamp(1 - right - left);
+            let h = utils.clamp(1 - bottom - top);
+            let min_x = 1 / this.width;
+            let min_y = 1 / this.height;
 
-        let crop_left = this.#props.crop_left || 0;
-        let crop_right = this.#props.crop_right || 0;
-        let crop_top = this.#props.crop_top || 0;
-        let crop_bottom = this.#props.crop_bottom || 0;
-        if (crop_left || crop_right || crop_top || crop_bottom) {
-            vf_graph.push(
-                `crop=w=iw*${Math.abs(1-crop_right-crop_left)}:h=ih*${Math.abs(1-crop_bottom-crop_top)}:x=iw*${crop_left}:y=ih*${crop_top}`
-            );
+            if ((w != 1 || h != 1) && w >= min_x && h >= min_y) {
+                vf_graph.push(
+                    `crop=w=iw*${w}:h=ih*${h}:x=iw*${x}:y=ih*${y}`
+                );
+            }
         }
+       
+        // {
+        //     let left = utils.clamp(Math.abs(this.#props.crop[0] || 0));
+        //     let top = utils.clamp(Math.abs(this.#props.crop[1] || 0));
+        //     let right = utils.clamp(Math.abs(this.#props.crop[2] || 0));
+        //     let bottom = utils.clamp(Math.abs(this.#props.crop[3] || 0));
+        //     if (left || right || top || bottom) {
+        //         vf_graph.push(
+        //             `crop=w=iw*dar*${Math.abs(1-right-left)}:h=ih*${Math.abs(1-bottom-top)}:x=iw*dar*${left}:y=ih*${top}`
+        //         );
+        //     }
+        // }
 
         const get_fade_in_out = ()=>{
             if ((this.loaded_item||{}).filename == "livestreamer://intertitle") {
@@ -1401,12 +1368,14 @@ Format: Start,End,Style,Text`+"\n";
             } else if (ac == "stereo") {
                 // do nothing
             }
-            // af_graph.push("pan=stereo|c0=c0|c1=c0");
         }
 
         vf_graph.push(
-            `scale=(iw*sar)*min(${w}/(iw*sar),${h}/ih):ih*min(${w}/(iw*sar),${h}/ih)`,
-            `pad=${w}:${h}:(${w}-iw*min(${w}/iw,${h}/ih))/2:(${h}-ih*min(${w}/iw,${h}/ih))/2`,
+            // `scale=(iw*sar)*min(${w}/(iw*sar),${h}/ih):ih*min(${w}/(iw*sar),${h}/ih)`,
+            // `pad=${w}:${h}:(${w}-iw*min(${w}/iw,${h}/ih))/2:(${h}-ih*min(${w}/iw,${h}/ih))/2`,
+            `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
+            // `setsar=sar=1`,
+            `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
             `format=yuv420p`
         );
 
@@ -1428,6 +1397,11 @@ Format: Start,End,Style,Text`+"\n";
 
         this.set_property("af", af);
         this.set_property("vf", vf);
+    }
+
+    get_dimensions_from_stream(stream) {
+        if (stream && stream.width && stream.height) return [stream.width, stream.height];
+        return [this.width, this.height];
     }
 }
 
@@ -1452,10 +1426,6 @@ function get_stream_by_id(id, streams, type) {
 
 function fix_stream_id(id, streams, type) {
     return (get_stream_by_id(id, streams, type)||{}).type_id || 0;
-}
-
-function av_escape(str) {
-    return str.replace(/\\/g, "\\\\\\\\").replace(/'/g, `'\\\\''`).replace(/:/g, "\\:")
 }
 function ass_text(text) {
     return (text||"").replace(/\r?\n/g, "\\N");

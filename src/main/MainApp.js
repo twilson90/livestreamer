@@ -1,0 +1,980 @@
+import path from "node:path";
+import os from "node:os";
+import url from "node:url";
+import fs from "fs-extra";
+import showdown from "showdown";
+import chokidar from "chokidar";
+import upath from "upath";
+import compression from "compression";
+import express, {Router} from "express";
+import bodyParser from "body-parser";
+import multer from "multer";
+import pidusage from "pidusage";
+import checkDiskSpace from "check-disk-space";
+import readline from "node:readline";
+import child_process from "node:child_process";
+import Core from "../core/index.js";
+import * as utils from "../core/utils.js";
+import Cache from "../core/Cache.js";
+import ClientServer from "../core/ClientServer.js";
+import ClientUpdater from "../core/ClientUpdater.js";
+import WebServer from "../core/WebServer.js";
+import Download from './Download.js';
+import Upload from './Upload.js';
+import InternalSessionProps from './InternalSessionProps.js';
+import InternalSession from './InternalSession.js';
+import ExternalSession from './ExternalSession.js';
+import Client from './Client.js';
+import API from './API.js';
+import Target from './Target.js';
+import Stream from './Stream.js';
+import globals from './globals.js';
+/** @import {StreamTarget, SessionBase} from "./types" */
+
+const dirname = import.meta.dirname;
+const MEDIAINFO_VERSION = 2;
+const MAX_CONCURRENT_MEDIA_INFO_PROMISES = 8;
+const TICK_INTERVAL = 1 * 1000;
+
+var ext_format_map = {
+    ".mkv": "matroska",
+    ".flv": "flv",
+    ".mp4": "mp4",
+};
+var format_ext_map = Object.fromEntries(...utils.reverse_map(ext_format_map));
+
+/** @typedef {string} Domain */
+/** @typedef {Record<PropertyKey,{access:string, password:string, suspended:boolean}>} AccessControl */
+
+export default class MainApp extends Core {
+    /** @type {Record<string,Download>} */
+    downloads = {};
+    /** @type {Record<string,SessionBase>} */
+    sessions = {};
+    /** @type {Record<string,Target>} */
+    targets = {};
+    /** @type {Record<string,Upload>} */
+    uploads = {};
+    /** @type {Cache} */
+    #media_info_cache;
+    #media_refs = {};
+    #media_info_promise_map = {};
+    /** @type {utils.PromisePool} */
+    #media_info_promise_pool;
+    // /** @type {utils.PromisePool} */
+    // #prepare_promise_pool;
+    null_stream_duration = 60
+    netstats = [];
+
+    SESSION_PUBLIC_PROPS = [
+       ["index"],
+       ["name"],
+       ["creation_time"],
+       ["version"],
+       ["stream", "state"],
+    ];
+
+    /** @type {Stream[]} */
+    get streams() { return Object.values(this.sessions).map(s=>s.stream).filter(s=>s).flat(); }
+
+    get sessions_ordered() { return utils.sort(Object.values(this.sessions), s=>s.index); }
+    
+    /** @type {Record<PropertyKey,Client>} */
+    get clients() { return this.client_server.clients; }
+
+    constructor() {
+        super("main");
+        globals.app = this;
+    }
+
+    async init() {
+        
+        this.$.sessions = {};
+        this.$.nms_sessions = {};
+        this.$.clients = {};
+        this.$.logs = this.logger.register_changes();
+        this.$.targets = {};
+        this.$.uploads = {};
+        this.$.downloads = {};
+        this.$.sysinfo = {
+            platform: process.platform
+        };
+        this.$.processes = {};
+        this.$.process_info = {};
+        this.$.detected_crops = {};
+        
+        var update_processes = ()=>{
+            for (var m in this.modules) {
+                var p = this.ipc.get_process(m);
+                p = p ? {...p, status: "online"} : {status:"stopped"}
+                Object.assign(p, {
+                    title: this.conf[`${m}.title`],
+                    description: this.conf[`${m}.description`],
+                });
+                this.$.processes[m] = p;
+            }
+            this.check_volumes();
+        };
+        update_processes();
+
+        this.ipc.on("internal:processes", ()=>update_processes());
+        this.ipc.respond("stream_targets", ()=>{
+            return this.streams.map(s=>Object.values(s.stream_targets)).flat().map(t=>t.$);
+        });
+        this.ipc.on("main.save-sessions", (data)=>{
+            this.save_sessions();
+        });
+        this.ipc.on("media-server.post-publish", async (id)=>{
+            var session = await this.ipc.get("media-server", ["sessions", id]);
+            this.$.nms_sessions[id] = session;
+            if (session.rejected) return;
+            if (session.appname === "livestream") {
+                new ExternalSession(session);
+            }
+        });
+        this.ipc.on("media-server.metadata-publish", async (id)=>{
+            this.$.nms_sessions[id] = await this.ipc.get("media-server", ["sessions", id]);
+        });
+        this.ipc.on("media-server.done-publish", (id)=>{
+            var sessions = Object.values(this.sessions).filter(s=>s instanceof ExternalSession && s.nms_session && s.nms_session.id == id);
+            for (var s of sessions) s.destroy();
+            delete this.$.nms_sessions[id];
+        });
+        this.ipc.request("media-server", "published_sessions").catch(utils.noop).then((nms_sessions)=>{
+            if (!nms_sessions) return;
+            Object.assign(this.$.nms_sessions, Object.fromEntries(nms_sessions.map(s=>[s.id,s])));
+        })
+        this.on("update-conf", ()=>{
+            this.logger.info("Config file updated.");
+            update_conf();
+        });
+
+        this.netstats = []
+        let nethogs = child_process.spawn(`nethogs`, ["-t"]);
+        readline.createInterface(nethogs.stdout).on("line", line=>{
+            if (String(line).match(/^Refreshing:/)) {
+                this.netstats = [];
+                return;
+            }
+            var m = String(line).match(/^(.+?)\/(\d+)\/(\d+)\s+([\d.]+)\s+([\d.]+)$/);
+            if (!m) return;
+            var [_,program,pid,userid,sent,received] = m;
+            sent *= 1024;
+            received *= 1024;
+            this.netstats.push({program,pid,userid,sent,received});
+        });
+        nethogs.on("error", (e)=>{
+            console.error(e.message);
+        });
+
+        this.curr_saves_dir = path.resolve(this.saves_dir, "curr");
+        this.old_saves_dir = path.resolve(this.saves_dir, "old");
+        this.public_html_dir = path.resolve(dirname, "public_html");
+        this.null_video_path = path.resolve(this.tmp_dir, `nv`);
+        this.null_audio_path = path.resolve(this.tmp_dir, `na`);
+        this.null_audio_video_path = path.resolve(this.tmp_dir, `nav`);
+        // this.fixed_media_dir = path.resolve(core.cache_dir, "fixed");
+
+        // setInterval(()=>this.cleanup_tmp_dirs(), 1000 * 60 * 60);
+        // this.cleanup_tmp_dirs();
+        
+        this.detected_crops_cache = new Cache("detected_crops", {
+            ttl: 1000 * 60 * 60 * 24 * 7,
+        });
+        this.detected_crops_cache.on("set", ({key,data})=>{
+            this.$.detected_crops[key] = data;
+        });
+        this.detected_crops_cache.on("delete", ({key,data})=>{
+            delete this.$.detected_crops[key];
+            fs.rm(path.resolve(this.screenshots_dir, key), {recursive:true}).catch(utils.noop);
+        });
+
+        this.#media_info_cache = new Cache("mediainfo", 1000 * 60 * 60 * 24 * 7);
+
+        this.#media_info_promise_pool = new utils.PromisePool(MAX_CONCURRENT_MEDIA_INFO_PROMISES);
+        
+        this.$.properties = utils.json_copy(InternalSessionProps);
+
+        this.api = new API();
+
+        await fs.mkdir(this.old_saves_dir, { recursive: true });
+        await fs.mkdir(this.curr_saves_dir, { recursive: true });
+        await this.#generate_null_media_files();
+        await this.load_sessions();
+        await this.#setup_web();
+        await this.detected_crops_cache.init();
+        await this.#media_info_cache.init();
+
+        var save_interval_id;
+        var setup_save_interval = ()=>{
+            clearInterval(save_interval_id);
+            save_interval_id = setInterval(()=>{
+                this.save_sessions();
+            }, this.conf["main.autosave_interval"] * 1000);
+        }
+        
+        setInterval(()=>this.#tick(), TICK_INTERVAL);
+        var update_change_log = async ()=>{
+            this.$.change_log = {
+                "mtime": +(await fs.stat(this.change_log_path)).mtime
+            };
+        }
+
+        this.client_updater = new ClientUpdater(this.observer, ()=>Object.values(this.client_server.clients), (c)=>{
+            return c.path[0] !== "sessions" || this.SESSION_PUBLIC_PROPS.some(p=>utils.array_starts_with(c.path.slice(2), p));
+        });
+
+        update_change_log();
+        var change_log_watcher = chokidar.watch(this.change_log_path, {awaitWriteFinish:true});
+        change_log_watcher.on("change", ()=>update_change_log());
+
+        var update_conf = ()=>{
+            this.load_targets();
+            setup_save_interval();
+        };
+        update_conf();
+
+        this.on("input", async (c)=>{
+            this.api.parse(...c);
+        });
+        
+    }
+
+    check_volumes() {
+        if (!this.ipc.get_process("file-manager")) return;
+        this.ipc.request("file-manager", "volumes").catch(utils.noop).then((data)=>{
+            if (!data) return;
+            this.logger.info(`update-volumes [${Object.keys(data).length}]`);
+            this.$.volumes = data;
+        });
+    }
+    
+    async #setup_web() {
+        var exp = express();
+
+        this.web = new WebServer(exp, {
+            auth: true,
+            // username: core.conf["main.http_username"],
+            // password: core.conf["main.http_password"],
+        });
+
+        this.client_server = new ClientServer("main", this.web.wss, this.observer, Client, true);
+        
+        exp.use(bodyParser.urlencoded({
+            extended: true,
+            limit: '50mb',
+        }));
+        
+        var upload = multer({
+            // limits: {
+            //     fileSize: 40*1024*1024*1024  // 40 gb limit
+            // },
+            storage: {
+                /** @param {express.Request} req @param {Express.Multer.File & {upload:Upload}} file */
+                _handleFile: async (req, file, cb)=>{
+                    var c;
+                    try { c = JSON.parse(decodeURIComponent(Buffer.from(file.originalname, 'ascii').toString('utf8'))); } catch {}
+                    if (!c) {
+                        cb("files[] field name incorrect format.");
+                        return;
+                    }
+                    this.id = null;
+                    this.path = "";
+                    this.last_modified = 0;
+                    this.start = 0;
+                    this.length = 0;
+                    
+                    let {filename, start, filesize, mtime, id, session_id} = c;
+                    // let hash = get_hash(filesize, mtime);
+                    let rel_dir = req.path.slice(1);
+                    let dest_dir = this.files_dir;
+                    /** @type {InternalSession} */
+                    let session = this.sessions[session_id];
+                    if (session) dest_dir = session.files_dir;
+                    let dest_path = path.resolve(dest_dir, rel_dir, filename);
+                    let item = session ? session.$.playlist[id] : null;
+
+                    if (path.relative(dest_dir, dest_path).startsWith("..")) {
+                        cb(`dest_path is not descendent of ${dest_dir}.`);
+                        return;
+                    }
+                    /** @type {Upload} */
+                    let upload = this.uploads[id];
+                    if (!upload) {
+                        upload = new Upload(id, dest_path, filesize, mtime);
+                        if (req.query.media) {
+                            var initial_scan = false;
+                            upload.on("chunk", ()=>{
+                                if (!item) return;
+                                if (initial_scan) return;
+                                if ((upload.unique_dest_path.match(/\.mp4$/i) && upload.first_and_last_chunks_uploaded) || upload.first_chunk_uploaded) {
+                                    initial_scan = true;
+                                    session.get_media_info(item.filename, {force:true});
+                                }
+                            });
+                            upload.on("complete", ()=>{
+                                // delete item.upload;
+                                if (upload.chunks > 1) {
+                                    if (item) session.get_media_info(item.filename, {force:true});
+                                }
+                            });
+                        }
+                    }
+                    if (item) {
+                        item.upload_id = upload.$.id;
+                        item.filename = upload.unique_dest_path;
+                    }
+
+                    // if (item) item.upload = upload.$;
+                    // same as "abort" apparently
+                    /* req.on('close', () => {
+                        if (!req.complete) {
+                            core.logger.info(`Upload chunk cancelled by user: ${upload.unique_dest_path}`);
+                            upload.cancel();
+                        }
+                    }); */
+                    await upload.ready;
+                    file.upload = upload;
+                    let err = await upload.add_chunk(file.stream, start).catch((e)=>e);
+                    cb(err);
+                },
+                /** @param {Request} _req @param {Express.Multer.File & {upload:Upload}} file @param {(error: Error | null) => void} cb */
+                _removeFile: async (req, file, cb)=>{
+                    let upload = file.upload;
+                    await fs.rm(upload.unique_dest_path, {force:true, recursive:true});
+                    // await ul.cancel();
+                    cb(null);
+                }
+            }
+        }).array("files[]");
+        
+        exp.put('/*', (req, res, next)=>{
+            upload(req, res, (err)=>{
+                let d = {};
+                if (err) d.error = err;
+                this.logger.log(err);
+                res.status(err ? 400 : 200).json(d);
+            })
+        });
+        var showdown_converter = new showdown.Converter();
+        exp.use(compression({threshold:0}));
+        exp.use("/changes.md", async (req, res, next)=>{
+            var html = showdown_converter.makeHtml(await fs.readFile(this.change_log_path, "utf8"));
+            res.status(200).send(html);
+        });
+
+        exp.use("/detected_crops", express.static(this.detected_crops_cache.dir));
+        
+        exp.use("/", await this.serve({
+            root: this.public_html_dir
+        }));
+        
+        await this.client_server.init();
+    }
+    
+    async load_targets() {
+        var leftovers = new Set(Object.values(this.targets));
+        
+        /** @type {{config:function(any,StreamTarget):any}[]} */
+        var targets = [
+			{
+                "id": "local",
+				"name": "Local Media Server",
+				"description": "Default streaming target",
+				"limit": 0,
+                "opts": {
+                    "use_hardware": true,
+                    "use_hevc": false,
+                    "outputs": this.conf["media-server.outputs"]
+                },
+                "config": (data, st)=>{
+                    return {
+                        "output_url": `rtmp://127.0.0.1:${this.conf["media-server.rtmp_port"]}/live/${st.id}`,
+                        "url": `${this.get_urls("media-server").url}/player/?id=${st.id}`,
+                    }
+                },
+			},
+			{
+                "id": "file",
+				"name": "File",
+				"description": "Generates a video file",
+				"limit": 0,
+                "opts": {
+                    "filename": "%session%-%date%",
+                    "format": "flv",
+                    "re": false,
+                },
+                "config": (data, st)=>{
+                    let format = data.opts.format;
+                    let filename = st.stream.session.evaluate_and_sanitize_filename(path.resolve(globals.app.files_dir, data.opts.filename));
+                    let ext = path.extname(filename);
+                    if (!ext) {
+                        ext = format_ext_map[format] || ".flv";
+                        filename += ext;
+                    }
+                    filename = filename.split(path.sep).join("/");
+                    if (filename.slice(0,1) !== "/") filename = "/"+filename;
+                    return {
+                        "output_format": format,
+                        "output_url": `file://${filename}`,
+                    }
+                },
+			},
+			{
+                "id": "gui",
+				"name": "GUI",
+				"description": "Opens a video window",
+				"limit": 0,
+                "opts": {
+                    "osc": false
+                },
+                "config": (data, st)=>{
+                    return {}
+                },
+			}
+        ];
+        for (var t of targets) t.builtin = true;
+
+        for (var t of this.conf["main.targets"]) {
+            if (!t.id) this.logger.error(`Cannot load conf defined target without 'id'.`);
+            targets.push(t);
+        }
+        for (var t of targets) t.locked = true;
+
+        var user_targets = [];
+        for (var id of await fs.readdir(this.targets_dir)) {
+            /** @type {Target} */
+            var t;
+            try {
+                t = JSON.parse(await fs.readFile(path.resolve(this.targets_dir, id)));
+            } catch (e) {
+                this.logger.error(`Couldn't read or parse target '${id}'`);
+            }
+            t.id = id;
+            user_targets.push(t);
+        }
+        for (var t of [...targets, ...user_targets]) {
+            if (t.id in this.targets) {
+                leftovers.delete(this.targets[t.id]);
+                await this.targets[t.id].update(t);
+            } else {
+                new Target(t);
+            }
+        }
+        for (var target of leftovers) {
+            target.destroy();
+        }
+    }
+
+    create_target(data) {
+        delete data.locked;
+        return new Target(data);
+    }
+
+    update_target(id, data) {
+        delete data.locked;
+        var target = this.targets[id];
+        if (target && !target.locked) target.update(data);
+    }
+
+    delete_target(id) {
+        var target = this.targets[id];
+        if (target && !target.locked) target.destroy();
+    }
+
+    #tick() {
+        Object.values(this.sessions).forEach(s=>s.tick());
+    }
+
+    // async cleanup_tmp_dirs() {
+    //     // stupid
+    //     var files = await glob("*", {cwd:this.fixed_media_dir, withFileTypes:true});
+    //     for (var f of files) {
+    //         if (f.mtimeMs + (1000 * 60 * 60 * 24) > Date.now()) {
+    //             await fs.rm(path.join(this.fixed_media_dir, f.name)).catch(utils.noop);
+    //         }
+    //     }
+    // }
+
+    async #generate_null_media_files() {
+        var [w,h] = [1280,720];
+        var t0 = Date.now();
+        if (!(await fs.exists(this.null_video_path))) {
+            this.logger.info(`Generating null video stream...`);
+            await utils.execa(this.conf["core.ffmpeg_executable"], ["-f", "lavfi", "-i", `color=c=black:s=${w}x${h}:r=30`, "-c:v", "libx264", "-b:v", "10m", `-force_key_frames`, `expr:gte(t,n_forced*1)`, "-r", "30", "-pix_fmt", "yuv420p", "-f", "matroska", "-t", String(this.null_stream_duration), this.null_video_path]);
+        }
+        if (!(await fs.exists(this.null_audio_path))) {
+            this.logger.info(`Generating null audio stream...`);
+            await utils.execa(this.conf["core.ffmpeg_executable"], ["-f", "lavfi", "-i", "anullsrc,aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo", "-c:a", "flac", "-f", "flac", "-t", String(this.null_stream_duration), this.null_audio_path]);
+        }
+        if (!(await fs.exists(this.null_audio_video_path))) {
+            this.logger.info(`Generating null audio/video stream...`);
+            await utils.execa(this.conf["core.ffmpeg_executable"], ["-i", this.null_audio_path, "-i", this.null_video_path, "-map", "0:a:0", "-map", "1:v:0", "-c", "copy", "-f", "matroska", this.null_audio_video_path]);
+        }
+        var t1 = Date.now();
+        this.logger.info(`Finished generating null [${t1-t0}ms]`);
+    }
+
+    async save_sessions() {
+        /** @type {InternalSession[]} */
+        var sessions = Object.values(this.sessions).filter(s=>s instanceof InternalSession);
+        for (var session of sessions) {
+            await session.autosave();
+        }
+    }
+
+    async load_sessions() {
+        var sessions = [];
+        var session_ids = await fs.readdir(this.curr_saves_dir);
+        // new format...
+        for (let uid of session_ids) {
+            var session_dir = path.resolve(this.curr_saves_dir, uid);
+            let filenames = await utils.order_files_by_mtime_descending(await fs.readdir(session_dir), session_dir);
+            for (let filename of filenames) {
+                let fullpath = path.resolve(session_dir, filename);
+                this.logger.info(`Loading '${filename}'...`);
+                var session = null;
+                try {
+                    session = JSON.parse(await fs.readFile(fullpath, "utf8"));
+                } catch {
+                    this.logger.error(`Failed to load '${filename}'`);
+                }
+                if (session) {
+                    session.id = uid;
+                    // if (!session.uid) session.uid = uid;
+                    sessions.push(session);
+                    break;
+                }
+            }
+        }
+        /* if (!sessions.length) {
+            // old format...
+            let filenames = (await fs.readdir(core.saves_dir)).filter(filename=>filename.match(/^\d{4}-\d{2}-\d{2}-/));
+            filenames = await utils.order_files_by_mtime_descending(filenames, core.saves_dir);
+            for (let filename of filenames) {
+                let fullpath = path.resolve(core.saves_dir, filename);
+                try {
+                    core.logger.info(`Loading '${filename}'...`);
+                    sessions = JSON.parse(await fs.readFile(fullpath, "utf8")).sessions;
+                    break;
+                } catch {
+                    core.logger.error(`Failed to load '${filename}'`);
+                }
+            }
+        } */
+        for (var session of sessions) {
+            var id = session.id;
+            delete session.id;
+            new InternalSession(id, session.name).load(session, true);
+        }
+    }
+
+    get_new_session_name() {
+        var i = 1;
+        while (true) {
+            var name = `Session ${i}`;
+            var session = Object.values(this.sessions).find(s=>s.name == name);
+            if (session === undefined) return name;
+            i++;
+        }
+    }
+
+    // #proxy_files = {};
+    // proxy_files = {};
+
+    async prepare(filename) {
+        return filename;
+        // if (filename) {
+        //     var mi = await this.probe_media(filename);
+        //     if (!this.#proxy_files[filename]) {
+        //         if (mi && mi.probe_method == "ffprobe") {
+        //             var fix = false;
+        //             var ffmpeg_args = [];
+        //             var fix_format = !!String(mi.format).match(/^(mpeg|mpegts|avi)$/);
+        //             var first_audio_track = mi.streams.filter(s=>s.type === "audio")[0];
+        //             var fix_audio = !!(first_audio_track && first_audio_track.codec.match(/^(mp3|mp2)$/)); // is this necessary?
+        //             fix_audio = false;
+        //             if (fix_format || fix_audio) {
+        //                 fix = true;
+        //                 // fflags +genpts is necessary for some VOB files.
+        //                 ffmpeg_args.push("-fflags", "+genpts", "-i", filename, "-c", "copy");
+        //                 if (fix_audio) ffmpeg_args.push("-c:a", "aac", "-b:a", "160k");
+        //                 ffmpeg_args.push("-f", "matroska");
+        //             }
+        //             if (fix) {
+        //                 this.#proxy_files[filename] = this.#prepare_promise_pool.enqueue(async ()=>{
+        //                     var hash = utils.md5(filename);
+        //                     var output_filename = path.join(core.cache_dir, "fixed", hash + ".mkv");
+        //                     var proof_filename = output_filename + ".complete";
+        //                     var exists = (await Promise.all([fs.exists(output_filename), fs.exists(proof_filename)])).every(s=>s);
+        //                     core.logger.info(`Fixing '${filename}' => '${output_filename}'...`);
+        //                     if (!exists) {
+        //                         await new Promise((resolve)=>{
+        //                             var ffmpeg = new FFMPEGWrapper();
+        //                             ffmpeg.start([...ffmpeg_args, output_filename, "-y"]);
+        //                             ffmpeg.on("info", (info)=>{
+        //                                 if (info.time > 5000) resolve();
+        //                             });
+        //                             ffmpeg.on("end", async()=>{
+        //                                 core.logger.info(`Fixed '${filename}' => '${output_filename}'.`);
+        //                                 await fs.writeFile(proof_filename, "");
+        //                                 resolve();
+        //                             });
+        //                             utils.timeout(10000).then(resolve);
+        //                         });
+        //                     }
+        //                     this.proxy_files[filename] = output_filename;
+        //                     return output_filename;
+        //                 });
+        //             }
+        //         }
+        //     }
+        // }
+        // return this.#proxy_files[filename] || filename;
+    }
+
+    register_media_refs(filenames) {
+        if (!Array.isArray(filenames)) filenames = [filenames];
+        for (var filename of filenames) {
+            if (!this.#media_refs[filename]) this.#media_refs[filename] = 0;
+            this.#media_refs[filename]++;
+        }
+    }
+
+    unregister_media_refs(filenames) {
+        if (!Array.isArray(filenames)) filenames = [filenames];
+        for (var filename of filenames) {
+            this.#media_refs[filename]--;
+            if (this.#media_refs[filename] <= 0) {
+                delete this.#media_refs[filename];
+                // delete this.$.media_info[filename];
+            }
+        }
+    }
+
+    get_media_info(filename, opts) {
+        filename = String(filename);
+        opts = {
+            force: false, // forces rescan despite still valid in cache
+            silent: false, // if true doesn't set processing flag
+            ...opts
+        };
+        var key = JSON.stringify([filename, opts]);
+        if (!this.#media_info_promise_map[key]) {
+            this.#media_info_promise_map[key] = this.#probe_media(filename, opts);
+            this.#media_info_promise_map[key].finally(()=>{
+                delete this.#media_info_promise_map[key];
+            })
+        }
+        return this.#media_info_promise_map[key];
+    }
+
+    #probe_media(filename, opts) {
+        return this.#media_info_promise_pool.enqueue(async ()=>{
+            let t0 = Date.now();
+
+            let uri = utils.urlify(filename);
+            let stat, abspath, size, mtime;
+
+            if (uri.protocol === "file:") {
+                abspath = url.fileURLToPath(filename);
+                stat = (await fs.stat(uri).catch(utils.noop));
+                if (stat) {
+                    size = stat.size;
+                    mtime = stat.mtimeMs;
+                } else {
+                    return {exists: false};
+                }
+            }
+
+            let cache_key = JSON.stringify([filename, size, mtime, MEDIAINFO_VERSION]);
+            let cached_data = this.#media_info_cache.get(cache_key);
+
+            let new_data;
+            if (!opts.force && cached_data) {
+                new_data = cached_data;
+            } else {
+                new_data = { exists: false };
+                if ((stat && uri.protocol === "file:") || uri.protocol === "edl:") {
+                    let header = await read_file(abspath, 0, 32).then((buffer)=>buffer.toString("utf-8")).catch(()=>"");
+                    let is_edl_file = header.startsWith("# mpv EDL v0\n");
+                    let is_playlist_file = header.startsWith("// livestreamer playlist");
+                    if (is_playlist_file) {
+                        new_data.probe_method = "playlist";
+                        let header_and_json = utils.split_after_first_line(await fs.readFile(abspath, "utf8"));
+                        try{
+                            new_data.exists = true;
+                            new_data.playlist = JSON.parse(header_and_json[1]);
+                        } catch {
+                            this.logger.warn("Playlist error:", header_and_json[1]);
+                        }
+                    } else if (is_edl_file || uri.protocol === "edl:") {
+                        new_data.probe_method = "edl";
+                        let raw = await edl_probe(filename).catch(e=>this.logger.warn("EDL error:", e));
+                        if (raw) {
+                            // mi.name = filename;
+                            new_data.exists = true;
+                            new_data.duration = raw.duration;
+                            new_data.streams = raw["track-list"].map(t=>{
+                                let stream = {};
+                                stream.type = (t.type === "sub") ? "subtitle" : t.type;
+                                stream.codec = t.codec;
+                                stream.bitrate = +t["demux-bitrate"];
+                                stream.default = t.default;
+                                stream.forced = t.forced;
+                                stream.title = t.title;
+                                stream.language = t.lang;
+                                if (t.type === "video") {
+                                    stream.width = +t["demux-w"];
+                                    stream.height = +t["demux-h"];
+                                    stream.albumart = !!t.albumart;
+                                } else if (t.type === "audio") {
+                                    stream.channels = +t["demux-channel-count"];
+                                }
+                                return stream;
+                            });
+                        }
+                    } else {
+                        new_data.probe_method = "ffprobe";
+                        new_data.exists = !!stat;
+                        if (size) new_data.size = size;
+                        if (mtime) new_data.mtime = mtime;
+                        let raw = await ffprobe(abspath).catch(()=>null);
+                        if (raw) {
+                            new_data.duration = parseFloat(raw.format.duration) || 0;
+                            // let orig_duration = info.duration;
+                            new_data.chapters = raw.chapters.map((c,i)=>({ index: i, start: +c.start_time, end: +c.end_time, title: (c.tags) ? c.tags.title : null }));
+                            new_data.format = raw.format.format_name;
+                            new_data.bitrate = +raw.format.bit_rate || 0;
+                            new_data.streams = raw.streams.map(s=>{
+                                let stream = {};
+                                stream.type = s.codec_type;
+                                stream.codec = s.codec_name;
+                                stream.bitrate = +s.bit_rate || 0;
+                                stream.duration = +s.duration || 0;
+                                stream.default = !!s.disposition.default;
+                                stream.forced = !!s.disposition.forced;
+                                if (s.tags && s.tags.title) stream.title = s.tags.title;
+                                if (s.tags && s.tags.language) stream.language = s.tags.language;
+                                if (s.codec_type === "video") {
+                                    stream.width = +s.width;
+                                    stream.height = +s.height;
+                                    stream.albumart = s.disposition.attached_pic;
+                                } else if (s.codec_type === "audio") {
+                                    stream.channels = +s.channels;
+                                }
+                                return stream;
+                            });
+                            let default_video = raw.streams.find(s=>s.codec_type === "video" && !s.disposition.attached_pic);
+                            if (default_video) {
+                                try { new_data.fps = utils.safe_eval(default_video.r_frame_rate); } catch { }
+                                try { new_data.avg_fps = utils.safe_eval(default_video.avg_frame_rate); } catch { }
+                                new_data.interlaced = !!(default_video.field_order && default_video.field_order !== "progressive");
+                            }
+                        }
+                    }
+                } else if (uri.protocol === "http:" || uri.protocol === "https:") {
+                    let raw = await youtubedl_probe(filename).catch(()=>null);
+                    new_data.probe_method = "youtube-dl";
+                    if (raw) {
+                        new_data.exists = true;
+                        new_data.size = +raw.filesize_approx;
+                        // data.atime = data.mtime = data.ctime = data.btime = +rmi.epoch;
+                        new_data.name = raw.is_playlist ? raw.items[0].playlist_title : raw.fulltitle;
+                        new_data.filename = raw._filename;
+                        new_data.downloadable = true;
+                        new_data.direct = !!raw.direct;
+                        if (raw.is_playlist) {
+                            new_data.playlist = raw.items.map(i=>i.url || i.webpage_url);
+                        } else {
+                            new_data.duration = raw.duration;
+                            new_data.streams = [
+                                {
+                                    type: "video",
+                                    bitrate: raw.vbr,
+                                    codec: raw.vcodec,
+                                    width: raw.width,
+                                    height: raw.height,
+                                },
+                                {
+                                    type: "audio",
+                                    bitrate: raw.abr,
+                                    codec: raw.acodec,
+                                    channels: 2,
+                                }
+                            ];
+                        }
+                    }
+                }
+                //ruh roh...
+                this.#media_info_cache.set(cache_key, new_data);
+            }
+            
+            let t1 = Date.now();
+            if (!opts.silent) {
+                this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
+            }
+            return new_data;
+        });
+    }
+
+    fix_access_control(ac) {
+        for (var id of Object.keys(ac)) {
+            var user = ac[id]
+            if (user.username) {
+                delete ac[id];
+                id = user.username
+                delete user.username;
+                ac[id] = user;
+            }
+            if (id != "*" && user.password) delete user.password;
+        }
+        if (!ac["*"]) ac["*"] = {"access":"allow"};
+    }
+
+    async analyze_local_file_system_volume(id) {
+        var process = async(dir, name, is_dir)=>{
+            var node = [name];
+            var filename = path.join(dir, name);
+            if (is_dir) {
+                node[1] = [];
+                for (var c of await fs.readdir(filename, {withFileTypes:true})) {
+                    var n = await process(filename, c.name, c.isDirectory());
+                    node[1].push(n);
+                }
+            } else {
+                var s = await fs.lstat(filename).catch(utils.noop);
+                node[1] = s ? s.size : 0;
+            }
+            return node;
+        }
+        var v = this.$.volumes[id];
+        return await process(path.dirname(v.root), path.basename(v.root), (await fs.stat(v.root)).isDirectory());
+    }
+
+    update_system_info() {
+        if (!this.updating_system_info) {
+            this.updating_system_info = (async()=>{
+                var [disk, cpu_avg] = await Promise.all([
+                    checkDiskSpace(utils.is_windows() ? 'c:' : '/'),
+                    utils.get_cpu_load_avg()
+                ]);
+                var sysinfo = this.$.sysinfo;
+                sysinfo.disk_total = disk.size;
+                sysinfo.disk_free = disk.free;
+                var freemem = utils.is_windows() ? os.freemem() : (1024 * Number(/MemAvailable:[ ]+(\d+)/.exec(fs.readFileSync('/proc/meminfo', 'utf8'))[1]));
+                sysinfo.memory_total = os.totalmem();
+                sysinfo.memory_free = freemem;
+                sysinfo.uptime = os.uptime();
+                sysinfo.cpu_avg = cpu_avg;
+                sysinfo.received = sysinfo.sent = 0;
+                for (var d of this.netstats) {
+                    sysinfo.received += d.received;
+                    sysinfo.sent += d.sent;
+                }
+                await this.update_process_infos();
+                this.updating_system_info = null;
+            })();
+        }
+        return this.updating_system_info;
+    }
+
+    async update_process_infos() {
+        var results = await utils.pidtree(this.ppid, {root:true, advanced:true});
+        var all_pids = [...Object.values(results).map(r=>r.pid).flat()];
+        var tree = utils.tree(results, (p)=>[p.pid, p.ppid])[0];
+        var stats_lookup = all_pids.length ? await pidusage(all_pids) : {};
+        for (let p of tree.children) {
+            let pids = utils.flatten_tree(p, o=>o.children).map(o=>o.value.pid);
+            let cpu = 0;
+            let memory = 0;
+            let received = 0;
+            let sent = 0;
+            let elapsed = (stats_lookup[p.value.pid]) ? stats_lookup[p.value.pid].elapsed : 0;
+            for (var pid of pids) {
+                var stat = stats_lookup[pid];
+                for (var d of this.netstats) {
+                    if (d.pid == pid) {
+                        received += d.received;
+                        sent += d.sent;
+                    }
+                }
+                if (stat) {
+                    cpu += stat.cpu/100;
+                    memory += stat.memory;
+                }
+            }
+            this.$.process_info[p.value.pid] = {sent,received,elapsed,cpu,memory};
+        }
+    }
+
+    parse_targets(targets) {
+        if (typeof targets === "string") {
+            var t = utils.try(()=>JSON.parse(targets));
+            if (!t) t = targets.split(/,\s*/).map(s=>s.trim()).filter(t=>t);
+            targets = t;
+        }
+        if (Array.isArray(targets)) {
+            targets = Object.fromEntries(Array.from(targets).map(id=>[id, {enabled:true}]));
+        }
+        return targets || null;
+    }
+
+    async destroy() {
+        this.logger.info("Saving all sessions before exit...");
+        await this.save_sessions();
+        this.web.destroy();
+        this.client_updater.destroy();
+    }
+}
+
+export {MainApp};
+
+async function read_file(filename, start, length) {
+    const chunks = [];
+    for await (let chunk of fs.createReadStream(filename, { start: 0, end: start+length })) {
+        chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+}
+
+async function youtubedl_probe(uri) {
+    var proc = await utils.execa(globals.app.conf["main.youtube_dl"] || "yt-dlp", [
+        uri,
+        "--dump-json",
+        "--no-warnings",
+        "--no-call-home",
+        "--no-check-certificate",
+        // "--prefer-free-formats",
+        // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
+        "--flat-playlist",
+        "--format", globals.app.conf["main.youtube_dl_format"]
+    ]);
+    var lines = proc.stdout.split("\n");
+    var arr = lines.map(line=>JSON.parse(line));
+    if (arr.length > 1) {
+        return {
+            is_playlist: true,
+            items: arr
+        };
+    }
+    return arr[0];
+}
+
+async function ffprobe(uri) {
+    var proc = await utils.execa("ffprobe", [
+        '-show_streams',
+        '-show_chapters',
+        '-show_format',
+        '-print_format', 'json',
+        uri
+    ]);
+    return JSON.parse(proc.stdout);
+}
+
+async function edl_probe(uri) {
+    var output = await utils.execa(globals.app.conf["core.mpv_executable"], ['--frames=0', '--vo=null', '--ao=null', `--script=${path.resolve(globals.app.mpv_lua_dir, 'get_media_info.lua')}`, uri]);
+    var m = output.stdout.match(/^\[get_media_info\] (.+)/);
+    if (m) return JSON.parse(m[1].trim());
+    return null;
+}

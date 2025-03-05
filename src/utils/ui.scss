@@ -1,15 +1,19 @@
-@use "./mixins.scss";
+@use "_mixins.scss" as *;
 
 :root {
-	--gap: 10px;
-	--padding: 5px;
-	--orientation1: column;
-	--orientation2: row;
-	--item-size: 0;
-	--input-height: 30px;
-	--property-icon-padding: 0 8px;
-	--border-color: #aaa;
-	--border: 1px solid var(--border-color);
+	--ui-gap: 8px;
+	--ui-property-padding: 4px 4px 4px 4px;
+	--ui-property-header-gap: 2px;
+	--ui-orientation1: column;
+	--ui-orientation2: row;
+	--ui-property-width: 100%;
+	--ui-property-min-width: auto;
+	--ui-property-input-height: 30px;
+	--ui-property-list-item-size: 0;
+	--ui-border-color: #aaa;
+	--ui-border: 1px solid var(--ui-border-color);
+	--ui-num-items-per: 1;
+	--ui-flex-basis: 100px;
 }
 
 label.uis {
@@ -20,18 +24,39 @@ label.uis {
 	display: flex;
 	flex-direction: column;
 	justify-content: flex-end;
+	// width: 100%;
+	width: var(--ui-property-width);
+	min-width: var(--ui-property-min-width);
+	min-height: var(--ui-property-input-height);
+	// flex: 1;
 	&[disabled], &:disabled {
-  	pointer-events: none;
+  		pointer-events: none;
 		opacity: 0.6;
 	}
 	&>* {
 		flex-direction: row;
 	}
+	&.multiple {
+		flex:1;
+		&>.property-outer>.property-inner>.property-input-wrapper {
+			flex-wrap: wrap;
+			&>*{
+				flex:1;
+			}
+		}
+	}
 	&>.property-header {
-		display:flex;
+		display: flex;
 		margin-bottom: 0;
-		line-height: 1.2;
-		margin-bottom: 0.2em;
+		line-height:1.2;
+		&>*:first-child {
+			@include single-line-ellpisis();
+		}
+		&>*:not(:first-child) {
+			flex: 0;
+		}
+
+		margin-bottom: var(--ui-property-header-gap);
 		align-items: center;
 		&>*:not(:first-child) {
 			margin-left:5px;
@@ -40,8 +65,10 @@ label.uis {
 	&>.property-outer {
 		display: flex;
 		position: relative;
+		--direction: row;
+		flex-direction: var(--direction);
 		&.vertical {
-			flex-direction: column;
+			--direction: column;
 		}
 		select>option {
 			font-weight:normal;
@@ -49,7 +76,7 @@ label.uis {
 		&>*:not(:first-child) {
 			margin-left:-1px;
 		}
-		&>.button {
+		&>button {
 			height: auto;
 			display: flex;
 			flex: none;
@@ -58,22 +85,32 @@ label.uis {
 			display: flex;
 			position: relative;
 			flex: 1;
-			min-width: 100px;
 
-			&>.property-input-icon,&>.property-input-suffix {
-				flex: 0;
+			&>.property-input-prefix,&>.property-input-suffix {
+				flex: none;
+				overflow: hidden;
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				padding: var(--property-icon-padding);
+				padding: var(--ui-property-padding);
+				font-size: 10px;
+				text-transform: uppercase;
 			}
 			&>.property-input-wrapper {
-				min-width: 100px;
+				display: flex;
 				width: 100%;
 				position:relative;
-				&>input, &>select, &>textarea, &>.fake-input {
+				flex-direction: var(--direction);
+				&>* {
 					display: block;
-					width: 100%;
+				}
+				&>input:not([type=checkbox]), &>select, &>textarea, &>.fake-input {
+					flex: 1;
+					width: 0;
+				}
+				&>input[type=time],&>input[type=date] {
+					padding-top:0;
+					padding-bottom:0;
 				}
 			}
 			/* &>.property-input-suffix {
@@ -95,17 +132,18 @@ label.uis {
 }
 .uis.property-list-wrapper {
 	display:flex;
-	flex-direction: var(--orientation1);
+	flex-direction: var(--ui-orientation1);
 	overflow: hidden;
-	min-height: var(--input-height);
     width: 100%;
 	padding: 0;
-	--padding: 5px;
-	--gap: 5px;
+	border: var(--ui-border);
+	--ui-gap: 5px;
 
 	&.horizontal {
-		--orientation1: row;
-		--orientation2: column;
+		--ui-orientation1: row;
+		--ui-orientation2: column;
+		width: 0;
+		flex: 1;
 	}
 	&>.empty {
 		display:flex;
@@ -116,25 +154,28 @@ label.uis {
 	}
 	.uis.property-list {
 		display:flex;
-		gap: var(--gap);
-		flex-direction: var(--orientation1);
-		padding: var(--padding);
+		gap: var(--ui-gap);
+		flex-direction: var(--ui-orientation1);
+		padding: var(--ui-property-padding);
 		overflow: auto;
 		&>.property-list-item {
 			display:flex;
-			flex-direction: var(--orientation2);
-			flex: 1 0 var(--item-size);
-			border: var(--border);
+			flex-direction: var(--ui-orientation2);
+			flex: 1 0 var(--ui-property-list-item-size);
+			border: var(--ui-border);
 			&>*:first-child {
 				display:flex;
-				padding: var(--padding);
+				padding: var(--ui-property-padding);
 				flex: 1;
-				gap: var(--gap);
-				border: var(--border);
+				gap: var(--ui-gap);
+				border: var(--ui-border);
 			}
 			&>.buttons {
 				display: flex;
-				flex-direction: var(--orientation1);
+				flex-direction: var(--ui-orientation1);
+				&>* {
+					flex:1;
+				}
 			}
 		}
 	}
@@ -142,7 +183,7 @@ label.uis {
 .uis.property-container {
 	display: flex;
 	flex-direction: column;
-	gap: var(--gap);
+	gap: var(--ui-gap);
 
 	&>* {
 		margin:0;
@@ -155,41 +196,41 @@ label.uis {
 .uis.box {
 	display: flex;
 	flex-direction: column;
-	gap: var(--gap);
+	gap: var(--ui-gap);
 	padding: 5px;
-	border: var(--border);
+	border: var(--ui-border);
 }
 .uis.header {
 	margin: 0;
 	padding-bottom: 5px;
-	border-bottom: var(--border);
+	border-bottom: var(--ui-border);
 }
 .uis.spinner {
 	display: flex;
 	flex-direction: column;
-	width: 16px;
 	flex: none;
 	&>* {
-		font-size:60%;
+		width: 14px;
+		font-size:8px;
 		flex: 1;
-		padding: 0;
-		&:not(:first-child) {
-			margin-top:-1px;
-		}
-	}
-	button {
-		font-size: 11px;
 		padding: 0 !important;
 		min-height: auto;
 		height: auto;
+		&:not(:first-child) {
+			margin-top:-1px;
+		}
 	}
 }
 .uis.column, .uis.row {
 	display: flex;
 	flex-wrap: wrap;
-	gap: var(--gap);
-	&.flex>* {
-		flex:1;
+	gap: var(--ui-gap);
+	margin: 0;
+	--ui-property-width: 100px;
+	&.flex {
+		&>* {
+			flex: 1 1 var(--ui-flex-basis);
+		}
 	}
 }
 .uis.row {
@@ -205,13 +246,31 @@ label.uis {
 	justify-content: center;
 	display: flex;
 	align-items: center;
-	gap: var(--gap);
+	gap: var(--ui-gap);
+	padding: var(--ui-property-padding);
 }
+
 select,input,textarea,.fake-input {
+	padding: var(--ui-property-padding);
+	.not-default & {
+		font-weight: bold;
+	}
 	&.invalid, .invalid & {
 		&:not(:focus) {
 			border-color: red;
 			box-shadow: inset 0 0 3px red;
 		}
+	}
+}
+.fake-input {
+	display: flex !important;
+	align-items: center;
+	gap: 5px;
+	&>*:first-child {
+		flex:1;
+		@include single-line-ellpisis();
+	}
+	&>*:not(:first-child) {
+		flex:none;
 	}
 }

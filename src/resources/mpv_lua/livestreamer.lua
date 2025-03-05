@@ -69,6 +69,15 @@ mp.add_hook("on_load", 50, function ()
     end
 end)
 
+--[[ mp.add_hook("on_load", 9, function ()
+    local url = mp.get_property("stream-open-filename", "")
+    ytdl = true
+    if url:match "^rtmp://" then
+        ytdl = false
+    end
+    mp.set_property_native('ytdl', ytdl)
+end) ]]
+
 mp.add_hook("on_preloaded", 50, function ()
     if on_load_commands then
         msg.info("on_load_commands: "..JSON.stringify(on_load_commands))
@@ -114,4 +123,8 @@ end)
 -----------------------------------------------------------------------
 
 mp.add_hook("on_unload", 50, function ()
+end)
+
+mp.add_periodic_timer(1.0/30.0, function()
+    mp.get_time()
 end)

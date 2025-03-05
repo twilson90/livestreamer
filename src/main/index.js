@@ -1,2 +1,2 @@
-import MainApp from "./App.js";
+import MainApp from "./MainApp.js";
 export default new MainApp();

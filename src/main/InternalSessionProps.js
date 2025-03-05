@@ -128,17 +128,14 @@ export const PlaylistItemProps = {
         audio_file: {
             __default__: null,
         },
-        crop_left: {
-            __default__: 0,
-        },
-        crop_top: {
-            __default__: 0,
-        },
-        crop_right: {
-            __default__: 0,
-        },
-        crop_bottom: {
-            __default__: 0,
+        crop: {
+            __default__: [0, 0, 0, 0],
+            __enumerable__: {
+                "0": { __default__: 0 },
+                "1": { __default__: 0 },
+                "2": { __default__: 0 },
+                "3": { __default__: 0 },
+            },
         },
         empty_duration: {
             __default__: 0,
@@ -190,6 +187,11 @@ export const PlaylistItemProps = {
         },
         title_rotation: {
             __default__: [0,0,0],
+            __enumerable__: {
+                "0": { __default__: 0 },
+                "1": { __default__: 0 },
+                "2": { __default__: 0 },
+            },
         },
         title_margin: {
             __default__: 10,
@@ -273,15 +275,7 @@ export const Props = {
         __enumerable__: {
             ...PlaylistItemProps
         }
-    },
-    detected_crops: {
-        __default__: {},
-        __save__:false,
-    },
-    playlist_info: {
-        __default__: {},
-        __save__: false,
-    },
+    }
 }
 
 export default Props;

@@ -1,202 +1,30 @@
-import { md5 } from "./md5.js";
-export { md5 } from "./md5.js";
+export * from "./Color.js";
+export * from "./EventEmitter.js";
+export * from "./md5.js";
+export * from "./Observer.js";
+export * from "./History.js";
+export * from "./Interval.js";
+export * from "./PromisePool.js";
+export * from "./Rectangle.js";
+export * from "./RangeTree.js";
+export * from "./StopWatch.js";
+export * from "./Timer.js";
+export * as ref from "./Reflect.js";
 
-const FLT_EPSILON = 1.19209290e-7;
 export const path_separator_regex = /[\\\/]+/g;
 export const emoji_regex = /(?:[\u2700-\u27bf]|(?:\ud83c[\udde6-\uddff]){2}|[\ud800-\udbff][\udc00-\udfff]|[\u0023-\u0039]\ufe0f?\u20e3|\u3299|\u3297|\u303d|\u3030|\u24c2|\ud83c[\udd70-\udd71]|\ud83c[\udd7e-\udd7f]|\ud83c\udd8e|\ud83c[\udd91-\udd9a]|\ud83c[\udde6-\uddff]|\ud83c[\ude01-\ude02]|\ud83c\ude1a|\ud83c\ude2f|\ud83c[\ude32-\ude3a]|\ud83c[\ude50-\ude51]|\u203c|\u2049|[\u25aa-\u25ab]|\u25b6|\u25c0|[\u25fb-\u25fe]|\u00a9|\u00ae|\u2122|\u2139|\ud83c\udc04|[\u2600-\u26FF]|\u2b05|\u2b06|\u2b07|\u2b1b|\u2b1c|\u2b50|\u2b55|\u231a|\u231b|\u2328|\u23cf|[\u23e9-\u23f3]|[\u23f8-\u23fa]|\ud83c\udccf|\u2934|\u2935|[\u2190-\u21ff])/g;
 
-var DIVIDERS = {
+const TIME_DIVIDERS = {
 	d: 24 * 60 * 60 * 1000,
 	h: 60 * 60 * 1000,
 	m: 60 * 1000,
 	s: 1000,
 };
 
-export class RefException extends Error {
-	constructor(str) {
-		super(`Invalid reference : ${str}`)
-	}
-}
-
-export class PromisePool {
-	get full() { return this.executing.size >= this.limit; }
-	constructor(limit=Infinity) {
-		this.executing = new Set();
-		this.queue = [];
-		this.limit = limit;
-	}
-	_next() {
-		if (this.queue.length == 0 || this.executing.size >= this.limit) return;
-		const [cb, resolve] = this.queue.shift();
-		const p = Promise.resolve(cb());
-		this.executing.add(p);
-		p.then(resolve);
-		p.finally(()=>{
-			this.executing.delete(p);
-			this._next();
-		});
-	}
-	enqueue(cb) {
-		return new Promise((resolve)=>{
-			this.queue.push([cb, resolve]);
-			this._next();
-		});
-	}
-}
-
-export class EventEmitter {
-	_events = {};
-	constructor(){
-		this.addEventListener = this.on;
-		this.addListener = this.on;
-		this.removeEventListener = this.off;
-		this.removeListener = this.off;
-	}
-	
-	on(event, listener) {
-		if (typeof this._events[event] !== 'object') this._events[event] = [];
-		this._events[event].push(listener);
-	};
-	
-	removeAllListeners() {
-		clear(this._events);
-	};
-
-	off(event, listener) {
-		if (!event) {
-			this.removeAllListeners();
-			return;
-		}
-		if (typeof this._events[event] !== 'object') return;
-		if (listener) array_remove(this._events[event], listener);
-		else clear(this._events[event]);
-	}
-	
-	emit(event, ...args) {
-		if (typeof this._events[event] !== 'object') return;
-		for (var l of [...this._events[event]]) l.apply(this, args);
-	};
-	
-	once(event, listener) {
-		var listener_wrapped = (...args)=>{
-			this.removeListener(event, listener_wrapped);
-			listener.apply(this, args);
-		}
-		this.on(event, listener_wrapped);
-	};
-}
-
-export class Timer extends EventEmitter {
-	get time_left() { return Math.max(0, this._total_time - this._stopwatch.time); }
-	get seconds_left() { return Math.ceil(this.time_left/1000); }
-	get finished() { return this.time_left <= 0; }
-	get paused() { return this._stopwatch.paused; }
-
-	constructor(time=0, autostart=false) {
-		super();
-		this._total_time = time;
-		this._interval_id;
-		this._last_seconds_left;
-		this._stopwatch = new StopWatch();
-		this._stopwatch.on("pause", ()=>{
-			clearInterval(this._interval_id);
-			this.emit("pause");
-		});
-		this._stopwatch.on("start", ()=>{
-			this._interval_id = setInterval(()=>this.tick(), Timer.TICK_INTERVAL);
-			this.emit("start");
-		})
-		this._stopwatch.on("reset", ()=>{
-			this._last_seconds_left = this.seconds_left;
-			this.emit("reset");
-			this.emit("second", this._last_seconds_left);
-		})
-		if (autostart) this.restart();
-	}
-
-	restart(time) {
-		if (time !== undefined) this._total_time = time;
-		this._stopwatch.reset();
-		this.resume();
-	}
-
-	tick() {
-		var seconds_left = this.seconds_left;
-		for (var i = this._last_seconds_left-1; i >= seconds_left; i--) {
-			this.emit("second", i);
-		}
-		this._last_seconds_left = seconds_left;
-		this.emit("tick");
-		if (this.finished) {
-			this.pause();
-			this.emit("finish");
-		}
-	}
-
-	pause() {
-		this._stopwatch.pause();
-	}
-
-	resume() {
-		this._stopwatch.resume();
-	}
-
-	reset() {
-		this._stopwatch.reset();
-	}
-
-	destroy() {
-		this._stopwatch.destroy();
-		this.removeAllListeners();
-	}
-}
-Timer.TICK_INTERVAL = 1000/60;
-	
-export class StopWatch extends EventEmitter {
-	get time() { return (this._paused ? this._pause_time : Date.now()) - this._start_time; }
-	get paused() { return this._paused; }
-
-	constructor(){
-		super();
-		this._start_time = 0;
-		this._pause_time = 0;
-		this._paused = true;
-	}
-	
-	start() {
-		var now = Date.now();
-		if (!this._start_time) this._start_time = now;
-		if (this._paused) {
-			this._paused = false;
-			this._start_time += now - this._pause_time;
-			this._pause_time = 0;
-			this.emit("start");
-		}
-	}
-	
-	resume() {
-		this.start();
-	}
-	
-	pause() {
-		if (this._paused) return;
-		this._paused = true;
-		this._pause_time = Date.now();
-		this.emit("pause");
-	}
-
-	reset() {
-		this._start_time = Date.now();
-		if (this._paused) this._pause_time = this._start_time;
-		this.emit("reset");
-	}
-
-	destroy() {
-		this.removeAllListeners();
-	}
-}
-
 export class Diff {
+	static CREATED = 1;
+	static DELETED = 2;
+	static CHANGED = 3;
 	constructor(old_value, new_value) {
 		if (old_value === new_value) this.type = 0;
 		if (old_value === undefined) this.type = Diff.CREATED;
@@ -207,10 +35,6 @@ export class Diff {
 		Object.freeze(this);
 	}
 }
-
-Diff.CREATED = 1;
-Diff.DELETED = 2;
-Diff.CHANGED = 3;
 
 /* class History {
 	get current() { return this.get(this.i); }
@@ -259,380 +83,15 @@ Diff.CHANGED = 3;
 		this.states = new Array(this.length);
 	}
 } */
-export class URLParams {
-	constructor(params_str) {
-		this._params = [];
-		if (!params_str) return;
-		if (params_str.substr(0,1) == "?") params_str = params_str.slice(1);
-		for (var p of params_str.split("&")) {
-			this.append(...p.split("="));
-		}
-	}
-	append(param, value = undefined) {
-		var p = {name: param};
-		if (value !== undefined) p.value = String(value);
-		Object.freeze(p);
-		this._params.push(p);
-	}
-	remove(param) {
-		if (typeof param === "object") {
-			this._params.filter(p=>p !== param);
-		} else {
-			this._params = this._params.filter(p=>p.name != param);
-		}
-	}
-	*[Symbol.iterator]() {
-		for (var p of this._params) yield p;
-	}
-	toString() {
-		return this._params.map(p=>{
-			if (p.value === undefined) return p.name;
-			return `${p.name}=${p.value}`
-		}).join("&");
-	}
-}
 
-export class Point {
-	constructor(x,y) {
-		this.x = x;
-		this.y = y;
-	}
-}
-Point.distance = function(x1,y1,x2,y2) {
-	return Math.sqrt(Math.pow(x2-x1,2),Math.pow(y2-y1,2));
-}
-
-export class Rectangle {
-	get left() { return this.x; }
-	set left(value) { var d = value - this.x; this.x += d; this.width -= d; }
-	get top() { return this.y; }
-	set top(value) { var d = value - this.y; this.y += d; this.height -= d; }
-	get right() { return this.x + this.width; }
-	set right(value) { this.width += value - this.right; }
-	get bottom() { return this.y + this.height; }
-	set bottom(value) { this.height += value - this.bottom; }
-
-	get center() { return {x:this.x + this.width/2, y:this.y + this.height/2}; }
-	
-	constructor(...args) {
-		args = (()=>{
-			if (args.length == 4) return args;
-			if (args.length == 2) return [0,0,...args];
-			if (args.length == 1) {
-				if (Array.isArray(args[0])) return args[0];
-				if (typeof args[0] === "object") {
-					var {x,y,width,height,left,right,bottom,top} = args[0];
-					if (x == undefined) x = left;
-					if (y == undefined) y = top;
-					if (width == undefined) width = right-left;
-					if (height == undefined) height = bottom-top;
-					return [x,y,width,height];
-				}
-			}
-			if (args.length == 0) return [0,0,0,0];
-		})();
-		this.x = +args[0] || 0;
-		this.y = +args[1] || 0;
-		this.width = +args[2] || 0;
-		this.height = +args[3] || 0;
-	}
-	update(x, y, width, height) {
-		this.x = x;
-		this.y = y;
-		this.width = width;
-		this.height = height;
-	}
-	contains(obj) {
-		if (!obj.width && !obj.height) return obj.x > this.left && obj.x < this.right && obj.y > this.top && obj.y < this.bottom;
-		return obj.x > this.left && (obj.x + obj.width) < this.right && obj.y > this.top && (obj.y + obj.height) < this.bottom;
-	}
-	intersects(obj) {
-		return (obj.x + obj.width) > this.left && obj.x < this.right && (obj.y + obj.height) > this.top && obj.y < this.bottom;
-	}
-	union(obj) {
-		var x = Math.min(obj.x, this.x);
-		var y  = Math.min(obj.y, this.y);
-		var right = Math.max(obj.x + (obj.width || 0), this.right);
-		var bottom = Math.max(obj.y + (obj.height || 0), this.bottom);
-		return new Rectangle(x, y, right-x, bottom-y);
-	}
-	intersection(obj) {
-		var x = Math.max(obj.x, this.x);
-		var y = Math.max(obj.y, this.y);
-		var right = Math.min(obj.x + obj.width, this.right);
-		var bottom = Math.min(obj.y + obj.height, this.bottom);
-		return new Rectangle(x, y, right-x, bottom-y);
-	}
-	scale(x,y) {
-		if (y === undefined) y = x;
-		this.x *= x;
-		this.y *= y;
-		this.width *= x;
-		this.height *= y;
-		return this;
-	}
-	expand(x,y) {
-		if (y === undefined) y = x;
-		this.x -= x/2;
-		this.y -= y/2;
-		this.width += x;
-		this.height += y;
-		return this;
-	}
-	fix() {
-		if (this.width < 0) {
-			this.x += this.width;
-			this.width *= -1;
-		}
-		if (this.height < 0) {
-			this.y += this.height;
-			this.height *= -1;
-		}
-		return this;
-	}
-	clone() {
-		return new Rectangle(this.x, this.y, this.width, this.height);
-	}
-	equals(obj) {
-		try { return this.x === obj.x && this.y === obj.y && this.width === obj.width && this.height === obj.height; } catch { return false; }
-	}
-	toString() {
-		return `[Rectangle x:${this.x} y:${this.y} width:${this.width} height:${this.height}]`;
-	}
-	toJSON() {
-		return {x:this.x, y:this.y, width:this.width, height:this.height};
-	}
-}
-
-Rectangle.union = function(...rects) {
-	var x = Math.min(...rects.map(r=>r.x));
-	var y = Math.min(...rects.map(r=>r.y));
-	var right = Math.max(...rects.map(r=>r.x+r.width));
-	var bottom = Math.max(...rects.map(r=>r.y+r.height));
-	return new Rectangle(x, y, right - x, bottom - y);
-}
-
-Rectangle.intersection = function(...rects) {
-	var x = Math.max(...rects.map(r=>r.x));
-	var y = Math.max(...rects.map(r=>r.y));
-	var right = Math.min(...rects.map(r=>r.x+r.width));
-	var bottom = Math.min(...rects.map(r=>r.y+r.height));
-	return new Rectangle(x, y, right - x, bottom - y);
-}
 export class TimeoutError extends Error {
 	constructor(message) {
 		super(message);
 		this.name = "TimeoutError";
 	}
 }
-export class Color {
-	get r() { return this._r; }
-	get g() { return this._g; }
-	get b() { return this._b; }
-	get h() { return this._h; }
-	get s() { return this._s; }
-	get l() { return this._l; }
-	get a() { return this._a; }
 
-	constructor(...components) {
-		this._r = 0;
-		this._g = 0;
-		this._b = 0;
-		this._h = 0;
-		this._s = 0;
-		this._l = 0;
-		this._a = 1.0;
-
-		if (components.length == 1) {
-			var c = components[0];
-			if (Array.isArray(c)) {s
-				components = [...c];
-			} else if (typeof c === "object") {
-				components = [c.r || c.red || 0, c.g || c.green || 0, c.b || c.blue || 0, c.a || c.alpha || 1];
-			} else if (typeof c === "string") {
-				if (c.charAt(0) === "#") c = c.slice(1);
-				else if (c.substring(0,2) === "0x") c = c.slice(2);
-				if (c.length < 6) components = c.split("").map(a=>a+a);
-				else components = c.match(/.{1,2}/g);
-			}
-		}
-		components = components.map(c=>{
-			if (typeof c === "string" && c.match(/^[0-9a-f]{2}$/)) return parseInt(c,16);
-			return +c;
-		})
-		this.from_rgba(...components);
-	}
-
-	from_hsl(h=0, s=0, l=0) { return this.from_hsla(h,s,l,1); }
-	from_hsla(h=0, s=0, l=0, a=1) {
-		this._h = h = clamp(h, 0, 1);
-		this._s = s = clamp(s, 0, 1);
-		this._l = l = clamp(l, 0, 1);
-		this._a = a = clamp(a, 0, 1);
-		var r, g, b;
-		if (s == 0) {
-			r = g = b = l;
-		} else {
-			var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-			var p = 2 * l - q;
-			r = Color.hue2rgb(p, q, h + 1/3);
-			g = Color.hue2rgb(p, q, h);
-			b = Color.hue2rgb(p, q, h - 1/3);
-		}
-		this._r = Math.round(r * 255);
-		this._g = Math.round(g * 255);
-		this._b = Math.round(b * 255);
-		return this;
-	}
-
-	from_rgb(r=0, g=0, b=0) { return this.from_rgba(r,g,b,1); }
-	from_rgba(r=0, g=0, b=0, a=1) {
-		this._r = r = Math.round(clamp(r, 0, 255));
-		this._g = g = Math.round(clamp(g, 0, 255));
-		this._b = b = Math.round(clamp(b, 0, 255));
-		this._a = a = Math.round(clamp(a, 0, 1));
-		r /= 255;
-		g /= 255;
-		b /= 255;
-		var cMax = Math.max(r, g, b);
-		var cMin = Math.min(r, g, b);
-		var delta = cMax - cMin;
-		var l = (cMax + cMin) / 2;
-		var h = 0;
-		var s = 0;
-		if (delta == 0) h = 0;
-		else if (cMax == r) h = 60 * (((g - b) / delta) % 6);
-		else if (cMax == g) h = 60 * (((b - r) / delta) + 2);
-		else h = 60 * (((r - g) / delta) + 4);
-		s = (delta == 0) ? 0 : (delta / (1-Math.abs(2 * l - 1)));
-		this._h = h;
-		this._s = s;
-		this._l = l;
-		return this;
-	}
-
-	rgb_mix(c,m=0.5) { return this.rgba_mix(c, m); }
-	rgba_mix(c, m=0.5) {
-		c = Color.from(c);
-		return new Color(lerp(this._r, c.r, m), lerp(this._g, c.g, m), lerp(this._b, c.b, m), lerp(this._a, c.a, m));
-	}
-	
-	hsl_mix(c,m=0.5) { return this.hsla_mix(c, m); }
-	hsla_mix(c, m=0.5) {
-		c = Color.from(c);
-		return new Color(lerp(this._h, c.h, m), lerp(this._s, c.s, m), lerp(this._l, c.l, m), lerp(this._a, c.a, m));
-	}
-
-	to_hsl_array() { return [this._h, this._s, this._l]; }
-	to_rgb_array() { return [this._r, this._g, this._b]; }
-	to_hsla_array() { return [this._h, this._s, this._l, this._a]; }
-	to_rgba_array() { return [this._r, this._g, this._b, this._a]; }
-	to_hsl_string() { return `hsl(${this._h}, ${this._s}, ${this._l})`; }
-	to_rgb_string() { return `rgb(${this._r}, ${this._g}, ${this._b})`; }
-	to_hsla_string() { return `hsla(${this._h}, ${this._s}, ${this._l}, ${this._a})`; }
-	to_rgba_string() { return `rgba(${this._r}, ${this._g}, ${this._b}, ${this._a})`; }
-	to_rgb_hex() { return `#${this._r.toString(16)}${this._g.toString(16)}${this._b.toString(16)}` }
-	to_rgba_hex() { return `#${this._r.toString(16)}${this._g.toString(16)}${this._b.toString(16)}${this._a.toString(16)}` }
-
-	toString() {
-		return this.to_rgba_string();
-	}
-
-	copy() {
-		var c = new Color();
-		c._r = this._r;
-		c._g = this._g;
-		c._b = this._b;
-		c._h = this._h;
-		c._s = this._s;
-		c._l = this._l;
-		c._a = this._a;
-		return c;
-	}
-}
-
-Color.from = function(...components) {
-	if (components.length === 1 && components[0] instanceof Color) {
-		return components[0];
-	}
-	return new Color(...components);
-}
-
-Color.mix = function(c1, c2, m=0.5) {
-	return Color.from(c1).mix(c2, m);
-}
-
-Color.hue_to_rgb = function(p, q, t) {
-	if (t < 0) t += 1;
-	if (t > 1) t -= 1;
-	if (t < 1/6) return p + (q - p) * 6 * t;
-	if (t < 1/2) return q;
-	if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-	return p;
-}
-
-/** @typedef {{interval:number, immediate:bool, await:bool, context:any}} IntervalOptions  */
-export class Interval {
-	get time_since_last_tick() {
-		return Math.max(0, Date.now() - this.#last_tick);
-	}
-	get time_until_next_tick() {
-		return Math.max(0, this.options.interval - this.time_since_last_tick);
-	}
-
-	/** @type {IntervalOptions} */
-	#options;
-	#ticks = 0;
-	#destroyed = false;
-	#last_tick = 0;
-	/** @type {Promise<any>} */
-	#current_promise;
-	#timeout;
-
-	/** @param {function():void} callback @param {IntervalOptions} opts */
-	constructor(callback, opts) {
-		if (typeof opts !== "object") opts = { interval: opts };
-		this.#options = Object.assign({
-			interval: 10000,
-			immediate: false,
-			await: true,
-			context: null
-		}, opts);
-		/** @type {IntervalOptions} */
-		this.options = options_proxy(this.#options);
-		if (!this.options.immediate) this.#last_tick = Date.now();
-		this.callback = callback;
-		
-		if (this.options.immediate) this.tick();
-		else this.next();
-	}
-
-	update(opts) {
-		Object.assign(this.#options, opts);
-	}
-
-	async tick(callback_args=null) {
-		var ticks = ++this.#ticks;
-		if (this.#options.await) await Promise.resolve(this.#current_promise).catch(()=>{});
-		if (!this.#destroyed && ticks == this.#ticks) {
-			this.#last_tick = Date.now();
-			this.#current_promise = Promise.resolve(this.callback.apply(this.options.context, callback_args));
-			this.next();
-		}
-		return this.#current_promise;
-	}
-
-	async next() {
-		clearTimeout(this.#timeout);
-		this.#timeout = setTimeout(()=>this.tick(), this.options.interval);
-	}
-
-	destroy() {
-		this.#destroyed = true;
-		clearTimeout(this.#timeout);
-	}
-}
-
+/** @template T @param {T} opts @return {T} */
 export function options_proxy(opts) {
 	return new Proxy(opts, {
 		get(target, prop, receiver) {
@@ -644,436 +103,90 @@ export function options_proxy(opts) {
 	});
 }
 
-export class OrderedSet {
-	constructor(items) {
-		this.set = new Set();
-		this.array = [];
-		if (Symbol.iterator in Object(items)) {
-			for (var i of items) this.add(i);
-		}
-	}
-	add(item) {
-		if (this.set.has(item)) return false;
-		this.set.add(item);
-		this.array.push(item);
-		return true;
-	}
-	delete(item) {
-		if (!this.set.has(item)) return false;
-		this.set.delete(item);
-		this.array.splice(this.array.indexOf(item), 1);
-		return true;
-	}
-	clear() {
-		this.set.clear();
-		this.array = [];
-	}
-	has(item) {
-		return this.set.has(item);
-	}
-	indexOf(item) {
-		return this.array.indexOf(item);
-	}
-	get size() {
-		return this.set.size;
-	}
-	[Symbol.iterator]() {
-		return this.array[Symbol.iterator]();
-	}
-}
-
-/** @typedef {{path:string, type:string, old_value:any new_value:any, nested:boolean}} ObserverChange */
-/** @callback ObserverListenerCallback @param {ObserverChange} change */
-
-export const Observer = (()=>{
-	const Observer_core = Symbol("Observer_core");
-	const Observer_target = Symbol("Observer_target");
-
-	function try_is_instance(target, type) {
-		try { return target instanceof type; } catch { return false; }
-	}
-
-	const CHANGE = Object.freeze({
-		set: "set",
-		update: "update",
-		delete: "delete",
-	});
-
-	// var force_emit = false;
-	/** @return {Proxy} */
-	function Observer(target) {
-		var _this = this;
-
-		/** @type {ObserverListenerCallback[]} */
-		_this.listeners = [];
-		_this.parents = new Map();
-		_this.silent = false;
-
-		function listen(cb) {
-			_this.listeners.push(cb);
-		}
-		function unlisten(cb) {
-			array_remove(_this.listeners, cb);
-		}
-		function destroy() {
-			_this.listeners.splice(0, _this.listeners.length);
-			/* for (var [key, parent] of Array.from(parents)) {
-				delete parent.proxy[key];
-			} */
-		}
-		function emit(path, type, old_value, new_value, nested=false) {
-			if (_this.silent) return;
-			// technically accurate - to track changes objects must be deep copied here... but unnecessary for my purposes.
-			// if (Observer.is_proxy(old_value)) old_value = deep_copy(old_value);
-			// if (Observer.is_proxy(new_value)) new_value = deep_copy(new_value);
-			if (_this.listeners.length) {
-				for (var listener of _this.listeners) {
-					listener.apply(_this, [{
-						path,
-						type,
-						old_value,
-						new_value,
-						nested
-					}]);
-				}
-			}
-
-			for (var [key, parent] of _this.parents) {
-				parent.emit([key, ...path], type, old_value, new_value, nested);
-			}
-		}
-
-		Object.assign(this, {
-			parents: _this.parents,
-			listen,
-			unlisten,
-			destroy,
-			emit,
-		});
-
-		// -----------------
-
-		function walk(o, delegate, path=[]) {
-			if (typeof o !== "object" || o === null) return;
-			for (var k in o) {
-				var sub_path = [...path, k];
-				delegate.apply(o, [sub_path, o[k]]);
-				walk(o[k], delegate,  sub_path);
-			}
-		}
-
-		function klaw(o, delegate, path=[]) {
-			if (typeof o !== "object" || o === null) return;
-			for (var k in o) {
-				var sub_path = [...path, k];
-				klaw(o[k], delegate, sub_path);
-				delegate.apply(o, [sub_path, o[k]]);
-			}
-		}
-		
-		function try_unregister_child(child, prop) {
-			var child_observer = Observer.get_observer(child);
-			if (child_observer && child_observer instanceof Observer) {
-				klaw(child, (path,val)=>{
-					emit([prop, ...path], CHANGE.delete, val, undefined, true);
-				});
-				child_observer.parents.delete(prop);
-			}
-		}
-		function try_register_child(child, prop) {
-			var child_observer = Observer.get_observer(child);
-			if (child_observer && child_observer instanceof Observer) {
-				walk(child, (path,val)=>{
-					emit([prop, ...path], CHANGE.set, undefined, val, true);
-				});
-				child_observer.parents.set(prop, _this);
-			}
-		}
-
-		// -----------------
-
-		// !! Arrays (shift(), splice(), etc.) produce TONS of events... consider replacing arrays with special object that doesnt emit so many changes.
-
-		var validator = {
-			get(target, prop) {
-				if (prop === Observer_core) return _this;
-				if (prop === Observer_target) return target;
-				return target[prop];
-			},
-			set(target, prop, new_value) {
-				var old_value = target[prop];
-				new_value = Observer.resolve(new_value);
-				var changed = old_value !== new_value;
-				if (changed) {
-					var type = (target[prop] === undefined) ? CHANGE.set : CHANGE.update;
-					try_unregister_child(old_value, prop);
-					target[prop] = new_value;
-					emit([prop], type, old_value, new_value);
-					try_register_child(new_value, prop);
-				}
-				return true;
-			},
-			deleteProperty(target, prop) {
-				if (prop in target) {
-					var old_value = target[prop];
-					try_unregister_child(old_value, prop);
-					delete target[prop];
-					emit([prop], CHANGE.delete, old_value, undefined);
-				}
-				return true;
-			},
-			// defineProperty(target, prop, descriptor) {
-			// },
-			// enumerate(target, prop) {
-			// },
-			// ownKeys(target, prop) {
-			// },
-			// has(target, prop) {
-			// },
-			// getOwnPropertyDescriptor(target, prop) {
-			// },
-			// construct(target, prop) {
-			// },
-			// apply(target, thisArg, argumentsList) {
-			// }
-		};
-		var proxy = new Proxy(Array.isArray(target) ? [] : {}, validator);
-		Object.assign(proxy, target);
-		_this.proxy = proxy;
-		return proxy;
-	}
-	Observer.RESET_KEY = "__RESET_0f726b__";
-	/** @return {Observer} */
-	Observer.get_observer = function(proxy) {
-		if (proxy == null) return null;
-		return proxy[Observer_core];
-	};
-	Observer.get_target = function(proxy) {
-		if (proxy == null) return null;
-		return proxy[Observer_target];
-	};
-	Observer.is_proxy = function(proxy) {
-		return !!Observer.get_observer(proxy);
-	};
-	/** @param {ObserverListenerCallback} cb */
-	Observer.listen = function(proxy, cb) {
-		var observer = Observer.get_observer(proxy);
-		if (observer) observer.listen(cb);
-		return cb;
-	};
-	/** @param {ObserverListenerCallback} cb */
-	Observer.unlisten = function(proxy, cb) {
-		var observer = Observer.get_observer(proxy);
-		if (observer) observer.unlisten(cb);
-	};
-	Observer.resolve = function(object) {
-		if (Observer.is_proxy(object) || object === null || typeof object !== "object") return object;
-		return new Observer(object);
-	};
-	Observer.destroy = function(proxy) {
-		var observer = Observer.get_observer(proxy);
-		if (observer) observer.destroy();
-	};
-	Observer.flatten_changes = function(changes) {
-		let result = {};
-		for (let c of changes) {
-			let key = c.path[c.path.length-1];
-			let r = result;
-			for (let i = 0; i < c.path.length-1; i++) {
-				let p = c.path[i];
-				if (r[p] === undefined) r[p] = {};
-				r = r[p];
-			}
-			let new_value = c.new_value;
-			if (Observer.is_proxy(new_value)) {
-				let target = Observer.get_target(new_value);
-				new_value = {};
-				if (c.old_value !== null) {
-					new_value[Observer.RESET_KEY] = target.constructor.name;
-				}
-			}
-			r[key] = new_value;
-		}
-		return result;
-	};
-
-	// root must be object, not array.
-	Observer.apply_changes = function(target, changes, silent=false) {
-		if (Array.isArray(changes)) {
-			changes = Observer.flatten_changes(changes);
-		}
-		var apply = (target, changes) =>{
-			for (var k in changes)  {
-				if (k === Observer.RESET_KEY) continue;
-				if (typeof changes[k] === 'object' && changes[k] !== null) {
-					if (Observer.RESET_KEY in changes[k]) {
-						
-						var old_constructor = target[k] ? target[k].constructor.name : undefined;
-						var new_constructor = "Object";
-						try { new_constructor = changes[k][Observer.RESET_KEY]; } catch { }
-						
-						if (target[k] && !globalThis[old_constructor]) {
-							Object.assign(clear(target[k]), new (target[k].constructor)());
-						} else if (target[k] && old_constructor === "Object" && old_constructor === new_constructor) {
-							clear(target[k]);
-						} else {
-							target[k] = new (globalThis[new_constructor])();
-						}
-					}
-					if (typeof target[k] !== "object" || target[k] === null) {
-						target[k] = (Array.isArray(changes[k])) ? [] : {};
-					}
-					apply(target[k], changes[k]);
-					if (Array.isArray(changes[k])) target[k].length = changes[k].length;
-					
-				} else if (changes[k] === null) {
-					delete target[k];
-				} else {
-					target[k] = changes[k];
-				}
-			}
-		};
-		if (silent) target[Observer_core].silent = true;
-		apply(target, changes);
-		if (silent) target[Observer_core].silent = false;
-	}
-	return Observer;
-})();
-
-/** @typedef {{[0]:number, [1]:number, next:RangeTreeNode}} RangeTreeNode */
-export class RangeTree {
-	constructor(values) {
-		/** @type {RangeTreeNode} */
-		this._first = null;
-		if (values) {
-			for (var v of values) this.add(v[0], v[1]);
-		}
-	}
-	get values () { return [...this]; }
-	get total () {
-		var a = 0;
-		for (var p of this) a += p[1]-p[0];
-		return a;
-	}
-	add(start, end) {
-		if (start < 0) throw new Error(`start must be >= 0: ${start}`);
-		if (start > end) throw new Error(`start must be smaller than end: ${start} > ${end}`);
-		if (start == end) return;
-		/** @type {RangeTreeNode} */
-		let new_node = [start, end];
-		if (!this._first || new_node[0] < this._first[0]) {
-			new_node.next = this._first;
-			this._first = new_node;
-		}
-		let curr = this._first;
-		while (curr) {
-			if (!curr.next || curr.next[0] > new_node[0]) {
-				let n = curr.next;
-				curr.next = new_node;
-				new_node.next = n;
-				if (new_node[0] <= curr[1] && new_node[0] >= curr[0]) {
-					curr[1] = Math.max(new_node[1], curr[1]);
-					curr.next = new_node.next;
-				}
-				if (new_node[1] <= curr[0] && new_node[1] >= curr[1]) {
-					curr[0] = Math.min(new_node[0], curr[0]);
-					curr.next = new_node.next;
-				}
-				while (curr.next && curr[1] >= curr.next[0]) {
-					curr[1] = Math.max(curr[1], curr.next[1]);
-					curr.next = curr.next.next;
-				}
-				break;
-			}
-			curr = curr.next;
-		}
-	}
-	includes(low, high) {
-		if (!high) high = low;
-		for (let r of this) {
-			if (low>=r[0] && high<=r[1]) return true;
-		}
-		return false;
-	}
-	*[Symbol.iterator]() {
-		var next = this._first;
-		while(next) {
-			if (next) yield [...next];
-			next = next.next;
-		}
-	}
-}
 export const regex = {
 	urls: /(https?:\/\/[^\s]+)/gi
 }
+/** @param {string} str */
 export function is_valid_url(str) {
 	return /(https?:\/\/(?:www\.|(?!www))[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|www\.[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|https?:\/\/(?:www\.|(?!www))[a-zA-Z0-9]+\.[^\s]{2,}|www\.[a-zA-Z0-9]+\.[^\s]{2,})/i.test(str);
 }
+/** @param {string} str */
 export function is_valid_rtmp_url(str) {
 	return /^rtmps?\:\/\//i.test(str)
 }
+/** @param {string} str */
 export function is_valid_ip(str) {
 	return /((^((([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))$)|(^((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))(%.+)?$))/.test(str);
 }
+/** @param {any} s */
 export function is_uri(s) {
 	return /^[a-z]{2,}\:\/\//.test(String(s));
 }
+/** @param {string} s */
 export function is_absolute_path(s) {
 	return /^(?:[a-zA-Z]\:[\\/]|\/)/.test(String(s));
 }
-// includes subdomains
+/** @param {string} uri @param {string} domain @description includes subdomains */
 export function domain_match(uri, domain) {
 	try { uri = new URL(uri).hostname || uri; } catch {}
 	return !!uri.match(`^(?:[^:]+:\\/\\/)?(?:.+?\.)?(${escape_regex(domain)})(?:\/|$)`)
 }
+/** @param {string} str */
 export function capitalize(str) {
 	return String(str).replace(/(?:^|\s)\S/g, function(a) { return a.toUpperCase(); });
 }
+/** @param {string} str */
 export function kebabcase(str) {
 	return String(str).replace(/([a-z])([A-Z])/g, "$1-$2")
 	.replace(/[\s_]+/g, '-')
 	.toLowerCase();
 }
+
+/** @param {string} str */
 export function escape_regex(str) {
 	return String(str).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
+/** @param {string} str */
 export function split_after_first_line(str) {
 	var m = str.match(/(.+?)[\n\r]+/);
 	return m ? [m[1], str.slice(m[0].length)] : [str, undefined];
 }
-/* str_to_js(str) {
-	try { return JSON.parse(str); } catch (e) { }
-	return str;
-}, */
+/** @param {any} n */
 export function is_numeric(n) {
 	return !isNaN(parseFloat(n)) && isFinite(n);
 }
-export function zip(...its) {
-	its = its.map(it=>Array.isArray(it)?it:[...it]);
-	return its[0].map((_,i)=>its.map(a=>a[i]));
+/** @template T @param {Iterable<T,T>[]} iterables */
+export function *zip(...iterables) {
+    const iterators = iterables.map(iterable=>iterable[Symbol.iterator]());
+    while (true) {
+        const nextValues = iterators.map(iterator=>iterator.next());
+        if (nextValues.some(next=>next.done)) break;
+        const tuple = nextValues.map(next=>next.value);
+        yield tuple;
+    }
 }
-/* export function zip(keys, values) {
-	return keys.reduce(
-		(obj, key, i)=>{
-			obj[key] = values[i];
-			return obj;
-		}, {}
-	);
-} */
-/** @template T @param {Iterable<T>} a @param {Iterable<T>} b @return {Set<T>} */
-export function set_union(a,b) {
+
+
+/** @template T @param {Iterable<T>} a @param {Iterable<T>} b */
+export function set_union(a, b) {
 	return new Set([...a, ...b]);
 }
-/** @template T @param {Iterable<T>} a @param {Iterable<T>} b @return {Set<T>} */
-export function set_difference(a,b) {
+/** @template T @param {Iterable<T>} a @param {Set<T>|Iterable<T>} b */
+export function set_difference(a, b) {
 	if (!(b instanceof Set)) b = new Set(b);
 	return new Set([...a].filter(x=>!b.has(x)));
 }
-/** @template T @param {Iterable<T>} a @param {Iterable<T>} b @return {Set<T>} */
-export function set_intersection(a,b) {
+/** @template T @param {Iterable<T>} a @param {Set<T>|Iterable<T>} b */
+export function set_intersection(a, b) {
 	if (!(b instanceof Set)) b = new Set(b);
 	return new Set([...a].filter(x=>b.has(x)));
 }
+/** @template T @param {Iterable<T>} a @param {Set<T>|Iterable<T>} b */
+export function set_symmetric_difference(a, b) {
+	if (!(b instanceof Set)) b = new Set(b);
+	return new Set([...a].filter(x=>!b.has(x)).concat([...b].filter(x=>!a.has(x))));
+}
+/** @template T @param {Iterable<T>} sets */
 export function sets_equal(...sets) {
 	var seta = sets[0];
 	if (!(seta instanceof Set)) seta = new Set(seta);
@@ -1143,9 +256,9 @@ export function throttle(func, wait, options) {
 	};
 	return throttled;
 }
-export function almost_equal(a,b,epsilon=FLT_EPSILON) {
-	var d = Math.abs(a-b);
-	return d <= epsilon;
+/** @param {number} a @param {number} b @param {number} epsilon */
+export function almost_equal(a, b, epsilon=Number.EPSILON) {
+	return Math.abs(a-b) <= epsilon;
 }
 /* sync_objects(src, dst) {
 	var dst_keys = new Set(Object.keys(dst));
@@ -1172,18 +285,8 @@ export function remove_nulls(obj) {
 		}
 	}
 }
-/** @template T @param {Iterable<T>} values @param {function(T):string} cb @return {Record<PropertyKey,T[]>} */
-export function group_by(values, cb) {
-	var groups = {};
-	for (var value of values) {
-		var key = cb(value);
-		if (!groups[key]) groups[key] = [];
-		groups[key].push(value);
-	}
-	return groups;
-}
 /** @template T, K @param {Iterable<T>} values @param {function(T):K} cb @return {Map<K,T[]>} */
-export function map_group_by(values, cb) {
+export function group_by(values, cb) {
 	/** @type {Map<T,K[]>} */
 	var groups = new Map(); 
 	for (var value of values) {
@@ -1193,14 +296,13 @@ export function map_group_by(values, cb) {
 	}
 	return groups;
 }
-export function is_path_remote(path_str) {
-	return path_str.includes("://");
-}
+/** @template T @param {T[][]} array */
 export function transpose(array) {
-	return array[0].map((_, c) => array.map(row => row[c]));
+	return array[0].map((_, c)=>array.map(row=>row[c]));
 }
+/** @template T,K @param {Record<T,K>|Map<T,K>} obj @return {Map<K,T>} */
 export function reverse_map(obj) {
-	return Object.fromEntries(Object.entries(obj).map(s=>s.reverse()));
+	return new Map(((obj instanceof Map) ? [...obj.entries()] : Object.entries(obj)).map(([k,v])=>[v,k]));
 }
 export function format_bytes(bytes, decimals = 2, min=1) {
 	decimals = Math.max(decimals, 0);
@@ -1238,7 +340,7 @@ export function string_to_bytes(s) {
 	return num * e;
 }
 export function is_ip_local(ip) {
-	return ip === "127.0.0.1" || ip === "::1" || ip == "::ffff:127.0.0.1"
+	return ip === "127.0.0.1" || ip === "::1" || ip == "::ffff:127.0.0.1";
 }
 export function date_to_string(date, options) {
 	if (date === undefined) date = Date.now();
@@ -1254,17 +356,18 @@ export function date_to_string(date, options) {
 	var str = parts.join("-").replace(/[^\d]+/g, options.delimiter);
 	return str;
 }
-export function uniquify(arr, resolver) {
+// todo: weird name
+/** @param {Iterable<any>} iterable @param {function(any,number,number):string} resolver @return {any[]} */
+export function *uniquify(iterable, resolver) {
 	if (!resolver) resolver = (s,i,n)=>n>1?`${s} [${i+1}]`:`${s}`;
 	var map = new Map();
-	for (var e of arr) {
-		if (map.has(e)) map.set(map.get(e)+1);
-		else map.set(e, 1);
+	for (var e of iterable) {
+		map.set(map.has(e) ? map.get(e)+1 : 1);
 	}
-	return arr.map((e,i)=>{
-		var n = map.get(e);
-		return resolver.apply(null, [e,i,n]);
-	})
+	var i = 0;
+	for (var e of iterable){
+		yield resolver(e, i++, map.get(e));
+	}
 }
 export function time_delta_readable(delta) {
 	var time_formats = [
@@ -1304,43 +407,14 @@ export function time_diff_readable(from, to) {
 export function split_path(path) {
 	return path.split(path_separator_regex).filter(p=>p);
 }
-/* register_change(obj, name) {
-	return (key,value) => {
-		// if key is int, value an array element.
-		if (typeof key === "number") {
-			if (!obj[name]) obj[name] = [];
-			obj[name].push(value);
-		} else {
-			if (!obj[name]) obj[name] = {};
-			obj[name][key] = value;
-		}
-	}
-}, */
 export function is_plain_object(obj) {
 	return	typeof obj === 'object' && obj !== null && obj.constructor === Object && Object.prototype.toString.call(obj) === '[object Object]';
 }
-export function websocket_ready(ws){
-	var is_open = ws ? ws.readyState === 1 : false
-	if (is_open) return Promise.resolve();
-	return new Promise(resolve=>{
-		ws.on("open", ()=>resolve());
-	});
-}
-/* once(event_emitter, event){
-	return new Promise(resolve=>{
-		event_emitter.once(event, (...args)=>{
-			resolve(...args);
-		})
-	})
-}, */
 /** @template T @param {Object.<string,T|PromiseLike<T>>} obj @returns {Object.<string,Promise<Awaited<T>[]>>}; */
 export async function promise_all_object(obj) {
 	var new_obj = {};
 	await Promise.all(Object.entries(obj).map(([k,p])=>Promise.resolve(p).then(data=>new_obj[k]=data)));
 	return new_obj;
-}
-export function replace_all(str, search, replace) {
-	return str.split(search).join(replace);
 }
 export function shuffle(arra1) {
 	var ctr = arra1.length, temp, index;
@@ -1352,13 +426,6 @@ export function shuffle(arra1) {
 		arra1[index] = temp;
 	}
 	return arra1;
-}
-export function matchAll(s, re) {
-	var matches = [], m = null;
-	while (m = re.exec(s)) {
-		matches.push(m);
-	}
-	return matches;
 }
 export function promise_timeout(promise, ms=10000) {
 	if (typeof promise === "function") promise = new Promise(promise);
@@ -1378,30 +445,11 @@ export function promise_wait_atleast(promise, ms=10000) {
 		return d[0];
 	});
 }
-export function promise_pool(array, iteratorFn, poolLimit=Infinity) {
-	let i = 0;
-	const ret = [];
-	const executing = new Set();
-	array = [...array];
-	const enqueue = ()=>{
-		if (i === array.length) {
-			return Promise.resolve();
-		}
-		const item = array[i];
-		const p = Promise.resolve().then(()=>iteratorFn(item, i, array));
-		ret.push(p);
-		const e = p.then(()=>executing.delete(e));
-		executing.add(e);
-		let r = executing.size >= poolLimit ? Promise.race(executing) : Promise.resolve()
-		i++;
-		return r.then(()=>enqueue());
-	};
-	return enqueue().then(()=>Promise.all(ret));
-}
 export function timeout(ms) {
 	if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();
 	return new Promise(resolve=>setTimeout(resolve, ms));
 }
+/** @param {function():Promise<any>} cb @param {number} attempts @param {number} delay @param {string} msg @return {Promise<any>} */
 export function retry_until(cb, attempts, delay, msg) {
 	return new Promise(async(resolve,reject)=>{
 		while (attempts--) {
@@ -1428,26 +476,11 @@ export function split_string(str, partLength) {
 export function remove_emojis(str) {
 	return str.replace(emoji_regex, '');
 }
-/* export function array_move_before(arr, from, to) {
-	if (to > from) to--;
-	if (from === to) return arr;
-	return array_move(arr, from, to);
-} */
 export function array_move_element(arr, from_index, to_index) {
 	from_index = clamp(from_index, 0, arr.length-1);
 	to_index = clamp(to_index, 0, arr.length-1);
 	arr.splice(to_index, 0, ...arr.splice(from_index, 1));
 	return arr;
-}
-export function remove_duplicates(arr) {
-	let s = new Set();
-	let new_arr = [];
-	for (var i of arr) {
-		if (s.has(i)) continue;
-		s.add(i);
-		new_arr.push(i);
-	}
-	return new_arr;
 }
 export function timespan_str_to_seconds(str, format="hh:mm:ss") {
 	return timespan_str_to_ms(str, format) / 1000;
@@ -1511,8 +544,8 @@ export function ms_to_shorthand_str(num, show_ms=0) {
 	var negative = num < 0;
 	num = Math.abs(+num) || 0;
 	var parts = [];
-	for (var k in DIVIDERS) {
-		var divider = DIVIDERS[k];
+	for (var k in TIME_DIVIDERS) {
+		var divider = TIME_DIVIDERS[k];
 		var d = Math.floor(num / divider);
 		num -= d * divider;
 		if (k == "s" && show_ms) {
@@ -1564,11 +597,7 @@ export function random_int(min, max) { // min and max included
 	max = ~~max;
 	return Math.floor(Math.random() * (max - min + 1) + min)
 }
-export function array_repeat(d, n) { // min and max included
-	var arr = [];
-	while (n-- > 0) arr.push(d);
-	return arr;
-}
+/** @param {number} length @param {string} [chars] @return {string} */
 export function random_string(length, chars="0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") {
 	var result = new Array(length), num_chars = chars.length;
 	for (var i = length; i > 0; --i) result[i] = chars[Math.floor(Math.random() * num_chars)];
@@ -1577,17 +606,15 @@ export function random_string(length, chars="0123456789abcdefghijklmnopqrstuvwxy
 export function random_hex_string(length) {
 	return random_string(length, "0123456789abcdef");
 }
-/* random_string(length) {
-	[...Array(length)].map(i=>(~~(Math.random()*36)).toString(36)).join('')
-}, */
 export function is_empty(obj) {
-	if (!obj) return true;
-	if (typeof obj !== "object") return false;
-	for (var key in obj) {
-		if (obj.hasOwnProperty(key)) return false;
+	if (obj && typeof obj === "object") {
+		for (var key in obj) {
+			if (obj.hasOwnProperty(key)) return false;
+		}
 	}
 	return true;
 }
+/** @template T @param {T} obj @param {function(PropertyKey,T[PropertyKey]):boolean} filter_callback @param {boolean} [in_place] @returns {T} */
 export function filter_object(obj, filter_callback, in_place=false) {
 	if (!in_place) obj = {...obj};
 	for (var k of Object.keys(obj)) {
@@ -1595,6 +622,7 @@ export function filter_object(obj, filter_callback, in_place=false) {
 	}
 	return obj;
 }
+/** @param {any[]} arr1 @param {any[]} arr2 @return {boolean} */
 export function array_equals(arr1, arr2) {
 	var length = arr1.length;
 	if (length !== arr2.length) return false;
@@ -1603,14 +631,34 @@ export function array_equals(arr1, arr2) {
 	}
 	return true;
 }
-export function all_equal(array) {
-	if (array.length <= 1) return true;
-	for (var i = 1; i < array.length; i++) {
-		if (array[0] !== array[i]) return false;
+
+/** @param {any[]} mainArray @param {any[]} subArray @return {boolean} */
+export function array_starts_with(mainArray, subArray) {
+	if (subArray.length > mainArray.length) return false;
+	return subArray.every((element, index) => element === mainArray[index]);
+}
+
+/** @param {Iterable<any>} it1 @param {Iterable<any>} it2 @return {boolean} */
+export function iterable_equals(it1, it2) {
+	while(true) {
+		var a = it1.next();
+		var b = it2.next();
+		if (a.done !== b.done) return false;
+		if (a.done) break;
+		if (a.value !== b.value) return false;
 	}
 	return true;
 }
-/** @template T1 @param {function():T1} cb @param {*} [default_value] @returns {T1} */
+/** @param {Iterable<any>} iterable @return {boolean} */
+export function all_equal(iterable) {
+	var first = undefined;
+	for (var o of iterable) {
+		if (first === undefined) first = o;
+		else if (first !== o) return false;
+	}
+	return true;
+}
+/** @template T1 @param {function():T1} cb @param {any} [default_value] @returns {T1} */
 function _try(cb, default_value=undefined) {
 	try { return cb(); } catch { return default_value; }
 }
@@ -1694,6 +742,9 @@ export function key_count(ob) {
 	for (var k in ob) i++
 	return i;
 }
+export function first_key(ob) {
+	for (var k in ob) return k;
+}
 /** @template T @param {Record<PropertyKey,T>} ob @param {number} max_size  @returns {T[]} */
 export function trim_object(ob, max_size) {
 	var result = [];
@@ -1706,11 +757,7 @@ export function trim_object(ob, max_size) {
 	}
 	return result;
 }
-/**
- * @template T
- * @param {T[]} arr
- * @param {...(function(T):number)} cbs
-*/
+/** @template T @param {T[]} arr @param {...(function(T):number)} cbs */
 export function sort(arr, ...cbs) {
 	if (!cbs.length) cbs = [v=>v];
 	return arr.sort((a,b)=>{
@@ -1833,16 +880,29 @@ export function relative_path(source, target) {
 	relative_parts.push(...target_parts.slice(source_parts.length), filename);
 	return relative_parts.join("/");
 }
+/** @param {Date} date */
 export function split_datetime(date, apply_timezone=false) {
+	date = new Date(date);
 	if (isNaN(date)) return ["", ""];
-	date = +new Date(date);
-	if (apply_timezone) date += - (+new Date(date).getTimezoneOffset()*60*1000);
-	var parts = new Date(date).toISOString().slice(0,-1).split("T");
+	if (apply_timezone) date = new Date(+date-(+date.getTimezoneOffset()*60*1000));
+	var parts = date.toISOString().slice(0,-1).split("T");
 	if (parts[0][0]=="+") parts[0] = parts[0].slice(1);
 	return parts;
 }
-export function join_datetime(parts, apply_timezone=false) {
-	var date = +new Date(`${parts.join(" ")}Z`);
+/** @param {string} date @param {string} time */
+export function join_datetime(date, time, apply_timezone=false) {
+	var time_parts = time.split(":");
+	while (time_parts.length<3) time_parts.push("00");
+	for (var i = 0; i < 2; i++) {
+		if (!time_parts[i].match(/^\d{2}$/)) {
+			time_parts[i] = (+time_parts[i]).toFixed(0)
+		}
+	}
+	if (!time_parts[2].match(/^\d{2}\.\d{3}$/)) {
+		time_parts[2] = parseFloat(time_parts[2]).toFixed(3).padStart(6, "0");
+	}
+	time = time_parts.join(":");
+	var date = +new Date(`${date} ${time}Z`);
 	if (apply_timezone) date += +new Date(date).getTimezoneOffset()*60*1000;
 	return new Date(date);
 }
@@ -1887,42 +947,48 @@ export function flatten_tree(o, children_cb) {
 	next(o);
 	return result;
 }
-/** @template T @param {T} obj @param {Function(any):any} replacer @return {T} */
-export function deep_copy(obj, replacer) {
+/** @template T @param {T} obj @param {Function(any,any):any} replacer @return {T} */
+export function json_copy(obj, replacer) {
 	if (typeof(obj) !== 'object' || obj === null) return obj;
 	return JSON.parse(replacer ? JSON.stringify(obj, replacer) : JSON.stringify(obj));
 }
-export function deep_filter(obj, cb) {
-	var new_obj = Array.isArray(obj) ? [] : {};
-	for (var k of Object.keys(obj)) {
-		if (typeof obj[k] === "object" && obj[k] !== null) new_obj[k] = deep_filter(obj[k], cb)
-		else if (cb.apply(obj, [k, obj[k]])) new_obj[k] = obj[k];
+
+/** @param {any|any[]} obj @param {(function(PropertyKey,any):boolean)|string[][]} filter_callback @returns {T} */
+export function deep_filter(obj, filter_callback) {
+	if (Array.isArray(filter_callback)) {
+		var paths = filter_callback;
+		filter_callback = (k, v, path)=>paths.some(p=>array_starts_with(p, path));
 	}
-	return new_obj;
-}
-export function deep_merge(dst, src, delete_nulls = false) {
-	var info = {
-		changes: 0,
-	}
-	var deep_merge = (dst, src)=>{
-		var is_array = Array.isArray(src);
-		for (var k in src) {
-			if (typeof src[k] === 'object' && src[k] !== null) {
-				if (typeof dst[k] !== "object" || dst[k] === null) {
-					dst[k] = (Array.isArray(src[k])) ? [] : {};
-					info.changes++;
-				}
-				deep_merge(dst[k], src[k]);
-			} else {
-				if (dst[k] !== src[k]) info.changes++;
-				if (!is_array && delete_nulls && src[k] === null) delete dst[k];
-				else dst[k] = src[k];
+	/** @param {any} obj @param {string[]} path */
+	var walk = (obj, path)=>{
+		if (typeof obj !== "object" || obj === null) return obj;
+		let new_obj = Array.isArray(obj) ? [] : {};
+		for (var k of Object.keys(obj)) {
+			var new_path = [...path, k];
+			if (filter_callback.apply(obj, [k, obj[k], new_path])) {
+				new_obj[k] = walk(obj[k], new_path);
 			}
 		}
-		if (is_array) dst.length = src.length;
-	};
-	deep_merge(dst, src);
-	return info;
+		return new_obj;
+	}
+	return walk(obj, []);
+}
+  
+
+export function deep_merge(dst, src, delete_nulls = false) {
+	var is_array = Array.isArray(src);
+	for (var k in src) {
+		if (typeof src[k] === 'object' && src[k] !== null) {
+			if (typeof dst[k] !== "object" || dst[k] === null) {
+				dst[k] = Array.isArray(src[k]) ? [] : {};
+			}
+			deep_merge(dst[k], src[k], delete_nulls);
+		} else {
+			if (!is_array && delete_nulls && src[k] == null) delete dst[k];
+			else dst[k] = src[k];
+		}
+	}
+	if (is_array) dst.length = src.length;
 }
 export function deep_assign(o1, ...objects) {
 	if (typeof o1 !== "object") throw new Error(`deep_assign requires Object as first argument`);
@@ -1931,22 +997,24 @@ export function deep_assign(o1, ...objects) {
 	}
 	return o1;
 }
+
 // syncs 2 objects to become identical, everything besides key order.
 export function deep_sync(dst, src) {
-	var dst_keys = Object.keys(dst);
+	var old_keys = Object.keys(dst);
 	for (var k in src) {
 		if (src[k] === dst[k]) continue;
 		if (src[k] !== null && dst[k] !== null && typeof src[k] === 'object' && typeof dst[k] === 'object' && Array.isArray(src[k]) == Array.isArray(dst[k])) {
 			deep_sync(dst[k], src[k]);
 		} else {
-			dst[k] = deep_copy(src[k]);
+			dst[k] = json_copy(src[k]);
 		}
 	}
 	if (Array.isArray(src)) dst.length = src.length;
-	for (var k of dst_keys) {
+	for (var k of old_keys) {
 		if (!(k in src)) delete dst[k];
 	}
 }
+
 /* deep_diff(o1, o2) {
 	var changes = [];
 	function _deep_diff(o1,o2,path) {
@@ -2003,7 +1071,7 @@ export function deep_equals(o1,o2) {
 	return a_keys.every((key)=>deep_equals(a[key], b[key]));
 }, */
 export function deep_diff(o1, o2) {
-	function _deep_diff(o1,o2) {
+	var _deep_diff = (o1,o2)=>{
 		if (typeof o1 === "object" && typeof o2 === "object" && o1 !== null && o2 !== null) {
 			var diff = {}, diffs = 0;
 			for (var k in o1) {
@@ -2028,7 +1096,7 @@ export function deep_diff(o1, o2) {
 			if (deep_equals(o1,o2)) return;
 			return new Diff(o1, o2);
 		}
-	}
+	};
 	return _deep_diff(o1,o2) || {};
 }
 /** @param {Iterable<{id,parent}>} nodes */
@@ -2058,7 +1126,7 @@ export function detect_circular_structure(nodes) {
 export function deep_entries(o, only_values=true, filter=null) {
 	if (o == null) throw new Error("Cannot convert undefined or null to object");
 	var entries = [];
-	var walk = (o, path)=>{
+	var next = (o, path)=>{
 		if (typeof o === "object" && o !== null) {
 			if (!only_values && path.length) entries.push([path, o]);
 			for (var k in o) {
@@ -2067,21 +1135,16 @@ export function deep_entries(o, only_values=true, filter=null) {
 					entries.push([new_path, o[k]]);
 					continue;
 				}
-				walk(o[k], new_path);
+				next(o[k], new_path);
 			}
 		} else {
 			entries.push([path, o]);
 		}
 	};
-	walk(o, []);
+	next(o, []);
 	return entries;
 }
-export function deep_keys(o, only_values=true, filter=null) {
-	return deep_entries(o, only_values, filter).map(([k,v])=>k);
-}
-export function deep_values(o, only_values=true, filter=null) {
-	return deep_entries(o, only_values, filter).map(([k,v])=>v);
-}
+
 export function pathed_key_to_lookup(key, value, target={}) {
 	let path = typeof key === "string" ? key.split("/") : [...key];
 	let curr = target;
@@ -2093,13 +1156,14 @@ export function pathed_key_to_lookup(key, value, target={}) {
 	curr[path[path.length-1]] = value;
 	return target;
 }
-export function tree_from_entries(entries) {
+
+export function tree_from_pathed_entries(entries) {
 	var root = {};
 	if (!Array.isArray(entries)) entries = [entries];
 	for (var c of entries) {
 		if (Array.isArray(c)) {
 			deep_merge(root, pathed_key_to_lookup(c[0], c[1]));
-		} else {
+		} else if (typeof c === "object") {
 			for (var k in c) {
 				deep_merge(root, pathed_key_to_lookup(k, c[k]));
 			}
@@ -2107,6 +1171,7 @@ export function tree_from_entries(entries) {
 	}
 	return root;
 }
+
 /** @typedef {[id:any,pid:any]} TreeCallbackResult */
 /** @template T @typedef {{value:T,children:TreeNode<T>[]}} TreeNode<T> */
 /** @template T @param {T[]} list @param {function(T):TreeCallbackResult} cb */
@@ -2132,7 +1197,7 @@ export function tree(list, cb) {
 	}
 	return root_nodes;
 }
-export function deep_map(o, cb) {
+/* export function deep_map(o, cb) {
 	if (typeof o !== "object" || o === null) return;
 	var new_o = {};
 	for (var k in o) {
@@ -2143,18 +1208,19 @@ export function deep_map(o, cb) {
 		}
 	}
 	return new_o;
-}
-export function deep_walk(o, delegate_filter) {
-	var deep_walk = (o, delegate_filter, path) => {
+} */
+export function walk(o, delegate_filter) {
+	var next = (o, delegate_filter, path) => {
 		if (typeof o !== "object" || o === null) return;
 		for (var k in o) {
 			if (delegate_filter && delegate_filter.apply(o, [k, o[k], [...path, k]]) === false) continue;
-			deep_walk(o[k], delegate_filter, [...path, k]);
+			next(o[k], delegate_filter, [...path, k]);
 		}
 	}
-	deep_walk(o, delegate_filter, []);
+	next(o, delegate_filter, []);
 }
-export async function replace_async(str, re, callback) {
+
+/* export async function replace_async(str, re, callback) {
 	str = String(str);
 	var parts = [], i = 0;
 	if (re instanceof RegExp) {
@@ -2179,63 +1245,13 @@ export async function replace_async(str, re, callback) {
 	parts.push(str.slice(i));
 	var strings = await Promise.all(parts);
 	return strings.join("");
-}
-export function get(fn_this, fn_path) {
-	// if (typeof fn_path === "string") fn_path = fn_path.split(/\./);
-	if (!Array.isArray(fn_path)) fn_path = [fn_path];
-	var fn_ref = fn_this;
-	try {
-		for (var fn_part of fn_path) {
-			fn_this = fn_ref;
-			var descriptor = get_property_descriptor(fn_ref, fn_part);
-			if (descriptor && descriptor.get) fn_ref = descriptor.get.call(fn_this);
-			else fn_ref = fn_ref[fn_part];
-			// fn_ref = descriptor ? (descriptor.get ? descriptor.get.call(fn_this) : descriptor.value) : undefined;
-		}
-	} catch {
-		throw new RefException(`${fn_this} -> ${fn_path}`);
-	}
-	return fn_ref
-}
-export function set(fn_this, fn_path, fn_value){
-	// if (typeof fn_path === "string") fn_path = fn_path.split(/\./);
-	if (!Array.isArray(fn_path)) fn_path = [fn_path];
-	var fn_ref = get(fn_this, fn_path.slice(0,-1));
-	var prop = fn_path.slice(-1)[0];
-	var descriptor = get_property_descriptor(fn_ref, prop);
-	if (descriptor && descriptor.set) descriptor.set.call(fn_this, [fn_value]);
-	else fn_ref[prop] = fn_value;
-	return true;
-}
-function _delete(fn_this, fn_path){
-	// if (typeof fn_path === "string") fn_path = fn_path.split(/\./);
-	if (!Array.isArray(fn_path)) fn_path = [fn_path];
-	try {
-		var fn_ref = get(fn_this, fn_path.slice(0,-1))
-		var prop = fn_path.slice(-1)[0];
-		delete fn_ref[prop];
-	} catch { }
-}
-export { _delete as delete }
-
-export function call(fn_this, fn_path, fn_args){
-	var args = [...arguments];
-	// if (typeof fn_path === "string") fn_path = fn_path.split(/\./);
-	if (!Array.isArray(fn_path)) fn_path = [fn_path];
-	if (!Array.isArray(fn_args)) fn_args = [fn_args];
-	var fn_this = get(fn_this, fn_path.slice(0,-1));
-	var fn_ref = get(fn_this, fn_path.slice(-1));
-	if (fn_ref) {
-		return fn_ref.apply(fn_this, fn_args);
-	} else {
-		throw new RefException(`Bad call ref: ${args.join(", ")}`);
-	}
-}
+} */
 
 export function path_to_file_uri(path) {
 	if (!path.startsWith("/")) path = "/"+path;
 	return new URL("file://"+path).toString();
 }
+
 export function file_uri_to_path(uri) {
 	if (typeof uri !== 'string' || uri.substring(0, 7) !== 'file://') {
 		throw new TypeError('Must pass in a file:// URI to convert to a file path');
@@ -2254,6 +1270,7 @@ export function file_uri_to_path(uri) {
 	}
 	return host + path;
 }
+
 export function try_file_uri_to_path(uri) {
 	try {
 		return file_uri_to_path(uri);
@@ -2261,6 +1278,7 @@ export function try_file_uri_to_path(uri) {
 		return uri;
 	}
 }
+
 /* get_random_values(array) {
 	for (let i = 0, l = array.length; i < l; i++) {
 			array[i] = Math.floor(Math.random() * 256);
@@ -2297,7 +1315,7 @@ export function get_default_stream(streams, type) {
 // b:1,
 // c:1,
 
-export class Cache {
+/* export class Cache {
 	#cache = {};
 	#limit = 0;
 	#n = 0;
@@ -2325,7 +1343,7 @@ export class Cache {
 			}
 		}
 	}
-}
+} */
 
 export function nearest(num, ...values) {
 	var min_diff = Number.MAX_VALUE;
@@ -2346,17 +1364,17 @@ export function truncate(str, len, suffix="") {
 	return str;
 }
 
-/** @returns {Promise & {resolve:function(any):void, reject:function(any):void}} */
-export function deferred() {
-	var resolve, reject;
-	var prom = new Promise((_resolve,_reject)=>{
-		resolve = _resolve;
-		reject = _reject;
-	});
-	prom.resolve = resolve;
-	prom.reject = reject;
-	return prom;
-}
+// /** @returns {Promise & {resolve:function(any):void, reject:function(any):void}} */
+// export function deferred() {
+// 	var resolve, reject;
+// 	var prom = new Promise((_resolve,_reject)=>{
+// 		resolve = _resolve;
+// 		reject = _reject;
+// 	});
+// 	prom.resolve = resolve;
+// 	prom.reject = reject;
+// 	return prom;
+// }
 
 export function fix_url(_url) {
 	_url = String(_url).trim();
@@ -2384,6 +1402,93 @@ export function rename_property(object, from, to) {
 	if (from in object) {
 		var val = object[from];
 		delete object[from];
-		object[to] = object[from];
+		object[to] = val;
+	}
+}
+
+export function repeat(a, num) {
+	return new Array(num).fill().map(()=>a);
+}
+
+export function* reverse_iterator(array) {
+	let index = array.length - 1;
+	while (index >= 0) {
+		yield array[index];
+		index--;
+	}
+}
+
+export function is_iterable(obj) {
+	return obj != null && typeof obj[Symbol.iterator] === 'function';
+}
+
+export function merge_non_null(...obs) {
+    var ob = obs.shift();
+    for (var o of obs) {
+        for (var k in o) {
+            if (o[k] != null)  ob[k] = o[k];
+        }
+    }
+    return ob;
+}
+
+export function get_defaults(def) {
+    if (def.__default__ !== undefined) {
+        return json_copy(def.__default__);
+    }
+    var defaults = {};
+    for (var k in def) {
+        if (k.startsWith("__")) continue;
+        defaults[k] = get_defaults(def[k]);
+    }
+    if (Object.keys(defaults).length) return defaults;
+}
+
+/** @param {function(string[], any, any):boolean} delete_criteria */
+export function cleanup_prop($, props, recursive, warn, delete_criteria) {
+	if (!warn) warn = noop;
+	if (!delete_criteria) {
+		delete_criteria = (path, value, prop)=>{
+			return !prop; // || deep_equals(value, prop.__default__);
+		}
+	}
+	const cleanup_prop = ($, prop, path) => {
+		if (!$) return;
+		if (!prop) prop = {};
+		if (!path) path = [];
+		if (prop.__custom__) return;
+		if (typeof prop !== "object") return;
+		for (let k of Object.keys($)) {
+			var value = $[k];
+			let new_path = [...path, k];
+			let p = new_path.join(".");
+			if (!(k in prop) && !prop.__enumerable__) {
+				warn(`Unrecognized property '${p}'`);
+			}
+			let child_prop = prop.__enumerable__ ?? prop[k];
+			if (delete_criteria(new_path, value, child_prop)) {
+				warn(`Deleting property '${p}'...`);
+				delete $[k];
+			}
+			if (recursive && typeof value === "object" && value !== null && child_prop) {
+				cleanup_prop(value, child_prop, new_path);
+			}
+		}
+	}
+	return cleanup_prop($, props, []);
+}
+
+/** @template T @param {AsyncGenerator<T>} gen @return {Promise<T[]>} */
+export async function array_from_async_generator(gen) {
+    const out = [];
+    for await(const x of gen) out.push(x)
+    return out;
+}
+
+export function first(o) {
+	if (is_iterable(o)) {
+		for (var k of o) return k;
+	} else {
+		for (var k in o) return o[k];
 	}
 }

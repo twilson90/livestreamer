@@ -4,8 +4,9 @@ import * as utils from "../core/utils.js";
 import DataNode from "../core/DataNode.js";
 import Logger from "../core/Logger.js";
 import globals from "./globals.js";
+import ClientUpdater from "../core/ClientUpdater.js";
 import Stream from "./Stream.js";
-import SessionBaseProps from "./SessionBaseProps.js";
+import * as constants from "../core/constants.js";
 
 export class SessionBase extends DataNode {
     /** @type {Logger} */
@@ -19,17 +20,21 @@ export class SessionBase extends DataNode {
     /** @type {Stream} */
     stream;
 
-    constructor(type, Props, id, name) {
+    reset() {
+        Object.assign(this.$, this.defaults);
+    }
+
+    constructor(type, defaults, id, name) {
         super(id);
 
-        this.defaults = utils.properties(Props || SessionBaseProps);
-        Object.assign(this.$, {
-            ...this.defaults,
+        this.defaults = {
+            ...utils.json_copy(defaults),
             type,
             index: Object.keys(globals.app.sessions).length,
             name: name || globals.app.get_new_session_name(),
             creation_time: Date.now(),
-        });
+        };
+        this.reset();
 
         this.logger = new Logger();
 
@@ -45,19 +50,18 @@ export class SessionBase extends DataNode {
         }
         
         this.logger.on("log", (log)=>{
-            ;
             log.prefix = [update_logger_prefix(), ...log.prefix];
             globals.app.logger.log(log);
-        })
-        this.$.logs = this.logger.register_observer((log)=>{
-            log = {...log};
-            log.prefix = log.prefix.slice(2);
         });
+        this.$.logs = this.logger.register_changes((log)=>{
+            return {...log, prefix: log.prefix.slice(2)};
+        });
+
+        this.client_updater = new ClientUpdater(this.observer, ()=>this.clients);
 
         globals.app.sessions[this.id] = this;
         globals.app.$.sessions[this.id] = this.$;
         globals.app.logger.info(`Initialized session [${this.id}]`);
-
         globals.app.ipc.emit("main.session.created", this.id);
     }
 
@@ -88,20 +92,25 @@ export class SessionBase extends DataNode {
     }
 
     async start_stream(settings) {
-        if (this.stream) return;
+        if (this.stream && this.stream.state !== constants.State.STOPPED) return;
         var stream = new Stream(this);
-        await stream.start({...this.$.stream_settings, ...settings});
-        globals.app.ipc.emit("main.session.stream-started", this.id);
+        settings = utils.merge_non_null(utils.json_copy(this.defaults.stream_settings), this.$.stream_settings, settings);
+        if (await stream.start(settings)) {
+            globals.app.ipc.emit("main.session.stream-started", this.id);
+        }
     }
 
     // only called by client
     async stop_stream() {
         if (!this.stream) return;
-        await this.stream.stop();
-        globals.app.ipc.emit("main.session.stream-stopped", this.id);
+        if (await this.stream.stop("stop")) {
+            globals.app.ipc.emit("main.session.stream-stopped", this.id);
+        }
     }
 
     async destroy() {
+        this.client_updater.destroy();
+        
         await this.stop_stream();
 
         // var index = app.sessions_ordered.indexOf(this);
@@ -124,6 +133,21 @@ export class SessionBase extends DataNode {
     }
 
     tick() { }
+
+    static get_defaults(def) {
+        var _process = (def)=>{
+            if (def.__default__ !== undefined) {
+                return utils.json_copy(def.__default__);
+            }
+            var defaults = {};
+            for (var k in def) {
+                if (k.startsWith("__")) continue;
+                defaults[k] = _process(def[k]);
+            }
+            if (Object.keys(defaults).length) return defaults;
+        }
+        return _process(def);
+    }
 }
 
 export default SessionBase;
