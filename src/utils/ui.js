@@ -1,7 +1,6 @@
 import * as utils from './utils.js';
 import * as dom from "./dom.js";
 import "./ui.scss";
-/** @import {EventEmitter} from './utils.js' */
 
 export const editable_input_types = {
     "text":1,
@@ -13,7 +12,7 @@ export const editable_input_types = {
     "url":1,
 }
 
-/** @template T @extends {EventEmitter<T>} */
+/** @template T @extends {utils.EventEmitter<T>} */
 export class UI extends utils.EventEmitter {
     get disabled() { return !!this.get_setting("disabled"); }
     set disabled(value) {
@@ -435,7 +434,7 @@ export class PropertyContainer extends UI {
     /** @type {object} */
     get named_property_lookup() { return Object.fromEntries(this.properties.filter(p=>!p.is_indeterminate && p.name).map(p=>[p.name, p._value])); }
     /** @type {object} */
-    get named_property_lookup_not_null() { return Object.fromEntries(Object.entries(this.named_property_lookup).filter(([k,v])=>v!==null)); }
+    get named_property_lookup_not_null() { return Object.fromEntries(Object.entries(this.named_property_lookup).filter(([k,v])=>v!=null)); }
     get properties() { return [...this.iterate_properties()]; }
     *iterate_properties() {
         for (var ui of traverse(this.elem, (ui)=>!(ui instanceof Property))) {

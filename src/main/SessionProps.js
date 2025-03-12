@@ -1,4 +1,4 @@
-export const Props = {
+export const SessionProps = {
     // id: {
     //     __default__: "-1",
     // },
@@ -66,4 +66,4 @@ export const Props = {
         }
     },
 }
-export default Props;
+export default SessionProps;

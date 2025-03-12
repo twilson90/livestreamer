@@ -2,9 +2,7 @@ import os from "node:os";
 import events from "node:events";
 import readline from "node:readline";
 import child_process from "node:child_process";
-import globals from "./globals.js";
-import Logger from "./Logger.js";
-import * as utils from "./utils.js";
+import {globals, utils, Logger} from "./exports.js";
 
 export class FFMPEGWrapper extends events.EventEmitter {
     /** @type {import("child_process").ChildProcessWithoutNullStreams} */
@@ -36,9 +34,9 @@ export class FFMPEGWrapper extends events.EventEmitter {
             this.#logger.info(`Starting ${this.opts.exec}...`);
             this.#logger.debug(`${this.opts.exec} args:`, args);
             
-            this.#process = child_process.spawn(this.opts.exec === "ffmpeg" ? globals.core.conf["core.ffmpeg_executable"]: globals.core.conf["core.ffplay_executable"], args, {windowsHide: true, ...spawn_opts});
+            this.#process = child_process.spawn(this.opts.exec === "ffmpeg" ? globals.app.conf["core.ffmpeg_executable"]: globals.app.conf["core.ffplay_executable"], args, {windowsHide: true, ...spawn_opts});
 
-            globals.core.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
+            globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
 
             var handle_error = (e)=>{
                 this.emit("error", e);

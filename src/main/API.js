@@ -1,7 +1,6 @@
-import * as utils from "../core/utils.js";
-import globals from "./globals.js";
 import {program, Command} from "commander";
 import fs from "fs-extra";
+import {globals, utils} from "./exports.js";
 
 class CommandHack extends Command {
     #o = 0;
@@ -20,7 +19,7 @@ class CommandHack extends Command {
 
 // const log = (s)=>process.stdout.write(s+"\n", "utf8");
 
-export default class API {
+export class API {
     constructor() {}
     
     async parse(...args) {
@@ -103,3 +102,4 @@ export default class API {
         await program.parseAsync(args);
     }
 }
+export default API;

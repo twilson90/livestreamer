@@ -1,16 +1,16 @@
 import express from "express";
 import path from "node:path";
 import compression from "compression";
-import WebServer from "../core/WebServer.js";
-import ElFinderEx from "./ElFinderEx.js";
-import globals from "./globals.js";
-import Core from "../core/index.js";
+import {WebServer, ElFinderEx, globals, Core, Core$} from "./exports.js";
 
 const dirname = import.meta.dirname;
 
-export default class FileManagerApp extends Core {
+export class FileManagerApp$ extends Core$ {}
+
+/** @extends {Core<FileManagerApp$>} */
+export class FileManagerApp extends Core {
     constructor() {
-        super("file-manager");
+        super("file-manager", new FileManagerApp$());
         globals.app = this;
     }
 
@@ -31,8 +31,7 @@ export default class FileManagerApp extends Core {
                 ...this.conf["file-manager.volumes"]
             ],
         });
-        
-        await this.elFinder.init();
+        this.elFinder.ready;
 
         exp.use("/", await this.serve({
             root: path.resolve(dirname, `public_html`)
@@ -43,4 +42,4 @@ export default class FileManagerApp extends Core {
     }
 }
 
-export {FileManagerApp};
+export default FileManagerApp;

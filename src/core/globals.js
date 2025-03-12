@@ -1,5 +1,5 @@
-/** @import { Core } from './types.d.ts' */
+/** @import { Core } from './exports.js' */
 export default {
     /** @type {Core} */
-    core: undefined
+    app: undefined
 }

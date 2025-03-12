@@ -4,12 +4,8 @@ import multer from "multer";
 import fs from "fs-extra";
 import crypto from "node:crypto";
 import bodyParser from "body-parser";
-import * as utils from "./utils.js";
-import * as errors from "./errors.js";
-import * as constants from "../core/constants.js";
-import Volume from "./Volume.js";
-import globals from "./globals.js";
-/** @import { Driver } from './types.d.ts' */
+import {utils, errors, constants, globals, Volume} from "./exports.js";
+/** @import { Driver } from './exports.js' */
 
 const dirname = import.meta.dirname;
 var callback_template = fs.readFileSync(path.join(dirname, "assets", "callback-template.html"), "utf-8");
@@ -24,6 +20,8 @@ export class ElFinder {
 	config;
 	/** @type {Object.<string,string[]>} */
 	uploads = {}
+	#ready;
+	get ready() { return this.#ready; }
 
 	/** @param {Express} express @param {object} config */
 	constructor(express, config) {
@@ -32,18 +30,14 @@ export class ElFinder {
 		this.uploads_dir = path.join(this.elfinder_dir, 'uploads');
 		this.thumbnails_dir = path.join(this.elfinder_dir, 'tmb');
 		this.tmp_dir = path.join(this.elfinder_dir, 'tmp');
-		fs.mkdirSync(this.thumbnails_dir, {recursive:true});
-		fs.mkdirSync(this.uploads_dir, {recursive:true});
-		fs.emptyDirSync(this.uploads_dir);
-		fs.mkdirSync(this.tmp_dir, {recursive:true});
-		fs.emptyDirSync(this.tmp_dir);
 
-		config = Object.assign({
-			tmbdir: this.thumbnails_dir,
-		}, config)
+		config = {
+			...config,	
+		}
 		
 		if (!config.volumes) config.volumes = [];
 		this.config = config;
+
 		var router = Router();
 
 		express.use(async (req, res, next) => {
@@ -80,7 +74,7 @@ export class ElFinder {
 				if (req.params.tmb == "0") {
 					res.status(404).send("Thumbnail not generatable.");
 				} else {
-					var tmbpath = path.join(volume.config.tmbdir, req.params.tmb);
+					var tmbpath = path.join(this.thumbnails_dir, req.params.volume, req.params.tmb);
 					res.sendFile(tmbpath);
 				}
 			}
@@ -102,32 +96,34 @@ export class ElFinder {
 				});
 			}
 		});
+		this.#ready = this.#init();
 	}
 
-	async init() {
-		
+	async #init() {
+		await fs.mkdir(this.thumbnails_dir, {recursive:true});
+		await fs.mkdir(this.uploads_dir, {recursive:true});
+		await fs.emptyDir(this.uploads_dir);
+		await fs.mkdir(this.tmp_dir, {recursive:true});
+		await fs.emptyDir(this.tmp_dir);
 		var drivers = await fs.readdir(`${dirname}/drivers`);
 		for (var d of drivers) {
 			var name = path.basename(d, ".js");
 			this.drivers[name] = (await import(`./drivers/${name}.js`)).default;
 		}
 
-		this.config.volumes.forEach((v,i)=>{
-			if (typeof v === "string") v = {root:v};
-			else v = {...v};
-			if (v.root) v.root = v.root.replace(/[\\/]+$/, "");
-			if (!v.id) v.id = `v${i}_`;
-			if (!v.name) v.name = v.root ? v.root.split(/[\\/]/).pop() : `Volume ${i+1}`;
-			if (!v.driver) v.driver = `LocalFileSystem`;
-			if (this.volumes[v.id]) throw new Error(`Volume with ID '${v.id}' already exists.`);
-			this.volumes[v.id] = new Volume(this, v);
-		});
+		for (var v of this.config.volumes) {
+			new Volume(this, v).register();
+		}
 
 		this.tmpvolume = new Volume(this, {
 			driver: "LocalFileSystem",
 			root: this.tmp_dir
 		});
+
+		await this.init();
 	}
+
+	async init(){}
 
 	/** @param {express.Request} req @param {express.Response} res */
 	async exec(req, res) {

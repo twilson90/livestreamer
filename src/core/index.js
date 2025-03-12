@@ -1,6 +1,5 @@
 import path from "node:path";
 import fs from "fs-extra";
-import events from "node:events";
 // import inspector from "node:inspector";
 import readline from "node:readline";
 import cron from "node-cron";
@@ -13,16 +12,12 @@ import child_process, { ChildProcess } from "node:child_process";
 import { program } from 'commander';
 import chokidar from "chokidar";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import Logger from "./Logger.js";
-import IPC from "./IPC.js";
-import * as utils from "./utils.js";
-import globals from "./globals.js";
-import config_default from "../config.default.js";
 import {minimatch} from "minimatch";
 import express from "express";
 import which from "which";
 import osInfo from "linux-os-info";
 import stringArgv from "string-argv";
+import {Logger, IPC, utils, DataNode, DataNode$, globals, config_default} from "./exports.js";
 
 /** @import {BuildOptions} from "vite" */
 /** @typedef {typeof import("../config.default.js").default} Conf */
@@ -38,10 +33,14 @@ const dirname = import.meta.dirname;
 const filename = import.meta.filename;
 const root = path.dirname(dirname);
 const js_exts = [`js`,`ts`,`cjs`,`mjs`,`cts`,`mts`];
+const module_id = 0;
 
 // import pkg from "./package.json" with { type: "json" };
 
-export class Core extends events.EventEmitter {
+export class Core$ extends DataNode$ {}
+
+/** @template {Core$} T @extends {DataNode<T>} */
+export class Core extends DataNode {
     modules = {}; // just a map of name:path to dir
     ppid = process.ppid;
     /** @type {Logger} */
@@ -67,8 +66,9 @@ export class Core extends events.EventEmitter {
     #ssl_certs;
     /** @type {Conf} */
     conf = {};
-    observer = new utils.Observer();
-    
+    #module_id = 0;
+    #cwd;
+    #ready;
     #portable_file;
     get appspace() { return process.env.LIVESTREAMER_APPSPACE || "livestreamer"; }
     get portable() {
@@ -80,15 +80,18 @@ export class Core extends events.EventEmitter {
     get use_pm2() { return !!("pm_id" in process.env || this.conf["core.pm2"]); }
     get hostname() { return this.conf["core.hostname"] || os.hostname(); }
     get change_log_path() { return path.resolve(this.conf["core.changelog"]); }
-    get $() { return this.observer.$; }
+    get cwd() { return this.#cwd; }
+    get ready() { return this.#ready; }
     
-    constructor(name, master_opts) {
-        super();
-        globalThis.app = globalThis.core = this;
-        globals.core = this;
+    /** @param {string} name @param {object|typeof T} master_opts */
+    constructor(name, $, master_opts) {
+        super($);
+        globalThis.app = this;
+        globals.app = this;
         if (!name || typeof name !== "string") throw new Error("Bad init()");
         this.name = name || "livestreamer";
-        this.#is_master = !!master_opts;
+        this.#is_master = typeof master_opts === "object";
+        this.#module_id = +(process.env.LIVESTREAMER_MODULE_ID || 0);
 
         var opts = {};
 
@@ -114,8 +117,8 @@ export class Core extends events.EventEmitter {
         this.logger = new Logger(this.name, {stdout:true, file:true, prefix:this.#is_master?"":this.name});
         this.logger.console_adapter();
 
-        this.cwd = process.cwd();
-        this.ready = this.#init();
+        this.#cwd = process.cwd();
+        this.#ready = this.#init();
     }
 
     async init() {}
@@ -134,7 +137,7 @@ export class Core extends events.EventEmitter {
     async #init() {
 
         this.resources_dir = path.resolve((process.versions.electron && process.env.BUILD) ? process.resourcesPath : path.join(root, "resources"));
-        let bin_dirs = [...glob.sync("**/bin", { cwd: this.resources_dir, absolute:true, dot:true })];
+        let bin_dirs = [path.join(this.resources_dir, "bin"), path.join(this.resources_dir, process.platform, "bin")];
         this.mpv_lua_dir = path.resolve(this.resources_dir, "mpv_lua");
         process.env.PATH = [...new Set([...bin_dirs, ...process.env.PATH.split(path.delimiter)].filter(p=>p))].join(path.delimiter);
 
@@ -317,6 +320,10 @@ export class Core extends events.EventEmitter {
             this.logger.info(`Starting ${m} [${run_path}]...`);
             var args = [];
             var node_args = [];
+            var env = {
+                ...process.env,
+                LIVESTREAMER_MODULE_ID: Object.keys(this.modules).indexOf(m)+1,
+            };
             if (this.debug && this.conf[`${m}.inspect`]) {
                 node_args.push(`--inspect=${this.conf[`${m}.inspect`]}`);
             }
@@ -330,6 +337,7 @@ export class Core extends events.EventEmitter {
                     "autorestart": true,
                     "restart_delay": 5000,
                     "node_args": node_args,
+                    env,
                     // "cron_restart" : null // prevent inheriting
                 };
                 return pm2("start", p);
@@ -344,6 +352,7 @@ export class Core extends events.EventEmitter {
                     const {utilityProcess} = (await import("electron"));
                     p = utilityProcess.fork(run_path, args, {
                         execArgv: node_args,
+                        env,
                         stdio: ["ignore", "inherit", "inherit", "ipc"]
                     });
                     // p.send = (msg)=>p.postMessage(msg);
@@ -351,6 +360,7 @@ export class Core extends events.EventEmitter {
                 } else {
                     p = child_process.fork(run_path, args, {
                         execArgv: node_args,
+                        env,
                         stdio: ["ignore", "inherit", "inherit", "ipc"]
                     });
                     p.on("error", (err)=>{
@@ -536,7 +546,7 @@ export class Core extends events.EventEmitter {
     }
     
     get_urls(subdomain) {
-        if (!subdomain && subdomain !== false) subdomain = globals.core.name;
+        if (!subdomain && subdomain !== false) subdomain = globals.app.name;
         var hostname = subdomain ? `${subdomain}.${this.hostname}` : this.hostname;
         var http = `http://${hostname}:${this.conf["core.http_port"]}`;
         var https = `https://${hostname}:${this.conf["core.https_port"]}`;
@@ -627,12 +637,17 @@ export class Core extends events.EventEmitter {
                 root,
                 // outDir: path.resolve(this.tmp_dir, "web", utils.md5(dir)),
                 server: {
+                    hmr: {
+                        port: 24679 + this.#module_id,
+                    },
+                    allowedHosts: true,
                     middlewareMode: true
                 },
                 plugins: [
                     ...plugins
                 ],
                 build: {
+                    target: "es2020",
                     modulePreload: false,
                     rollupOptions: {
                         input: pages,
@@ -687,7 +702,7 @@ export class Core extends events.EventEmitter {
 export function start(opts) {
     class App extends Core {
         constructor() {
-            super("livestreamer", {...opts});
+            super("livestreamer", null, {...opts});
         }
     }
     return new App();

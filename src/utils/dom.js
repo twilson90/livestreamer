@@ -6,6 +6,8 @@ import tippy from 'tippy.js';
 import "tippy.js/dist/tippy.css";
 import * as utils from './utils.js';
 import "./dom.scss";
+/** @typedef {import('tippy.js').Instance} TippyInstance */
+/** @typedef {import('tippy.js').Props} TippyProps */
 
 var _temp_div = document.createElement('div');
 var _div2 = document.createElement('div');
@@ -444,22 +446,32 @@ export class LocalStorageBucket extends utils.EventEmitter
 class _WebSocket extends utils.EventEmitter
 {
     last_ping = 0;
+    #ready_promise;
     get requests() { return this._requests; }
 
-    constructor(url, options={}) {
+    constructor(options={}) {
         super();
-        this.url = url;
-        this.options = Object.assign({
+        this.options = {
             auto_reconnect: true,
             auto_reconnect_interval: 1000,
-        }, options);
-        this._init_websocket();
+            ...options,
+        };
+        this.#reset_ready_promise();
     }
 
-    get ready_state() { return this.ws.readyState; }
-    get ready_promise() {
-        return (this.ws.readyState === WebSocket.OPEN) ? Promise.resolve(true) : new Promise(resolve=>this.once("open", resolve));
+    #reset_ready_promise() {
+        this.#ready_promise = new Promise(resolve=>this.once("open", resolve));
     }
+
+    connect(url) {
+        this.url = url;
+        this.#init_websocket();
+    }
+
+    get ready_state() {
+        if (this.ws) return this.ws.readyState;
+    }
+    get ready_promise() { return this.#ready_promise; }
 
     request(data, timeout){
         return new Promise((resolve,reject) => {
@@ -486,7 +498,7 @@ class _WebSocket extends utils.EventEmitter
         }
     }
 
-    _init_websocket(){
+    #init_websocket(){
         this._request_ids = {};
         this._requests = 0;
 
@@ -496,17 +508,8 @@ class _WebSocket extends utils.EventEmitter
         if (typeof url === "function") url = url();
         if (typeof protocols === "function") protocols = protocols();
         this.ws = new WebSocket(url, protocols);
-        var open = false;
         this.emit("connecting");
-        var try_reconnect = ()=>{
-            if (!this.options.auto_reconnect) return;
-            clearTimeout(this._reconnect_timeout);
-            this._reconnect_timeout = setTimeout(()=>{
-                this._init_websocket();
-            }, this.options.auto_reconnect_interval);
-        }
         this.ws.addEventListener("open", (e)=>{
-            open = true;
             clearTimeout(this._reconnect_timeout);
             this.emit("open", e);
             heartbeat_interval_id = setInterval(send_ping, 30*1000);
@@ -542,14 +545,18 @@ class _WebSocket extends utils.EventEmitter
             // setTimeout(()=>this.emit("data", data), 0);
         });
         this.ws.addEventListener("close", (e)=>{
-            open = false;
             clearInterval(heartbeat_interval_id);
             this.emit("close", e);
+            this.#reset_ready_promise();
             if (e.code == 1014) {
                 // bad gateway, don't bother.
                 console.error("Connection refused: Bad gateway.")
             } else {
-                try_reconnect();
+                if (!this.options.auto_reconnect) return;
+                clearTimeout(this._reconnect_timeout);
+                this._reconnect_timeout = setTimeout(()=>{
+                    this.#init_websocket();
+                }, this.options.auto_reconnect_interval);
             }
         });
         this.ws.addEventListener("error", (e)=>{
@@ -1655,45 +1662,108 @@ export function set_dataset_value(elem, key, value) {
     return elem.dataset[convert_to_camel_case(key)] = value;
 }
 
-
-
-/** @param {HTMLElement} target @param {HTMLElement} elem @param {MouseEvent} e @return {import("tippy.js").Props} */
-export function contextmenu_tippy_opts(x,y) {
-    return {
-        appendTo: document.body,
-        getReferenceClientRect: () => ({
-            width: 0,
-            height: 0,
-            top: y,
-            bottom: y,
-            left: x,
-            right: x,
-        }),
-        placement: "right-start",
-        trigger: "manual",
-        hideOnClick: true,
-        interactive: true,
-        offset: [0, 0],
-        theme: "list",
-        content:"",
+export class DropdownMenu extends utils.EventEmitter {
+    showing = false;
+    /** @type {HTMLElement} */
+    el;
+    /** @type {import("tippy.js").Instance} */
+    tippy;
+    constructor(opts) {
+        super();
+        opts = {
+            target: null,
+            parent: document.body,
+            params: [],
+            tippy_opts: {},
+            contextmenu: false,
+            x: undefined,
+            y: undefined,
+            ...opts,
+        };
+        if (opts.target) {
+            opts.target.addEventListener("click", (e)=>{
+                this.toggle();
+            });
+        }
+        this.opts = opts;
+    }
+    toggle(show) {
+        if (show === undefined) show = !this.showing;
+        if (show === this.showing) return;
+        this.showing = show;
+        if (!this.showing) {
+            this.tippy.hide();
+            return;
+        }
+        if (this.opts.items) {
+            var items = typeof this.opts.items === "function" ? this.opts.items() : this.opts.items;
+            this.el = create_menu(items, {
+                click: ()=>this.hide(),
+                params: this.opts.params,
+            });
+        } else if (this.opts.content) {
+            var content = typeof this.opts.content === "function" ? this.opts.content() : this.opts.content;
+            if (typeof content === "string") content = $(content)[0];
+            this.el = content;
+        }
+        /** @type {import("tippy.js").Instance} */
+        var tippy_opts = {
+            trigger: "manual",
+            placement: "top-start",
+            interactive: true,
+            hideOnClick: true,
+            arrow: false,
+            appendTo: this.opts.parent,
+            theme: "list",
+            offset: [0, 5],
+            content: this.el,
+            ...this.opts.tippy_opts,
+        };
+        if (this.opts.x !== undefined && this.opts.y !== undefined) {
+            tippy_opts = {
+                ...tippy_opts,
+                getReferenceClientRect: ()=>({
+                    width: 0,
+                    height: 0,
+                    top: this.opts.y,
+                    bottom: this.opts.y,
+                    left: this.opts.x,
+                    right: this.opts.x,
+                }),
+                offset: [0, 0],
+            };
+        }
+        if (this.tippy) {
+            this.tippy.destroy();
+            this.tippy = null;
+        }
+        document.body.addEventListener("click", this.on_click = (e)=>{
+            /** @type {HTMLElement} */
+            var t = e.target;
+            if (closest(t, (el)=>el === this.opts.target || el === this.el)) return;
+            this.hide();
+        });
+        this.tippy = tippy(this.opts.target || document.body, {
+            ...tippy_opts,
+            onShow: ()=>this.emit("show"),
+            onHide: ()=>this.emit("hide"),
+        });
+        this.tippy.show();
+    }
+    show() {
+        this.toggle(true)
+    }
+    hide() {
+        this.toggle(false);
+    }
+    destroy() {
+        document.body.removeEventListener("click", this.on_click);
+        this.tippy.destroy();
+        this.tippy = null;
     }
 }
 
-/** @return {import("tippy.js").Props} */
-export function dropdown_tippy_opts() {
-    return {
-        trigger: "click",
-        hideOnClick: true,
-        placement: "top-start",
-        interactive: true,
-        arrow: false,
-        appendTo: document.body,
-        theme: "list",
-        offset: [0, 5],
-        content: "",
-    }
-}
-
+/** @return {HTMLElement} */
 export function create_menu(items, opts={}) {
     opts = {
         click: utils.noop,
@@ -1712,7 +1782,10 @@ export function create_menu(items, opts={}) {
             item.forEach(i=>process_item(i, elem));
         } else {
             var get = (p) => {
-                if (typeof item[p] === "function") return item[p].apply(item, [...opts.params, elem]);
+                if (typeof item[p] === "function") {
+                    var params = typeof opts.params === "function" ? opts.params() : opts.params;
+                    return item[p].apply(item, [params, elem]);
+                }
                 return item[p];
             }
             var icon = get("icon");

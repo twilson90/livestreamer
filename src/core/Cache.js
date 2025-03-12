@@ -1,14 +1,14 @@
 import path from "node:path";
 import fs from "fs-extra";
-import globals from "./globals.js";
-import * as utils from "./utils.js";
+import {globals, utils} from "./exports.js";
 
 export class Cache extends utils.EventEmitter {
     #cache = {};
     #timeouts = {};
     #dir;
     #opts;
-
+    #ready;
+    get ready() { return this.#ready; }
     get dir() { return this.#dir; }
 
     constructor(dir, opts = {}) {
@@ -18,7 +18,8 @@ export class Cache extends utils.EventEmitter {
             ...opts
         };
         this.#opts = opts;
-        this.#dir = path.resolve(globals.core.cache_dir, dir);
+        this.#dir = path.resolve(globals.app.cache_dir, dir);
+        this.#ready = this.#init();
     }
     get keys() {
         return Object.keys(this.#cache);
@@ -30,16 +31,16 @@ export class Cache extends utils.EventEmitter {
         return Object.values(this.#cache).map(d=>d.data);
     }
 
-    async init() {
+    async #init() {
         await fs.mkdir(this.#dir, {recursive:true});
         for (let key of await fs.readdir(this.#dir)) {
-            let filename = this.#get_cache_filename(key);
+            let filepath = path.join(this.#dir, key);
             try {
-                let d = JSON.parse(await fs.readFile(filename, "utf8"));
+                let d = JSON.parse(await fs.readFile(filepath, "utf8"));
                 this.#cache[key] = d;
                 if (d.expires) this.#setup_expire(key, d.expires);
             } catch {
-                await fs.rm(filename).catch(utils.noop);
+                await fs.rm(filepath).catch(utils.noop);
             }
         }
     }
@@ -51,7 +52,7 @@ export class Cache extends utils.EventEmitter {
     }
 
     #get_cache_filename(key) {
-        return path.join(this.#dir, utils.md5(key));
+        return path.join(this.#dir, key);
     }
 
     #setup_expire(key, expires) {
@@ -79,7 +80,8 @@ export class Cache extends utils.EventEmitter {
     /** @param {string} key */
     async set(key, data, ttl=null) {
         if (!ttl) ttl = this.#opts.ttl;
-        var d = {data, expires: ttl ? (Date.now() + ttl) : null};
+        var d = {data};
+        if (ttl) d.expires = (Date.now() + ttl);
         this.#cache[key] = d;
         this.emit("set", {key, data});
 

@@ -1,2 +1,2 @@
-import FileManagerWebApp from "./FileManagerWebApp.js";
+import {FileManagerWebApp} from "./FileManagerWebApp.js";
 $(function(){window.app = new FileManagerWebApp()});

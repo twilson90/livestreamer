@@ -5,7 +5,8 @@ import fs from "fs-extra";
 import MultiStream from "multistream";
 import { Writable } from "node:stream";
 
-export const noop = ()=>{};
+export * from "../core/utils.js";
+
 export function suffix(name, suff) {
 	var ext = path.extname(name);
 	var fil = path.basename(name, ext);

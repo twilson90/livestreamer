@@ -1,2 +1,2 @@
-import MediaServerApp from "./MediaServerApp.js";
+import {MediaServerApp} from "./exports.js";
 export default new MediaServerApp();

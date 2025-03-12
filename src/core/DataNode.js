@@ -1,19 +1,18 @@
 import events from "node:events";
-import * as utils from "./utils.js";
+import {utils} from "./exports.js";
 
+export class DataNode$ {}
+
+/** @template {DataNode$} T */
 export class DataNode extends events.EventEmitter {
-    observer = new utils.Observer();
     get $() { return this.observer.$; }
-    /** @type {string} */
-    get id() { return this.$.id; } // always a string
     #destroyed = false;
     get destroyed() { return this.#destroyed; }
 
-    constructor(id) {
+    /** @param {T} $ */
+    constructor($) {
         super();
-        if (id == null) id = utils.uuid4();
-        else id = String(id);
-        this.$.id = id;
+        this.observer = new utils.Observer($);
     }
     
     update_values(...datas) {
@@ -33,10 +32,6 @@ export class DataNode extends events.EventEmitter {
         // safe to call multiple times.
         this.#destroyed = true;
         this.observer.removeAllListeners();
-    }
-
-    toString() {
-        return `[${this.constructor.name}:${this.id}]`;
     }
 }
 

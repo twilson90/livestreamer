@@ -40,7 +40,7 @@ export class CancelSortPlugin {
 export class ResponsiveSortable extends Sortable {
     /** @type {ResponsiveSortable[]} */
     static instances = [];
-    /** @type {Record<string, ResponsiveSortable>} */
+    /** @type {Record<PropertyKey, ResponsiveSortable>} */
     static active = {};
     static VERTICAL = "vertical";
     static HORIZONTAL = "horizontal";
@@ -322,6 +322,7 @@ export class ResponsiveSortable extends Sortable {
         e = this.get_item(e);
         return e ? e.classList.contains(this.options.selectedClass) : false;
     }
+    /** @return {HTMLElement} */
     get_item(e) {
         e = Sortable.utils.closest(e, this.options.draggable, this.el, false);
         return (e && e.parentElement === this.el) ? e : undefined;

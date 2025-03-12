@@ -2,14 +2,23 @@ import fs from "fs-extra";
 import path from "node:path";
 import child_process from "node:child_process";
 import url from "node:url";
-import * as utils from "../core/utils.js";
-import FFMPEGWrapper from "../core/FFMPEGWrapper.js";
-import Logger from "../core/Logger.js";
-import globals from "./globals.js";
-import * as constants from "../core/constants.js";
-import StopStartStateMachine from "../core/StopStartStateMachine.js";
-/** @import { Target, Stream } from './types.d.ts' */
+import {globals, utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger} from "./exports.js";
+/** @import { Target, Stream } from './exports.js' */
 
+export class StreamTarget$ extends StopStartStateMachine$ {
+    stream_id = "";
+    target_id = "";
+    /** @type {string | undefined} */
+    output_url;
+    /** @type {string | undefined} */
+    rtmp_host;
+    /** @type {string | undefined} */
+    rtmp_key;
+    /** @type {Record<PropertyKey,any>} */
+    opts = {};
+}
+
+/** @extends {StopStartStateMachine<StreamTarget$>} */
 export class StreamTarget extends StopStartStateMachine {
     /** @type {FFMPEGWrapper} */
     #ffmpeg;
@@ -17,7 +26,7 @@ export class StreamTarget extends StopStartStateMachine {
     #mpv;
     /** @param {Stream} stream @param {Target} target */
     constructor(stream, target) {
-        super();
+        super(null, new StreamTarget$());
 
         this.logger = new Logger(`target-${target.id}`);
         this.logger.on("log", (log)=>{
@@ -30,11 +39,12 @@ export class StreamTarget extends StopStartStateMachine {
         stream.stream_targets[target.id] = this;
         stream.$.stream_targets[target.id] = this.$;
         
-        var data = JSON.parse(JSON.stringify({
+        var data = utils.json_copy({
             opts: { ...stream.$.targets[target.id] },
             stream_id: stream.id,
             target_id: target.id,
-        }));
+        });
+
         Object.assign(data, target.config(data, this));
 
         if (data.rtmp_host) {
@@ -71,6 +81,7 @@ export class StreamTarget extends StopStartStateMachine {
             if (this.target.id === "gui") {
                 var mpv_args = [
                     input,
+                    "--no-config",
                     "--video-latency-hacks=yes",
                     "--audio-buffer=0",
                     "--demuxer-lavf-o-add=fflags=+nobuffer",

@@ -1,36 +1,40 @@
 import fs from "fs-extra";
 import path from "node:path";
 import upath from "upath";
-import { Jimp } from "jimp";
 import * as uuid from "uuid";
 import express from "express";
 import encoding from "encoding-japanese";
 import axios from "axios";
 import sanitize from "sanitize-filename";
 import dataUriToBuffer from "data-uri-to-buffer";
+import sharp from "sharp";
 import mime from "mime";
 import https from "node:https";
-import * as utils from "./utils.js";
-import * as errors from "./errors.js";
-import * as constants from "../core/constants.js";
-/** @import { ElFinder, Driver } from './types.d.ts' */
+import {utils, errors, constants} from "./exports.js";
+/** @import { ElFinder, Driver } from './exports.js' */
 
 const API_VERSION = "2.161";
 // const API_VERSION = "2.1";
+var VOLUME_ID = 0;
 
 export class Volume {
+	/** @type {string} */
 	get root() { return this.config.root; }
+	/** @type {string} */
 	get driver_name() { return this.config.driver; }
+	/** @type {string} */
 	get id() { return this.config.id; }
+	/** @type {string} */
 	get name() { return this.config.name; }
+	/** @type {boolean} */
 	get isPathBased() { return this.config.isPathBased; }
-	get driver_class() { return this.elfinder.drivers[this.config.driver]; }
+	get driver_class() { return this.elfinder.drivers[this.driver_name]; }
 
 	/** @callback driverCallback @param {Driver} driver */
 	/** @param {driverCallback} cb */
 	async driver(taskid, cb) {
 		
-		var driver = new this.driver_class(this, taskid);
+		var driver = new (this.driver_class)(this, taskid);
 		var initialized = await driver.init();
 		driver.initialized = initialized;
 		if (!initialized) console.error("Driver could not initialize");
@@ -41,17 +45,23 @@ export class Volume {
 
 	/** @param {ElFinder} elfinder @param {*} config */
 	constructor(elfinder, config) {
+		if (typeof config === "string") config = {root:config};
+		config = {
+			id: `v${VOLUME_ID++}_`,
+			name: null,
+			driver: `LocalFileSystem`,
+			permissions: { read:1, write:1, locked:0 },
+			separator: null,
+			isPathBased: undefined,
+			...config,
+		}
+		if (config.root) config.root = config.root.replace(/[\\/]+$/, "");
+		if (!config.name) config.name = config.root ? config.root.split(/[\\/]/).pop() : `Volume ${VOLUME_ID}`;
+		if (elfinder.volumes[config.id]) throw new Error(`Volume with ID '${config.id}' already exists.`);
+
 		/** @type {ElFinder} */
 		this.elfinder = elfinder;
-		this.config = {
-			id: null,
-			name: null,
-			driver: null,
-			permissions: { read:1, write:1, locked:0 },
-			tmbdir: null,
-			separator: null,
-		}
-		Object.assign(this.config, config);
+		this.config = config;
 		
 		var driver = new this.driver_class(this);
 		driver.config();
@@ -61,16 +71,14 @@ export class Volume {
 		if (this.config.isPathBased === undefined) {
 			this.config.isPathBased = !!this.config.separator;
 		}
-		if (!this.config.tmbdir) {
-			this.config.tmbdir = this.elfinder.config.tmbdir;
-		}
-		if (this.config.tmbdir) {
-			fs.mkdirSync(this.config.tmbdir, {recursive:true});
-		}
-		if (!this.config.name) {
-			this.config.name = `${this.config.driver} ${utils.md5(uuid.v4())}`;
-		}
 		this.not_implemented_commands = [...this.elfinder.commands].filter(p=>!this.__proto__[p]);
+	}
+
+	register() {
+		this.elfinder.volumes[this.id] = this;
+	}
+	unregister() {
+		delete this.elfinder.volumes[this.id];
 	}
 
 	// -------------------------------------------------------------
@@ -131,8 +139,9 @@ export class Volume {
 		if (!opts.target) throw new errors.ErrCmdParams();
 		return this.driver(opts.reqid, async (driver)=>{
 			var id = driver.unhash(opts.target).id;
-			var img = await Jimp.read(await utils.streamToBuffer(await driver.read(id)));
-			var dim = img.bitmap.width + "x" + img.bitmap.height;
+			const buffer = await utils.streamToBuffer(await driver.read(id));
+			const { width, height } = await sharp(buffer).metadata();
+			var dim = width + "x" + height;
 			return {
 				dim
 			};
@@ -379,9 +388,10 @@ export class Volume {
 			}
 			if (!target) throw new errors.ErrCmdParams();
 			var {id} = driver.unhash(target);
+			var stat = await driver.stat(id);
+			if (stat.mime !== constants.DIRECTORY) id = stat.parent || "/"
 			var cwd = await driver.file(id);
-			if (!cwd) cwd = await driver.file("/");
-			data.cwd = cwd
+			data.cwd = cwd;
 			data.options = driver.options();
 			var files = [];
 			if (opts.tree) {
@@ -579,17 +589,19 @@ export class Volume {
 		return this.driver(opts.reqid, async (driver)=>{
 			var id = driver.unhash(opts.target).id;
 			var stat = await driver.stat(id);
-			var img = await Jimp.read(await utils.streamToBuffer(await driver.read(id)));
+			const buffer = await utils.streamToBuffer(await driver.read(id));
+			let img = sharp(buffer);
 			if (opts.mode == "resize") {
-				img = img.resize(+opts.width, +opts.height)
+				img = img.resize(+opts.width, +opts.height);
 			} else if (opts.mode == "crop") {
-				img = img.crop(+opts.x, +opts.y, +opts.width, +opts.height);
+				img = img.extract({ left: +opts.x, top: +opts.y, width: +opts.width, height: +opts.height });
 			} else if (opts.mode == "rotate") {
 				img = img.rotate(+opts.degree);
-				if (opts.bg) img = img.background(parseInt(opts.bg.substr(1, 6), 16));
+				if (opts.bg) img = img.flatten({ background: parseInt(opts.bg.substr(1, 6), 16) });
 			}
-			img = img.quality(+opts.quality);
-			await driver.write(stat.parent, stat.name, await img.getBuffer('image/webp', { quality: 80 }));
+			await img.webp({ quality: +opts.quality })
+				.toFile(`${stat.parent}/${stat.name}`);
+			
 			var info = await driver.file(id);
 			info.tmb = 1;
 			return {
@@ -925,7 +937,8 @@ export class Volume {
 		return this.driver(opts.reqid, async (driver)=>{
 			var result = await driver.mount();
 			if (result) {
-				this.elfinder.volumes[this.id] = this;
+				if (typeof result !== "object") result = {};
+				this.register();
 				result.added = [await driver.file("/")];
 				if (result.exit === 'callback') {
 					this.elfinder.callback(result.out);
@@ -939,7 +952,7 @@ export class Volume {
 
 	async unmount() {
 		return this.driver(opts.reqid, async (driver)=>{
-			delete this.elfinder.volumes[this.id];
+			this.unregister();
 			if (await driver.unmount()) {
 				return {
 					removed: [{'hash':driver.hash("/")}]

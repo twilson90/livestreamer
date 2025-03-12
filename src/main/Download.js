@@ -2,14 +2,23 @@ import path from "node:path";
 import os from "node:os";
 import fs from "fs-extra";
 import readline from "node:readline";
-import * as utils from "../core/utils.js";
-import DataNode from "../core/DataNode.js";
-import globals from "./globals.js";
-/** @import InternalSession from "./InternalSession.js" */
+import {globals, utils, DataNodeID, DataNodeID$} from "./exports.js";
+/** @import {InternalSession} from "./exports.js" */
 
 const log_interval = 5 * 1000;
 
-export class Download extends DataNode {
+export class Download$ extends DataNodeID$ {
+    filename = "";
+    dest_path = "";
+    stage = 0;
+    stages = 0;
+    bytes = 0;
+    total = 0;
+    speed = 0;
+}
+
+/** @extends {DataNodeID<Download$>} */
+export class Download extends DataNodeID {
     get filename() { return this.$.filename; };
     get dest_dir() { return this.session.files_dir || globals.app.files_dir; }
     #promise = null;
@@ -19,7 +28,7 @@ export class Download extends DataNode {
     /** @param {string} id */
     /** @param {InternalSession} session */
     constructor(id, session) {
-        super(id);
+        super(id, new Download$());
         this.session = session;
 
         globals.app.downloads[this.id] = this;
@@ -33,11 +42,11 @@ export class Download extends DataNode {
                 this.$.bytes = 0;
                 this.$.total = 0;
                 this.$.speed = 0;
-                var mi = await this.session.get_media_info(this.filename, {force:true});
+                var mi = await this.session.update_media_info(this.filename, {force:true});
 
-                if (mi.probe_method != "youtube-dl") return;
+                if (!mi) return;
                 
-                var name = mi.filename
+                var name = mi.filename;
                 var dest_path = path.join(this.dest_dir, name);
                 this.$.dest_path = dest_path;
                 var exists = await fs.stat(dest_path).catch(utils.noop);

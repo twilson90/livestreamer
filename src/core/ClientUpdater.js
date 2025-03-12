@@ -1,26 +1,20 @@
-import * as utils from "./utils.js";
-/** @import ClientServer from "./ClientServer.js" */
-/** @import ClientBase from "./ClientBase.js" */
-/** @import { ObserverChangeEvent, Observer } from '../utils/Observer.js' */
+import {utils} from "./exports.js";
+/** @import {Client} from "./exports.js" */
 
-/** @template {ClientBase} T */
-export class ClientUpdater {
-    /** @type {ObserverChangeEvent[]} */
+/** @template {Client} T */
+export class ClientUpdater extends utils.EventEmitter {
+    /** @type {utils.ObserverChangeEvent[]} */
     #$_changes = [];
-    /** @type {function():Iterable<T>} */
-    #clients;
     #update_interval;
-    /** @type {Observer} */
+    /** @type {utils.Observer} */
     #observer;
 
-    /** @param {Observer} observer */
-    /** @param {function():Iterable<T>} clients */
-    /** @param {function(ObserverChangeEvent):boolean} filter */
-    constructor(observer, clients, filter) {
+    /** @param {utils.Observer} observer @param {function():Iterable<T>} clients @param {function(utils.ObserverChangeEvent):boolean} filter */
+    constructor(observer, filter) {
+        super();
         if (!filter) filter = (c)=>true;
         this.#observer = observer;
-        this.#clients = clients;
-        var debounced_update = utils.debounce(()=>this.update_clients(), 0);
+        var debounced_update = utils.debounce(()=>this.update(), 0);
         this.#observer.on("change", c=>{
             if (c.subtree) return;
             if (!filter(c)) return;
@@ -29,13 +23,11 @@ export class ClientUpdater {
         });
     }
 
-    update_clients() {
+    update() {
         if (!this.#$_changes.length) return;
         var $ = utils.Observer.flatten_changes(this.#$_changes);
         utils.clear(this.#$_changes);
-        for (var c of this.#clients()) {
-            c.send({$});
-        }
+        this.emit("update", $);
     }
 
     destroy() {

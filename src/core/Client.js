@@ -2,28 +2,40 @@ import http from "node:http";
 import WebSocket from "ws";
 import fs from "fs-extra";
 import path from "node:path";
-import * as utils from "./utils.js";
-import globals from "./globals.js";
-import Logger from "./Logger.js";
-import DataNode from "./DataNode.js";
-/** @import { ClientServer } from './types.d.ts' */
+import {globals, utils, Logger, DataNodeID, DataNodeID$} from "./exports.js";
+/** @import { ClientServer } from './exports.js' */
 
-export class ClientBase extends DataNode {
+export class Client$ extends DataNodeID$ {
+    ip = "";
+    ip_hash = "";
+    init_ts = 0;
+    client_id = "";
+    ts = 0;
+    username = "";
+    is_admin = false;
+}
+
+/** @template {Client$} T @extends {DataNodeID<T>} */
+export class Client extends DataNodeID {
 
     get ip() { return this.$.ip; }
     get ip_hash() { return this.$.ip_hash; }
     get username() { return this.$.username; }
     get is_admin() { return !!this.$.is_admin; }
-    #initialized = false;
 
-    /** @param {ClientServer<ClientBase>} server @param {http.IncomingMessage} req @param {WebSocket} ws */
-    constructor(server, ws, req, userdata) {
-        super();
+    /** @param {T} $ */
+    constructor($) {
+        super(null, $);
+    }
 
+    _init() { throw new Error("not implemented"); }
+
+    /** @param {ClientServer<Client>} server @param {http.IncomingMessage} req @param {WebSocket} ws */
+    async init(server, ws, req) {
         server.clients[this.id] = this;
-        
         this.server = server;
         this.ws = ws;
+        
         this.request = req;
         this.url = new URL("http://localhost"+req.url);
         
@@ -32,25 +44,15 @@ export class ClientBase extends DataNode {
         this.logger = new Logger(`client-${this.id}`);
         this.logger.on("log", (log)=>server.logger.log(log));
         
-        Object.assign(this.$, {
-            ip: ip,
-            ip_hash: utils.md5(ip),
-            init_ts: Date.now(),
-            client_id: this.id,
-            ts: Date.now(),
-        });
-        if (userdata && typeof userdata === "object") {
-            Object.assign(this.$, userdata);
-        }
+        this.$.ip = ip;
+        this.$.ip_hash = utils.md5(ip);
+        this.$.init_ts = Date.now();
+        this.$.client_id = this.id;
+        this.$.ts = Date.now();
+
         this.logger.info(`${JSON.stringify(this.$)} connected`);
         
         this.client_history_path = path.join(server.clients_dir, `${this.ip_hash}.json`);
-    }
-
-    _init() { throw new Error("not implemented"); }
-
-    async init() {
-        await utils.append_line_truncate(this.client_history_path, JSON.stringify(this.$), 32);
         this.send({
             $: {
                 client_id: this.id,
@@ -58,6 +60,7 @@ export class ClientBase extends DataNode {
             }
         });
         this._init();
+        await utils.append_line_truncate(this.client_history_path, JSON.stringify(this.$), 32);
     }
 
     async get_client_info(id) {
@@ -97,14 +100,14 @@ export class ClientBase extends DataNode {
             else if (request.delete) result = utils.ref.deleteProperty(this, request.delete);
             else error = `Invalid request: ${JSON.stringify(request)}`;
         };
-        if (globals.core.debug) {
+        if (globals.app.debug) {
             run();
         } else {
             try { run(); } catch (e) { error = e; }
         }
         result = await Promise.resolve(result).catch(e=>{
             error = e;
-            if (globals.core.debug) throw e;
+            if (globals.app.debug) throw e;
         });
         result = {
             __id__: request_id,
@@ -115,7 +118,6 @@ export class ClientBase extends DataNode {
             result.error = { message: error.toString() }
         }
         this.send(result);
-        this.server.update_clients();
     }
 
     _onerror(error){
@@ -129,8 +131,9 @@ export class ClientBase extends DataNode {
 
     destroy() {
         super.destroy();
+        delete this.server.clients[this.id];
         this.ws.close();
     }
 }
 
-export default ClientBase;
+export default Client;

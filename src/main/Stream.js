@@ -1,20 +1,26 @@
 import fs from "fs-extra";
 import path from "node:path";
-import * as utils from "../core/utils.js";
-import DataNode from "../core/DataNode.js";
-import FFMPEGWrapper from "../core/FFMPEGWrapper.js";
-import Logger from "../core/Logger.js";
-import globals from "./globals.js";
-import SessionTypes from "./SessionTypes.js";
-import StreamTarget from "./StreamTarget.js";
-import MPVSessionWrapper from "./MPVSessionWrapper.js";
-import * as constants from "../core/constants.js";
-import StopStartStateMachine from "../core/StopStartStateMachine.js";
-/** @import { SessionBase, InternalSession, ExternalSession } from './types.d.ts' */
+import {globals, utils, constants, FFMPEGWrapper, Logger, SessionTypes, StreamTarget, MPVSessionWrapper, StopStartStateMachine, StopStartStateMachine$} from "./exports.js";
+/** @import { Session, InternalSession, ExternalSession } from './exports.js' */
 
 const WARNING_MPV_LOG_SIZE = 1 * 1024 * 1024 * 1024;
 const MAX_MPV_LOG_SIZE = 8 * 1024 * 1024 * 1024;
 
+export class Stream$ extends StopStartStateMachine$ {
+    mpv = {};
+    targets = {};
+    metrics = {};
+    stream_targets = {};
+    bitrate = 0;
+    scheduled = false;
+    is_encode = false;
+    internal_path = "";
+    output_url = "";
+    /** @type {string | undefined} */
+    title;
+}
+
+/** @extends {StopStartStateMachine<Stream$>} */
 export class Stream extends StopStartStateMachine {
     /** @return {any[]} */
     get is_gui() { return !!this.$.targets["gui"]; }
@@ -22,11 +28,12 @@ export class Stream extends StopStartStateMachine {
     get is_only_gui() { return this.is_single_target && this.is_gui; }
     get is_encode() { return !this.is_only_gui; }
     get is_realtime() { return !(this.is_single_target && this.$.targets["file"] && !this.$.targets["file"]["re"]); }
+    get is_test() { return !!this.$.test; }
     get title() { return this.$.title; }
     get is_running() { return this.$.state === constants.State.STARTED; }
     get fps() { return isNaN(+this.$.frame_rate) ? 30 : +this.$.frame_rate; }
 
-    /** @type {SessionBase} */
+    /** @type {Session} */
     session;
     /** @type {MPVSessionWrapper} */
     mpv;
@@ -38,9 +45,9 @@ export class Stream extends StopStartStateMachine {
     #ticks = 0;
     #tick_interval;
 
-    /** @param {SessionBase} session */
+    /** @param {Session} session */
     constructor(session) {
-        super();
+        super(null, new Stream$());
         this.logger = new Logger("stream");
         this.logger.on("log", (log)=>(this.session||session).logger.log(log))
         this.attach(session);
@@ -62,7 +69,7 @@ export class Stream extends StopStartStateMachine {
         this.$.scheduled = !!this.session.$.schedule_start_time;
         this.$.is_encode = this.is_encode;
 
-        if (this.$.test) {
+        if (this.is_test) {
             if (globals.app.conf["main.test_stream_low_settings"]) {
                 this.$.audio_bitrate = "128";
                 this.$.video_bitrate = "2000";
@@ -222,18 +229,17 @@ export class Stream extends StopStartStateMachine {
             this.mpv = new MPVSessionWrapper(this, {
                 width,
                 height,
-                cwd: globals.app.tmp_dir,
             });
             this.mpv.logger.on("log", (log)=>{
                 this.logger.log(log);
             });
-            this.$.mpv = this.mpv.$;
 
             this.mpv_log_file = path.join(globals.app.logs_dir, `mpv-${utils.date_to_string(Date.now())}.log`);
 
             var mpv_args = [];
             
             mpv_args.push(
+                "--no-config",
                 `--demuxer-max-bytes=${32*1024*1024}`,
                 `--demuxer-readahead-secs=5`,
                 "--sub-font-size=66",
@@ -270,7 +276,6 @@ export class Stream extends StopStartStateMachine {
                     `--audio-channels=stereo`,
                     // `--sub-ass-vsfilter-aspect-compat=no`, // fixes fucked up sub scaling on ass files for anamorphic vids (vids with embedded aspect ratio)
                     `--sub-fix-timing=yes`,
-                    "--no-config",
                     "--framedrop=no",
                     `--o=-`,
                     "--ofopts-add=strict=+experimental",
@@ -392,14 +397,14 @@ export class Stream extends StopStartStateMachine {
         }
 
         if (this.ffmpeg && this.mpv) {
-            this.mpv.process.stdout.pipe(this.ffmpeg.process.stdin);
+            this.mpv.mpv.process.stdout.pipe(this.ffmpeg.process.stdin);
             this.ffmpeg.process.stdin.on("error", (e)=>{}); // needed to swallow 'Error: write EOF' when unpiping!!!
-            this.mpv.on("before-quit", ()=>{
-                this.mpv.process.stdout.unpipe(this.ffmpeg.process.stdin);
+            this.mpv.mpv.on("before-quit", ()=>{
+                this.mpv.mpv.process.stdout.unpipe(this.ffmpeg.process.stdin);
             })
         }
 
-        this.mpv.on("quit", async ()=>{
+        this.mpv.mpv.on("quit", async ()=>{
             if (this.is_only_gui) await this.stop("quit");
             else this._handle_end();
         });
@@ -464,7 +469,7 @@ export class Stream extends StopStartStateMachine {
         if (this.mpv) {
             this.logger.info("Terminating MPV...");
             let t0 = Date.now();
-            await this.mpv.quit();
+            await this.mpv.mpv.quit();
             let t1 = Date.now();
             this.logger.info(`MPV terminated in ${(t1-t0)/1000} secs.`);
         }
@@ -484,7 +489,7 @@ export class Stream extends StopStartStateMachine {
         d.data[d.max++] = [x, y];
     }
     
-    /** @param {SessionBase} session */
+    /** @param {Session} session */
     attach(session) {
         session = (typeof session === "string") ? globals.app.sessions[session] : session;
         let last_session = this.session;
@@ -519,7 +524,7 @@ export class Stream extends StopStartStateMachine {
         if (this.session.type === SessionTypes.INTERNAL && this.state === constants.State.STARTED) {
             /** @type {InternalSession} */
             let session = this.session;
-            await session.playlist_play(session.$.playlist_id, { start: session.$.time });
+            await session.playlist_play(session.$.playlist_id, { start: session.$.time_pos });
         }
     }
 

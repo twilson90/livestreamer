@@ -1,2 +1,2 @@
-import FileManagerApp from "./FileManagerApp.js";
+import {FileManagerApp} from "./exports.js";
 export default new FileManagerApp();

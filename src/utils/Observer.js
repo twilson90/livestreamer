@@ -26,14 +26,16 @@ export class ObserverChangeEvent {
 }
 
 /** @typedef {{change:ObserverChangeEvent, changes:ObserverChangeEvent}} EventMap */
-/** @extends {EventEmitter<EventMap>} */
-export default class Observer extends EventEmitter {
+/** @template T @extends {EventEmitter<EventMap>} */
+export class Observer extends EventEmitter {
     /** @type {Map<string, Observer>} */
     #parents = new Map();
     #$;
     #opts;
+    /** @type {T} */
     get $(){ return this.#$; }
 
+    /** @param {T} target @param {any} opts */
     constructor(target, opts) {
         super();
 
@@ -240,4 +242,4 @@ export default class Observer extends EventEmitter {
     }
 }
 
-export { Observer }
+export default Observer;

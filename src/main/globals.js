@@ -1,4 +1,4 @@
-/** @import { MainApp } from './types.d.ts' */
+/** @import { MainApp } from './exports.js' */
 export default {
     /** @type {MainApp} */
     app: undefined

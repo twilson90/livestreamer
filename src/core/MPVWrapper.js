@@ -5,9 +5,8 @@ import path from "node:path";
 import fs from "fs-extra";
 import readline from "node:readline";
 import child_process from "node:child_process";
-import globals from "./globals.js";
-import * as utils from "./utils.js";
-import Logger from "./Logger.js";
+import {globals, utils, Logger} from "./exports.js";
+import which from "which";
 
 const TIMEOUT = 10 * 1000;
 const default_observes = [
@@ -28,6 +27,7 @@ export class MPVWrapper extends events.EventEmitter {
     #quitting = false;
     #closed = false;
     #observed_props;
+    #loading = false;
     /** @type {import("child_process").ChildProcessWithoutNullStreams} */
     #process;
     /** @type {net.Socket} */
@@ -38,6 +38,7 @@ export class MPVWrapper extends events.EventEmitter {
 
     get observed_props() { return this.#observed_props; }
     get process() { return this.#process; }
+    get loading() { return this.#loading; }
     get quitting() { return this.#quitting; }
     get cwd() { return path.resolve(this.options.cwd); }
 
@@ -45,13 +46,17 @@ export class MPVWrapper extends events.EventEmitter {
         super();
 
         this.options = options = {
-            executable: globals.core.conf["core.mpv_executable"],
+            executable: globals.app.conf["core.mpv_executable"],
             cwd: ".",
             ipc: true,
             ...options,
         };
+
+        which(options.executable).then(p=>{
+            console.log(p);
+        });
         
-        this.socket_path = globals.core.get_socket_path(`mpv-${utils.uuid4()}`);
+        this.socket_path = globals.app.get_socket_path(`mpv-${utils.uuid4()}`);
 
         this.logger = new Logger("mpv");
     }
@@ -87,7 +92,7 @@ export class MPVWrapper extends events.EventEmitter {
             console.error(e);
         });
 
-        globals.core.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
+        globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
         
         let stderr_listener = readline.createInterface(this.#process.stderr);
         let stdout_listener = readline.createInterface(this.#process.stdout);
@@ -324,8 +329,9 @@ export class MPVWrapper extends events.EventEmitter {
         this.off("message", msg_handler);
     }
 
-    async loadfile(source, flags = "replace", options = {}) {
+    async loadfile(source, flags = "replace", index = -1, options = {}) {
         var params = [source, flags];
+        if (index != null) params.push(index);
         if (options) params.push(options);
         var prom = this.command("loadfile", ...params);
         var item;
@@ -396,6 +402,7 @@ export class MPVWrapper extends events.EventEmitter {
     async on_load_promise(promise) {
         var handler;
         let started = false;
+        this.#loading = true;
         return new Promise((resolve, reject)=>{
             handler = (msg)=>{
                 // console.log(msg);
@@ -403,6 +410,7 @@ export class MPVWrapper extends events.EventEmitter {
                     if (msg.event === "start-file") {
                         started = true;
                     } else if (msg.event === "file-loaded" && started) {
+                        this.#loading = false;
                         resolve();
                     } else if (msg.event === "end-file" && started) {
                         reject("File immediately ended.");

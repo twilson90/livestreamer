@@ -265,7 +265,6 @@ class VideoPlayer {
         // var MouseTimeDisplay_constructor = MouseTimeDisplay.prototype.constructor;
         
         // MouseTimeDisplay.prototype.constructor = function(...args) {
-        //   debugger;
         //   var ret = MouseTimeDisplay_constructor.apply(this, args);
         //   this.el_.setAttribute('draggable', false)
         //   this.el_.ondragstart = ()=>false;

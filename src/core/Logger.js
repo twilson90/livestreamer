@@ -1,8 +1,7 @@
 import events from "node:events";
 import fs from "fs-extra";
 import path from "node:path";
-import * as utils from "./utils.js";
-import globals from "./globals.js";
+import {globals, utils} from "./exports.js";
 
 /** @typedef {{file:boolean, stdout:boolean, prefix:string}} Settings */
 
@@ -35,7 +34,7 @@ export class Log {
 					try { m = JSON.stringify(m) } catch {};
 				}
 				if (typeof m !== "string") m = String(m);
-				if (m.length > globals.core.conf["core.logs_max_msg_length"]) m = m.substr(0, globals.core.conf["core.logs_max_msg_length"]);
+				if (m.length > globals.app.conf["core.logs_max_msg_length"]) m = m.substr(0, globals.app.conf["core.logs_max_msg_length"]);
 				return m;
 			}).join(" ");
 		}
@@ -141,9 +140,9 @@ export class Logger extends events.EventEmitter {
 	
 	/** @param {Log} log */
 	log_to_file(log) {
-		if (!globals.core.logs_dir) return;
+		if (!globals.app.logs_dir) return;
 		if (!this.#settings.file || !log.level) return;
-		let filename = path.join(globals.core.logs_dir, `${this.name}-${utils.date_to_string(undefined, {time:false})}.log`);
+		let filename = path.join(globals.app.logs_dir, `${this.name}-${utils.date_to_string(undefined, {time:false})}.log`);
 		if (this.#filename != filename) {
 			this.#end();
 			this.#filename = filename;
@@ -167,8 +166,8 @@ export class Logger extends events.EventEmitter {
 	}
 
 	/** @param {function(Log):Log} cb */
-	register_changes(cb) {
-		let $ = new utils.Observer().$;
+	register_changes($, cb) {
+		/** @type {Observer<Log>} */
 		let logs = {};
 		let _id = 0;
 		this.on("log", (log)=>{
@@ -178,11 +177,10 @@ export class Logger extends events.EventEmitter {
 			$[id] = log;
 			if (!logs[log.level]) logs[log.level] = [];
 			logs[log.level].push(id);
-			if (logs[log.level].length > globals.core.conf["core.logs_max_length"]) {
+			if (logs[log.level].length > globals.app.conf["core.logs_max_length"]) {
 				delete $[logs[log.level].shift()];
 			}
 		});
-		return $;
 	}
 }
 

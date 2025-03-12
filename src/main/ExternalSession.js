@@ -1,10 +1,11 @@
-import * as utils from "../core/utils.js";
-import SessionBase from "./SessionBase.js";
-import SessionBaseProps from "./SessionBaseProps.js";
-import SessionTypes from "./SessionTypes.js";
-import globals from './globals.js';
+import {globals, utils, SessionTypes, Session, SessionProps, Session$} from "./exports.js";
 
-export class ExternalSession extends SessionBase {
+class ExternalSession$ extends Session$ {
+    client_ip = "";
+}
+
+/** @extends {Session<ExternalSession$>} */
+export class ExternalSession extends Session {
     nms_session;
     get stream_key() { return this.nms_session ? this.nms_session.publishStreamPath.split("/")[2] : null; }
     get appname() { return this.nms_session ? this.nms_session.appname : null; }
@@ -15,10 +16,9 @@ export class ExternalSession extends SessionBase {
         var name = nms_session.publishArgs["name"] || `[${ip}]`;
         var id = nms_session.publishStreamPath.split("/").pop();
 
-        super(SessionTypes.EXTERNAL, utils.get_defaults(SessionBaseProps), id, name);
+        super(SessionTypes.EXTERNAL, new ExternalSession$(), utils.get_defaults(SessionProps), id, name);
 
         this.$.client_ip = ip;
-        // this.$.nms_session_id = nms_session.id;
 
         this.nms_session = nms_session;
         

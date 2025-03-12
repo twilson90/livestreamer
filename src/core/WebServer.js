@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import WebSocket, { WebSocketServer } from "ws";
-import globals from "./globals.js";
+import {globals} from "./exports.js";
 
 /** @typedef {{http_port:Number, https_port:Number, username:string, password:string, ssl_key:string, ssl_cert:string, socket_path:string, ws:WebSocket.ServerOptions<typeof WebSocket, typeof http.IncomingMessage>}} Config */
 export class WebServer {
@@ -39,22 +39,22 @@ export class WebServer {
         /** @type {https.ServerOptions<typeof http.IncomingMessage, typeof http.ServerResponse>} */
         var http_opts = {};
 
-        this.socket_path = globals.core.get_socket_path(`${globals.core.name}_http`);
-        globals.core.logger.info(`Starting HTTP server on socket ${this.socket_path}...`);
-        globals.core.logger.info(globals.core.get_urls().http);
-        // console.info(globals.core.get_urls(globals.core.name).url);
+        this.socket_path = globals.app.get_socket_path(`${globals.app.name}_http`);
+        globals.app.logger.info(`Starting HTTP server on socket ${this.socket_path}...`);
+        globals.app.logger.info(globals.app.get_urls().http);
+        // console.info(globals.app.get_urls(globals.app.name).url);
         
         this.server = http.createServer(http_opts, async (req, res)=>{
             // accesslog(req, res, undefined, (l)=>core.logger.debug(l));
             if (opts.auth) {
                 var path = new URL(req.url, `http://localhost`).pathname;
                 if (path.match(/^\/logout$/)) {
-                    await globals.core.unauthorise(req, res);
+                    await globals.app.unauthorise(req, res);
                     res.write('Logged out');
                     res.end();
                     return;
                 } else if (path.match(/^\/$/) || path.match(/^\/index.html$/)) {
-                    let auth_res = await globals.core.authorise(req, res);
+                    let auth_res = await globals.app.authorise(req, res);
                     if (!auth_res) {
                         res.setHeader('WWW-Authenticate', 'Basic realm="Authorized"');
                         res.statusCode = 401;
@@ -69,7 +69,7 @@ export class WebServer {
             var allow_origin = opts.allow_origin;
             // var allow_origin = [...new Set([`${url.protocol}//${url.hostname}:*`, `${url.protocol}//${core.hostname}:*`])].join(" ");
             // res.setHeader('Access-Control-Allow-Origin', allow_origin);
-            res.setHeader('Access-Control-Allow-Origin', globals.core.get_urls().domain);
+            res.setHeader('Access-Control-Allow-Origin', globals.app.get_urls().domain);
             res.setHeader('Access-Control-Allow-Credentials', true);
             res.setHeader('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', 'Origin, Accept, X-Requested-With, Content-Type, Authorization, Access-Control-Allow-Headers, Access-Control-Request-Method, Access-Control-Request-Headers');
@@ -95,7 +95,7 @@ export class WebServer {
             });
             this.wss = new WebSocketServer(opts.ws);
             this.wss.on("error", (error)=>{
-                globals.core.logger.error(error);
+                globals.app.logger.error(error);
             });
         }
         var sock_id = 0;

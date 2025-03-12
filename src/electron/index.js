@@ -2,7 +2,7 @@ import squirrel from 'electron-squirrel-startup';
 import electron from "electron";
 import path from "node:path";
 import net from "node:net";
-import globals from "../core/globals.js";
+import {globals} from "../core/exports.js";
 
 const dirname = import.meta.dirname;
 
@@ -62,7 +62,7 @@ if (electron.app) {
 
     electron.app.once('before-quit', async (e)=>{
         e.preventDefault();
-        await globals.core.shutdown();
+        await globals.app.shutdown();
         console.log("electron.app.quit");
         electron.app.quit();
     });
@@ -111,17 +111,17 @@ if (electron.app) {
         // session.protocol.handle("ws", websocket_handler);
         // session.protocol.handle("wss", websocket_handler);
         
-        globals.core.ready.then(()=>{
+        globals.app.ready.then(()=>{
             // const session = electron.session.defaultSession;
             // session.protocol.handle("http", async (req)=>{
             //     var res = new Response();
-            //     await globals.core.web_request_listener(req, res);
+            //     await globals.app.web_request_listener(req, res);
             //     return res;
             // });
             // /** @param {Request} req */
             // var websocket_handler = async (req)=>{
             //     var res = new Response();
-            //     await globals.core.ws_upgrade_handler(req, res);
+            //     await globals.app.ws_upgrade_handler(req, res);
             //     return res;
             // };
             // session.protocol.handle("ws", websocket_handler);
@@ -160,7 +160,7 @@ if (electron.app) {
                         label:'Save', 
                         accelerator: 'CommandOrControl+S',
                         click: ()=>{
-                            globals.core.ipc.send("main", "main.save-sessions");
+                            globals.app.ipc.send("main", "main.save-sessions");
                         }
                     },
                     { type: 'separator' },
@@ -191,7 +191,7 @@ if (electron.app) {
                 submenu: [
                     {
                         label:'Open Installation Folder', 
-                        click: ()=>electron.shell.openPath(globals.core.appdata_dir),
+                        click: ()=>electron.shell.openPath(globals.app.appdata_dir),
                     },
                 ],
             },
@@ -222,9 +222,9 @@ if (electron.app) {
                     // nativeWindowOpen: true,
                 }
             });
-            await globals.core.ready;
-            if (globals.core.debug) window.webContents.openDevTools();
-            window.loadURL(globals.core.get_urls("main").url);
+            await globals.app.ready;
+            if (globals.app.debug) window.webContents.openDevTools();
+            window.loadURL(globals.app.get_urls("main").url);
         }
     });
 }

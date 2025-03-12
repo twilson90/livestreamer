@@ -1,5 +1,4 @@
 import path from "node:path";
-
 export default {
 	"core.hostname": "livestreamer.localhost",
 	"core.appdata_dir": undefined,

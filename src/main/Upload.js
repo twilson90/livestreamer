@@ -1,12 +1,21 @@
 import fs from "fs-extra";
 import path from "node:path";
-import * as utils from "../core/utils.js";
-import DataNode from "../core/DataNode.js";
-import globals from "./globals.js";
+import {globals, utils, DataNodeID, DataNodeID$} from "./exports.js";
 
 const log_interval = 1 * 1000;
 
-export class Upload extends DataNode {
+export class Upload$ extends DataNodeID$ {
+    bytes = 0;
+    total = 0;
+    speed = 0;
+    dest_path = "";
+    status = 0;
+    chunks = 0;
+    bytes = 0;
+}
+
+/** @extends {DataNodeID<Upload$>} */
+export class Upload extends DataNodeID {
     #last_log = 0;
     segment_tree = new utils.RangeTree();
     /** @type {Set<import("fs").WriteStream>} */
@@ -35,7 +44,7 @@ export class Upload extends DataNode {
     }
 
     constructor(id, dest_path, filesize, mtime=0) {
-        super(id);
+        super(id, new Upload());
 
         this.$.bytes = 0;
         this.$.total = filesize;
@@ -43,6 +52,7 @@ export class Upload extends DataNode {
         this.$.dest_path = dest_path;
         this.$.status = Upload.Status.STARTED;
         this.$.chunks = 0;
+        
         this.mtime = mtime;
 
         var dir = path.dirname(dest_path);

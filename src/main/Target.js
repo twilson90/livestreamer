@@ -1,9 +1,7 @@
 import fs from "fs-extra";
 import path from "node:path";
-import DataNode from "../core/DataNode.js";
-import * as utils from "../core/utils.js";
-import globals from "./globals.js";
-/** @import { StreamTarget } from './types.d.ts' */
+import {globals, utils, DataNodeID, DataNodeID$, AccessControl} from "./exports.js";
+/** @import { StreamTarget } from './exports.js' */
 
 // stream_targets
 // streams
@@ -18,7 +16,21 @@ import globals from "./globals.js";
 // limit
 // locked
 
-export class Target extends DataNode {
+export class Target$ extends DataNodeID$ {
+    name = "";
+    description = "";
+    rtmp_host = "";
+    rtmp_key = "";
+    title = "";
+    url = "";
+    access_control = new AccessControl();
+    ts = 0;
+    locked = false;
+    limit = 1;
+}
+
+/** @extends {DataNodeID<Target$>} */
+export class Target extends DataNodeID {
     #data;
     get stream_targets() { return Object.values(globals.app.streams).map(s=>s.stream_targets[this.id]).filter(st=>st); }
     get streams() { return this.stream_targets.map(st=>st.stream); }
@@ -40,7 +52,7 @@ export class Target extends DataNode {
             limit: 1,
             ...data
         };
-        super(data.id);
+        super(data.id, new Target$());
         this.#data = data;
         
         globals.app.targets[this.id] = this;
@@ -56,8 +68,7 @@ export class Target extends DataNode {
         delete data.stream_id;
         Object.assign(this.$, data);
         if (!this.$.locked || !this.$.ts) this.$.ts = Date.now();
-        if (!this.$.access_control) this.$.access_control = {};
-        globals.app.fix_access_control(this.$.access_control);
+        if (!this.$.access_control) this.$.access_control = new AccessControl();
     }
     
     /** @param {Target} data */

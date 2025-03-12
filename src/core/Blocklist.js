@@ -1,9 +1,12 @@
 import fs from "fs-extra";
 import chokidar from "chokidar";
-import * as utils from "./utils.js";
-import DataNode from "./DataNode.js";
+import {DataNodeID, DataNodeID$, utils} from "./exports.js";
 
-export class Blocklist extends DataNode {
+/** @type {DataNodeID$ & Record<PropertyKey,number>}  */
+export class Blocklist$ extends DataNodeID$ {}
+
+/** @extends {DataNodeID<Blocklist$>} */
+export class Blocklist extends DataNodeID {
     #path;
     #expire_timeouts = {};
     #loading = false;
@@ -11,7 +14,7 @@ export class Blocklist extends DataNode {
     #ignore_changes = false;
 
     constructor(path) {
-        super();
+        super(null, new Blocklist$());
         this.#path = path;
         if (!fs.existsSync(this.#path)) this.save();
         this.observer.on("change", (c)=>{

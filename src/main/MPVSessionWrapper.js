@@ -1,12 +1,8 @@
 import fs from "fs-extra";
 import path from "node:path";
-import * as utils from "../core/utils.js";
-import MPVWrapper from "../core/MPVWrapper.js";
-import globals from "./globals.js";
-import InternalSessionProps from './InternalSessionProps.js';
 import { stringify } from "node:querystring";
-import { MPVEDL, MPVEDLEntry, MAX_EDL_REPEATS } from "./MPVEDL.js";
-/** @import { InternalSession, Stream } from './types' */
+import {globals, utils, MPVWrapper, InternalSessionProps, MPVEDL, MPVEDLEntry, MAX_EDL_REPEATS, DataNode, DataNode$, Logger} from "./exports.js";
+/** @import { InternalSession, Stream, PlaylistItem$, MediaInfo } from './exports.js' */
 
 // const FORCE_NEXT_ITEM_TIMEOUT = 5 * 1000;
 const FORCE_NEXT_ITEM_TIMEOUT = Number.MAX_SAFE_INTEGER;
@@ -14,6 +10,8 @@ const FORCE_ABORT_TIMEOUT = 10 * 1000;
 const DEFAULT_FPS = 30;
 const TICK_RATE = 30;
 const EDL_TRACK_TYPES = ["video", "audio", "sub"];
+const DEFAULT_WIDTH = 1280;
+const DEFAULT_HEIGHT = 720;
 
 const ALBUMART_FILENAMES = Object.fromEntries([
     "albumart", "album", "cover", "front", "albumartsmall", "folder", ".folder", "thumb",
@@ -35,7 +33,8 @@ let IGNORE_MPV_REALTIME_CHANGES = {
     "time-pos": 1,
     "output-frames": 1,
     "output-pts": 1,
-    "volume": 1
+    "volume": 1,
+    "audio-pts": 1,
 };
 
 const STREAM_VOLUME_NORMALIZATION_CONFIGS = {
@@ -44,7 +43,13 @@ const STREAM_VOLUME_NORMALIZATION_CONFIGS = {
     "loudnorm": `loudnorm=dual_mono=true`
 };
 
-export class MPVSessionWrapper extends MPVWrapper {
+export class MPVSessionWrapper$ extends DataNode$ {
+    context = new MPVContext$();
+    special_seeking = false;
+}
+
+/** @extends {DataNode<MPVSessionWrapper$>} */
+export class MPVSessionWrapper extends DataNode {
     #load_id = 0;
     #mpv_last_speed_check = Date.now();
     #mpv_last_pts = 0;
@@ -54,56 +59,44 @@ export class MPVSessionWrapper extends MPVWrapper {
     #current_props_override = {};
     #mpv_expected_props = {};
     #mpv_load_props = {};
+    #props = {};
+    #time_progressed = 0;
+    #seeks = 0;
+    #loads = 0;
+    /** @type {Stream} */
+    #stream;
+
     allowed_mpv_args = {};
     allowed_mpv_props = {};
-    #props = {};
     width = 0;
     height = 0;
-    observer = new utils.Observer();
-    #time_progressed = 0;
-
-    get $() { return this.observer.$; }
-    get time_pos() { return (this.$.special_start_time + (this.#props["time-pos"] || 0)) || 0; }
-    
+    context = new MPVContext(this);
+    get stream() { return this.#stream; }
     /** @type {InternalSession} */
-    get session() { return this.stream.session; }
-    get is_encoding() { return this.stream.is_encode; }
+    get session() { return this.#stream.session; }
+    get is_encoding() { return this.#stream.is_encode; }
     
-    /** @param {Stream} stream */
+    /** @param {Stream} stream @param {{width:number, height:number}} opts */
     constructor(stream, opts) {
-        super({
-            width: 1280,
-            height: 720,
+        opts = {
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
             ...opts
-        });
+        };
         
-        this.width = this.options.width;
-        this.height = this.options.height;
+        super(new MPVSessionWrapper$());
 
-        this.stream = stream;
-        
-        Object.assign(this.$, {
-            playing: false,
-            seeks: 0,
-            seeking: false,
-            loaded: true,
-            preloaded: true,
-            loads: 0,
-            time: 0,
-            duration: 0,
-            is_special: false,
-            special_start_time: 0,
-            seekable: false, 
-            seekable_ranges: [],
-            loaded_item: null,
-            props: {}
+        this.#stream = stream;
+        this.width = opts.width;
+        this.height = opts.height;
+        this.mpv = new MPVWrapper({
+            cwd: globals.app.tmp_dir,
         });
-
-        this.observer.on("change", c=>{
-            if (c.path[0] === "time") {
-                this.session.$.time = c.new_value;
-            }
+        this.logger = new Logger("mpv");
+        this.mpv.logger.on("log", (log)=>{
+            this.logger.log({...log, prefix: log.prefix.slice(1)});
         });
+        stream.$.mpv = this.$;
     }
 
     async start(mpv_args) {
@@ -136,7 +129,8 @@ export class MPVSessionWrapper extends MPVWrapper {
             return filtered;
         })();
         
-        await super.start(mpv_args).catch((e)=>{
+
+        await this.mpv.start(mpv_args).catch((e)=>{
             this.logger.error(e);
         });
 
@@ -165,6 +159,7 @@ export class MPVSessionWrapper extends MPVWrapper {
             ["eof-reached"]: false,
             ["cache-buffering-state"]: 0,
             ["paused-for-cache"]: 0,
+            ["audio-pts"]: 0,
             // these are new props that I added...
             ["output-pts"]: 0,
             ["output-frames"]: 0,
@@ -172,18 +167,18 @@ export class MPVSessionWrapper extends MPVWrapper {
 
         for (let k in mpv_props) {
             this.#props[k] = mpv_props[k];
-            this.$.props[k] = mpv_props[k];
-            this.observe_property(k);
+            this.$.context.props[k] = mpv_props[k];
+            this.mpv.observe_property(k);
         }
         
         let log_history = {};
 
-        this.on("before-quit", ()=>{
+        this.mpv.on("before-quit", ()=>{
             clearInterval(this.#tick_interval);
             clearInterval(this.#long_tick_interval);
         });
         
-        this.on("log-message", (log)=>{
+        this.mpv.on("log-message", (log)=>{
             // this.logger.debug(log.text);
             let text = log.text.trim();
             if (log.level == "warn") {
@@ -200,12 +195,12 @@ export class MPVSessionWrapper extends MPVWrapper {
             }
         })
         
-        this.on("start-file", (e)=>{
+        this.mpv.on("start-file", (e)=>{
         });
 
         let eof_reason;
         let valid_eof_reasons = new Set(["eof","error","unknown"]);
-        this.on("end-file", (e)=>{
+        this.mpv.on("end-file", (e)=>{
             eof_reason = e.reason;
             var fn1 = this.#props["path"]
             var fn2 = this.#props["stream-open-filename"]
@@ -215,23 +210,23 @@ export class MPVSessionWrapper extends MPVWrapper {
             }
         });
         
-        this.on("file-loaded", async (e)=>{
-            this.$.loaded = true;
-            this.$.loads++;
+        this.mpv.on("file-loaded", async (e)=>{
+            this.#loads++;
             Object.assign(this.#mpv_expected_props, this.#mpv_load_props);
         });
 
-        this.on("seek", (e)=>{
-            this.$.playing = false;
-            this.$.seeking = true;
+        this.mpv.on("seek", (e)=>{
+            this.$.context.playing = false;
+            this.$.context.seeking = true;
             this.update_time_pos();
         });
 
-        this.on("playback-restart", (e)=>{
-            this.$.playing = true;
-            this.$.seeks++;
-            this.$.seeking = false;
-            this.$.user_seeking = false;
+        this.mpv.on("playback-restart", (e)=>{
+            this.#seeks++;
+            this.$.context.loaded = true;
+            this.$.context.playing = true;
+            this.$.context.seeking = false;
+            this.$.special_seeking = false;
             this.update_time_pos();
         });
 
@@ -242,7 +237,7 @@ export class MPVSessionWrapper extends MPVWrapper {
         }); */
         var last_time_pos_load_id;
 
-        this.on("property-change", async (e)=>{
+        this.mpv.on("property-change", async (e)=>{
             let {name, data} = e;
             if (name === "eof-reached") {
                 if (data) {
@@ -256,16 +251,23 @@ export class MPVSessionWrapper extends MPVWrapper {
                 this.#mpv_expected_props[name] = data;
             }
             if (!(name in IGNORE_MPV_REALTIME_CHANGES)) {
-                this.$.props[name] = data;
+                this.$.context.props[name] = data;
             }
             if (name === "time-pos") {
-                if (this.$.seeking) this.update_time_pos();
+                // if (this.$.context.seeking) this.update_time_pos();
                 if (this.#load_id == last_time_pos_load_id) {
                     var delta = Math.max(0, (data - this.#props["time-pos"]) || 0);
                     this.#time_progressed += delta;
                 }
                 last_time_pos_load_id = this.#load_id;
             }
+            /* if (name === "audio-pts") {
+                console.log(data);
+                if (data === null) {
+                    // audio has ended, move on.
+                    this.load_next();
+                }
+            } */
             this.#props[name] = data;
         });
         
@@ -284,17 +286,13 @@ export class MPVSessionWrapper extends MPVWrapper {
             } */
         });
 
-        this.on("quit", async ()=>{
-            this.session.$.time = this.$.time;
-        });
-
-        this.on("idle", ()=>{
+        this.mpv.on("idle", ()=>{
             this.logger.info("MPV idle.");
             // this.session.playlist_next();
             // this.stop();
         });
 
-        this.request_log_messages("info");
+        this.mpv.request_log_messages("info");
 
         this.#mpv_last_pts = 0;
         this.#mpv_last_speed_check = Date.now();
@@ -310,7 +308,7 @@ export class MPVSessionWrapper extends MPVWrapper {
             if (this.deinterlace_dirty) {
                 this.rebuild_deinterlace();
             }
-            if (this.$.playing) {
+            if (this.$.context.playing) {
                 this.update_volume();
             }
         }, 1000/TICK_RATE);
@@ -322,11 +320,8 @@ export class MPVSessionWrapper extends MPVWrapper {
             if (this.#props["output-pts"]) {
                 let diff_pts = (this.#props["output-pts"] - this.#mpv_last_pts) * 1000;
                 let diff_ts = ts - this.#mpv_last_speed_check;
-                let speed = (diff_pts / diff_ts);
-                if (isNaN(speed) || speed < 0) speed = 0;
-                // let f = this.$["output-frames"];
-                this.speed = speed;
-                this.$.speed = speed;
+                let speed = Math.max(0, (diff_pts / diff_ts) || 0);
+                this.$.context.playback_speed = speed;
                 this.emit("speed", speed);
                 this.#mpv_last_pts = this.#props["output-pts"];
                 this.#mpv_last_speed_check = ts;
@@ -334,14 +329,21 @@ export class MPVSessionWrapper extends MPVWrapper {
     
             (async ()=>{
                 let new_ranges;
-                let demuxer_cache_state = (await this.get_property("demuxer-cache-state").catch(()=>null));
+                let demuxer_cache_state = (await this.mpv.get_property("demuxer-cache-state").catch(()=>null));
                 // console.log(demuxer_cache_state);
                 if (demuxer_cache_state) {
                     new_ranges = demuxer_cache_state["seekable-ranges"];
+                    if (new_ranges) {
+                        [...new_ranges].forEach((r)=>{
+                            r.start -= this.$.context.start_offset;
+                            r.end -= this.$.context.start_offset;
+                        });
+                    }
                 }
                 if (JSON.stringify(new_ranges) != this.#seekable_ranges_hash) {
-                    this.$.seekable_ranges = new_ranges || [];
-                    this.#seekable_ranges_hash = JSON>stringify(this.$.seekable_ranges);
+                    this.$.context.seekable_ranges = new_ranges || [];
+
+                    this.#seekable_ranges_hash = JSON.stringify(this.$.context.seekable_ranges);
                 }
             })();
     
@@ -366,12 +368,10 @@ export class MPVSessionWrapper extends MPVWrapper {
                 if (curr_val != new_val) {
                     this.set_property("interpolation", new_val);
                 }
-    
-    
             }
     
             for (var k in IGNORE_MPV_REALTIME_CHANGES) {
-                this.$.props[k] = this.#props[k];
+                this.$.context.props[k] = this.#props[k];
             }
     
             this.update_time_pos();
@@ -387,10 +387,14 @@ export class MPVSessionWrapper extends MPVWrapper {
                 var hash2 = this.#time_progressed;
                 if (hash2 != last_hash2) last_ts2 = ts;
                 if (ts > (last_ts2 + FORCE_ABORT_TIMEOUT)) {
-                    this.quit();
+                    this.mpv.quit();
                 }
                 last_hash2 = hash2;
             }
+
+            /* if (this.mpv.get_property("audio-pts") == null) {
+                this.load_next();
+            } */
         }, 1000);
     }
 
@@ -399,36 +403,41 @@ export class MPVSessionWrapper extends MPVWrapper {
     }
 
     seek(t) {
-        if (!this.$.seekable) return;
-        this.$.user_seeking = true;
-        this.$.seek_time = t;
-        if (this.$.is_special) {
-            return this.loadfile(this.loaded_item, { start: t, reload_props:false, pause:this.#props.pause });
+        if (!this.$.context.seekable) return;
+        this.update_time_pos(t);
+        if (this.$.context.is_special) {
+            this.$.special_seeking = true;
+            return this.loadfile(this.context.item, { start: t, reload_props:false, pause:this.#props.pause });
         } else {
-            return super.seek(t);
+            return this.mpv.seek(t + this.$.context.start_offset);
         }
     }
 
     reload(reload_props=true) {
-        return this.loadfile(this.session.get_playlist_item(this.loaded_item.id), { start: this.$.time, reload_props, pause:this.#props.pause });
+        return this.loadfile(this.session.get_playlist_item(this.context.id), { start: this.$.context.time_pos, reload_props, pause:this.#props.pause });
     }
         
-    /** @param {{offset:number, duration:number, media_type:string}} opts */
-    /** @return {{filename:string, duration:number}} */
-    async #process(item, opts) {
-        opts = Object.assign({}, opts);
-        let is_root = item === this.loaded_item;
+    /** @param {PlaylistItem$} item @param {{offset:number, duration:number, media_type:string}} opts */
+    async #parse_item(item, opts) {
+        opts = {
+            start: 0,
+            offset: 0,
+            duration: 0,
+            media_type: 0,
+            ...opts,
+        };
+        let is_root = item.id == this.context.id;
         item = fix_item(item);
-        let duration = opts.duration || 0;
-        let offset = opts.offset || 0;
+        let {start, duration, offset, media_type} = opts;
         let is_playlist = item.filename && this.session.is_item_playlist(item.id);
-        let mi = await this.session.get_media_info(item.filename);
-        let exists = mi.exists;
-        let is_image = mi.duration <= 0.04;
+        let media_info = (is_root ? this.context.media_info : await this.session.update_media_info(item.filename)) || {};
+        let exists = !!media_info.exists;
+        let is_image = media_info.duration <= 0.04;
         let filename = item.filename;
+        let uri = utils.urlify(filename);
         var duration_override = Number.MAX_SAFE_INTEGER;
         var use_duration_override = false;
-
+        
         if (is_playlist && (item.props.playlist_mode || !is_root)) {
             exists = true;
             let is_2track = item.props.playlist_mode == 2;
@@ -451,20 +460,20 @@ export class MPVSessionWrapper extends MPVWrapper {
                         use_duration_override = true;
                     }
                     let opts = {};
-                    if (track.type) opts.media_type = track.type;
+                    if (track.type) media_type = track.type;
                     opts.offset = o;
-                    let tmp = await this.#process(item, opts);
+                    let tmp = await this.#parse_item(item, opts);
                     let fade_in = utils.round_precise(+item.props.fade_in || 0, 3);
                     let fade_out = utils.round_precise(+item.props.fade_out || 0, 3);
                     if (fade_in) {
-                        if (!is_2track || i == 0) this.loaded_item.fades.push(["v", "in", o, fade_in])
-                        if (!is_2track || i == 1) this.loaded_item.fades.push(["a", "in", o, fade_in])
+                        if (!is_2track || i == 0) this.context.fades.push(["v", "in", o, fade_in])
+                        if (!is_2track || i == 1) this.context.fades.push(["a", "in", o, fade_in])
                     }
                     track.duration += tmp.duration;
                     o += tmp.duration;
                     if (fade_out) {
-                        if (!is_2track || i == 0) this.loaded_item.fades.push(["v", "out", o-fade_out, fade_out])
-                        if (!is_2track || i == 1) this.loaded_item.fades.push(["a", "out", o-fade_out, fade_out])
+                        if (!is_2track || i == 0) this.context.fades.push(["v", "out", o-fade_out, fade_out])
+                        if (!is_2track || i == 1) this.context.fades.push(["a", "out", o-fade_out, fade_out])
                     }
                     if (tmp.duration > 0) {
                         track.entries.push(new MPVEDLEntry(MPVEDL.escape(tmp.filename), {
@@ -500,7 +509,7 @@ export class MPVSessionWrapper extends MPVWrapper {
                                 length: (tracks[0].duration - tracks[1].duration).toFixed(3)
                             }));
                         } else {
-                            let tmp = await this.#process(null, {duration: pad_duration, media_type: track.type, offset});
+                            let tmp = await this.#parse_item(null, {duration: pad_duration, media_type: track.type, offset});
                             track.entries.push(new MPVEDLEntry(MPVEDL.escape(tmp.filename), {
                                 length: pad_duration.toFixed(3)
                             }));
@@ -530,13 +539,13 @@ export class MPVSessionWrapper extends MPVWrapper {
             let edl = new MPVEDL();
             edl.append("!no_chapters");
             if (!duration) {
-                duration = (item.props.clip_end - item.props.clip_start) || item.props.title_duration || item.props.empty_duration || mi.duration;
+                duration = (item.props.clip_end - item.props.clip_start) || item.props.title_duration || item.props.empty_duration || media_info.duration;
             }
             if (duration) {
-                if (mi && mi.streams) {
-                    for (let s of mi.streams) stream_map[s.type] = !s.albumart;
+                if (media_info && media_info.streams) {
+                    for (let s of media_info.streams) stream_map[s.type] = !s.albumart;
                 }
-                let required_stream_types = opts.media_type ? [opts.media_type] : ["video","audio"];
+                let required_stream_types = media_type ? [media_type] : ["video","audio"];
                 for (let t of required_stream_types) {
                     if (!stream_map[t]) {
                         let null_filename;
@@ -564,59 +573,56 @@ export class MPVSessionWrapper extends MPVWrapper {
             }
         }
         
-        if (!duration) duration = (mi && mi.duration) || 0;
+        if (!duration) duration = (media_info && media_info.duration) || 0;
 
-        if (!is_image) {
-            if (item.props.clip_start || item.props.clip_loops || item.props.clip_end || item.props.clip_offset || !is_root) {
-                let opts = {
-                    start: item.props.clip_start,
-                    end: item.props.clip_end || duration,
-                    loops: item.props.clip_loops,
-                    offset: item.props.clip_offset,
-                    // duration: item.props.clip_duration,
-                };
-                let temp_edl = MPVEDL.repeat(filename, opts);
-                duration = temp_edl.duration;
-                filename = temp_edl.toString();
+        if (uri.protocol.match(/^https?:$/)) {
+            if (is_root) {
+                start = item.props.clip_start || 0;
+                duration = (item.props.clip_end || duration) - start;
             }
+        } else if (!is_image && (item.props.clip_start || item.props.clip_loops || item.props.clip_end || item.props.clip_offset || !is_root)) {
+            let opts = {
+                start: item.props.clip_start || 0,
+                end: item.props.clip_end || duration,
+                loops: item.props.clip_loops || 1,
+                offset: item.props.clip_offset || 0,
+            };
+            let temp_edl = MPVEDL.repeat(filename, opts);
+            duration = temp_edl.duration;
+            filename = temp_edl.toString();
         }
 
-        return {filename, duration};
+        return {filename, start, duration, media_info};
     }
 
-    // /** @param {InternalSession.PlaylistItem} item */
+    /** @param {PlaylistItem$} item */
     async loadfile(item, opts) {
 
         this.#load_id++;
-        var load_id = this.#load_id;
+        let load_id = this.#load_id;
+        let start = +(opts.start||0);
+        let seekable = true;
+        let edl_start_offset = 0;
 
         opts = Object.assign({
             reload_props: true,
         }, opts);
 
-        let last_id = this.loaded_item && this.loaded_item.id;
+        let last_id = this.context.id;
         let last_props = utils.json_copy(this.#props);
 
-        // this.$.current_item_on_load = utils.json_copy(item);
-        // this.$.current_descendents_on_load = utils.json_copy(this.get_playlist_items(id, null, true));
+        // this.$.context.current_item_on_load = utils.json_copy(item);
+        // this.$.context.current_descendents_on_load = utils.json_copy(this.get_playlist_items(id, null, true));
 
-        item = utils.json_copy(fix_item(item));
-        let mi = await this.session.get_media_info(item.filename)
-        this.loaded_item = item;
-        item.media_info = mi;
-        [item.width, item.height] = this.get_dimensions_from_stream(mi.streams ? mi.streams.find(s=>s.type == "video") : null);
-        item.af_graph = [];
-        item.vf_graph = [];
-        item.fades = [];
-        item.ignore_crop = false;
+        this.context = new MPVContext(this, item);
+        await this.context.ready;
 
-        let props_def = InternalSessionProps.playlist.__enumerable__.props;
         let props = {};
         let on_load_commands = [];
         
         if (opts.reload_props) {
-            for (let k in props_def) {
-                props[k] = props_def[k].__default__;
+            for (let k in InternalSessionProps.playlist.__enumerable__.props) {
+                props[k] = InternalSessionProps.playlist.__enumerable__.props[k].__default__;
             }
             for (let k in this.session.$.player_default_override) {
                 props[k] = this.session.$.player_default_override[k];
@@ -634,14 +640,14 @@ export class MPVSessionWrapper extends MPVWrapper {
             props[k] = this.#current_props_override[k];
         }
         
-        let {filename, duration} = await this.#process(item);
-
-        this.logger.debug(filename);
+        // todo: if url (youtube) and it has clipping it aint gonna work...
+        let {filename, start: start_offset, duration, media_info} = await this.#parse_item(item);
+        start += start_offset;
 
         if (!filename) filename = "livestreamer://empty";
 
         let ls_path, is_intertitle, is_rtmp, is_empty, is_macro;
-        let is_image = mi.duration <= 0.04;
+        let is_image = media_info.duration <= 0.04;
         if (is_image) {
             duration = item.props.empty_duration || 0;
         }
@@ -728,11 +734,11 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
                 // load_opts["demuxer-lavf-format"] = "flv";
                 // load_opts["demuxer-lavf-buffersize"] = 8192;
                 // load_opts["demuxer-lavf-hacks"] = true;
+            } else {
+                this.logger.warn(`Unknown playlist item: ${item.filename}`);
+                return this.load_next();
             }
         }
-
-        let start_time = +(opts.start||0);
-        let seekable = true;
         
         let m;
         if (!filename || is_image || (m = filename.match(/^(rtmp|null|memory|av):\/\//))) {
@@ -763,7 +769,7 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         }
 
         const register_file_streams = async (file, type) =>{
-            let mi = utils.json_copy(await this.session.get_media_info(file));
+            let mi = utils.json_copy(await this.session.update_media_info(file));
             if (!mi.streams) return;
             var streams = filter_streams(mi.streams, type);
             if (!streams.length) return;
@@ -776,8 +782,8 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
             return true;
         }
 
-        if (mi.streams) {
-            let streams = utils.json_copy(mi.streams);
+        if (media_info.streams) {
+            let streams = utils.json_copy(media_info.streams);
             if (is_image) streams.filter(s=>s.type==="video").forEach(s=>s.albumart=1);
             register_streams(...streams);
         } else if (is_rtmp || props.playlist_mode) {
@@ -800,7 +806,7 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         let subtitle_files = [];
 
         const add_video_file = async (filename, start, end)=>{
-            let mi = await this.session.get_media_info(filename, {force:true});
+            let mi = await this.session.update_media_info(filename, {force:true});
             let video_ext = path.extname(filename);
             let video_name = path.basename(filename, video_ext);
             start = start || 0;
@@ -852,8 +858,8 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         let external_artworks = [];
 
         // auto add local files with similar names...
-        if (item.media_info.protocol == "file:" && item.media_info.exists) {
-            let filepath = utils.try_file_uri_to_path(item.filename || "");
+        if (this.context.url.protocol == "file:" && this.context.media_info.exists) {
+            let filepath = utils.pathify(item.filename || "");
             let dir = path.dirname(filepath);
             let filename = path.basename(filepath);
             let files = await fs.readdir(dir);
@@ -878,14 +884,14 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
 
         let fix_background_file = async (f)=>{
             if (f) {
-                var mi = await this.session.get_media_info(f);
+                var mi = await this.session.update_media_info(f);
                 if (!mi.streams) return null;
             }
             return f;
         }
         
-        let has_main_video = is_image || !!streams.find(s=>s.type==="video" && !s.albumart);
-        let use_background = is_empty || is_intertitle || !!props.background_mode || !!props.background_file || !has_main_video;
+        let has_main_video = !!(is_image || streams.find(s=>s.type==="video" && !s.albumart));
+        let use_background = !!(is_empty || is_intertitle || props.background_mode || props.background_file || !has_main_video);
         let background_mode = props.background_mode;
         let background_color = props.background_color || "#000000";
         let background_file, background_file_start, background_file_end;
@@ -954,6 +960,9 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         let show_waveform = !!(props.audio_visualization == "waveform" && aid);
         var video_stream = get_stream_by_id(vid,streams);
         let is_albumart = video_stream ? !!video_stream.albumart : false;
+        // -------------------------------------------------
+        is_albumart = false;
+        // -------------------------------------------------
 
         if (use_background || !vid || show_waveform || is_albumart) {
             let overlay_center = "overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2";
@@ -961,9 +970,9 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
             let [w,h] = this.get_dimensions_from_stream(video_stream);
             vo.push(`color=c=${background_color}:s=${w}x${h}:r=${fps}`);
             if (background_mode === "color") {
-                item.ignore_crop = true;
+                this.context.ignore_crop = true;
             } else if (vid) {
-                item.ignore_crop = true;
+                this.context.ignore_crop = true;
                 vo.push(
                     `${vo.pop()}[bg1]`,
                     `[vid${vid||1}]scale=${this.width}:${this.height}:force_original_aspect_ratio=decrease[img1]`,
@@ -972,9 +981,9 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
                 // vid = "generated";
             }
             if (show_waveform) {
-                item.ignore_crop = true;
+                this.context.ignore_crop = true;
                 let ar = this.width / this.height;
-                let wave_h = Math.min(720, this.height) // cap it at 1280 or it lags.
+                let wave_h = Math.min(720, this.height) // cap it at 720 or it lags.
                 let wave_w = Math.ceil(wave_h * ar);
                 let h_scale = 0.5;
                 let wf_alpha = 1.0;
@@ -1006,18 +1015,15 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
             // aid = 1;
         }
 
-        let special_start_time = 0
-        if (seekable && start_time && is_special) {
-            special_start_time = start_time;
-            start_time = 0;
+        if (seekable && start && is_special) {
+            edl_start_offset = start;
+            start = 0;
+            start_offset = 0;
         }
         
         const try_edlify = (filename)=>{
-            if (special_start_time) {
-                var params = { start: special_start_time.toFixed(3) };
-                if (seekable) {
-                    params.length = (duration - special_start_time).toFixed(3);
-                }
+            if (edl_start_offset) {
+                var params = { start: edl_start_offset.toFixed(3), length: (duration - edl_start_offset).toFixed(3) };
                 filename = new MPVEDL([
                     new MPVEDLEntry(MPVEDL.escape(filename), params)
                 ]).toString();
@@ -1028,12 +1034,12 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         filename = try_edlify(filename);
 
         props.pause = !!opts.pause;
-        if (seekable && start_time > 0) {
-            props.start = start_time
+        if (seekable && start > 0) {
+            props.start = start;
         }
 
         if (duration) {
-            props.end = duration - special_start_time;
+            props.end = duration - edl_start_offset + start_offset;
         }
         
         props["lavfi-complex"] = lavfi_complex.join(";");
@@ -1044,8 +1050,8 @@ Dialogue: 0,${start},${end},livestreamer-default,,0,0,0,,${text}`;
         {
             let [w,h] = [this.width, this.height];
             let ass;
-            for (let [type,dir,offset,dur] of item.fades) {
-                offset = Math.max(0, offset - (special_start_time || 0));
+            for (let [type,dir,offset,dur] of this.context.fades) {
+                offset = Math.max(0, offset - (edl_start_offset || 0));
                 // if (type.startsWith("v")) vf_graph.push(`fade=enable='between(t,${offset},${offset+duration})':t=${dir}:st=${o}:d=${duration}`)
                 if (type.startsWith("v")) {
                     if (!ass) {
@@ -1075,7 +1081,7 @@ Format: Start,End,Style,Text`+"\n";
                     let c = `{\\p1}m 0 0 l ${w} 0 ${w} ${h} 0 ${h}{\\p0}`;
                     ass += `Dialogue: ${ass_time(start*1000)},${ass_time(end*1000)},F1,${f+c}\n`;
                 } else if (type.startsWith("a")) {
-                    item.af_graph.push(`afade=enable='between(t,${offset},${offset+dur})':t=${dir}:st=${offset}:d=${dur}`);
+                    this.context.af_graph.push(`afade=enable='between(t,${offset},${offset+dur})':t=${dir}:st=${offset}:d=${dur}`);
                 }
             }
             if (ass) {
@@ -1114,18 +1120,17 @@ Format: Start,End,Style,Text`+"\n";
         //                THE BIG APPLY                //
         /////////////////////////////////////////////////
 
-        this.$.playing = false;
-        this.$.loaded = false;
-        this.$.seekable_ranges = [];
-        this.$.time = start_time;
-        this.$.duration = duration;
-        this.$.special_start_time = special_start_time;
-        this.$.is_special = is_special;
-        this.$.seekable = seekable;
-        this.$.streams = streams;
+        this.$.context.real_duration = duration - edl_start_offset;
+        this.$.context.duration = duration + start_offset;
+        this.$.context.edl_start_offset = edl_start_offset;
+        this.$.context.start_offset = start_offset;
+        this.$.context.is_special = is_special;
+        this.$.context.seekable = seekable;
+        this.$.context.streams = streams;
+        this.update_time_pos(start - start_offset);
 
         this.#props = props;
-        this.$.props = props;
+        this.$.context.props = props;
         this.#mpv_load_props = {};
         for (var k in props) {
             this.set_property(k, props[k]);
@@ -1139,7 +1144,7 @@ Format: Start,End,Style,Text`+"\n";
         if (aid != null) olp.aid = aid || false;
         if (sid != null) olp.sid = sid || false;
         if (secondary_sid != null) olp["secondary-sid"] = secondary_sid || false;
-        if (this.$.seekable) olp.start = String(start_time);
+        if (this.$.context.seekable) olp.start = String(start);
         if (ls_path === "rtmp") olp.ytdl = false;
         Object.assign(this.#mpv_load_props, olp);
         
@@ -1147,18 +1152,24 @@ Format: Start,End,Style,Text`+"\n";
             if (!this.allowed_mpv_props[k]) delete this.#mpv_load_props[k];
         }
 
-        await this.on_load_promise(this.lua_message("loadfile", filename, this.#mpv_load_props, on_load_commands)).catch((e)=>{
-            this.logger.error(e);
-            if (load_id == this.#load_id) {
-                return this.load_next();
-            }
-        });
+        this.lua_message("setup_loadfile", this.#mpv_load_props, on_load_commands);
+
+        // important do not move this line
+        this.$.context.preloaded = true;
+
+        return this.mpv.loadfile(filename)
+            .catch((e)=>{
+                this.logger.error(e);
+                if (load_id == this.#load_id) {
+                    return this.load_next();
+                }
+            });
     }
 
     async set_property(key, value, current_file_override=false) {
         let changed = this.#props[key] != value;
         this.#props[key] = value;
-        this.$.props[key] = value;
+        this.$.context.props[key] = value;
         let mpv_key = key, mpv_value = value;
 
         if (current_file_override) {
@@ -1195,7 +1206,7 @@ Format: Start,End,Style,Text`+"\n";
         if (this.allowed_mpv_props[mpv_key]) {
             this.#mpv_expected_props[mpv_key] = mpv_value;
         }
-        if (!this.$.loaded) {
+        if (!this.$.context.preloaded) {
             this.#mpv_load_props[mpv_key] = mpv_value;
             return;
         }
@@ -1203,12 +1214,12 @@ Format: Start,End,Style,Text`+"\n";
             return this.reload(false);
         }
         if (this.allowed_mpv_props[mpv_key]) {
-            return super.set_property(mpv_key, mpv_value);
+            return this.mpv.set_property(mpv_key, mpv_value);
         }
     }
 
     lua_message(name, ...args) {
-        return this.command("script-message-to", "livestreamer", name, JSON.stringify(args));
+        return this.mpv.command("script-message-to", "livestreamer", name, JSON.stringify(args));
     }
     
     update_volume(immediate = false) {
@@ -1230,8 +1241,11 @@ Format: Start,End,Style,Text`+"\n";
         }
     }
 
-    update_time_pos() {
-        this.$.time = this.$.user_seeking ? this.$.seek_time : this.time_pos;
+    /** @param {number|undefined} time_pos @description time_pos is the time position to set the video to (according to the user). */
+    update_time_pos(time_pos) {
+        if (this.mpv.quitting) return;
+        if (time_pos === undefined) time_pos = Math.max(0, +(this.#props["time-pos"] ?? this.#props["start"] ?? 0) + this.$.context.edl_start_offset - this.$.context.start_offset);
+        this.session.$.time_pos = this.$.context.time_pos = time_pos;
     }
 
     rebuild_deinterlace() {
@@ -1239,7 +1253,7 @@ Format: Start,End,Style,Text`+"\n";
         let deint = this.#props.deinterlace_mode;
         if (deint == "auto") {
             deint = false;
-            if (this.loaded_item && this.loaded_item.media_info) deint = !!this.loaded_item.media_info.interlaced;
+            if (this.context.media_info) deint = !!this.context.media_info.interlaced;
         }
         this.logger.info(`deint:`, deint)
         this.set_property("deinterlace", deint);
@@ -1256,7 +1270,7 @@ Format: Start,End,Style,Text`+"\n";
         // `asetpts=PTS-STARTPTS`,
         
         // this fucks it up. Do not use.
-        // if (this.stream.is_realtime && !this.$.seekable) {
+        // if (this.stream.is_realtime && !this.$.context.seekable) {
         //     vf_graph.push("realtime");
         //     af_graph.push("arealtime");
         // }
@@ -1267,14 +1281,14 @@ Format: Start,End,Style,Text`+"\n";
             `aresample=async=1`
         );
         // let fps = +(this.#props.force_fps || this.stream.fps);
-        let fps = +this.stream.fps;
+        let fps = +this.#stream.fps;
         if (fps) {
             vf_graph.push(
                 `fps=${fps}`
             );
         }
         
-        if (!this.loaded_item.ignore_crop) {
+        if (!this.context.ignore_crop) {
             let left = utils.clamp(Math.abs(this.#props.crop[0] || 0));
             let top = utils.clamp(Math.abs(this.#props.crop[1] || 0));
             let right = utils.clamp(Math.abs(this.#props.crop[2] || 0));
@@ -1306,16 +1320,15 @@ Format: Start,End,Style,Text`+"\n";
         // }
 
         const get_fade_in_out = ()=>{
-            if ((this.loaded_item||{}).filename == "livestreamer://intertitle") {
+            if (this.context.filename == "livestreamer://intertitle") {
                 return [this.#props.title_fade || 0, this.#props.title_fade || 0];
             }
             return [this.#props.fade_in || 0, this.#props.fade_out || 0];
         };
         let [fade_in, fade_out] = get_fade_in_out();
-        var real_duration = this.$.duration - this.$.special_start_time;
-        let end_fade = real_duration - fade_out - 0.5
+        let end_fade = this.$.context.real_duration - fade_out - 0.5
         
-        if (fade_in && !this.$.special_start_time) {
+        if (fade_in && !this.$.context.edl_start_offset) {
             vf_graph.push(
                 `fade=t=in:st=0:d=${fade_in}`
             );
@@ -1324,7 +1337,7 @@ Format: Start,End,Style,Text`+"\n";
             );
         }
 
-        if (fade_out && end_fade >= 0 && real_duration > 0) {
+        if (fade_out && end_fade >= 0 && this.$.context.real_duration > 0) {
             vf_graph.push(
                 `fade=t=out:st=${end_fade}:d=${fade_out}`
             );
@@ -1347,7 +1360,7 @@ Format: Start,End,Style,Text`+"\n";
         }
 
         let has_2_channels = (()=>{
-            var streams = this.$.streams;
+            var streams = this.$.context.streams;
             return (get_stream_by_id(this.#props.aid, streams, "audio") || get_stream_by_id("auto", streams, "audio") || {}).channels == 2;
         })();
 
@@ -1371,13 +1384,19 @@ Format: Start,End,Style,Text`+"\n";
         }
 
         vf_graph.push(
-            // `scale=(iw*sar)*min(${w}/(iw*sar),${h}/ih):ih*min(${w}/(iw*sar),${h}/ih)`,
+            `scale=(iw*sar)*min(${w}/(iw*sar),${h}/ih):ih*min(${w}/(iw*sar),${h}/ih)`,
             // `pad=${w}:${h}:(${w}-iw*min(${w}/iw,${h}/ih))/2:(${h}-ih*min(${w}/iw,${h}/ih))/2`,
-            `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
+            // `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
             // `setsar=sar=1`,
             `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
             `format=yuv420p`
         );
+
+        if (this.stream.is_test) {
+            vf_graph.push(
+                `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(path.resolve(globals.app.resources_dir, "Arial.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`,
+            );
+        }
 
         /** @param {str[]} graph */
         var fix = (graph,lavfi=false) => {
@@ -1386,14 +1405,14 @@ Format: Start,End,Style,Text`+"\n";
             return s;
         }
 
-        af_graph.push(...this.loaded_item.af_graph);
-        vf_graph.push(...this.loaded_item.vf_graph);
+        af_graph.push(...this.context.af_graph);
+        vf_graph.push(...this.context.vf_graph);
         
         let af = fix(af_graph,true);
         let vf = fix(vf_graph,true);
 
-        // let af = [fix(af_graph,true), fix(this.loaded_item.af_graph)].filter(s=>s).join(",");
-        // let vf = [fix(vf_graph,true), fix(this.loaded_item.vf_graph)].filter(s=>s).join(",");
+        // let af = [fix(af_graph,true), fix(this.curr.af_graph)].filter(s=>s).join(",");
+        // let vf = [fix(vf_graph,true), fix(this.curr.vf_graph)].filter(s=>s).join(",");
 
         this.set_property("af", af);
         this.set_property("vf", vf);
@@ -1475,3 +1494,63 @@ Whether the demuxer is idle, which means that the demuxer cache is filled to the
 demuxer-cache-state */
 
 export default MPVSessionWrapper;
+
+export class MPVContext$ extends DataNode$ {
+    playing = false;
+    seeking = false;
+    preloaded = false;
+    loaded = false;
+    seekable = false;
+    is_special = false;
+    special_seeking = false;
+    time_pos = 0;
+    duration = 0;
+    real_duration = 0;
+    playback_speed = 1;
+    edl_start_offset = 0;
+    start_offset = 0;
+    seek_time = 0;
+    seekable_ranges = [];
+    streams = [];
+    props = {};
+}
+
+/** @type {DataNode<MPVContext$>} */
+export class MPVContext extends DataNode {
+    /** @type {MPVSessionWrapper} */
+    #mpv;
+    /** @type {PlaylistItem$} */
+    #item;
+    af_graph = [];
+    vf_graph = [];
+    fades = [];
+    ignore_crop = false;
+    width = 0;
+    height = 0;
+    /** @type {MediaInfo} */
+    #media_info;
+    #ready;
+    get session() { return this.#mpv.session; }
+    get filename() { return this.item.filename; }
+    get id() { return this.item.id; }
+    get item() { return (this.#item||{}); }
+    get media_info() { return this.#media_info; }
+    get ready() { return this.#ready; }
+
+    /** @param {MPVSessionWrapper} mpv @param {PlaylistItem$} item */
+    constructor(mpv, item) {
+        super(new MPVContext$());
+        this.#mpv = mpv;
+        this.#item = utils.json_copy(item);
+        this.url = utils.urlify(this.item.filename);
+        mpv.$.context = this.$;
+        mpv.context = this;
+        this.#ready = this.#init();
+    }
+    async #init() {
+        if (!this.#item) return;
+        this.#media_info = await this.session.update_media_info(this.filename);
+        let streams = utils.try(()=>this.#media_info.streams, []);
+        [this.width, this.height] = this.#mpv.get_dimensions_from_stream(streams.find(s=>s.type == "video"));
+    }
+}

@@ -1,14 +1,34 @@
 import path from "node:path";
 import fs from "fs-extra";
-import * as utils from "../core/utils.js";
-import DataNode from "../core/DataNode.js";
-import Logger from "../core/Logger.js";
-import globals from "./globals.js";
-import ClientUpdater from "../core/ClientUpdater.js";
-import Stream from "./Stream.js";
-import * as constants from "../core/constants.js";
+import {globals, utils, constants, DataNodeID, DataNodeID$, Logger, ClientUpdater, Stream, AccessControl} from "./exports.js";
+/** @import {Log} from "./exports.js" */
 
-export class SessionBase extends DataNode {
+export class Session$ extends DataNodeID$ {
+    name = "";
+    type = "unknown";
+    index = 0;
+    creation_time = 0;
+    /** @type {Record<PropertyKey,Log>} */
+    logs = {};
+    version = "1.0";
+    stream_settings = new StreamSettings$();
+    access_control = new AccessControl();
+}
+
+export class StreamSettings$ {
+    targets = {};
+    title = "";
+    frame_rate = 30;
+    use_hardware = 0;
+    experimental_mode = false;
+    resolution = "1280x720";
+    h264_preset = "veryfast";
+    video_bitrate = 5000;
+    audio_bitrate = 160;
+}
+
+/** @template {Session$} T @extends {DataNodeID<T>} */
+export class Session extends DataNodeID {
     /** @type {Logger} */
     logger;
 
@@ -22,10 +42,12 @@ export class SessionBase extends DataNode {
 
     reset() {
         Object.assign(this.$, this.defaults);
+        this.emit("reset");
     }
 
-    constructor(type, defaults, id, name) {
-        super(id);
+    /** @param {string} type @param {T} $ @param {any} defaults @param {string} id @param {string} name */
+    constructor(type, $, defaults, id, name) {
+        super(id, $);
 
         this.defaults = {
             ...utils.json_copy(defaults),
@@ -34,7 +56,6 @@ export class SessionBase extends DataNode {
             name: name || globals.app.get_new_session_name(),
             creation_time: Date.now(),
         };
-        this.reset();
 
         this.logger = new Logger();
 
@@ -47,17 +68,23 @@ export class SessionBase extends DataNode {
                 logger_prefix = parts.join("-");
             }
             return logger_prefix;
-        }
+        };
         
         this.logger.on("log", (log)=>{
             log.prefix = [update_logger_prefix(), ...log.prefix];
             globals.app.logger.log(log);
         });
-        this.$.logs = this.logger.register_changes((log)=>{
+
+        this.logger.register_changes(this.$.logs, (log)=>{
             return {...log, prefix: log.prefix.slice(2)};
         });
 
-        this.client_updater = new ClientUpdater(this.observer, ()=>this.clients);
+        this.reset();
+        this.client_updater = new ClientUpdater(this.observer);
+        this.client_updater.on("update", ($)=>{
+            var payload = {$:{sessions:{[this.id]:$}}};
+            for (var c of this.clients) c.send(payload);
+        });
 
         globals.app.sessions[this.id] = this;
         globals.app.$.sessions[this.id] = this.$;
@@ -150,4 +177,4 @@ export class SessionBase extends DataNode {
     }
 }
 
-export default SessionBase;
+export default Session;

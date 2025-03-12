@@ -1,6 +1,7 @@
 import {WindowCommunicator} from "../../utils/dom.js";
 import "./extra-style.scss";
 import * as mime_ext_map from "../../utils/mime_ext_map.js";
+import * as constants from "../../core/constants.js";
 
 export class FileManagerWebApp {
 	constructor() {
@@ -12,11 +13,11 @@ export class FileManagerWebApp {
 		let opts;
 		try { opts = JSON.parse(params.get("opts")); } catch {}
 		if (!opts) opts = {};
+		var hash = window.location.hash.slice(5);
 		window.history.replaceState({}, "", "/"+window.location.hash);
 		console.log(opts);
 		var id = opts ? opts.id : null;
 		// var key = params.get("key");
-		// debugger;
 		// var parent_window = window.opener || window.parent;
 
 		var defaultOpts = {
@@ -169,44 +170,38 @@ export class FileManagerWebApp {
 				fm.bind('open', function() {
 					var path = '', cwd = fm.cwd();
 					if (!last_cwd) last_cwd = cwd;
-					if (cwd) {
-						path = fm.path(cwd.hash) || null;
-					}
-					// document.title = path ? path + ' - ' + title : title;
-					document.title = `File Manager - ${path}`;
-					if (cwd != last_cwd) {
-						delete fm.options.selectHashes;
-					}
-					last_cwd = cwd;
-				}).bind('destroy', function() {
-					document.title = title;
-				});
-				
-				fm.bind("load", function() {
-					fm.bind('cwdrender', function() {
-						requestAnimationFrame(()=>{
-							if (fm.options.selectHashes) {
+					if (cwd.hash !== hash) {
+						fm.bind('cwdrender', function() {
+							if (!hash) return;
+							requestAnimationFrame(()=>{
 								var top = Number.MAX_SAFE_INTEGER;
 								var highest_elem;
-								for (var i=0; i<fm.options.selectHashes.length; i++) {
-									var hash = fm.options.selectHashes[i];
-									var $item = fm.cwdHash2Elm(hash);
-									if (!$item[0]) continue;
+								var $item = fm.cwdHash2Elm(hash);
+								hash = null;
+								if ($item[0]) {
 									if ($item[0].offsetTop < top) {
 										top = $item[0].offsetTop;
 										highest_elem = $item[0];
 									}
 									var e = $.Event("click");
-									e.ctrlKey = i != 0;
 									$item.trigger(e);
+									if (highest_elem) {
+										setTimeout(()=>highest_elem.scrollIntoView({block:"center"}, 100));
+									}
+									fm.enable();
 								}
-								if (highest_elem) {
-									setTimeout(()=>highest_elem.scrollIntoView({block:"center"}, 100));
-								}
-								fm.enable();
-							}
+							});
 						});
-					});
+						return;
+					}
+					if (cwd) {
+						path = fm.path(cwd.hash) || null;
+					}
+					// document.title = path ? path + ' - ' + title : title;
+					document.title = `File Manager - ${path}`;
+					last_cwd = cwd;
+				}).bind('destroy', function() {
+					document.title = title;
 				});
 			},
 		};
@@ -236,4 +231,4 @@ export class FileManagerWebApp {
 		$('#elfinder').elfinder(opts);
 	}
 }
-export default App;
+export default FileManagerWebApp;

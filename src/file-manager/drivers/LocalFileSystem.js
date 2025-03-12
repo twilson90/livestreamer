@@ -3,14 +3,12 @@ import path from "node:path";
 import Mime from "mime";
 import fs from "fs-extra";
 import stream from "node:stream";
-import * as constants from "../../core/constants.js";
-import * as utils from "../utils.js";
-import Driver from "../Driver.js";
+import {Driver, constants, utils} from "../exports.js";
 
 /**
  * @inheritDoc
  */
-class LocalFileSystem extends Driver {
+export class LocalFileSystem extends Driver {
 	__abspath(id_or_path) {
 		return upath.join(this.volume.root, id_or_path);
 	}
@@ -45,7 +43,7 @@ class LocalFileSystem extends Driver {
 	__uri(id) {
 		var p = this.abspath(id);
 		if (!p.startsWith("/")) p = "/"+p;
-		return new URL(p, "file://").toString();
+		return utils.pathToFileURL(p);
 	}
 	async __upload(tmpfile, dirid, name) {
 		var dstid = upath.join(dirid, name);

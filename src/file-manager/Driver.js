@@ -1,6 +1,6 @@
 import fs from "fs-extra";
 import path from "node:path";
-import { Jimp } from "jimp";
+import sharp from "sharp";
 import stream from "node:stream";
 import archiver from "archiver";
 import * as uuid from "uuid";
@@ -9,12 +9,7 @@ import unzipper from "unzip-stream";
 import events from "node:events";
 import upath from "upath";
 import { Writable, Readable, Stream } from "node:stream";
-import * as utils from "./utils.js";
-import * as errors from "./errors.js";
-import * as constants from "../core/constants.js";
-import Cache from "./Cache.js";
-import Volume from "./Volume.js";
-import globals from "./globals.js";
+import {utils, errors, constants, globals, FileManagerCache, Volume} from "./exports.js";
 
 const THUMBNAIL_SIZE = 48;
 const MAX_MEDIA_CHUNK = 1024 * 1000 * 4; // 4 MB
@@ -39,7 +34,9 @@ export class Driver extends events.EventEmitter {
 		super();
 		this.volume = volume;
 		this.taskid = taskid;
-		this.cache = new Cache();
+		this.cache = new FileManagerCache();
+		
+		this.thumbnails_dir = path.join(this.elfinder.thumbnails_dir, this.volume.id);
 		
 		var req = this.volume.elfinder.requests[taskid];
 		if (req) {
@@ -74,6 +71,7 @@ export class Driver extends events.EventEmitter {
 	}
 
 	async init() {
+		await fs.mkdir(this.thumbnails_dir, {recursive:true});
 		return this.__init();
 	}
 
@@ -304,21 +302,24 @@ export class Driver extends events.EventEmitter {
 
 	/** @param {ID} id @return {string|null} returns null if thumbnail not generatable. */
 	async tmb(id, create=false) {
-		if (!this.volume.config.tmbdir) return null
 		var stat = await this.stat(id);
-		if (stat.parent == this.volume.config.tmbdir) return id; // I am a thumbnail!
-		var tmbname = utils.md5([id, stat.size, stat.ts].join("_")) + ".png";
-		var tmbpath = path.join(this.volume.config.tmbdir, tmbname);
+		if (stat.parent == this.thumbnails_dir) return id; // I am a thumbnail!
+		var tmbname = utils.md5([id, stat.size, stat.ts].join("_")) + ".webp";
+		var tmbpath = path.join(this.thumbnails_dir, tmbname);
 		if (!await fs.lstat(tmbpath).then((s)=>s.isFile()).catch(()=>null)) {
 			if (create) {
-				/** @type {Jimp} */
-				var img = await Jimp.read(await utils.streamToBuffer(await this.read(id))).catch(()=>null); // catch if cnanot read file (e.g. psds)
-				if (img) {
-					img = await img.cover({w:THUMBNAIL_SIZE, h:THUMBNAIL_SIZE});
+				const buffer = await utils.streamToBuffer(await this.read(id)).catch(utils.noop); // catch if cannot read file (e.g. psds)
+				if (buffer) {
+					await sharp(buffer)
+						.resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, {
+							fit: sharp.fit.cover,
+						})
+						.webp({ quality: 80 })
+						.toFile(tmbpath)
+						.catch(() => null); // catch if cannot save (e.g. path too long)
 				} else {
-					return null;
+					await fs.writeFile(tmbpath, Buffer.from([]));
 				}
-				await img.write(tmbpath).catch(()=>null); // catch if cannot save (e.g. path too long)
 			} else {
 				return "1";
 			}
@@ -394,7 +395,7 @@ export class Driver extends events.EventEmitter {
 				this.cache.dirs = {};
 			});
 	}
-	/** @param {ID} id @param {{start:Number, end:Number}} options @return {stream.Readable} */
+	/** @param {ID} id @param {{start:Number, end:Number}} option */
 	async read(id, options) {
 		var stream = await this.__read(id, options);
 		this.register_stream(stream);

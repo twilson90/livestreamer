@@ -88,3 +88,4 @@
 [ ] Apply changes prompt to modals that need require confirmation.
 [ ] chat data-pause too frequent, on mobile fullscreen it pauses for no reason.
 [ ] mini buttons under chat too packed, no wrap.
+[ ] playlist undo messes up media infos

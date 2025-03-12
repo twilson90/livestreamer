@@ -1,63 +1,81 @@
 import path from "node:path";
 import os from "node:os";
-import url from "node:url";
 import fs from "fs-extra";
 import showdown from "showdown";
 import chokidar from "chokidar";
-import upath from "upath";
 import compression from "compression";
-import express, {Router} from "express";
+import express from "express";
 import bodyParser from "body-parser";
 import multer from "multer";
 import pidusage from "pidusage";
 import checkDiskSpace from "check-disk-space";
 import readline from "node:readline";
 import child_process from "node:child_process";
-import Core from "../core/index.js";
-import * as utils from "../core/utils.js";
-import Cache from "../core/Cache.js";
-import ClientServer from "../core/ClientServer.js";
-import ClientUpdater from "../core/ClientUpdater.js";
-import WebServer from "../core/WebServer.js";
-import Download from './Download.js';
-import Upload from './Upload.js';
-import InternalSessionProps from './InternalSessionProps.js';
-import InternalSession from './InternalSession.js';
-import ExternalSession from './ExternalSession.js';
-import Client from './Client.js';
-import API from './API.js';
-import Target from './Target.js';
-import Stream from './Stream.js';
-import globals from './globals.js';
-/** @import {StreamTarget, SessionBase} from "./types" */
+import {globals, Stream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, WebServer, ClientUpdater, ClientServer, Cache, utils, Core, Core$} from "./exports.js";
+/** @import {StreamTarget, Session, Session$, MainClient$, Log$, Target$, Upload$, Download$} from "./exports.js" */
+
+/** @typedef {{index:number, start:number, end:number, title:string}} MediaInfoChapter */
+/** @typedef {{type:"audio"|"video"|"subtitle", codec:string, bitrate:number, default:boolean, forced:boolean, title:string, language:string, width:number, height:number, albumart:boolean, channels:number, duration:number}} MediaInfoStream */
+/** @typedef {{filename:string, streams:MediaInfoStream[], exists:boolean, duration:number, size:number, mtime:number, format:string, bitrate:number, chapters:MediaInfoChapter[], avg_fps:number, fps:number, interlaced:boolean, downloadable:boolean, direct:boolean}} MediaInfo */
 
 const dirname = import.meta.dirname;
-const MEDIAINFO_VERSION = 2;
+const MEDIA_INFO_VERSION = 2;
 const MAX_CONCURRENT_MEDIA_INFO_PROMISES = 8;
 const TICK_INTERVAL = 1 * 1000;
+
+const mpv_args = ["--no-config", '--frames=0', '--vo=null', '--ao=null'];
 
 var ext_format_map = {
     ".mkv": "matroska",
     ".flv": "flv",
     ".mp4": "mp4",
 };
-var format_ext_map = Object.fromEntries(...utils.reverse_map(ext_format_map));
+var format_ext_map = Object.fromEntries(utils.reverse_map(ext_format_map));
 
 /** @typedef {string} Domain */
 /** @typedef {Record<PropertyKey,{access:string, password:string, suspended:boolean}>} AccessControl */
 
-export default class MainApp extends Core {
-    /** @type {Record<string,Download>} */
-    downloads = {};
-    /** @type {Record<string,SessionBase>} */
+export class MainApp$ extends Core$ {
+    /** @type {Record<PropertyKey,Session$>} */
     sessions = {};
-    /** @type {Record<string,Target>} */
+    /** @type {Record<PropertyKey,MainClient$>} */
+    clients = {};
+    /** @type {Record<PropertyKey,Log$>} */
+    logs = {};
+    /** @type {Record<PropertyKey,Target$>} */
     targets = {};
-    /** @type {Record<string,Upload>} */
+    /** @type {Record<PropertyKey,Upload$>} */
+    uploads = {};
+    /** @type {Record<PropertyKey,Download$>} */
+    downloads = {};
+    /** @type {Record<PropertyKey,any>} */
+    nms_sessions = {};
+    sysinfo = {
+        platform: process.platform
+    };
+    /** @type {Record<PropertyKey,any>} */
+    processes = {};
+    /** @type {Record<PropertyKey,any>} */
+    process_info = {};
+    /** @type {Record<PropertyKey,any>} */
+    detected_crops = {};
+    properties = utils.json_copy(InternalSessionProps);
+}
+
+/** @extends {Core<MainApp$>} */
+export class MainApp extends Core {
+    /** @type {Record<PropertyKey,Download>} */
+    downloads = {};
+    /** @type {Record<PropertyKey,Session>} */
+    sessions = {};
+    /** @type {Record<PropertyKey,Target>} */
+    targets = {};
+    /** @type {Record<PropertyKey,Upload>} */
     uploads = {};
     /** @type {Cache} */
     #media_info_cache;
     #media_refs = {};
+    /** @type {Record<PropertyKey,Promise<MediaInfo>>} */
     #media_info_promise_map = {};
     /** @type {utils.PromisePool} */
     #media_info_promise_pool;
@@ -67,11 +85,16 @@ export default class MainApp extends Core {
     netstats = [];
 
     SESSION_PUBLIC_PROPS = [
-       ["index"],
-       ["name"],
-       ["creation_time"],
-       ["version"],
-       ["stream", "state"],
+        ["id"],
+        ["index"],
+        ["name"],
+        ["creation_time"],
+        ["version"],
+        ["stream", "id"],
+        ["stream", "session_id"],
+        ["stream", "state"],
+        ["schedule_start_time"],
+        ["access_control"],
     ];
 
     /** @type {Stream[]} */
@@ -79,29 +102,39 @@ export default class MainApp extends Core {
 
     get sessions_ordered() { return utils.sort(Object.values(this.sessions), s=>s.index); }
     
-    /** @type {Record<PropertyKey,Client>} */
+    /** @type {Record<PropertyKey,MainClient>} */
     get clients() { return this.client_server.clients; }
 
     constructor() {
-        super("main");
+        super("main", new MainApp$());
         globals.app = this;
     }
 
     async init() {
         
-        this.$.sessions = {};
-        this.$.nms_sessions = {};
-        this.$.clients = {};
-        this.$.logs = this.logger.register_changes();
-        this.$.targets = {};
-        this.$.uploads = {};
-        this.$.downloads = {};
-        this.$.sysinfo = {
-            platform: process.platform
-        };
-        this.$.processes = {};
-        this.$.process_info = {};
-        this.$.detected_crops = {};
+        this.logger.register_changes(this.$.logs);
+
+        this.curr_saves_dir = path.resolve(this.saves_dir, "curr");
+        this.old_saves_dir = path.resolve(this.saves_dir, "old");
+        this.public_html_dir = path.resolve(dirname, "public_html");
+        this.null_video_path = path.resolve(this.tmp_dir, `nv`);
+        this.null_audio_path = path.resolve(this.tmp_dir, `na`);
+        this.null_audio_video_path = path.resolve(this.tmp_dir, `nav`);
+        
+        this.detected_crops_cache = new Cache("detected_crops", {
+            ttl: 1000 * 60 * 60 * 24 * 7,
+        });
+        this.detected_crops_cache.on("set", ({key,data})=>{
+            this.$.detected_crops[key] = data;
+        });
+        this.detected_crops_cache.on("delete", ({key,data})=>{
+            delete this.$.detected_crops[key];
+            fs.rm(path.resolve(this.screenshots_dir, key), {recursive:true}).catch(utils.noop);
+        });
+
+        this.#media_info_cache = new Cache("mediainfo", 1000 * 60 * 60 * 24 * 7);
+
+        this.#media_info_promise_pool = new utils.PromisePool(MAX_CONCURRENT_MEDIA_INFO_PROMISES);
         
         var update_processes = ()=>{
             for (var m in this.modules) {
@@ -148,117 +181,13 @@ export default class MainApp extends Core {
             this.logger.info("Config file updated.");
             update_conf();
         });
-
-        this.netstats = []
-        let nethogs = child_process.spawn(`nethogs`, ["-t"]);
-        readline.createInterface(nethogs.stdout).on("line", line=>{
-            if (String(line).match(/^Refreshing:/)) {
-                this.netstats = [];
-                return;
-            }
-            var m = String(line).match(/^(.+?)\/(\d+)\/(\d+)\s+([\d.]+)\s+([\d.]+)$/);
-            if (!m) return;
-            var [_,program,pid,userid,sent,received] = m;
-            sent *= 1024;
-            received *= 1024;
-            this.netstats.push({program,pid,userid,sent,received});
-        });
-        nethogs.on("error", (e)=>{
-            console.error(e.message);
-        });
-
-        this.curr_saves_dir = path.resolve(this.saves_dir, "curr");
-        this.old_saves_dir = path.resolve(this.saves_dir, "old");
-        this.public_html_dir = path.resolve(dirname, "public_html");
-        this.null_video_path = path.resolve(this.tmp_dir, `nv`);
-        this.null_audio_path = path.resolve(this.tmp_dir, `na`);
-        this.null_audio_video_path = path.resolve(this.tmp_dir, `nav`);
-        // this.fixed_media_dir = path.resolve(core.cache_dir, "fixed");
-
-        // setInterval(()=>this.cleanup_tmp_dirs(), 1000 * 60 * 60);
-        // this.cleanup_tmp_dirs();
         
-        this.detected_crops_cache = new Cache("detected_crops", {
-            ttl: 1000 * 60 * 60 * 24 * 7,
-        });
-        this.detected_crops_cache.on("set", ({key,data})=>{
-            this.$.detected_crops[key] = data;
-        });
-        this.detected_crops_cache.on("delete", ({key,data})=>{
-            delete this.$.detected_crops[key];
-            fs.rm(path.resolve(this.screenshots_dir, key), {recursive:true}).catch(utils.noop);
-        });
-
-        this.#media_info_cache = new Cache("mediainfo", 1000 * 60 * 60 * 24 * 7);
-
-        this.#media_info_promise_pool = new utils.PromisePool(MAX_CONCURRENT_MEDIA_INFO_PROMISES);
-        
-        this.$.properties = utils.json_copy(InternalSessionProps);
-
-        this.api = new API();
-
-        await fs.mkdir(this.old_saves_dir, { recursive: true });
-        await fs.mkdir(this.curr_saves_dir, { recursive: true });
-        await this.#generate_null_media_files();
-        await this.load_sessions();
-        await this.#setup_web();
-        await this.detected_crops_cache.init();
-        await this.#media_info_cache.init();
-
-        var save_interval_id;
-        var setup_save_interval = ()=>{
-            clearInterval(save_interval_id);
-            save_interval_id = setInterval(()=>{
-                this.save_sessions();
-            }, this.conf["main.autosave_interval"] * 1000);
-        }
-        
-        setInterval(()=>this.#tick(), TICK_INTERVAL);
-        var update_change_log = async ()=>{
-            this.$.change_log = {
-                "mtime": +(await fs.stat(this.change_log_path)).mtime
-            };
-        }
-
-        this.client_updater = new ClientUpdater(this.observer, ()=>Object.values(this.client_server.clients), (c)=>{
-            return c.path[0] !== "sessions" || this.SESSION_PUBLIC_PROPS.some(p=>utils.array_starts_with(c.path.slice(2), p));
-        });
-
-        update_change_log();
-        var change_log_watcher = chokidar.watch(this.change_log_path, {awaitWriteFinish:true});
-        change_log_watcher.on("change", ()=>update_change_log());
-
-        var update_conf = ()=>{
-            this.load_targets();
-            setup_save_interval();
-        };
-        update_conf();
-
-        this.on("input", async (c)=>{
-            this.api.parse(...c);
-        });
-        
-    }
-
-    check_volumes() {
-        if (!this.ipc.get_process("file-manager")) return;
-        this.ipc.request("file-manager", "volumes").catch(utils.noop).then((data)=>{
-            if (!data) return;
-            this.logger.info(`update-volumes [${Object.keys(data).length}]`);
-            this.$.volumes = data;
-        });
-    }
-    
-    async #setup_web() {
         var exp = express();
-
         this.web = new WebServer(exp, {
             auth: true,
             // username: core.conf["main.http_username"],
             // password: core.conf["main.http_password"],
         });
-
-        this.client_server = new ClientServer("main", this.web.wss, this.observer, Client, true);
         
         exp.use(bodyParser.urlencoded({
             extended: true,
@@ -309,13 +238,13 @@ export default class MainApp extends Core {
                                 if (initial_scan) return;
                                 if ((upload.unique_dest_path.match(/\.mp4$/i) && upload.first_and_last_chunks_uploaded) || upload.first_chunk_uploaded) {
                                     initial_scan = true;
-                                    session.get_media_info(item.filename, {force:true});
+                                    session.update_media_info(item.filename, {force:true});
                                 }
                             });
                             upload.on("complete", ()=>{
                                 // delete item.upload;
                                 if (upload.chunks > 1) {
-                                    if (item) session.get_media_info(item.filename, {force:true});
+                                    if (item) session.update_media_info(item.filename, {force:true});
                                 }
                             });
                         }
@@ -368,8 +297,92 @@ export default class MainApp extends Core {
         exp.use("/", await this.serve({
             root: this.public_html_dir
         }));
+        this.client_server = new ClientServer("main", this.web.wss, MainClient, true);
+
+        this.netstats = []
+        let nethogs = child_process.spawn(`nethogs`, ["-t"]);
+        readline.createInterface(nethogs.stdout).on("line", line=>{
+            if (String(line).match(/^Refreshing:/)) {
+                this.netstats = [];
+                return;
+            }
+            var m = String(line).match(/^(.+?)\/(\d+)\/(\d+)\s+([\d.]+)\s+([\d.]+)$/);
+            if (!m) return;
+            var [_,program,pid,userid,sent,received] = m;
+            sent *= 1024;
+            received *= 1024;
+            this.netstats.push({program,pid,userid,sent,received});
+        });
+        nethogs.on("error", (e)=>{
+            console.error(e.message);
+        });
+        // this.fixed_media_dir = path.resolve(core.cache_dir, "fixed");
+
+        // setInterval(()=>this.cleanup_tmp_dirs(), 1000 * 60 * 60);
+        // this.cleanup_tmp_dirs();
+
+        this.api = new API();
+
+        await fs.mkdir(this.old_saves_dir, { recursive: true });
+        await fs.mkdir(this.curr_saves_dir, { recursive: true });
+        await this.detected_crops_cache.ready;
+        await this.#media_info_cache.ready;
+        await this.#generate_null_media_files();
+
+        await this.load_sessions();
+
+        var save_interval_id;
+        var setup_save_interval = ()=>{
+            clearInterval(save_interval_id);
+            save_interval_id = setInterval(()=>{
+                this.save_sessions();
+            }, this.conf["main.autosave_interval"] * 1000);
+        }
         
-        await this.client_server.init();
+        setInterval(()=>this.#tick(), TICK_INTERVAL);
+        var update_change_log = async ()=>{
+            this.$.change_log = {
+                "mtime": +(await fs.stat(this.change_log_path)).mtime
+            };
+        }
+
+        this.client_updater = new ClientUpdater(this.observer, (c)=>{
+            if (c.path[0] === "sessions") {
+                var path = c.path.slice(2);
+                if (!path.length || this.SESSION_PUBLIC_PROPS.some(p=>utils.array_starts_with(path, p))) return true;
+                return false;
+            }
+            return true;
+        });
+        this.client_updater.on("update", ($)=>{
+            var payload = {$};
+            for (var c of Object.values(this.client_server.clients)) c.send(payload);
+        });
+
+        update_change_log();
+        var change_log_watcher = chokidar.watch(this.change_log_path, {awaitWriteFinish:true});
+        change_log_watcher.on("change", ()=>update_change_log());
+
+        var update_conf = ()=>{
+            this.load_targets();
+            setup_save_interval();
+        };
+        update_conf();
+
+        this.on("input", async (c)=>{
+            this.api.parse(...c);
+        });
+        
+        await this.client_server.ready;
+    }
+
+    check_volumes() {
+        if (!this.ipc.get_process("file-manager")) return;
+        this.ipc.request("file-manager", "volumes").catch(utils.noop).then((data)=>{
+            if (!data) return;
+            this.logger.info(`update-volumes [${Object.keys(data).length}]`);
+            this.$.volumes = data;
+        });
     }
     
     async load_targets() {
@@ -547,21 +560,6 @@ export default class MainApp extends Core {
                 }
             }
         }
-        /* if (!sessions.length) {
-            // old format...
-            let filenames = (await fs.readdir(core.saves_dir)).filter(filename=>filename.match(/^\d{4}-\d{2}-\d{2}-/));
-            filenames = await utils.order_files_by_mtime_descending(filenames, core.saves_dir);
-            for (let filename of filenames) {
-                let fullpath = path.resolve(core.saves_dir, filename);
-                try {
-                    core.logger.info(`Loading '${filename}'...`);
-                    sessions = JSON.parse(await fs.readFile(fullpath, "utf8")).sessions;
-                    break;
-                } catch {
-                    core.logger.error(`Failed to load '${filename}'`);
-                }
-            }
-        } */
         for (var session of sessions) {
             var id = session.id;
             delete session.id;
@@ -633,16 +631,16 @@ export default class MainApp extends Core {
         // return this.#proxy_files[filename] || filename;
     }
 
+    /** @param {string[]} filenames */
     register_media_refs(filenames) {
-        if (!Array.isArray(filenames)) filenames = [filenames];
         for (var filename of filenames) {
             if (!this.#media_refs[filename]) this.#media_refs[filename] = 0;
             this.#media_refs[filename]++;
         }
     }
 
+    /** @param {string[]} filenames */
     unregister_media_refs(filenames) {
-        if (!Array.isArray(filenames)) filenames = [filenames];
         for (var filename of filenames) {
             this.#media_refs[filename]--;
             if (this.#media_refs[filename] <= 0) {
@@ -653,12 +651,6 @@ export default class MainApp extends Core {
     }
 
     get_media_info(filename, opts) {
-        filename = String(filename);
-        opts = {
-            force: false, // forces rescan despite still valid in cache
-            silent: false, // if true doesn't set processing flag
-            ...opts
-        };
         var key = JSON.stringify([filename, opts]);
         if (!this.#media_info_promise_map[key]) {
             this.#media_info_promise_map[key] = this.#probe_media(filename, opts);
@@ -669,6 +661,7 @@ export default class MainApp extends Core {
         return this.#media_info_promise_map[key];
     }
 
+    /** @returns {Promise<MediaInfo>} */
     #probe_media(filename, opts) {
         return this.#media_info_promise_pool.enqueue(async ()=>{
             let t0 = Date.now();
@@ -677,43 +670,40 @@ export default class MainApp extends Core {
             let stat, abspath, size, mtime;
 
             if (uri.protocol === "file:") {
-                abspath = url.fileURLToPath(filename);
-                stat = (await fs.stat(uri).catch(utils.noop));
+                abspath = utils.pathify(uri);
+                stat = (await fs.stat(abspath).catch(utils.noop));
                 if (stat) {
                     size = stat.size;
                     mtime = stat.mtimeMs;
                 } else {
-                    return {exists: false};
+                    return {exists:false};
                 }
             }
+            // await utils.timeout(2000);
 
-            let cache_key = JSON.stringify([filename, size, mtime, MEDIAINFO_VERSION]);
+            let cache_key = utils.md5(JSON.stringify([filename, size, mtime, MEDIA_INFO_VERSION]));
             let cached_data = this.#media_info_cache.get(cache_key);
 
             let new_data;
             if (!opts.force && cached_data) {
                 new_data = cached_data;
             } else {
-                new_data = { exists: false };
                 if ((stat && uri.protocol === "file:") || uri.protocol === "edl:") {
                     let header = await read_file(abspath, 0, 32).then((buffer)=>buffer.toString("utf-8")).catch(()=>"");
                     let is_edl_file = header.startsWith("# mpv EDL v0\n");
                     let is_playlist_file = header.startsWith("// livestreamer playlist");
                     if (is_playlist_file) {
-                        new_data.probe_method = "playlist";
                         let header_and_json = utils.split_after_first_line(await fs.readFile(abspath, "utf8"));
                         try{
-                            new_data.exists = true;
+                            new_data = {exists:true};
                             new_data.playlist = JSON.parse(header_and_json[1]);
                         } catch {
                             this.logger.warn("Playlist error:", header_and_json[1]);
                         }
                     } else if (is_edl_file || uri.protocol === "edl:") {
-                        new_data.probe_method = "edl";
-                        let raw = await edl_probe(filename).catch(e=>this.logger.warn("EDL error:", e));
+                        let raw = await this.edl_probe(filename).catch(e=>this.logger.warn("EDL error:", e));
+                        new_data = {exists:!!raw};
                         if (raw) {
-                            // mi.name = filename;
-                            new_data.exists = true;
                             new_data.duration = raw.duration;
                             new_data.streams = raw["track-list"].map(t=>{
                                 let stream = {};
@@ -735,11 +725,10 @@ export default class MainApp extends Core {
                             });
                         }
                     } else {
-                        new_data.probe_method = "ffprobe";
-                        new_data.exists = !!stat;
+                        new_data = {exists: !!stat};
                         if (size) new_data.size = size;
                         if (mtime) new_data.mtime = mtime;
-                        let raw = await ffprobe(abspath).catch(()=>null);
+                        let raw = await this.ffprobe(abspath).catch(()=>null);
                         if (raw) {
                             new_data.duration = parseFloat(raw.format.duration) || 0;
                             // let orig_duration = info.duration;
@@ -774,10 +763,9 @@ export default class MainApp extends Core {
                         }
                     }
                 } else if (uri.protocol === "http:" || uri.protocol === "https:") {
-                    let raw = await youtubedl_probe(filename).catch(()=>null);
-                    new_data.probe_method = "youtube-dl";
+                    let raw = await this.youtubedl_probe(filename).catch(()=>null);
+                    new_data = {exists:!!raw};
                     if (raw) {
-                        new_data.exists = true;
                         new_data.size = +raw.filesize_approx;
                         // data.atime = data.mtime = data.ctime = data.btime = +rmi.epoch;
                         new_data.name = raw.is_playlist ? raw.items[0].playlist_title : raw.fulltitle;
@@ -806,30 +794,14 @@ export default class MainApp extends Core {
                         }
                     }
                 }
-                //ruh roh...
-                this.#media_info_cache.set(cache_key, new_data);
+                if (new_data) this.#media_info_cache.set(cache_key, new_data);
             }
-            
-            let t1 = Date.now();
-            if (!opts.silent) {
+            if (!opts.silent && new_data && new_data !== cached_data) {
+                let t1 = Date.now();
                 this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
             }
             return new_data;
         });
-    }
-
-    fix_access_control(ac) {
-        for (var id of Object.keys(ac)) {
-            var user = ac[id]
-            if (user.username) {
-                delete ac[id];
-                id = user.username
-                delete user.username;
-                ac[id] = user;
-            }
-            if (id != "*" && user.password) delete user.password;
-        }
-        if (!ac["*"]) ac["*"] = {"access":"allow"};
     }
 
     async analyze_local_file_system_volume(id) {
@@ -920,6 +892,52 @@ export default class MainApp extends Core {
         return targets || null;
     }
 
+    async youtubedl_probe(uri) {
+        var proc = await utils.execa(globals.app.conf["main.youtube_dl"] || "yt-dlp", [
+            uri,
+            "--dump-json",
+            "--no-warnings",
+            "--no-call-home",
+            "--no-check-certificate",
+            // "--prefer-free-formats",
+            // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
+            "--flat-playlist",
+            "--format", globals.app.conf["main.youtube_dl_format"]
+        ]);
+        var lines = proc.stdout.split("\n");
+        var arr = lines.map(line=>JSON.parse(line));
+        if (arr.length > 1) {
+            return {
+                is_playlist: true,
+                items: arr
+            };
+        }
+        return arr[0];
+    }
+    
+    async ffprobe(uri) {
+        var proc = await utils.execa("ffprobe", [
+            '-show_streams',
+            '-show_chapters',
+            '-show_format',
+            '-print_format', 'json',
+            uri
+        ]);
+        return JSON.parse(proc.stdout);
+    }
+    
+    async edl_probe(uri) {
+        var output = await utils.execa(globals.app.conf["core.mpv_executable"], [...mpv_args,`--script=${path.resolve(globals.app.mpv_lua_dir, 'get_media_info.lua')}`, uri]);
+        var m = output.stdout.match(/^\[get_media_info\] (.+)/);
+        try { return JSON.parse(m[1].trim()); } catch { }
+    }
+    
+    async youtube_url_to_edl(filename) {
+        var output = await utils.execa(globals.app.conf["core.mpv_executable"], [...mpv_args, `--script=${path.resolve(globals.app.mpv_lua_dir, 'get_stream_open_filename.lua')}`, filename]);
+        var m = output.stdout.match(/^\[get_stream_open_filename\] (.+)/m);
+        try { return JSON.parse(m[1].trim()); } catch { }
+    }
+
     async destroy() {
         this.logger.info("Saving all sessions before exit...");
         await this.save_sessions();
@@ -927,8 +945,6 @@ export default class MainApp extends Core {
         this.client_updater.destroy();
     }
 }
-
-export {MainApp};
 
 async function read_file(filename, start, length) {
     const chunks = [];
@@ -938,43 +954,4 @@ async function read_file(filename, start, length) {
     return Buffer.concat(chunks);
 }
 
-async function youtubedl_probe(uri) {
-    var proc = await utils.execa(globals.app.conf["main.youtube_dl"] || "yt-dlp", [
-        uri,
-        "--dump-json",
-        "--no-warnings",
-        "--no-call-home",
-        "--no-check-certificate",
-        // "--prefer-free-formats",
-        // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
-        "--flat-playlist",
-        "--format", globals.app.conf["main.youtube_dl_format"]
-    ]);
-    var lines = proc.stdout.split("\n");
-    var arr = lines.map(line=>JSON.parse(line));
-    if (arr.length > 1) {
-        return {
-            is_playlist: true,
-            items: arr
-        };
-    }
-    return arr[0];
-}
-
-async function ffprobe(uri) {
-    var proc = await utils.execa("ffprobe", [
-        '-show_streams',
-        '-show_chapters',
-        '-show_format',
-        '-print_format', 'json',
-        uri
-    ]);
-    return JSON.parse(proc.stdout);
-}
-
-async function edl_probe(uri) {
-    var output = await utils.execa(globals.app.conf["core.mpv_executable"], ['--frames=0', '--vo=null', '--ao=null', `--script=${path.resolve(globals.app.mpv_lua_dir, 'get_media_info.lua')}`, uri]);
-    var m = output.stdout.match(/^\[get_media_info\] (.+)/);
-    if (m) return JSON.parse(m[1].trim());
-    return null;
-}
+export default MainApp;

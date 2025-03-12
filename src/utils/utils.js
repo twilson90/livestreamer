@@ -2,7 +2,6 @@ export * from "./Color.js";
 export * from "./EventEmitter.js";
 export * from "./md5.js";
 export * from "./Observer.js";
-export * from "./History.js";
 export * from "./Interval.js";
 export * from "./PromisePool.js";
 export * from "./Rectangle.js";
@@ -35,54 +34,6 @@ export class Diff {
 		Object.freeze(this);
 	}
 }
-
-/* class History {
-	get current() { return this.get(this.i); }
-	get prev() { return this.get(this.i-1); }
-	get next() { return this.get(this.i+1); }
-	get can_go_back() { return this.has(this.i-1); }
-	get can_go_forward() { return this.has(this.i+1); }
-	constructor(length=512, json_encode=false, compress=false) {
-		this.length = length;
-		this.reset();
-		if (compress && !!window.LZUTF8) this.compress = true;
-		this.json_encode = json_encode;
-	}
-	push(state) {
-		this.i++;
-		var s = typeof state === "string";
-		if (this.json_encode) state = JSON.stringify(state);
-		if (this.compress) state = LZUTF8.compress(state);
-		this.states[this.i%this.length] = {states:state,i:this.i};
-		for (var i = this.i; i < this.i + this.length; i++) {
-			var o = this.states[i%this.length];
-			if (!o || o.i <= this.i) break;
-			this.states[i%this.length] = null;
-		}
-	}
-	has(i) {
-		var s = this.states[i%this.length];
-		return (s && s.i == i);
-	}
-	get(i) {
-		if (!this.has(i)) return;
-		var state = s.state;
-		if (this.compress) state = LZUTF8.decompress(state);
-		if (this.json_encode) state = JSON.parse(state);
-		else return state;
-	}
-	goto(i) {
-		if (!this.has(i)) return;
-		this.i = i;
-		return this.current;
-	}
-	go_back() { return this.goto(this.i-1); }
-	go_forward() { return this.goto(this.i+1); }
-	reset() {
-		this.i = -1;
-		this.states = new Array(this.length);
-	}
-} */
 
 export class TimeoutError extends Error {
 	constructor(message) {
@@ -957,7 +908,7 @@ export function json_copy(obj, replacer) {
 export function deep_filter(obj, filter_callback) {
 	if (Array.isArray(filter_callback)) {
 		var paths = filter_callback;
-		filter_callback = (k, v, path)=>paths.some(p=>array_starts_with(p, path));
+		filter_callback = (k, v, path)=>paths.some(p=>array_starts_with(path, p));
 	}
 	/** @param {any} obj @param {string[]} path */
 	var walk = (obj, path)=>{
@@ -1013,6 +964,7 @@ export function deep_sync(dst, src) {
 	for (var k of old_keys) {
 		if (!(k in src)) delete dst[k];
 	}
+	return dst;
 }
 
 /* deep_diff(o1, o2) {
@@ -1220,73 +1172,38 @@ export function walk(o, delegate_filter) {
 	next(o, delegate_filter, []);
 }
 
-/* export async function replace_async(str, re, callback) {
-	str = String(str);
-	var parts = [], i = 0;
-	if (re instanceof RegExp) {
-		if (re.global)
-			re.lastIndex = i;
-		var m;
-		while (m = re.exec(str)) {
-			var args = m.concat([m.index, m.input]);
-			parts.push(str.slice(i, m.index), callback.apply(null, args));
-			i = re.lastIndex;
-			if (!re.global)
-				break; // for non-global regexes only take the first match
-			if (m[0].length == 0)
-				re.lastIndex++;
-		}
-	} else {
-		re = String(re);
-		i = str.indexOf(re);
-		parts.push(str.slice(0, i), callback.apply(null, [re, i, str]));
-		i += re.length;
-	}
-	parts.push(str.slice(i));
-	var strings = await Promise.all(parts);
-	return strings.join("");
-} */
-
-export function path_to_file_uri(path) {
-	if (!path.startsWith("/")) path = "/"+path;
-	return new URL("file://"+path).toString();
+/** @param {string} fileURL */
+export function pathToFileURL(filePath) {
+    const url = new URL('file://');
+    url.pathname = filePath.replace(/\\/g, '/');
+    return url;
 }
 
-export function file_uri_to_path(uri) {
-	if (typeof uri !== 'string' || uri.substring(0, 7) !== 'file://') {
-		throw new TypeError('Must pass in a file:// URI to convert to a file path');
+/** @param {string|URL} fileURL */
+export function fileURLToPath(fileURL) {
+    const url = (typeof fileURL === 'string') ? new URL(fileURL) : fileURL;
+    if (url.protocol !== 'file:') throw new TypeError('URL must use the file: protocol');
+    let pathname = decodeURIComponent(url.pathname);
+    if (pathname.startsWith('/') && /^\/[A-Za-z]:\//.test(pathname)) {
+		pathname = pathname.slice(1);
 	}
-	const rest = decodeURI(uri.substring(7));
-	const firstSlash = rest.indexOf('/');
-	let host = rest.substring(0, firstSlash);
-	let path = rest.substring(firstSlash + 1);
-	if (host === 'localhost') host = '';
-	if (host) host = "//" + host;
-	path = path.replace(/^(.+)\|/, '$1:');
-	// path = path.replace(/\//g, '\\');
-	// if not windows path...
-	if (!/^.+:/.test(path)) {
-		path = "/" + path;
-	}
-	return host + path;
+    return pathname;
 }
 
-export function try_file_uri_to_path(uri) {
-	try {
-		return file_uri_to_path(uri);
-	} catch (e) {
-		return uri;
-	}
+/** @param {string|URL} str */
+export function urlify(str) {
+	if (str instanceof URL) return str;
+    if (/^[a-zA-Z]+:\/\//.test(str)) return new URL(str);
+    try { return pathToFileURL(str); } catch { }
 }
 
-/* get_random_values(array) {
-	for (let i = 0, l = array.length; i < l; i++) {
-			array[i] = Math.floor(Math.random() * 256);
-	}
-	return array;
-}, */
+/** @param {string|URL} str */
+export function pathify(str) {
+	try { return fileURLToPath(urlify(str)); } catch { }
+}
+
 export function convert_links_to_html(str) {
-		return str.replace(/(\b(https?|ftp):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/gim, '<a href="$1" target="_blank">$1</a>');
+	return str.replace(/(\b(https?|ftp):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|])/gim, '<a href="$1" target="_blank">$1</a>');
 }
 
 export function convert_bytes(num, precision=2) {

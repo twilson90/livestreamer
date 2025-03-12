@@ -36,8 +36,12 @@ end
 
 ------------------
 
---[[ for _,v in ipairs({"volume", "track-list", "path", "o"}) do
-    observe_property(v)
+--[[ for k,v in pairs({
+    ["stream-open-filename"] = 1,
+    ["path"] = 1,
+    ["audio-pts"] = 1
+}) do
+    observe_property(k)
 end ]]
 
 -- observe_property("stream-open-filename")
@@ -49,19 +53,15 @@ end) ]]
 
 local on_load_commands = nil
 local on_load_opts = nil
-local loading = false
-register_script_message("loadfile", function(filename, opts, _on_load_commands)
-    loading = true
+register_script_message("setup_loadfile", function(_on_load_opts, _on_load_commands)
+    on_load_opts = _on_load_opts
     on_load_commands = _on_load_commands
-    on_load_opts = opts
-    mp.commandv("loadfile", filename, "replace")
 end)
 
 mp.add_hook("on_before_start_file", 50, function ()
 end)
 
 mp.add_hook("on_load", 50, function ()
-    loading = false
     mp.set_property("keep-open", "always") -- have to set it here because 'encoding' auto-profile will always change this to 'no' ...
     mp.set_property_native("keep-open-pause", false)
     if props.o then
@@ -125,6 +125,14 @@ end)
 mp.add_hook("on_unload", 50, function ()
 end)
 
-mp.add_periodic_timer(1.0/30.0, function()
+--[[ mp.add_periodic_timer(1.0/30.0, function()
     mp.get_time()
-end)
+end) ]]
+
+--[[ mp.add_periodic_timer(1.0, function()
+    local path = mp.get_property_native("path")
+    local pts = mp.get_property_native("audio-pts")
+    if path ~= "null://eof" and pts == nil then
+        mp.commandv("loadfile", "null://eof", "replace")
+    end
+end) ]]

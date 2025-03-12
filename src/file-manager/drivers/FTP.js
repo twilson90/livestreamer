@@ -3,11 +3,10 @@ import mime from "mime-types";
 import fs from "fs-extra";
 import stream from "node:stream";
 import ftp from "basic-ftp"
-import * as constants from "../../core/constants.js";
-import Driver from "../Driver.js";
+import {Driver, constants} from "../exports.js";
 
 /** @inheritDoc */
-class FTP extends Driver {
+export class FTP extends Driver {
     static net_protocol = "ftp";
 
     __config(config) {

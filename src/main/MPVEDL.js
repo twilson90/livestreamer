@@ -43,9 +43,10 @@ export class MPVEDL {
     entries = [];
     get length() { return this.entries.length; }
 
-    constructor(entries=[]) {
+    /** @param {Iterable<MPVEDLEntry>} entries */
+    constructor(entries) {
         /** @type {MPVEDLEntry[]} */
-        this.append(...entries);
+        if (entries) this.append(...entries);
     }
 
     static escape(str, check=false) {

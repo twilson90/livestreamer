@@ -41,7 +41,7 @@ export function importMetaPlugin() {
     }
 }
 
-export default class {
+export class API {
 
     constructor(dir) {
         if (!dir) dir = process.cwd();
@@ -108,8 +108,8 @@ export default class {
 
         let input = [
             "core/exports.js",
-            "media-server/index.js",
             "main/index.js",
+            "media-server/index.js",
             "file-manager/index.js",
         ]
 
@@ -377,3 +377,5 @@ export default class {
 }
 
 export {vite, esmShim, viteStaticCopy, defineConfig};
+
+export default API;

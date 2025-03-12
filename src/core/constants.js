@@ -6,3 +6,5 @@ export const State = new class {
     STOPPED = "stopped";
     STOPPING = "stopping";
 };
+
+/** @typedef {State.STARTED | State.STARTING | State.STOPPED | State.STOPPING} StateType */

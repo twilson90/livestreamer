@@ -1,12 +1,11 @@
 import events from "node:events";
 import net from "node:net";
 import readline from "node:readline";
-import * as utils from "./utils.js";
-import globals from "./globals.js";
+import {globals, utils} from "./exports.js";
 
 /** @typedef {{name:string,pid:number,ppid:number,sock:net.Socket}} Process */
 export class IPC extends events.EventEmitter {
-    /** @type {Record<any,Process>} */
+    /** @type {Record<PropertyKey,Process>} */
     processes = {};
     /** @type {Record<PropertyKey,net.Socket>} */
     #socks = {};
@@ -72,14 +71,15 @@ export class IPC extends events.EventEmitter {
                         throw new Error(`Unrecognized event: ${event}`);
                     }
                 });
-            }).listen(socket_path);
+            });
+            this.#server.listen(socket_path);
         } else {
             this.#ready = new Promise((resolve)=>{
                 this.#ready_resolve = resolve;
             });
         }
         this.respond("internal:get", (...paths)=>{
-            return paths.map(p=>utils.ref.get(globals.core, p));
+            return paths.map(p=>utils.ref.get(globals.app, p));
         });
     }
     async connect() {
@@ -153,8 +153,8 @@ export class IPC extends events.EventEmitter {
             setTimeout(()=>reject(`internal:request ${rid} ${request} timed out.`), timeout);
             this.send(pid, "internal:request", { rid, request, args, origin: this.pid });
             this.once(`internal:response:${rid}`, ([result,err])=>{
-                if (err && _default === undefined) reject(err);
-                else resolve(result ?? _default);
+                if (err) reject(err);
+                else resolve(result);
             });
         });
     }

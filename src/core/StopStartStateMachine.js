@@ -1,8 +1,14 @@
-import DataNode from "../core/DataNode.js";
-import globals from "./globals.js";
-import * as constants from "../core/constants.js";
+import {DataNodeID, DataNodeID$, constants, globals} from "./exports.js";
 
-export default class StopStartStateMachine extends DataNode {
+export class StopStartStateMachine$ extends DataNodeID$ {
+    restart = 0;
+    state = constants.State.STOPPED;
+    start_time = 0;
+    stop_reason = "";
+}
+
+/** @template {StopStartStateMachine$} T @extends {DataNodeID<T>} */
+export class StopStartStateMachine extends DataNodeID {
     
     #restart_interval;
 
@@ -10,17 +16,16 @@ export default class StopStartStateMachine extends DataNode {
     get is_started() { return this.$.state === constants.State.STARTED; }
     get time_running() { return Date.now() - this.$.start_time } // in ms
 
-    constructor(id) {
-        super(id);
-        this.$.restart = 0;
-        this.$.state = constants.State.STOPPED;
+    /** @param {string} id @param {T} $ */
+    constructor(id, $) {
+        super(id, $);
     }
 
     async _handle_end() {
         if (this.state === constants.State.STOPPING || this.state === constants.State.STOPPED) return;
         this.logger.warn(`Ended unexpectedly, attempting restart soon...`);
         await this.stop("restart");
-        this.$.restart = globals.core.conf["main.stream_restart_delay"];
+        this.$.restart = globals.app.conf["main.stream_restart_delay"];
         this.#restart_interval = setInterval(()=>{
             this.$.restart--;
             if (this.$.restart <= 0) {
@@ -39,8 +44,8 @@ export default class StopStartStateMachine extends DataNode {
     }
 
     async stop(reason) {
-        if (this.state === constants.State.STOPPED) return;
         clearInterval(this.#restart_interval);
+        if (this.state === constants.State.STOPPED) return;
         this.$.state = constants.State.STOPPING;
         this.$.stop_reason = reason || "unknown";
         await this._stop(reason);
@@ -63,3 +68,5 @@ export default class StopStartStateMachine extends DataNode {
 
     _destroy(){}
 }
+
+export default StopStartStateMachine;

@@ -1,10 +1,12 @@
 import fs from "fs-extra";
-import * as utils from "../core/utils.js";
-import ClientBase from "../core/ClientBase.js";
-import InternalSession from "./InternalSession.js";
-import globals from "./globals.js";
+import {globals, utils, InternalSession, Client, Client$} from "./exports.js";
 
-export class Client extends ClientBase {
+export class MainClient$ extends Client$ {
+    session_id = "";
+}
+
+/** @extends {Client<MainClient$>} */
+export class MainClient extends Client {
     get session() { return globals.app.sessions[this.$.session_id]; }
     get stream() { return this.session.stream; }
     get sessions() { return globals.app.sessions; }
@@ -52,8 +54,10 @@ export class Client extends ClientBase {
         if (!globals.app.sessions[session_id]) session_id = null;
         this.$.session_id = session_id;
         var session = this.session;
-        var $ = {session:(session)?session.$:{[utils.Observer.RESET_KEY]:"Object"}};
-        this.send({$});
+        if (session) {
+            var $ = {sessions:{[session_id]:session.$}, session_id};
+            this.send({$});
+        }
         // if (this.session) this.session.emit("attach", this);
     }
 
@@ -61,11 +65,11 @@ export class Client extends ClientBase {
         var fullpath = this.session.evaluate_and_sanitize_filename(file);
         if (fullpath) await fs.writeFile(fullpath, data);
     }
-    
+
     destroy() {
         super.destroy();
         delete globals.app.$.clients[this.id];
     }
 }
 
-export default Client;
+export default MainClient;

@@ -12,14 +12,7 @@ import nms_ctx from "node-media-server/src/node_core_ctx.js";
 import NodeFlvSession from "node-media-server/src/node_flv_session.js";
 import NodeRtmpSession from "node-media-server/src/node_rtmp_session.js";
 
-import Core from "../core/index.js";
-import Logger from "../core/Logger.js";
-import * as utils from "../core/utils.js";
-import Blocklist from "../core/Blocklist.js";
-import FFMPEGWrapper from "../core/FFMPEGWrapper.js";
-import WebServer from "../core/WebServer.js";
-import globals from "./globals.js";
-import StopStartStateMachine from "../core/StopStartStateMachine.js";
+import {utils, globals, Blocklist, FFMPEGWrapper, WebServer, Core, Core$, Logger, StopStartStateMachine, StopStartStateMachine$} from "./exports.js";
 
 /** @import {Request, Response} from "express" */
 
@@ -113,13 +106,16 @@ const APPNAMES = new Set([
     "internal", // internal
 ]);
 
-export default class MediaServerApp extends Core {
-    /** @type {Record<string,Live>} */
+export class MediaServerApp$ extends Core$ {}
+
+/** @extends {Core<MediaServerApp$>} */
+export class MediaServerApp extends Core {
+    /** @type {Record<PropertyKey,Live>} */
     lives = {};
     sessions = {};
 
     constructor() {
-        super("media-server");
+        super("media-server", new MediaServerApp$());
         globals.app = this;
     }
 
@@ -432,8 +428,20 @@ export default class MediaServerApp extends Core {
     }
 }
 
-export {MediaServerApp};
+export class Live$ extends StopStartStateMachine$ {
+    hls_list_size = 0;
+    hls_max_duration = 0;
+    segment_duration = 0;
+    start_ts = 0;
+    is_live = false;
+    segment = 0;
+    use_hevc = false;
+    use_hardware = false;
+    outputs = [];
+    is_vod = false;
+}
 
+/** @extends {StopStartStateMachine<Live$>} */
 export class Live extends StopStartStateMachine {
     /** @type {FFMPEGWrapper} */
     ffmpeg;
@@ -446,7 +454,7 @@ export class Live extends StopStartStateMachine {
 
     constructor(id) {
 
-        super(id);
+        super(id, new Live$());
         globals.app.lives[this.id] = this;
 
         /** @type {{ts:Number, duration:Number, start_ts:Number, ended:boolean, segment:Number, hls_list_size:Number, hls_max_duration:Number, segment_duration:Number, outputs:Config[]}} */ this.$;
@@ -967,3 +975,5 @@ export class LiveLevel extends events.EventEmitter {
         await this.#update();
     }
 }
+
+export default MediaServerApp;

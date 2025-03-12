@@ -1,29 +1,41 @@
-import EventEmitter from "./EventEmitter.js";
-import {Observer, Observer_SET, Observer_DELETE, ObserverChangeEvent} from "./Observer.js";
-import * as utils from "./utils.js";
+import {DataNode, DataNode$, utils} from "./exports.js";
+/** @import {ObserverChangeEvent} from "./exports.js" */
 
 const STACK_LIMIT = 256;
 
-export class Entry {
-    /** @param {History} parent @param {ObserverChangeEvent[]} changes */
+export class HistoryEntry$ extends DataNode$ {
+    name = "";
+    ts = 0;
+    changes = 0;
+}
+
+export class History$ extends DataNode$ {
+    position = 0;
+    start = 0;
+    end = 0;
+    stack = {};
+}
+
+/** @extends {DataNode<HistoryEntry$>} */
+export class HistoryEntry extends DataNode {
+    /** @param {History} parent @param {utils.ObserverChangeEvent[]} changes */
     constructor(name, changes) {
+        super(new HistoryEntry$())
         var ts = Date.now();
         this.name = name;
         this.num_changes = changes.length;
         this.changes = changes
-        this.forward_changes = Observer.flatten_changes(changes)
-        this.backward_changes = Observer.flatten_changes(changes, true);
+        this.forward_changes = utils.Observer.flatten_changes(changes)
+        this.backward_changes = utils.Observer.flatten_changes(changes, true);
         this.ts = ts;
-        this.$ = { name, ts, changes: changes.length };
     }
 }
 
-export default class History extends EventEmitter {
+/** @extends {DataNode<History$>} */
+export class History extends DataNode {
     #applying = false;
-    /** @type {Record<string|undefined,Entry>} */
+    /** @type {Record<PropertyKey,HistoryEntry>} */
     #stack = {};
-    /** @type {{ pos:number, stack:Entry[] }} */
-    $ = new Observer().$;
     #curr_changes = [];
 
     get start() { return this.$.start; }
@@ -31,9 +43,9 @@ export default class History extends EventEmitter {
     get position() { return this.$.position; }
     get size() { return this.end-this.start; }
 
-    /** @param {Observer} target @param {function(ObserverChangeEvent):boolean} filter */
+    /** @param {utils.Observer} target @param {function(utils.ObserverChangeEvent):boolean} filter */
     constructor(target, filter) {
-        super();
+        super(new History$());
         this.clear();
         this.target = target;
         target.on("change", (c)=>{
@@ -71,7 +83,7 @@ export default class History extends EventEmitter {
             this.$.position++;
         }
         this.$.end = this.$.position;
-        var entry = new Entry(name, [...this.#curr_changes]);
+        var entry = new HistoryEntry(name, [...this.#curr_changes]);
         this.#stack[this.$.position-1] = entry;
         this.$.stack[this.$.position-1] = entry.$;
         this.#curr_changes = [];
@@ -90,11 +102,11 @@ export default class History extends EventEmitter {
         var reverse = new_pos<this.$.position;
         if (reverse) {
             for (var i = this.$.position-1; i >= new_pos; i--) {
-                Observer.apply_changes(this.target.$, this.#stack[i].backward_changes)
+                utils.Observer.apply_changes(this.target.$, this.#stack[i].backward_changes)
             }
         } else {
             for (var i = this.$.position; i < new_pos; i++) {
-                Observer.apply_changes(this.target.$, this.#stack[i].forward_changes);
+                utils.Observer.apply_changes(this.target.$, this.#stack[i].forward_changes);
             }
         }
         this.$.position = new_pos;
@@ -110,4 +122,4 @@ export default class History extends EventEmitter {
         this.goto(this.$.position - 1);
     }
 }
-export { History }
+export default History;

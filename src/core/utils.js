@@ -1,6 +1,5 @@
 import fs from "fs-extra";
 import path from "node:path";
-import url from "node:url";
 import child_process from "node:child_process";
 import os from "node:os";
 import * as tar from "tar";
@@ -383,6 +382,10 @@ export class AsyncIteratorLoop {
     }
 }
 
+export function* iterate_keys(obj) {
+    for (var k in obj) yield k;
+}
+
 /** @template T @param {(() => Iterable<T>) | Iterable<T>} generator */
 export function* infinite_iterator(generator) {
     while (true) {
@@ -396,12 +399,4 @@ export function* infinite_iterator(generator) {
             yield undefined;
         }
     }
-}
-
-/** @param {string} filePath */
-export function urlify(filePath) {
-    if (/^[a-zA-Z]+:\/\//.test(filePath)) {
-        return new URL(filePath);
-    }
-    return url.pathToFileURL(path.resolve(filePath));
 }

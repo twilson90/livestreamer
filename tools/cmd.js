@@ -1,5 +1,5 @@
 import { program } from 'commander';
-import API, {vite} from "./api.js";
+import {API, vite} from "./api.js";
     
 const api = new API();
 

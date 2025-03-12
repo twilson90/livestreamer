@@ -187,19 +187,17 @@ table.files {
 			font-weight: 500;
 			position: relative;
 			user-select: none;
-			display:flex;
+			display: inline-flex;
 			align-items: center;
 			flex-wrap: wrap;
 			gap: 5px;
 			flex: 1;
 			pointer-events: none;
-
-			&>*:first-child {
-				display:flex;
-				flex: 1 0;
-			}
 			&>*:not(:first-child) {
 				pointer-events: all;
+			}
+			&>.gap {
+				flex: 1 0 0;
 			}
 		}
 	}
@@ -950,7 +948,7 @@ button, input[type=button], input[type=submit] {
 .session-wrapper {
 	display: flex;
 }
-.sessions-select-wrapper {
+.session-select-wrapper {
 	display: flex;
 	&>*:not(:first-child) {
 		margin-left:-1px;
@@ -959,7 +957,7 @@ button, input[type=button], input[type=submit] {
 		display:none;
 	}
 }
-.sessions-tabs-wrapper {
+.session-tabs-wrapper {
 	display:flex;
 	overflow-x: auto;
 	overflow-y: hidden;
@@ -978,7 +976,7 @@ button, input[type=button], input[type=submit] {
 		flex-direction: column;
 	}
 }
-#sessions-tabs {
+#session-tabs {
 	display: flex;
 	// gap: 2px;
 	/* flex: 1 1 auto; */
@@ -1578,20 +1576,9 @@ input[type=number]::-webkit-inner-spin-button {
 		flex-direction: column;
 		gap: 0;
 	}
-	.playlist-header {
-		display: flex;
-		align-items: center;
-		gap: 5px;
-		.playlist-time-left, .playlist-time-total {
-			font-size: 80%;
-			font-weight: normal;
-		}
-	}
-	.playlist-controls {
-		display:flex;
-		flex-direction: row;
-		gap:5px;
-		flex-wrap: wrap;
+	.playlist-time-left, .playlist-time-total {
+		font-size: 80%;
+		font-weight: normal;
 	}
 	.playlist-status {
 		flex: 1 0;

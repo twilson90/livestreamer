@@ -1,5 +1,5 @@
-import SessionBaseProps from "./SessionBaseProps.js";
-/** @import {Property} from "../core/types.d.ts" */
+import {SessionProps} from "./exports.js";
+/** @import {Property} from "../core/exports.js" */
 
 export const PerFileProps = {
     __default__: {},
@@ -223,8 +223,8 @@ export const PlaylistItemProps = {
     },
 }
 
-export const Props = {
-    ...SessionBaseProps, 
+export const InternalSessionProps = {
+    ...SessionProps, 
     playlist_id: {
         __default__: -1,
     },
@@ -278,4 +278,4 @@ export const Props = {
     }
 }
 
-export default Props;
+export default InternalSessionProps;

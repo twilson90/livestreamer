@@ -1,6 +1,6 @@
 /** @template T */
 export class EventEmitter {
-    /** @type {Record<string, Set<(arg: T[K]) => void>} @template {keyof T} K */
+    /** @type {Record<PropertyKey, Set<(arg: T[K]) => void>} @template {keyof T} K */
     #events = {};
     
     addEventListener = this.on;
