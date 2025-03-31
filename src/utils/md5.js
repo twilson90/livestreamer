@@ -1,3 +1,4 @@
+/** @param {string} e */
 export function md5(e) {
     function h(a, b) {
         var c, d, e, f, g;

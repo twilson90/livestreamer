@@ -1,4 +1,4 @@
-import * as utils from "./utils.js";
+import {almost_equal} from "./almost_equal.js";
 
 export class Rectangle {
 	get left() { return this.x; }
@@ -123,10 +123,10 @@ export class Rectangle {
 
 	equals(r, epsilon=Number.EPSILON) {
 		r = Rectangle.resolve(r);
-		return utils.almost_equal(this.x, r.x, epsilon) &&
-			utils.almost_equal(this.y, r.y, epsilon) && 
-			utils.almost_equal(this.width, r.width, epsilon) && 
-			utils.almost_equal(this.height, r.height, epsilon)
+		return almost_equal(this.x, r.x, epsilon) &&
+			almost_equal(this.y, r.y, epsilon) && 
+			almost_equal(this.width, r.width, epsilon) && 
+			almost_equal(this.height, r.height, epsilon)
 	}
 
 	toString() {

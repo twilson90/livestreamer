@@ -1,7 +1,6 @@
-import {WindowCommunicator} from "../../utils/dom.js";
+import {WindowCommunicator} from "../../utils/dom/WindowCommunicator.js";
 import "./extra-style.scss";
-import * as mime_ext_map from "../../utils/mime_ext_map.js";
-import * as constants from "../../core/constants.js";
+import {mime_ext_map} from "../../utils/constants.js";
 
 export class FileManagerWebApp {
 	constructor() {

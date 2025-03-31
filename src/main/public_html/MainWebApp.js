@@ -1,4 +1,6 @@
-import * as utils from "../../utils/all.js";
+import * as utils from "../../utils/exports.js";
+import * as dom from "../../utils/dom/exports.js";
+import * as ui from "../../utils/dom/ui/exports.js";
 import { jQuery, $ } from '../../jquery-global.js';
 import 'jquery-ui/dist/jquery-ui.js';
 import 'jquery-ui/dist/themes/base/jquery-ui.css';
@@ -11,21 +13,24 @@ import {Chart} from 'chart.js/auto';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import Hammer from 'hammerjs';
 import Sortable, {MultiDrag} from 'sortablejs';
+import Color from 'color';
 import { ResponsiveSortable, CancelSortPlugin } from './ResponsiveSortable.js';
 import { terminalCodesToHtml } from "terminal-codes-to-html";
-import * as mime_ext_map from "../../utils/mime_ext_map.js";
 import * as constants from "../../core/constants.js" ;
+import { get_default_stream, get_auto_background_mode } from "../shared.js";
+import { filters } from "../filters.js";
 
+import "../../utils/dom/dom.scss";
 import "./style.scss";
-/** @import * as ui from "../../utils/ui.js" */
+
+/** @import * as ui from "../../utils/dom/ui/ui.js" */
 /** @import {API as noUiSliderAPI} from "nouislider" */
-/** @import {Rectangle} from "../../utils/all.js" */
+/** @import {MediaInfo, FilterInput, Filter} from "../exports.js" */
 
 /** @type {MainWebApp} */
 let app;
 
-export { utils, jQuery, $, Fancybox, noUiSlider, flvjs, Chart, Hammer, Sortable, MultiDrag }
-export const { ui, add_class, remove_class, toggle_attribute, set_inner_html, set_children, set_attribute, set_select_options, set_text, set_value, set_style_property, update_style_properties, remove_style_property, toggle_class } = utils.dom;
+export { ui, utils, jQuery, $, Fancybox, noUiSlider, flvjs, Chart, Hammer, Sortable, MultiDrag }
 
 const SessionTypes = {
     EXTERNAL: "ExternalSession",
@@ -101,12 +106,14 @@ const VALIDATORS = (()=>{
         var v = this.value;
         if (!v) return true;
         var mi = app.$._session.media_info[v];
+        if (this.value.startsWith("livestreamer://")) return true;
         if (!mi || !mi.exists) return "Media does not exist.";
-        if (type && mi && mi.streams && !mi.streams.find(s=>s.type === type)) return `No ${type} streams detected.`
+        if (!mi.streams) return `No streams detected.`;
+        if (type && !mi.streams.find(s=>s.type === type)) return `No ${type} streams detected.`
         return true;
     };
     return {
-        ...ui.VALIDATORS,
+        ...ui.validators,
         media_exists: function() { return media_type.apply(this, []); },
         media_video: function() { return media_type.apply(this, ["video"]); },
         media_audio: function() { return media_type.apply(this, ["audio"]); },
@@ -161,7 +168,7 @@ export var item_colors = {
 };
 for (var k in item_colors) {
     if (!item_colors[k]) continue;
-    item_colors[k] = new utils.Color(item_colors[k]).rgb_mix("#fff",0.5).to_rgb_hex();
+    item_colors[k] = Color(item_colors[k]).mix(Color("#fff"),0.5).hex();
 }
 
 /* var children_map = new Map();
@@ -170,7 +177,7 @@ export function toggle_parent(elem, v) {
     if (v && !elem.parentElement) {
         var p = parent_map[elem];
         var new_children = children_map[p].filter(e=>!!e.parentElement || e === elem);
-        utils.dom.insert_at(p, elem, new_children.indexOf(elem));
+        dom.insert_at(p, elem, new_children.indexOf(elem));
         delete parent_map[elem];
         if (children_map[p].every(e=>!!e.parentElement)) delete children_map[p];
     } else if (!v && elem.parentElement) {
@@ -225,7 +232,7 @@ export class UploadFileChunk {
 UploadFileChunk.create = function(blob, path=undefined) {
     var ufc = new UploadFileChunk();
     ufc._blob = blob;
-    ufc.id = blob.id || utils.dom.uuid4();
+    ufc.id = blob.id || dom.uuid4();
     ufc.path = path || blob.path || blob.name;
     ufc.last_modified = +blob.lastModified || 0;
     ufc.start = 0;
@@ -297,7 +304,7 @@ export class UploadQueue {
                     }
                 });
                 xhr.addEventListener("loadend", (e) => {
-                    resolve(xhr.readyState == 4 && utils.try(()=>JSON.parse(xhr.responseText)));
+                    resolve(xhr.readyState == 4 && utils.try_catch(()=>JSON.parse(xhr.responseText)));
                 });
                 let url = new URL(location.origin);
                 if (c.media) url.searchParams.set("media", "1");
@@ -308,7 +315,7 @@ export class UploadQueue {
             ALL_XHRS.delete(xhr);
             let msg = `Chunk ${ci} [${Date.now()-ts}ms]`;
             done = true;
-            if (xhr.canceled || utils.try(()=>response.uploads[c.id].status === UploadStatus.CANCELED)) {
+            if (xhr.canceled || utils.try_catch(()=>response.uploads[c.id].status === UploadStatus.CANCELED)) {
                 console.warn(`${msg} failed. Canceled.`);
             } else if (response && !response.err) {
                 console.log(`${msg} succeeded.`);
@@ -342,12 +349,12 @@ export class FileDrop extends utils.EventEmitter{
         var is_files = (e)=>{
             return [...e.dataTransfer.items].some(i=>i.kind === "file");
         }
-        add_class(elem, "drop-area");
+        dom.add_class(elem, "drop-area");
         elem.addEventListener("drop", async (e) => {
             if (!is_files(e)) return;
             e.preventDefault();
             e.stopPropagation();
-            remove_class(elem, "file-over");
+            dom.remove_class(elem, "file-over");
             i--;
             let entries = [...e.dataTransfer.items].map(i=>i.webkitGetAsEntry());
             this.emit("drop", entries);
@@ -362,14 +369,14 @@ export class FileDrop extends utils.EventEmitter{
             e.preventDefault();
             e.stopPropagation();
             i++;
-            add_class(elem, "file-over");
+            dom.add_class(elem, "file-over");
         });
         elem.addEventListener("dragleave", (e) => {
             if (!is_files(e)) return;
             e.preventDefault();
             e.stopPropagation();
             i--;
-            if (i == 0) remove_class(elem, "file-over")
+            if (i == 0) dom.remove_class(elem, "file-over")
         });
     }
 }
@@ -469,7 +476,7 @@ export function get_clip_segments(start, end, duration, offset=0) {
 
 async function read_file(file, encoding="utf-8") {
     if (file instanceof File) {
-        return utils.dom.read_file(file, {encoding})
+        return dom.read_file(file, {encoding})
     } else if (IS_ELECTRON) {
         return fs.readFileSync(file.path, encoding);
     }
@@ -483,7 +490,7 @@ async function open_file_dialog(options) {
         var dialog_opts = {};
         if (options.filter) dialog_opts.accept = options.filter.join(", ");
         if (options.multiple) dialog_opts.multiple = !!options.multiple;
-        return await utils.dom.open_file_dialog(dialog_opts);
+        return await dom.open_file_dialog(dialog_opts);
     }
 }
 async function save_local_file(filename, text) {
@@ -497,7 +504,7 @@ async function save_local_file(filename, text) {
         }
         return false;
     } else {
-        utils.dom.download(filename, text);
+        dom.download(filename, text);
         return true;
     }
 }
@@ -529,62 +536,48 @@ export function hash(str) {
     return hash;
 }
 
-export function create_background_properties(settings) {
-    settings = Object.assign({
-        "name": "background",
-        "label": "Background",
-        "default": "",
-    }, settings)
-    var name = settings["name"];
+/** @this {ui.Property} */
+function background_mode_info() {
+    if (this.value == "embedded") return `Shows the currently playing audio file's embedded artwork.`;
+    if (this.value == "external") return `Shows the external artwork relative to the audio file (a file named AlbumArt.jpg, Cover.jpg, etc.)`;
+}
 
-    var background_mode = new ui.Property(`<select></select>`, {
-        "name": `${name}_mode`,
-        "info": ()=>{
-            if (background_mode.value == "embedded") return `Shows the currently playing audio file's embedded artwork.`;
-            if (background_mode.value == "external") return `Shows the external artwork relative to the audio file (a file named AlbumArt.jpg, Cover.jpg, etc.)`;
-        },
-        "label": settings["label"],
-        "options": settings["options"],
-        "default": settings["default"],
-    });
-
-    var background_color = new ui.Property(`<input type="color">`, {
-        "name": `${name}_color`,
-        "label": "Color",
-        "default": "#000000",
-        "hidden": ()=>background_mode.value !== "color"
-    });
-
-    var get_file_duration = ()=>app.$._session.media_info[background_file.value] ? app.$._session.media_info[background_file.value].duration : 0;
+export function create_video_file_start_end_properties(settings) {
+    settings = {
+        name: "video",
+        label: "Video File",
+        hidden: false,
+        ...settings,
+    }
+    var get_file_duration = ()=>app.$._session.media_info[file.value] ? app.$._session.media_info[file.value].duration : 0;
     var is_file_image = ()=>get_file_duration()<=IMAGE_DURATION;
 
-    var background_file = new FileProperty({
-        "name": `${name}_file`,
-        "label": "Video / Image Loop File",
+    var file = new FileProperty({
+        "name": `${settings.name}`,
+        "label": `${settings.label}`,
         "file.options": { files: true, filter: ["image", "video"] },
-        "info": `An image or video file, overriding the '${settings.label}' option`,
-        // "hidden": ()=>background_mode.value !== "file",
+        "hidden": settings.hidden,
     });
 
-    var background_file_start = new ui.TimeSpanProperty({
-        "name": `${name}_file_start`,
-        "label": "Loop Start Time",
+    var file_start = new ui.TimeSpanProperty({
+        "name": `${settings.name}_start`,
+        "label": `${settings.label} Loop Start Time`,
         "timespan.format": "h:mm:ss.SSS",
         "min":0,
         "default": 0,
-        "hidden": ()=>is_file_image(),
+        "hidden": ()=>file.is_hidden ||is_file_image(),
     });
     
-    var background_file_end = new ui.TimeSpanProperty({
-        "name": `${name}_file_end`,
-        "label": "Loop End Time",
+    var file_end = new ui.TimeSpanProperty({
+        "name": `${settings.name}_end`,
+        "label": `${settings.label} Loop End Time`,
         "timespan.format": "h:mm:ss.SSS",
-        "min":0,
+        "min": 0,
         "default": ()=>get_file_duration(),
-        "hidden": ()=>is_file_image(),
+        "hidden": ()=>file.is_hidden ||is_file_image(),
     });
 
-    return [background_mode, background_color, background_file, background_file_start, background_file_end]
+    return [file, file_start, file_end]
 }
 
 export class TicksBar {
@@ -600,7 +593,7 @@ export class TicksBar {
         this.start = 0;
         this.end = 0;
         this.elem = elem || $(`<div></div>`)[0];
-        add_class(this.elem, "ticks-bar");
+        dom.add_class(this.elem, "ticks-bar");
         this.elem.dataset.placement = opts.placement;
         if (!opts.hover_elem) opts.hover_elem = elem;
 
@@ -616,14 +609,14 @@ export class TicksBar {
             seek_time.style.top = `${data.rect.y}px`;
             cursor_elem.style.left = `${data.pt.x-data.rect.x}px`;
             var html = `<div>${utils.seconds_to_timespan_str(data.time, app.user_time_format)}</div>`;
-            set_inner_html(seek_time, `<div>${opts.modifier(html, data.time)}</div>`);
+            dom.set_inner_html(seek_time, `<div>${opts.modifier(html, data.time)}</div>`);
         }
 
-        this.hover_listener = new utils.dom.TouchListener(opts.hover_elem, {
+        this.hover_listener = new dom.TouchListener(opts.hover_elem, {
             mode: "hover",
             start: (e)=>{
                 // console.log("in")
-                toggle_class(this.elem, "hover", true);
+                dom.toggle_class(this.elem, "hover", true);
                 update_seek_time(e);
             },
             move: (e)=>{
@@ -632,7 +625,7 @@ export class TicksBar {
             },
             end: (e)=>{
                 // console.log("end")
-                toggle_class(this.elem, "hover", false);
+                dom.toggle_class(this.elem, "hover", false);
             }
         });
     }
@@ -651,7 +644,7 @@ export class TicksBar {
         this.start = start;
         this.end = end;
 
-        toggle_class(this.elem, "no-duration", this.duration == 0);
+        dom.toggle_class(this.elem, "no-duration", this.duration == 0);
 
         var ticks = [];
         var duration = end-start;
@@ -685,7 +678,7 @@ export class TicksBar {
                 ticks.push(`<div class="tick" style="left:${tx}%;height:${th}">${text}</div>`);
             }
         }
-        set_inner_html(this.ticks_elem, ticks.join(""));
+        dom.set_inner_html(this.ticks_elem, ticks.join(""));
     }
 }
 TicksBar.tick_times = [0.1, 0.5, 1, 5, 15, 60, 5*60, 15*60, 60*60, 4*60*60, 12*60*60, 24*60*60];
@@ -696,7 +689,7 @@ TicksBar.max_ticks = 100;
 
 
 function get_file_manager_url(opts) {
-    var url = new URL("/index.html", utils.dom.get_url(null, "file-manager"));
+    var url = new URL("/index.html", dom.get_url(null, "file-manager"));
     if (!opts) opts = {};
     var elfinder_options = {};
     if (opts.id != null) elfinder_options.id = opts.id;
@@ -738,7 +731,7 @@ async function open_file_manager(options) {
     options = Object.assign({
         "new_window" : app.settings.get("open_file_manager_in_new_window")
     }, default_file_manager_options, options);
-    if (!options.standalone && options.id === undefined) options.id = utils.dom.uuidb64();
+    if (!options.standalone && options.id === undefined) options.id = dom.uuidb64();
     // if ("start" in options && !Array.isArray(options.start)) options.start = [options.start];
 
     if (IS_ELECTRON) {
@@ -755,7 +748,7 @@ async function open_file_manager(options) {
             var custom_ext = [];
             let mime_filters = [];
             for (var f of options.filter) {
-                mime_filters.push({name: utils.capitalize(f), extensions: mime_ext_map[f]||["*"]});
+                mime_filters.push({name: utils.capitalize(f), extensions: utils.mime_ext_map[f]||["*"]});
             }
             if (mime_filters.length>1) {
                 let names = [];
@@ -768,7 +761,7 @@ async function open_file_manager(options) {
             }
             electron_options.filters.push(...mime_filters);
             if (custom_ext.length) {
-                custom_ext = utils.array_unique(custom_ext);
+                custom_ext = [...new Set(custom_ext)];
                 electron_options.filters.push({ name: "Custom File Type", extensions: custom_ext});
             }
         }
@@ -780,7 +773,7 @@ async function open_file_manager(options) {
         var win;
         var win_id = options.hidden_id || options.id;
         var use_window = options.new_window;
-        var messenger = new utils.dom.WindowCommunicator();
+        var messenger = new dom.WindowCommunicator();
         return new Promise((resolve,reject)=>{
             messenger.on("files", ({files,id})=>{
                 if (id != options.id) return;
@@ -836,7 +829,7 @@ export function fancybox_prompt(title, inputs, settings) {
         var prop;
         if (input instanceof ui.Property) {
             prop = input;
-        } else if (utils.dom.is_html(input)) {
+        } else if (dom.is_html(input)) {
             prop = new ui.Property(input, { "reset": false });
         } else if (typeof input === "number") {
             prop = new ui.Property(`<input type="number"></input>`, { "default": input, "reset": false });
@@ -847,7 +840,7 @@ export function fancybox_prompt(title, inputs, settings) {
         }
         return prop;
     });
-    modal.content.append(...props);
+    modal.props.append(...props);
     
     modal.show();
     if (props[0]) props[0].input.focus();
@@ -868,13 +861,13 @@ export function fancybox_prompt(title, inputs, settings) {
                     resolve(result);
                 }
             })
-            modal.footer_elem.append(ok_button)
+            modal.footer.append(ok_button)
         }
         if (settings.cancel) {
             var cancel_button = new ui.Button(`<button>${settings.cancel}</button>`, {
                 "click": ()=>resolve(null)
             })
-            modal.footer_elem.append(cancel_button)
+            modal.footer.append(cancel_button)
         }
         modal.on("hide", ()=>resolve(null))
     }).finally(()=>{
@@ -1019,12 +1012,12 @@ export class Media {
     update() {
         var session = app.$._session;
         var stream = app.$._stream;
-        var item = session._current_playing_item;
+        var item = session._current_playlist_item;
         var running = session._is_running;
-        var loaded = !!(!running || stream.mpv.context.loaded);
-        var seeking = running ? !!(loaded && stream.mpv.context.seeking) : false;
-        var buffering = (seeking || !loaded || !!stream.mpv.context.props["paused-for-cache"]);
-        var seekable = !running || !!stream.mpv.context.seekable;
+        var loaded = !!(!running || stream.mpv.ctx.loaded);
+        var seeking = running ? !!(loaded && stream.mpv.ctx.seeking) : false;
+        var buffering = (seeking || !loaded || !!stream.mpv.ctx.props["paused-for-cache"]);
+        var seekable = !running || !!stream.mpv.ctx.seekable;
         var special_seeking = !!(running && stream.mpv.special_seeking);
 
         this.buffering = buffering;
@@ -1033,21 +1026,21 @@ export class Media {
 
         if (special_seeking) return;
 
-        this.playback_speed = stream.mpv.context.playback_speed;
+        this.playback_speed = stream.mpv.ctx.playback_speed;
         this.time_pos = session.time_pos;
-        this.paused = stream.mpv.context.props.pause || stream.mpv.context.props["paused-for-cache"];
+        this.paused = stream.mpv.ctx.props.pause || stream.mpv.ctx.props["paused-for-cache"];
         this.duration = session._current_duration;
         this.chapters = loaded ? session._current_chapters : EMPTY_CHAPTERS;
         this.seekable = loaded ? this.duration != 0 && seekable && item.filename !== "livestreamer://empty" : false;
         this.loaded = loaded;
         this.status = running ? (loaded ? "Playing" : "Loading") : "Pending";
         this.stats = {};
-        this.stats["V-FPS"] = (+stream.mpv.context.props["estimated-vf-fps"] || 0).toFixed(2);
-        if (!stream.is_encode) this.stats["D-FPS"] = (+stream.mpv.context.props["estimated-display-fps"] || 0).toFixed(2);
-        this.stats["INTRP"] = stream.mpv.context.interpolation ? "On" : "Off";
-        this.stats["DEINT"] = stream.mpv.context.deinterlace ? "On" : "Off";
+        this.stats["V-FPS"] = (+stream.mpv.ctx.props["estimated-vf-fps"] || 0).toFixed(2);
+        if (!stream.is_encode) this.stats["D-FPS"] = (+stream.mpv.ctx.props["estimated-display-fps"] || 0).toFixed(2);
+        this.stats["INTRP"] = stream.mpv.ctx.interpolation ? "On" : "Off";
+        this.stats["DEINT"] = stream.mpv.ctx.deinterlace ? "On" : "Off";
         this.ranges = session._current_seekable_ranges;
-        // this.#last_seeks = stream.mpv.context.seeks;
+        // this.#last_seeks = stream.mpv.ctx.seeks;
         this.#cache = {};
     }
     get curr_chapters() {
@@ -1059,9 +1052,12 @@ export class Media {
     }
     get do_live_seek(){
         var stream = app.$._stream;
-        return stream._is_running && !stream.is_encode && !stream.mpv.context.is_special;
+        return stream._is_running && !stream.is_encode; //  && !stream.mpv.ctx.is_special
     }
 }
+
+/** @typedef {{url:string,rect:utils.Rectangle}} Crop */
+/** @typedef {{crops:Crop[],combined:utils.Rectangle,width:number,height:number}} DetectedCrop */
 
 export class Remote extends utils.EventEmitter {
     client_id = null;
@@ -1083,6 +1079,7 @@ export class Remote extends utils.EventEmitter {
     };
     process_info = {};
     conf = {};
+    /** @type {Record<string,DetectedCrop>} */
     detected_crops = {};
 
     _changes = [];
@@ -1096,22 +1093,13 @@ export class Remote extends utils.EventEmitter {
         return app.ws.ping();
     }
 
-    _debounced_update = utils.dom.debounce_next_frame(()=>this._update());
+    _debounced_update = dom.debounce_next_frame(()=>this._update());
     _update() {
         var changes = utils.tree_from_pathed_entries(this._changes);
         utils.clear(this._changes);
-
         // !! IMPORTANT FOR DATES AND THINGS LIKE THAT.
-
         // this will automatically do any toJSON calls and not pollute the original data structure.
-        changes = utils.json_copy(changes)
-        
-        /* utils.walk(changes, function(k,v) {
-            if (v && typeof v === "object" && v.toJSON && typeof v.toJSON === "function") {
-                this[k] = v.toJSON();
-            }
-        }); */
-        
+        changes = utils.json_copy(changes);
         Observer.apply_changes(this, changes);
         this.emit("update", changes);
     }
@@ -1158,6 +1146,7 @@ export class Target {
     get _streams() { return Object.values(app.$._streams).filter(st=>st.stream_targets[this.id]); }
     get _active_streams() { return this._streams.filter(s=>s._is_running); }
     get _in_use() { return !!this._active_streams.length; }
+    get _can_edit() { return !this.locked && this.access_control._self_can_edit; }
     // get _stream_targets() { return Object.values(app.$._streams).map(s=>s._get_stream_target(this.id)).filter(st=>st); }
 }
 
@@ -1192,7 +1181,7 @@ export class Stream {
     session_id = 0;
     mpv = {
         special_seeking: false,
-        context: new MPVContext(this),
+        ctx: new MPVContext(this),
     };
     targets = {};
     stream_targets = create_proxy(StreamTarget);
@@ -1223,20 +1212,31 @@ export class Stream {
     }
 }
 
+export class ParsedItem {
+    id = "";
+    filename = "";
+    map = {
+        video: {},
+        audio: {},
+        subtitle: {},
+        files: [],
+        streams: [],
+    };
+}
+
 export class MPVContext {
+    item = new ParsedItem();
     preloaded = false;
     loaded = false;
     seeking = false;
-    is_special = false;
+    // is_special = false;
     seekable = false;
     interpolation = false;
     deinterlace = false;
     duration = 0;
     time = 0;
     seekable_ranges = [];
-    playing = true;
     props = {};
-    streams = [];
     playback_speed = 1;
 }
 export class Session {
@@ -1252,11 +1252,14 @@ export class Session {
     player_default_override = {};
     stream_settings = {};
     stream = new Stream();
+    /** @type {Record<string,MediaInfo>} */
     media_info = {};
     // current_item_on_load = null;
     // current_descendents_on_load = null;
     name = "";
     background_mode = "";
+    volume_target = 100;
+    volume_speed = 0;
     /** @type {Record<PropertyKey,PlaylistItem>} */
     playlist = new Proxy({}, {
         /** @param {Record<PropertyKey,PlaylistItem>} target */
@@ -1300,7 +1303,7 @@ export class Session {
         return Object.values(app.$.nms_sessions).filter(s=>s.publishStreamPath.split("/").pop() === this.id);
     }
     /** @return {PlaylistItem} */
-    get _current_playing_item() {
+    get _current_playlist_item() {
         return this.playlist[this.playlist_id] || NULL_PLAYLIST_ITEM;
     }
     get _is_running() {
@@ -1308,20 +1311,20 @@ export class Session {
     }
     /** @return {Chapter[]} */
     get _current_chapters() {
-        return this._current_playing_item._userdata.chapters;
+        return this._current_playlist_item._userdata.chapters;
     }
     get _current_duration() {
         var d = 0;
-        if (this.stream._is_running && this.stream.mpv.context.duration) {
-            d = this.stream.mpv.context.duration;
+        if (this.stream._is_running) {
+            d = this.stream.mpv.ctx.duration || 0;
         } else {
-            var item = this._current_playing_item;
+            var item = this._current_playlist_item;
             if (!item._is_playlist || item._is_merged_playlist) d = item._userdata.duration;
         }
         return round_ms(d || 0);
     }
     get _current_seekable_ranges() {
-        if (this.stream._is_running) return this.stream.mpv.context.seekable_ranges;
+        if (this.stream._is_running) return this.stream.mpv.ctx.seekable_ranges;
         return [];
     }
     _get_connected_nms_session_with_appname(...appnames) {
@@ -1334,6 +1337,7 @@ export class Session {
         return this._get_current_chapters_at_time(t).pop();
     }
 }
+
 class PlaylistItemPrivate {
     /** @type {PlaylistItem} */
     item;
@@ -1443,8 +1447,11 @@ export class PlaylistItem {
     get _is_playlist() {
         return this._is_root || this.filename === "livestreamer://playlist" || this._has_children;
     }
-    get _is_current_playing_item() {
-        return this === this._session._current_playing_item;
+    get _is_current() {
+        return this.id === this._session._current_playlist_item.id;
+    }
+    get _is_currently_playing() {
+        return this.id === this._session.stream.mpv.ctx.item.id;
     }
     get _is_root() {
         return this.id == "0";
@@ -1500,10 +1507,11 @@ export class PlaylistItem {
         let children = this._children;
         var is_playlist = this._is_playlist;
         let is_processing = this._is_processing;
+        let root_merged_playlist = this._root_merged_playlist;
 
         let filenames = new Set();
         filenames.add(this.filename);
-        if (this.props.background_file) filenames.add(this.props.background_file);
+        if (this.props.video_file) filenames.add(this.props.video_file);
         if (this.props.audio_file) filenames.add(this.props.audio_file);
         if (this.props.subtitle_file) filenames.add(this.props.subtitle_file);
         ud.filenames = [...filenames];
@@ -1535,10 +1543,12 @@ export class PlaylistItem {
                 timeline_duration = Math.max(...track_timeline_durations);
             }
             media_duration = children_duration;
-        } else if (this.filename === "livestreamer://intertitle") {
-            media_duration = this.props.title_duration || app.playlist_item_props_class.title_duration.default;
-        } else if (this.filename === "livestreamer://empty") {
-            media_duration = this.props.empty_duration || app.playlist_item_props_class.empty_duration.default;
+        } else {
+            if (this.props.duration != null) {
+                media_duration = this.props.duration;
+            } else if (root_merged_playlist) {
+                media_duration = 60;
+            }
         }
 
         let start = this.props.clip_start || 0;
@@ -1693,7 +1703,7 @@ export class PlaylistItem {
     get _is_merged_playlist() {
         return !!this.props.playlist_mode;
     }
-    get _is_url() {
+    get _is_remote() {
         this._url.protocol.match(/^(https?|rtmps?):$/)
     }
     get _is_normal_playlist() {
@@ -1720,7 +1730,7 @@ export class PlaylistItem {
         return app.$.uploads[this.upload_id];
     }
     get _is_downloadable() {
-        return !this._download && (this._media_info||EMPTY_OBJECT).downloadable && !this._is_playlist;
+        return !this._download && this._url.protocol.match(/^https?:$/) && !this._is_playlist;
     }
     get _is_splittable() {
         return this._userdata.media_duration > 0 && !this._is_playlist;
@@ -1765,6 +1775,9 @@ export class PlaylistItem {
     get _next_sibling() { return this._get_adjacent_sibling(1); }
     get _previous_sibling() { return this._get_adjacent_sibling(-1); }
 
+    get _is_special() { return this.filename.match(/^livestreamer:/); }
+    get _ls_path() { return this._is_special ? this._url.host : undefined; }
+
     _get_pretty_name(opts) {
         opts = Object.assign({
             label:true,
@@ -1803,8 +1816,8 @@ export class PlaylistItem {
         var item = this;
         while (item) {
             item = item._parent;
-            if (item) yield item;
             if (until === item) break;
+            if (item) yield item;
         }
     }
     _copy(include_non_enumerable=false) {
@@ -1827,8 +1840,6 @@ export const NULL_SESSION = Object.freeze(new Session());
 export const NULL_PLAYLIST_ITEM = Object.freeze(new PlaylistItem());
 export const NULL_STREAM = Object.freeze(new Stream());
 export const NULL_STREAM_TARGET = Object.freeze(new StreamTarget());
-
-/** @extends {ui.UI<{save:Rectangle}>} */
 export class CropPreview extends ui.UI {
     rect = new utils.Rectangle();
 
@@ -1854,7 +1865,7 @@ export class CropPreview extends ui.UI {
         
         this.black_elem = this.elem.querySelector(".crop-edges");
         this.crop_border_elem = this.elem.querySelector(".crop-border");
-        toggle_class(this.crop_border_elem, "d-none", !rect2);
+        dom.toggle_class(this.crop_border_elem, "d-none", !rect2);
         this.detected_crop_border_elem = this.elem.querySelector(".detected-crop-border");
         this.content_elem = this.elem.querySelector(".crop-preview");
         this.img_elem = this.elem.querySelector("img");
@@ -2004,7 +2015,7 @@ export class CropPreview extends ui.UI {
         // this.ui_elem.style.setProperty("--tw", `${client_rect.width * this.rect.width}px`)
         // this.ui_elem.style.setProperty("--th", `${client_rect.height * this.rect.height}px`)
 
-        set_inner_html(this.black_elem, [
+        dom.set_inner_html(this.black_elem, [
             `<div style="left:0;width:${this.rect.left*100}%;top:0;bottom:0"></div>`,
             `<div style="left:${this.rect.right*100}%;right:0;top:0;bottom:0"></div>`,
             `<div style="left:0;right:0;top:0;height:${this.rect.top*100}%"></div>`,
@@ -2020,7 +2031,7 @@ export class CropPreview extends ui.UI {
                 var v = (i!=2 && i!=3) ? r[e] : 1-r[e];
                 return `<span>${e}=${(v*100).toFixed(2)}%</span>`;
             }).join("");
-            set_inner_html(this.info_elem, html);
+            dom.set_inner_html(this.info_elem, html);
         }
         
         this.emit("change");
@@ -2043,8 +2054,8 @@ export class SelectableList extends utils.EventEmitter {
         super();
         /** @type {HTMLElement} */
         this.elem = elem || $("<div></div>")[0];
-        add_class(elem, "selectable-list");
-        set_attribute(elem, "tabindex", "-1");
+        dom.add_class(elem, "selectable-list");
+        dom.set_attribute(elem, "tabindex", "-1");
         $(elem).disableSelection();
         this.options = Object.assign({
             "selector":"*",
@@ -2057,7 +2068,7 @@ export class SelectableList extends utils.EventEmitter {
             this.toggle(tr);
         });
         window.addEventListener("keydown", this.on_keydown = (e)=>{
-            if (!utils.dom.has_focus(this.elem)) return;
+            if (!dom.has_focus(this.elem)) return;
             e.preventDefault();
             var items = this.items;
             var index = items.indexOf(this._selected);
@@ -2086,12 +2097,12 @@ export class SelectableList extends utils.EventEmitter {
         this.elem.focus();
         if (this._selected === item) return;
         if (this._selected) {
-            remove_class(this._selected, this.options.selectedClass);
+            dom.remove_class(this._selected, this.options.selectedClass);
             this.emit("deselect", this._selected);
         }
         this._selected = item;
         if (this._selected) {
-            add_class(this._selected, this.options.selectedClass);
+            dom.add_class(this._selected, this.options.selectedClass);
             this._selected.scrollIntoView({block:"nearest", inline:"nearest"})
             this.emit("select", this._selected);
         }
@@ -2172,9 +2183,9 @@ class JsonElement {
         else if (this.data === null) this.type = "null";
 
         this.elem = document.createElement("div");
-        add_class(this.elem, "json-node");
+        dom.add_class(this.elem, "json-node");
         this.value_elem = document.createElement("div");
-        add_class(this.value_elem, "json-value");
+        dom.add_class(this.value_elem, "json-value");
         var prefix = "";
         var suffix = "";
         if (key) prefix = key+": ";
@@ -2186,11 +2197,11 @@ class JsonElement {
             suffix += "}";
         }
         var prefix_elem = document.createElement("span");
-        add_class(prefix_elem, "json-prefix");
+        dom.add_class(prefix_elem, "json-prefix");
         prefix_elem.innerText = prefix;
 
         var suffix_elem = document.createElement("span");
-        add_class(suffix_elem, "json-suffix");
+        dom.add_class(suffix_elem, "json-suffix");
         suffix_elem.innerText = suffix;
 
         var empty = false;
@@ -2210,7 +2221,7 @@ class JsonElement {
         var placeholder_elem;
         if (collapsible) {
             placeholder_elem = document.createElement("span");
-            add_class(placeholder_elem, "json-placeholder");
+            dom.add_class(placeholder_elem, "json-placeholder");
             placeholder_elem.innerText = `${children.length} items`;
             if (collapsible) {
                 placeholder_elem.onclick=()=>this.collapse();
@@ -2225,8 +2236,8 @@ class JsonElement {
         this.elem.append(suffix_elem);
         
         this.elem.dataset.jsonType = this.type;
-        toggle_class(this.elem, "collapsible", collapsible);
-        toggle_class(this.elem, "empty", empty);
+        dom.toggle_class(this.elem, "collapsible", collapsible);
+        dom.toggle_class(this.elem, "empty", empty);
         
         Object.assign(this.elem.style, {
             "font-family": "monospace",
@@ -2235,7 +2246,7 @@ class JsonElement {
         });
     }
     collapse(value) {
-        toggle_class(this.elem, "collapsed", value)
+        dom.toggle_class(this.elem, "collapsed", value)
     }
     find(path) {
         if (!Array.isArray(path)) path = [path];
@@ -2266,76 +2277,104 @@ export class JSONContainer extends ui.UI {
 
 // -----------------------------------------------------------
 
-/** @template T,K @extends {ui.UI<K>} */
+/**
+ * @typedef {{
+ *  "modal.title": UISetting<string>,
+ *  "modal.title_overflow": UISetting<boolean>,
+ *  "modal.close": UISetting<boolean>,
+ *  "modal.footer": UISetting<boolean>,
+ *  "modal.header": UISetting<boolean>,
+ *  "modal.width": UISetting<number | string>,
+ *  "modal.props": UISetting<ui.PropertyContainer>,
+ *  "modal.hide": function(),
+ *  "modal.show": function(),
+ *  "modal.block_updates": UISetting<boolean>,
+ * }} ModalSettings
+ */
+
+/** @template ItemType @extends {ui.UI<ModalSettings,{show:function(),hide:function()}>} */
 export class Modal extends ui.UI {
     get showing() { return !!this.fb; }
     get modal_title() { return this.get_setting("modal.title"); }
-    get changes() {
-        if (!this.props) return null;
-        return utils.deep_entries(utils.deep_diff(this.items_on_show, this.props.items));
-    }
+    get changes() { return this.props.changes; }
     get items() { return this.props.items; }
+    get item() { return this.props.item; }
+    get block_updates() { return this.get_setting("modal.block_updates"); }
 
-    /** @type {ui.PropertyContainer<T>} */
+    /** @type {ui.PropertyContainer<ItemType>} */
     props;
 
+    /** @type {Set<Modal>} */
+    static showing = new Set();
+    showing_promise = Promise.resolve();
+    #showing_resolve;
+    #cancelled = false;
+
+    /** @param {ModalSettings} settings */
     constructor(settings) {
         settings = {
             // modal_click: "close",
             "modal.close": true,
             "modal.title": "",
-            "modal.title-overflow": false,
+            "modal.title_overflow": false,
             "modal.footer": false,
             "modal.header": true,
             "modal.width": undefined,
             "modal.props": false,
+            "modal.block_updates": false,
+            "modal.props": ()=>new ui.PropertyContainer(),
             ...settings
         };
 
         super(settings);
         
-        this.header_elem = $(`<div class="modal-header"></div>`)[0];
+        this.header = new ui.UI($(`<div class="modal-header"></div>`)[0], {
+            hidden: !this.get_setting("modal.header"),
+        });
         this.content = new ui.UI($(`<div class="modal-content"></div>`)[0]);
-        this.footer_elem = $(`<div class="modal-footer"></div>`)[0];
+        this.footer = new ui.UI($(`<div class="modal-footer"></div>`)[0], {
+            hidden: !this.get_setting("modal.footer"),
+        });
 
-        this.elem.append(this.header_elem);
-        this.elem.append(this.content);
-        this.elem.append(this.footer_elem);
+        this.elem.append(this.header, this.content, this.footer);
 
-        if (this.settings["modal.props"]) {
-            this.props = this.get_setting("modal.props");
-            this.content.append(this.props);
-            
-            this.props.on("change", ()=>{
-                this.update();
-            });
-        }
+        this.props = this.get_setting("modal.props");
+        this.content.append(this.props);
+        
+        this.props.on("change", ()=>{
+            this.update();
+        });
         
         this.on("render", ()=>{
             var width = this.get_setting("modal.width");
             var min_width = this.get_setting("modal.min-width");
             var max_width = this.get_setting("modal.max-width");
-            update_style_properties(this.elem, {
+            dom.update_style_properties(this.elem, {
                 "width": typeof width === "number" ? `${width}px` : width,
                 "--min-width": typeof min_width === "number" ? `${min_width}px` : min_width,
                 "--max-width": typeof max_width === "number" ? `${max_width}px` : max_width,
             });
-            set_inner_html(this.header_elem, this.get_setting("modal.title"));
-            toggle_class(this.header_elem, "overflow", this.get_setting("modal.title-overflow"));
-            toggle_class(this.header_elem, "d-none", !this.get_setting("modal.header"));
-            toggle_class(this.footer_elem, "d-none", !this.get_setting("modal.footer"));
+            dom.set_inner_html(this.header.elem, this.get_setting("modal.title"));
+            dom.toggle_class(this.header.elem, "overflow", this.get_setting("modal.title_overflow"));
         });
     }
+
     async load() {}
 
     async show(items) {
         if (this.fb) return;
+        this.#cancelled = false;
+        this.showing_promise = new Promise(resolve=>this.#showing_resolve = resolve);
+        Modal.showing.add(this);
         if (!Array.isArray(items)) items = [items];
         if (this.props) this.props.items = items;
-        this.items_on_show = utils.json_copy(items);
         
+        // remove close button created by fancybox
         var close_button = this.elem.querySelector("button.carousel__button.is-close");
         if (close_button) close_button.remove();
+        
+        this.emit("before-show");
+
         await this.load();
         this.fb = new Fancybox([{
             src: this.elem,
@@ -2349,58 +2388,70 @@ export class Modal extends ui.UI {
         });
         this.fb.on("closing",()=>{
             this.fb = null;
+            Modal.showing.delete(this);
+            this.#showing_resolve();
+            if (!this.#cancelled) {
+                this.get_setting("modal.apply");
+                this.emit("apply");
+            }
             this.emit("hide");
         });
+
+        if (this.props) this.props.refresh();
+
+        await this.update();
+
+        if (this.props) this.props.save();
         
         this.emit("show");
-        await this.update();
     }
 
     hide() {
-        if (!this.fb) return;
-        this.fb.close();
-        this.fb = null;
+        if (this.fb) this.fb.close();
+    }
+
+    cancel() {
+        this.#cancelled = true;
+        this.hide();
     }
 }
 
+/** @extends {Modal<TargetsMenu>} */
 export class TargetConfigMenu extends Modal {
     get _target() { return app.$.targets[this._target_id]; }
+    
     /** @param {Target} target  */
     constructor(target_id, title) {
         super({
             "modal.title": `Configure ${title}`,
             "modal.props": new ui.PropertyContainer({
                 "nullify_defaults": true,
-                "items": ()=>[this._target_menu._value[target_id]],
-            })
+                "data": (_,path)=>utils.reflect.get(this.item._value[target_id], path),
+            }),
+            "modal.footer": true,
+            "modal.apply": ()=>{
+                var enabled = this.item._value[target_id].enabled;
+                this.item._value[target_id] = {enabled, ...this.props.named_property_lookup};
+                this.item.update();
+            }
         });
         this._target_id = target_id;
         app.target_config_menus[target_id] = this;
+        
+        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
+            "click":()=>this.cancel()
+        })
+        this.footer.append(cancel_button);
 
         var _this = this;
+
         /** @this {ui.Property} */
         this._get_default = function() { return _this._target.opts[this.name]; }
-
-        this.props.on("change", (e)=>{
-            if (e.trigger) {
-                var opts = this._target_menu._value;
-                if (!opts[target_id]) opts[target_id] = {};
-                if (e._value === null) delete opts[target_id][e.name];
-                else opts[target_id][e.name] = e._value;
-                this._target_menu.update_value();
-            }
-        });
 
         this.config();
     }
 
     config() { }
-
-    /** @param {TargetMenu} target_menu */
-    async show(target_menu) {
-        this._target_menu = target_menu;
-        await super.show();
-    }
 }
 
 export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
@@ -2428,44 +2479,47 @@ export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
             "name": "outputs",
             "label": "Outputs", 
             "item_size": 300,
-            "type": ()=>class extends ui.PropertyContainer {
-                constructor() {
-                    super();
-                    var name = new ui.Property(`<input type="text">`, {
-                        "name": "name",
-                        "label": "Name",
-                        "reset": false,
-                        "placeholder": "Name of preset"
-                    });
-                    this.append(name);
-                    var resolution = new ui.Property(`<select>`, {
-                        "name": "resolution",
-                        "label": "Resolution",
-                        "options": [[0, "Pass-through"], ...[1080, 720, 480, 360, 240].map(o=>[o,String(o)+"p"])],
-                        "reset": false,
-                    });
-                    var video_bitrate = new ui.Property(`<input type="number">`, {
-                        "name": "video_bitrate",
-                        "label": "Video Bitrate",
-                        "suffix": `kbps`,
-                        "step": 50,
-                        "min": 100,
-                        "max": 5000,
-                        "reset": false,
-                    });
-                    var audio_bitrate = new ui.Property(`<input type="number">`, {
-                        "name": "audio_bitrate",
-                        "label": "Audio Bitrate",
-                        "suffix": `kbps`,
-                        "step": 1,
-                        "min": 64,
-                        "max": 320,
-                        "reset": false,
-                    });
-                    var row = new ui.FlexRow();
-                    row.append(resolution, video_bitrate, audio_bitrate);
-                    this.append(row);
-                }
+            ui(list_item) {
+                list_item.content.append(new class extends ui.PropertyContainer {
+                    constructor() {
+                        super();
+                        var name = new ui.Property(`<input type="text">`, {
+                            "name": "name",
+                            "label": "Name",
+                            "reset": false,
+                            "placeholder": "Name of preset"
+                        });
+                        var resolution = new ui.Property(`<select>`, {
+                            "name": "resolution",
+                            "label": "Resolution",
+                            "options": [[0, "Pass-through"], ...[1080, 720, 480, 360, 240].map(o=>[o,String(o)+"p"])],
+                            "reset": false,
+                        });
+                        var video_bitrate = new ui.Property(`<input type="number">`, {
+                            "name": "video_bitrate",
+                            "label": "Video Bitrate",
+                            "suffix": `kbps`,
+                            "step": 50,
+                            "min": 100,
+                            "max": 5000,
+                            "reset": false,
+                        });
+                        var audio_bitrate = new ui.Property(`<input type="number">`, {
+                            "name": "audio_bitrate",
+                            "label": "Audio Bitrate",
+                            "suffix": `kbps`,
+                            "step": 1,
+                            "min": 64,
+                            "max": 320,
+                            "reset": false,
+                        });
+
+                        this.append(name);
+                        var row = new ui.FlexRow();
+                        row.append(resolution, video_bitrate, audio_bitrate);
+                        this.append(row);
+                    }
+                });
             },
             "default": this._get_default,
         });
@@ -2521,7 +2575,7 @@ export class GUITargetConfigMenu extends TargetConfigMenu {
             "default": this._get_default,
             "info": "Show On-Screen-Controller"
         });
-        this.content.append(osc);
+        this.props.append(osc);
     }
 }
 
@@ -2538,7 +2592,7 @@ export class UserConfigurationSettings extends Modal {
         var groups = utils.group_by(Object.entries(app.settings_prop_defs), ([k,v])=>v.__group__);
         var group_keys = Object.keys(app.settings_groups);
         group_keys.forEach((k,i)=>{
-            var box = new ui.Box(`<p>${app.settings_groups[k].title}</p>`);
+            var box = new ui.Box({header:`<p>${app.settings_groups[k].title}</p>`});
             var row = box.append(new ui.FlexRow());
             for (var [name, def] of groups.get(k)) {
                 var prop_settings = {
@@ -2579,7 +2633,7 @@ export class UserConfigurationSettings extends Modal {
         var reset_button = new ui.Button(`<button>Reset</button>`, {
             "click": ()=>this.props.reset()
         });
-        this.footer_elem.append(reset_button);
+        this.footer.append(reset_button);
         
         var reset_layout_button = new ui.Button(`<button>Reset Layout</button>`, {
             "click": ()=>{
@@ -2587,17 +2641,17 @@ export class UserConfigurationSettings extends Modal {
                 app.update_layout();
             }
         });
-        this.footer_elem.append(reset_layout_button);
+        this.footer.append(reset_layout_button);
         var logout_button = new ui.Button(`<button>Log Out</button>`, {
             "click": async ()=>{
-                utils.dom.Cookies.remove("ls_key");
+                dom.Cookies.remove("ls_key");
                 var request = new XMLHttpRequest();
                 request.addEventListener("loadend", ()=>window.location.reload());
                 request.open("get", "/logout", false, "false", "false");
                 request.send();
             }
         });
-        this.footer_elem.append(logout_button);
+        this.footer.append(logout_button);
 
         this.props.on("change", (e)=>{
             if (!e.name || !e.trigger) return;
@@ -2708,7 +2762,7 @@ export class FileSystemInfoMenu extends Modal {
         };
         var create_bar = (p)=>{
             var outer = document.createElement("div");
-            add_class(outer, "percent-bar");
+            dom.add_class(outer, "percent-bar");
             var inner = document.createElement("div");
             var text = document.createElement("span");
             inner.style.width = `${p*100}%`;
@@ -2729,7 +2783,7 @@ export class FileSystemInfoMenu extends Modal {
         };
 
         var init = async()=> {
-            utils.dom.empty(tbody);
+            dom.remove_children(tbody);
             for (let id in app.$.volumes) {
                 if (app.$.volumes[id].driver !== "LocalFileSystem") continue;
                 var volume = app.$.volumes[id];
@@ -2755,7 +2809,7 @@ export class FileSystemInfoMenu extends Modal {
             tbody.append(row_el);
             
             var name_outer_el = document.createElement("td");
-            add_class(name_outer_el, "name");
+            dom.add_class(name_outer_el, "name");
 
             var name_inner_el = document.createElement("div");
             name_inner_el.style.display="flex";
@@ -2773,30 +2827,30 @@ export class FileSystemInfoMenu extends Modal {
             }
             
             var arrow_el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-            set_inner_html(arrow_el, `<use href="icons.svg#chevron-right"></use>`);
-            add_class(arrow_el, "arrow");
+            dom.set_inner_html(arrow_el, `<use href="icons.svg#chevron-right"></use>`);
+            dom.add_class(arrow_el, "arrow");
             name_inner_el.append(arrow_el);
             if (!node.isdir) arrow_el.style.visibility = "hidden";
 
             var icon_el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-            set_inner_html(icon_el, `<use href="icons.svg#${node.icon}"></use>`);
+            dom.set_inner_html(icon_el, `<use href="icons.svg#${node.icon}"></use>`);
             name_inner_el.append(icon_el, name_el);
             name_outer_el.append(name_inner_el);
 
             var size_el = document.createElement("td");
-            add_class(size_el, "size");
+            dom.add_class(size_el, "size");
             size_el.innerText = utils.format_bytes(node.size);
             var files_el = document.createElement("td");
-            add_class(files_el, "files");
+            dom.add_class(files_el, "files");
             files_el.innerText = node.isdir ? node.files.toLocaleString() : "-";
             var folders_el = document.createElement("td");
-            add_class(folders_el, "folders");
+            dom.add_class(folders_el, "folders");
             folders_el.innerText = node.isdir ? node.folders.toLocaleString() : "-";
             var percent_el = document.createElement("td");
-            add_class(percent_el, "percent");
+            dom.add_class(percent_el, "percent");
             percent_el.append(create_bar(node.percent));
             var percent_total_el = document.createElement("td");
-            add_class(percent_total_el, "percent-total");
+            dom.add_class(percent_total_el, "percent-total");
             percent_total_el.append(create_bar(node.total_percent));
 
             row_el.append(name_outer_el, size_el, files_el, folders_el, percent_total_el, percent_el);
@@ -2806,7 +2860,7 @@ export class FileSystemInfoMenu extends Modal {
                 node.open = false;
                 node.toggle = ()=>{
                     var open = node.open = !node.open;
-                    toggle_class(row_el, "open", open);
+                    dom.toggle_class(row_el, "open", open);
                     var next = node;
                     if (!node.sorted) {
                         node.sorted = true;
@@ -2844,13 +2898,13 @@ export class FileSystemInfoMenu extends Modal {
         // -------------------------------
 
         var table = document.createElement("table");
-        add_class(table, "files");
+        dom.add_class(table, "files");
         var th = document.createElement("thead");
         table.append(th);
         var tr = document.createElement("tr");
         tr.append(...["Name", "Size", "Files", "Folders", "% Total", "% Parent"].map((c)=>{
             var td = document.createElement("td");
-            set_inner_html(td, c);
+            dom.set_inner_html(td, c);
             return td;
         }))
         th.append(tr);
@@ -2861,10 +2915,10 @@ export class FileSystemInfoMenu extends Modal {
         var refresh_button = new ui.Button(`<button>Refresh</button>`, {
             "click":()=>init()
         });
-        this.footer_elem.append(refresh_button)
+        this.footer.append(refresh_button)
         
         var inited;
-        this.on("show", ()=>{
+        this.on("before-show", ()=>{
             if (inited) return;
             inited = true;
             init();
@@ -2881,7 +2935,7 @@ export class SystemManagerMenu extends Modal {
         class Bar extends ui.UI {
             constructor(settings) {
                 super(null, settings);
-                this.append(new ui.FlexRow()).append(this.label = new ui.Label(null, {content: ()=>this.get_setting("label")}));
+                this.append(new ui.FlexRow()).append(this.label = new ui.Label({content: ()=>this.get_setting("label")}));
                 this.bar = new ui.UI($(`<div class="bar"></div>`)[0]);
                 this.append(new ui.FlexRow()).append(this.bar);
                 this.on("update", ()=>{
@@ -2904,8 +2958,8 @@ export class SystemManagerMenu extends Modal {
                 var is_running = ()=>app.$.processes[name].status == "online"
 
                 var row = this.append(new ui.Row());
-                add_class(this.elem, "process");
-                var info_ui = row.append(new ui.UI({flex:1}));
+                dom.add_class(this.elem, "process");
+                var info_ui = row.append(new ui.UI(null, {flex:1}));
                 var name_ui = info_ui.append(new ui.UI());
                 var description_ui = info_ui.append(new ui.UI());
                 var buttons_ui = row.append(new ui.Row({gap:5}));
@@ -2949,29 +3003,29 @@ export class SystemManagerMenu extends Modal {
                     if (p.status.match(/(online|launch)/)) color="#0a0";
                     else if (p.status.match(/stop/)) color="#666";
                     else if (p.status.match(/error/)) color="f00";
-                    set_inner_html(name_ui.elem, `${conf_name} [<span class="status">${p.status.toUpperCase()}</span>]`);
+                    dom.set_inner_html(name_ui.elem, `${conf_name} [<span class="status">${p.status.toUpperCase()}</span>]`);
                     var status_el = name_ui.elem.querySelector(".status");
                     status_el.style.color = color;
-                    set_style_property(name_ui, "font-weight", "bold");
-                    set_inner_html(description_ui.elem, conf_desc);
+                    dom.set_style_property(name_ui, "font-weight", "bold");
+                    dom.set_inner_html(description_ui.elem, conf_desc);
                     
                     var pinfo = app.$.process_info[p.pid] || {};
                     var cpu = Number((pinfo.cpu||0)*100).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})+"%";
                     var mem = utils.format_bytes(pinfo.memory||0);
                     var uptime = utils.ms_to_human_readable_str(pinfo.elapsed||0);
                     var s = {"CPU":cpu,"Memory":mem,"Transfer rate":`↑ ${utils.format_bytes(pinfo.sent)}ps / ↓ ${utils.format_bytes(pinfo.received)}ps`, "Uptime":uptime};
-                    set_inner_html(stats_ui.elem, Object.entries(s).map(([k,v])=>`${k}: ${v}`).join(" | "));
+                    dom.set_inner_html(stats_ui.elem, Object.entries(s).map(([k,v])=>`${k}: ${v}`).join(" | "));
                 })
             }
         }
-        var uptime = this.props.append(new ui.UI({
+        var uptime = this.props.append(new ui.UI(null, {
             "update":()=>{
-                set_inner_html(uptime.elem, `System uptime: ${utils.ms_to_human_readable_str(app.$.sysinfo.uptime*1000)}`)
+                dom.set_inner_html(uptime.elem, `System uptime: ${utils.ms_to_human_readable_str(app.$.sysinfo.uptime*1000)}`);
             }
         }));
-        var transfer = this.props.append(new ui.UI({
+        var transfer = this.props.append(new ui.UI(null, {
             "update":()=>{
-                set_inner_html(transfer.elem, `Transfer rate: ↑ ${utils.format_bytes(app.$.sysinfo.sent)}ps / ↓ ${utils.format_bytes(app.$.sysinfo.received)}ps`)
+                dom.set_inner_html(transfer.elem, `Transfer rate: ↑ ${utils.format_bytes(app.$.sysinfo.sent)}ps / ↓ ${utils.format_bytes(app.$.sysinfo.received)}ps`);
             }
         }));
         this.props.append(new Bar({
@@ -3001,7 +3055,7 @@ export class SystemManagerMenu extends Modal {
         this.on("update", ()=>{
             var processes = Object.keys(app.$.processes);
             utils.sort(processes, (p)=>p==="main"?0:1)
-            utils.dom.rebuild(process_container.elem, processes, {
+            dom.rebuild(process_container.elem, processes, {
                 id_callback: (p)=>p,
                 add: (p, elem, i)=>{
                     if (!elem) elem = new Process(p).elem;
@@ -3019,7 +3073,7 @@ export class SystemManagerMenu extends Modal {
         var next_tick = ()=>tick_timeout = setTimeout(tick, 2000);
         var clear_tick = ()=>clearTimeout(tick_timeout);
 
-        this.on("show", ()=>{
+        this.on("before-show", ()=>{
             tick();
         })
         this.on("hide", ()=>{
@@ -3027,6 +3081,8 @@ export class SystemManagerMenu extends Modal {
         })
     }
 }
+
+/** @extends {Modal<string>} */
 export class FileManagerMenu extends Modal {
     constructor() {
         super({
@@ -3038,18 +3094,18 @@ export class FileManagerMenu extends Modal {
             "height": "100%",
             "min-height": "200px",
         });
-        Object.assign(this.content.elem.style, {
+        Object.assign(this.props.elem.style, {
             "padding": 0,
             "height": "100%",
         });
-        this.content.elem.style.height = "100%";
+        this.props.elem.style.height = "100%";
         /** @type {HTMLIFrameElement} */
         this.iframe = $(`<iframe allowfullscreen="allowfullscreen" allow="autoplay; fullscreen" scrolling="auto" width="100%" height="100%" frameBorder="0"></iframe>`)[0];
-        this.content.elem.append(this.iframe);
-    }
-    async show(url) {
-        await super.show();
-        this.iframe.src = url;
+        this.props.elem.append(this.iframe);
+
+        this.on("before-show", ()=>{
+            this.iframe.src = this.item;
+        });
     }
 }
 
@@ -3178,7 +3234,7 @@ export class FontSettings extends Modal {
             "modal.footer":false,
         });
 
-        add_class(this.elem, "font-manager");
+        dom.add_class(this.elem, "font-manager");
 
         var row = this.props.append(new ui.FlexRow());
         
@@ -3205,7 +3261,7 @@ export class FontSettings extends Modal {
         
         var add_button = new ui.Button(`<button>Add New Font</button>`, {
             "click":async ()=>{
-                var files = utils.dom.upload(`application/font-sfnt,application/font-sfnt`, true)
+                var files = dom.upload(`application/font-sfnt,application/font-sfnt`, true)
                 app.upload_queue.add(files, {dir:"/fonts"});
             },
             "disabled":()=>!list.selected,
@@ -3231,10 +3287,10 @@ export class FontSettings extends Modal {
         
         list.on("change", async (item, i)=>{
             // await app.load_font(item.id);
-            // utils.dom.empty(info_elem);
+            // dom.empty(info_elem);
         });
 
-        this.on("show", async ()=>{
+        this.on("before-show", async ()=>{
             list.select(null);
         });
     }
@@ -3245,13 +3301,12 @@ export class FontSettings extends Modal {
     }
 }
 
+/** @extends {Modal<PlaylistItem>} */
 export class SplitSettings extends Modal {
-    /** @type {PlaylistItem[]} */
-    get _items() { return this.props.items; }
     constructor() {
         super({
-            "modal.title": ()=>`Split '<span>${PlaylistItem.get_items_title(this._items)}</span>'`,
-            "modal.title-overflow": true,
+            "modal.title": ()=>`Split '<span>${PlaylistItem.get_items_title(this.items)}</span>'`,
+            "modal.title_overflow": true,
             "modal.footer":true,
             "modal.props": new ui.PropertyContainer(),
         });
@@ -3347,12 +3402,20 @@ export class SplitSettings extends Modal {
         
         this.split_button = new ui.Button(`<button>Split</button>`, {
             "click": ()=>{
-                app.playlist_split(this._items, this.get_splits(), true);
+                app.playlist_split(this.items, this.get_splits(), true);
                 this.time_list.set_value([]);
                 this.hide();
             }
         });
-        this.footer_elem.append(this.split_button)
+        this.footer.append(this.split_button)
+
+        this.on("show", ()=>{
+            this.seek.update_settings({
+                "seek.duration": this.items[0]._userdata.duration,
+                "seek.chapters": this.items[0]._userdata.chapters
+            });
+            this.update_markers();
+        });
     }
 
     get_splits(){
@@ -3386,58 +3449,47 @@ export class SplitSettings extends Modal {
         this.seek.clear_markers();
         this.get_splits().forEach(t=>this.seek.add_marker(t));
     };
-
-    async show() {
-        await super.show();
-        this.seek.update_settings({
-            "seek.duration": this._items[0]._userdata.duration,
-            "seek.chapters": this._items[0]._userdata.chapters
-        });
-        this.update_markers();
-    }
 }
 
 /** @extends {Modal<PlaylistItem>} */
-
 export class CropEditMenu extends Modal {
-    /** @param {PlaylistItem} item @param {Rectangle} rect */
-    constructor(item, index, rect) {
+    /** @param {Property} @param {DetectedCrop} data @param {Rectangle} rect */
+    constructor(crop_property, data, index) {
         super({
             "modal.title": "Crop Editor",
             "modal.footer": true,
+            "modal.apply": ()=>{
+                crop_property.set_value([cp.rect.left, cp.rect.top, 1-cp.rect.right,1-cp.rect.bottom], {trigger:true});
+            }
         });
+
+        let vals = crop_property.value;
+        let rect = new utils.Rectangle({left:vals[0], top:vals[1], right:1-vals[2], bottom:1-vals[3]});
 
         var default_rect = new utils.Rectangle(0,0,1,1);
         var detected_crop_rect = new utils.Rectangle(0,0,1,1);
         
-        var reset_button0 = new ui.Button(`<button class="button"><i class="fas fa-arrow-rotate-left"></i></button>`, {
+        var reset_button0 = new ui.Button(`<button><i class="fas fa-arrow-rotate-left"></i></button>`, {
             "title": "Undo",
             "disabled": ()=>cp.rect.equals(rect),
             "click": ()=>cp.update_crop(rect),
         })
-        var reset_button = new ui.Button(`<button class="button">Set to Detected</button>`, {
+        var reset_button = new ui.Button(`<button>Set to Detected</button>`, {
             "flex": 1,
             "disabled": ()=>cp.rect.equals(detected_crop_rect),
             "click": ()=>cp.update_crop(detected_crop_rect),
         })
-        var reset_button2 = new ui.Button(`<button class="button">Reset</button>`, {
+        var reset_button2 = new ui.Button(`<button>Reset</button>`, {
             "flex": 1,
             "disabled": ()=>cp.rect.equals(default_rect),
             "click": ()=>cp.update_crop(default_rect),
         })
-        var save_button = new ui.Button(`<button class="button">Apply</button>`, {
+        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
             "flex": 1,
-            "disabled": ()=>item._crop.equals(cp.rect),
-            "click":()=>{
-                this.hide();
-                app.playlist_update([
-                    [`${item.id}/props/crop`, [cp.rect.left, cp.rect.top, 1-cp.rect.right,1-cp.rect.bottom]],
-                ])
-            }
+            "click":()=>this.cancel()
         })
-        this.footer_elem.append(reset_button0, reset_button, reset_button2, save_button);
+        this.footer.append(reset_button0, reset_button, reset_button2, cancel_button);
 
-        var data = item._detected_crops;
         var container = $(`<div class="crop-editor-container"></div>`)[0];
         var crop_container = $(`<div></div>`)[0];
         /** @type {CropPreview} */
@@ -3445,23 +3497,23 @@ export class CropEditMenu extends Modal {
         container.append(crop_container);
         
         var row = $(`<div class="buttons border-group"></div>`)[0];
-        var left = new ui.Button(`<button class="button"><i class="fas fa-arrow-left"></i></button>`, {
+        var left = new ui.Button(`<button><i class="fas fa-arrow-left"></i></button>`, {
             "title": "Previous",
             "flex": "none",
             "click":()=>update(index-1)
         })
         var page_el = $(`<span></span>`)[0];
-        var right = new ui.Button(`<button class="button"><i class="fas fa-arrow-right"></i></button>`, {
+        var right = new ui.Button(`<button><i class="fas fa-arrow-right"></i></button>`, {
             "title": "Next",
             "flex": "none",
             "click":()=>update(index+1)
         })
         row.append(left, page_el, right);
         container.append(row);
-        this.content.append(container);
+        this.props.append(container);
 
         var update = (i)=>{
-            utils.dom.empty(crop_container);
+            dom.remove_children(crop_container);
             index = i = utils.loop(i, 0, data.crops.length);
             var c = data.crops[i];
             detected_crop_rect = c.rect;
@@ -3483,17 +3535,24 @@ export class CropEditMenu extends Modal {
 export class ScheduleStreamSettings extends Modal {
     constructor() {
         super({
+            "modal.title": "Schedule Stream Start",
             "modal.props": new ui.PropertyContainer({
                 "items": ()=>[app.$._session],
                 "nullify_defaults": true,
             }),
-            "modal.title": "Schedule Stream Start",
             "modal.footer": true,
+            "modal.apply": ()=>{
+                app.request({
+                    call: ["session", "set_values"],
+                    arguments: this.props.named_property_lookup
+                });
+            }
         });
 
         var row = this.props.append(new ui.FlexRow());
         row.append(
-            this.schedule_start_time = new ui.DateTimeProperty("schedule_start_time", null, {
+            this.schedule_start_time = new ui.DateTimeProperty({
+                "name": "schedule_start_time",
                 "label": function() {
                     var n = `Start Date/Time`;
                     if (this.value) {
@@ -3506,33 +3565,33 @@ export class ScheduleStreamSettings extends Modal {
             })
         )
         
+        this.footer.append(new ui.Button(`<button>Cancel</button>`, {
+            click:()=>this.cancel()
+        }));
         var reset_button = new ui.Button(`<button>Reset</button>`, {
             "click": ()=>this.reset()
         });
-        this.footer_elem.append(reset_button);
-        
-        this.props.on("change", (e)=>{
-            if (!e.name || !e.trigger) return;
-            app.$._push([`sessions/${app.$._session.id}/${e.name}`, e._value]);
-            // app.$._session[e.name] = e._value;
-            app.request({
-                call: ["session", "update_values"],
-                arguments: [[e.name, e._value]]
-            });
-        });
+        this.footer.append(reset_button);
     }
 }
 
 export class SessionConfigurationSettings extends Modal {
     constructor() {
         super({
+            "modal.title":"Session Configuration",
             "modal.props": new ui.PropertyContainer({
                 "items": ()=>[app.$._session],
             }),
-            "modal.title":"Session Configuration",
+            "modal.footer": true,
+            "modal.apply": ()=>{
+                app.request({
+                    call: ["session", "set_values"],
+                    arguments: this.props.named_property_lookup
+                });
+            },
         });
 
-        function get_default() { return utils.try(()=>app.$.properties[this.name].__default__); }
+        function get_default() { return utils.try_catch(()=>app.$.properties[this.name].__default__); }
         this.name = new ui.Property(`<input type="text">`, {
             "name": "name",
             "label": "Session Name",
@@ -3588,12 +3647,22 @@ export class SessionConfigurationSettings extends Modal {
             "title": "Regenerate Key",
         });
         this.stream_key.group_elem.append(regenerate_button); */
+        this.background_mode = new ui.Property(`<select></select>`, {
+            "name": "background_mode",
+            "label": "Background Mode",
+            "options": ()=>utils.try_catch(()=>app.$.properties.background_mode.__options__, []),
+            "default": ()=>utils.try_catch(()=>app.$.properties.background_mode.__default__, null),
+        });
+
+        this.background_color = new ui.Property(`<input type="color">`, {
+            "name": "background_color",
+            "label": "Background Color",
+        });
         
-        [this.background_mode, this.background_color, this.background_file, this.background_file_start, this.background_file_end] = create_background_properties({
-            "name": "background",
-            "label": "Default Background",
-            "options": ()=>utils.try(()=>app.$.properties.background_mode.__options__, []),
-            "default": ()=>utils.try(()=>app.$.properties.background_mode.__default__, null),
+        [this.background_file, this.background_file_start, this.background_file_end] = create_video_file_start_end_properties({
+            "name": "background_file",
+            "label": "Background File",
+            "hidden": ()=>this.background_mode.value !== "file",
         })
 
         this.files_dir = new FileProperty({
@@ -3628,16 +3697,8 @@ export class SessionConfigurationSettings extends Modal {
             "label": "Access Control",
             "info": "Owners: Full access.\nAllowed: Full access but cannot edit session confugration, delete the session, load/save session files or access history.\nDenied: No access rights whatsoever.",
         });
-        this.props.on("change", (e)=>{
-            if (!e.name || !e.trigger) return;
-            app.$._push([`sessions/${app.$._session.id}/${e.name}`, e._value]);
-            app.request({
-                call: ["session", "update_values"],
-                arguments: [[e.name, e._value]]
-            });
-        });
         
-        this.on("show", ()=>{
+        this.on("before-show", ()=>{
             var layout = [
                 [this.name],
                 // [this.default_stream_title],
@@ -3646,7 +3707,8 @@ export class SessionConfigurationSettings extends Modal {
             if (this.props.item.type === SessionTypes.INTERNAL) {
                 layout.push(
                     [this.stream_host], [this.stream_key],
-                    [this.background_mode, this.background_color, this.background_file, this.background_file_start, this.background_file_end],
+                    [this.background_mode, this.background_color],
+                    [this.background_file, this.background_file_start, this.background_file_end],
                     [this.files_dir],
                     [this.auto_reconnect, this.auto_reconnect_delay, this.auto_reconnect_max_attempts]
                 );
@@ -3658,6 +3720,10 @@ export class SessionConfigurationSettings extends Modal {
             }
             this.props.update_layout(layout);
         });
+
+        this.footer.append(new ui.Button(`<button>Cancel</button>`, {
+            click:()=>this.cancel()
+        }));
     }
 }
 
@@ -3678,8 +3744,8 @@ export class ChangeLog extends Modal {
             "modal.title": "Change Log",
             "modal.min-width": "750px"
         });
-        this.on("show",()=>{
-            Object.assign(this.content.elem.style, {
+        this.on("before-show",()=>{
+            Object.assign(this.props.elem.style, {
                 // "font-family": "monospace",
                 "font-size": "1.2rem",
             });
@@ -3688,7 +3754,7 @@ export class ChangeLog extends Modal {
     }
     async load() {
         var html = await (await (fetch("./changes.md"))).text();
-        set_inner_html(this.content.elem, `<div>${html}</div>`);
+        dom.set_inner_html(this.props.elem, `<div>${html}</div>`);
     }
 }
 
@@ -3738,23 +3804,38 @@ export class UploadsDownloadsMenu extends Modal {
                         progress: `${((u.bytes/u.total)*100).toLocaleString(undefined, {maximumFractionDigits:2,minimumFractionDigits:2})}%`
                     });
                 }
-                var table = utils.dom.build_table(rows, { header, empty: `No active ${type}` });
+                var table = dom.build_table(rows, { header, empty: `No active ${type}` });
                 content.append(table);
             }
-            utils.dom.sync_dom(this.props.elem, content.elem, {attrs:false});
+            dom.sync_dom(this.props.elem, content.elem, {attrs:false});
         });
     }
 }
 
+class JSONViewerSettings {
+    title = "";
+    data = {};
+    all_collapsed = false;
+    /** @param {JSONViewerSettings} d */
+    constructor(d) {
+        Object.assign(this, d);
+    }
+}
+
+
+/** @extends {Modal<JSONViewerSettings>} */
 export class JSONViewer extends Modal {
-    async show(title, data, all_collapsed=false) {
-        await super.show();
-        this.update_settings({"modal.title": title });
-        var json = new JSONContainer(data, all_collapsed);
-        this._json_root = json._json_root;
-        set_inner_html(this.content.elem, "");
-        set_style_property(this.content.elem, "margin-bottom", 0);
-        this.content.elem.append(json);
+    constructor() {
+        super({
+            "modal.title": ()=>this.item.title||"JSON Viewer",
+        });
+        this.on("before-show", ()=>{
+            var json = new JSONContainer(this.item.data, this.item.all_collapsed);
+            this._json_root = json._json_root;
+            dom.remove_children(this.props);
+            dom.set_style_property(this.props.elem, "margin-bottom", 0);
+            this.props.elem.append(json);
+        });
     }
 }
 
@@ -3762,7 +3843,7 @@ export class InfoSettings extends JSONViewer {
     /** @param {PlaylistItem[]} items */
     async show(items) {
         var name;
-        var special_keys = ["_media_info", "_info", "_userdata"]
+        var special_keys = ["_media_info", "_info", "_userdata"];
         var data = items.map(d=>{
             var a = {...d};
             for (var k of special_keys) a[k] = d[k];
@@ -3774,7 +3855,7 @@ export class InfoSettings extends JSONViewer {
         } else {
             name = `[${items.length} Items]`
         }
-        await super.show(name, data, false);
+        await super.show(new JSONViewerSettings({title:name, data, all_collapsed:false}));
         for (var k of special_keys) {
             var n = this._json_root.find(k);
             if (n) n.collapse(true);
@@ -3826,9 +3907,9 @@ export class SetTimePosSettings extends Modal {
         this.cancel = new ui.Button(`<button>Cancel</button>`, {
             "click": ()=>this.hide()
         });
-        this.footer_elem.append(this.ok, this.cancel);
+        this.footer.append(this.ok, this.cancel);
 
-        this.on("show",()=>{
+        this.on("before-show",()=>{
             this.time_pos.settings.default = app.$._session.time_pos;
             this.time_pos.reset();
         })
@@ -3840,9 +3921,7 @@ export class SetVolumeSettings extends Modal {
         super({
             "modal.title":"Precise Volume Adjustment",
             "modal.footer":true,
-            "modal.props": new ui.PropertyContainer({
-                data: app.$._session,
-            }),
+            "modal.props": new ui.PropertyContainer(),
         });
         var row = this.props.append(new ui.FlexRow());
         //<div style="padding:0 5px; border-left: 1px solid #aaa; border-bottom: 1px solid #aaa;">
@@ -3852,6 +3931,8 @@ export class SetVolumeSettings extends Modal {
             "default": 100,
             "min": 0,
             "max": 200,
+            "data": app.$._session.volume_target,
+            "nullify_defaults": true,
         });
         row.append(volume_input);
         var volume_speed = new ui.Property(`<select>`, {
@@ -3859,6 +3940,8 @@ export class SetVolumeSettings extends Modal {
             "label": "Volume Transition Speed",
             "default": 4.0,
             "options": [[0.5, "Very Slow"], [1.0, "Slow"], [2.0, "Medium"], [4.0, "Fast"], [8.0, "Very Fast"], [0, "Immediate"]],
+            "data": app.$._session.volume_speed,
+            "nullify_defaults": true,
         });
         row.append(volume_speed);
         
@@ -3874,12 +3957,12 @@ export class SetVolumeSettings extends Modal {
         });
         row.append(volume_slider);
         
-        volume_input.on("change", (e)=>{
+        /* volume_input.on("change", (e)=>{
             volume_slider.set_value(e._value);
         });
         volume_slider.on("change", (e)=>{
             volume_input.set_value(e._value, {trigger:e.trigger})
-        });
+        }); */
 
         this.ok = new ui.Button(`<button>Apply</button>`, {
             "disabled": ()=>this.changes.length==0,
@@ -3892,7 +3975,7 @@ export class SetVolumeSettings extends Modal {
         this.cancel = new ui.Button(`<button>Cancel</button>`, {
             "click": ()=>this.hide()
         });
-        this.footer_elem.append(this.ok, this.cancel);
+        this.footer.append(this.ok, this.cancel);
     }
 }
 
@@ -3902,17 +3985,17 @@ export class ExternalSessionConfigurationMenu extends Modal {
         super({
             "modal.props": new ui.PropertyContainer({
                 "nullify_defaults": true,
-                "items": ()=>[app.settings.get("external-session-config")]
+                "items": ()=>[app.settings.get("external-session-config")||{}]
             }),
             "modal.title":"Setup External Session",
             "modal.footer":false,
         });
         
         var row = this.props.append(new ui.FlexRow());
-        set_inner_html(row.elem, `Setup your streaming software to stream to cabtv and restream to multiple targets.`);
+        dom.set_inner_html(row.elem, `Setup your streaming software to stream to cabtv and restream to multiple targets.`);
 
         var row = this.props.append(new ui.FlexRow());
-        set_inner_html(row.elem, `<hr/>`);
+        dom.set_inner_html(row.elem, `<hr/>`);
         
         this.stream_name = new ui.Property(`<input type="text">`, {
             "name": "name",
@@ -3937,7 +4020,7 @@ export class ExternalSessionConfigurationMenu extends Modal {
             this.stream_targets,
         ]
         
-        var valid = ()=>input_props.every(i=>i.valid);
+        var valid = ()=>input_props.every(i=>i.is_valid);
 
         this.props.append(new ui.Separator());
 
@@ -3962,11 +4045,9 @@ export class ExternalSessionConfigurationMenu extends Modal {
         });
         this.props.append(this.output_key);
 
-        var get_settings = ()=>Object.fromEntries(input_props.map(i=>[i.name, i._value]).filter(([k,v])=>v!=null));
-
         var host, key, old_hash;
         this.on("update", ()=>{
-            var hash = JSON.stringify(get_settings());
+            var hash = JSON.stringify(this.props.named_property_lookup);
             if (hash === old_hash) return;
             old_hash = hash;
 
@@ -3985,7 +4066,7 @@ export class ExternalSessionConfigurationMenu extends Modal {
 
         this.props.on("change", (e)=>{
             if (e.trigger) {
-                app.settings.set("external-session-config", get_settings());
+                app.settings.set("external-session-config", this.props.named_property_lookup_not_null);
             }
         })
     }
@@ -3996,35 +4077,39 @@ export const TimeLeftMode = {
     DURATION:1,
 }
 
-export class TargetEditMenu extends Modal {
+/** @extends {Modal<Target>} */
+export class EditTargetMenu extends Modal {
     constructor() {
         super({
-            "modal.title": ()=>this.target ? `Edit '<span>${this.target.name}</span>'` : "New Target",
-            "modal.title-overflow": true,
+            "modal.title": ()=>this.item.id ? `Edit '<span>${this.item.name}</span>'` : "New Target",
+            "modal.title_overflow": true,
             "modal.footer":true,
             "modal.props": new ui.PropertyContainer(),
+            "modal.apply": ()=>{
+                if (this.item.id) {
+                    app.request({
+                        call: ["app", "update_target"],
+                        arguments: [this.item.id, this.props.named_property_lookup]
+                    });
+                } else {
+                    app.request({
+                        call: ["app", "create_target"],
+                        arguments: [this.props.named_property_lookup]
+                    });
+                }
+            }
         });
-
-        /* var row = this.props.append(new ui.FlexRow());
-        var id = new ui.Property(`<input type="text">`, {
-            "name": "id",
-            "label": "ID",
-            "readonly": true,
-            "disabled":true,
-            hidden: ()=>!this.id
-        });
-        row.append(id) */
 
         var row = this.props.append(new ui.FlexRow());
         this.name = new ui.Property(`<input type="text">`, {
             "name": "name",
             "label": "Name",
-            "reset":false,
+            "reset": false,
             "default": "",
             "placeholder": "My Stream",
         });
         this.name.validators.push(VALIDATORS.not_empty, (v)=>{
-            return Object.values(app.$.targets).filter((t)=>t!=this.target).map(t=>t.name).includes(v) ? "Name already exists." : true
+            return Object.values(app.$.targets).filter((t)=>t!=this.item).map(t=>t.name).includes(v) ? "Name already exists." : true
         });
         row.append(this.name)
 
@@ -4083,64 +4168,23 @@ export class TargetEditMenu extends Modal {
         if (!IS_ELECTRON) {
             this.props.append(this.access_control);
         }
-
-        /* var row = this.append(new ui.FlexRow());
-        this.custom = new ui.TextArea("custom", "Additional Properties (JSON)", {
-            "default": {},
-        });
-        this.custom.validators.push(VALIDATORS.json);
-        this.custom.input_modifiers.push(v=>{ try { return JSON.parse(v) } catch {} });
-        this.custom.output_modifiers.push(v=>JSON.stringify(v, null, "  "));
-        row.append(this.custom); */
         
-        var save_button = new ui.Button(`<button>Save</button>`, {
-            "disabled": ()=>!this.props.valid,
-            "hidden": ()=>!!this.target,
-            "click": ()=>{
-                app.request({
-                    call: ["app", "create_target"],
-                    arguments: [this.props.named_property_lookup]
-                });
-                this.hide();
-            }
+        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
+            "click": ()=>this.cancel()
         });
+        this.footer.append(cancel_button);
 
-        var delete_button = new ui.Button(`<button>Delete</button>`, {
-            "hidden": ()=>!this.target,
-            "click": ()=>{
-                if (confirm(`Are you sure you want to delete Target '${this.target.name}'?`)) {
-                    app.request({
-                        call: ["app", "delete_target"],
-                        arguments: [this.target.id]
-                    });
-                    this.hide();
-                }
-            }
+        this.on("before-show", ()=>{
+            if (!this.item.id) this.access_control._claim();
         });
-        this.footer_elem.append(save_button, delete_button);
-        
-        this.props.on("change", (e)=>{
-            if (!this.target || !e.name || !e.trigger) return;
-            app.request({
-                call: ["app", "update_target"],
-                arguments: [this.target.id, {[e.name]:e._value}]
-            });
-        });
-    }
-
-    /** @param {Target} target */
-    async show(target) {
-        await super.show(target);
-        this.target = target;
-        if (!target) { // new
-            this.access_control._claim();
-        }
     }
 }
 
-export class TargetMenu extends Modal {
+/** @extends {Modal<TargetsProperty>} */
+export class TargetsMenu extends Modal {
     /** @type {string[]} */
     get _enabled_target_ids() { return Object.keys(filter_enabled_targets(this._value)); }
+    /** @type {Record<string, TargetOpts>} */
     _value = {};
 
     get _enabled_targets() {
@@ -4153,76 +4197,61 @@ export class TargetMenu extends Modal {
     }
     get _disabled_targets_ids() { return this._disabled_targets.map(t=>t.id); }
 
-    get _auto_apply() {
-        if (this._targets_prop) return this._targets_prop.get_setting("auto_apply");
-        return false;
-    }
-
     get _show_in_use() {
-        if (this._targets_prop) return this._targets_prop.get_setting("show_in_use");
+        if (this.item) return this.item.get_setting("show_in_use");
         return false;
     }
 
-    /** @param {TargetsProperty} targets_prop */
-    constructor(targets_prop, settings) {
+    constructor() {
         super({
             "modal.title": "Targets",
-            "modal.footer": ()=>!this._auto_apply,
+            "modal.footer": true,
             "modal.props": new ui.PropertyContainer(),
-            ...settings,
+            "modal.apply": ()=>{
+                if (!this.item) return;
+                this.item.set_value(this._value, {trigger:true});
+            }
         });
 
-        this._targets_prop = targets_prop;
+        dom.add_class(this.props.elem, "target-config");
 
-        add_class(this.props.elem, "target-config");
-
+        var disabled_list = new ui.UI(`<div></div>`, {class:"target-list"});
         /** @type {HTMLElement} */
-        var enabled_el;
-        if (targets_prop) {
-            enabled_el = $(`<div></div>`)[0];
-            add_class(enabled_el, "target-list");
-            this.props.append(enabled_el);
-            this.props.append(new ui.Separator());
-            var update_from_prop = ()=>{
-                this._value = targets_prop.value;
-                this.update();
+        var enabled_list = new ui.UI(`<div></div>`, {class:"target-list"});
+
+        this.on("before-show", ()=>{
+            var layout = [];
+            if (this.item) {
+                layout.push(
+                    [enabled_list],
+                    new ui.Separator()
+                );
             }
-            this.on("show", ()=>{
-                update_from_prop();
-            })
-            targets_prop.on("change", (e)=>{
-                if (e.trigger) {
-                    update_from_prop();
-                }
-            })
-        }
+            layout.push(
+                [disabled_list],
+            );
+            this.props.update_layout(layout);
+            if (this.item) {
+                this._value = utils.json_copy(this.item.value);
+            }
+        });
 
-        var disabled_el = $(`<div></div>`)[0];
-        add_class(disabled_el, "target-list");
-        this.props.append(disabled_el);
-
-        var row = this.props.append(new ui.FlexRow());
-        var new_button = new ui.Button(`<button>New Target <i class="fas fa-plus" style="padding:0 5px"></i></button>`, {
+        var new_button = new ui.Button(`<button>New Target <i class="fas fa-plus"></i></button>`, {
+            "flex":1,
             "click":()=>{
-                new TargetEditMenu().show(null);
+                app.edit_target_menu.show({});
             },
             "title": "New Target",
         });
-        row.append(new_button);
 
-        var apply_button = new ui.Button(`<button>Apply</button>`, {
-            "hidden": ()=>this._auto_apply,
-            "click":()=>{
-                this.apply();
-                this.update();
-                this.hide();
-            },
-            "title": "Apply",
+        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
+            "hidden":()=>!this.item,
+            "click":()=>this.cancel()
         });
-        this.footer_elem.append(apply_button);
+        this.footer.append(new_button, cancel_button);
 
         var update_target_ids = ()=>{
-            var enabled_ids = [...enabled_el.children, ...disabled_el.children].filter(e=>e.dataset.id && e.querySelector("input").checked).map(e=>e.dataset.id);
+            var enabled_ids = [...enabled_list.elem.children, ...disabled_list.elem.children].filter(e=>e.dataset.id && e.querySelector("input").checked).map(e=>e.dataset.id);
             var new_value = {};
             for (var id of enabled_ids) {
                 new_value[id] = {...this._value[id], enabled: true};
@@ -4232,12 +4261,9 @@ export class TargetMenu extends Modal {
                 if (id in allowed && !(id in new_value)) new_value[id] = {...this._value[id], enabled: false};
             }
             this._value = new_value;
-            this.update_value();
+            this.update();
         }
 
-        var is_editable = (target)=>{
-            return !target.locked && new AccessControl(target.access_control)._self_can_edit;
-        };
         /** @param {Target} target */
         var add = (target, elem, i)=>{
             elem = $(`<div></div>`)[0];
@@ -4250,11 +4276,15 @@ export class TargetMenu extends Modal {
             checkbox_input.onchange = ()=>{
                 update_target_ids();
             };
-            label_el.append(checkbox_input, text_wrapper_elem);
+            var checkbox = new ui.UI(checkbox_input, {
+                "hidden":()=>!this.item,
+            });
+
+            label_el.append(checkbox, text_wrapper_elem);
 
             var up_button = new ui.Button(`<button><i class="fas fa-arrow-up"></i></button>`, {
                 "click":()=>{
-                    utils.dom.move(elem, -1);
+                    dom.move(elem, -1);
                     update_target_ids();
                 },
                 "hidden":()=>this._enabled_target_ids.length<2 || !this._enabled_target_ids.includes(target.id),
@@ -4264,7 +4294,7 @@ export class TargetMenu extends Modal {
 
             var down_button = new ui.Button(`<button><i class="fas fa-arrow-down"></i></button>`, {
                 "click":()=>{
-                    utils.dom.move(elem, 1);
+                    dom.move(elem, 1);
                     update_target_ids();
                 },
                 "hidden":()=>this._enabled_target_ids.length<2 || !this._enabled_target_ids.includes(target.id),
@@ -4279,7 +4309,7 @@ export class TargetMenu extends Modal {
             }
 
             var config_button = new ui.Button(`<button><i class="fas fa-cog"></i></button>`, {
-                "hidden": ()=>!targets_prop || !get_config_menu(),
+                "hidden": ()=>!this.item || !get_config_menu(),
                 "click": ()=>get_config_menu().show(this),
                 "title": "Configure",
             });
@@ -4287,8 +4317,8 @@ export class TargetMenu extends Modal {
             var disabled_restart = false;
             var restart_button = new ui.Button(`<button><i class="fas fa-sync"></i></button>`, {
                 "hidden": ()=>{
-                    if (!targets_prop) return true;
-                    var stream = targets_prop._stream;
+                    if (!this.item) return true;
+                    var stream = this.item._stream;
                     if (!stream) return true;
                     return !stream.stream_targets[target.id];
                 },
@@ -4297,23 +4327,16 @@ export class TargetMenu extends Modal {
                     disabled_restart = true;
                     app.stream_restart([target.id]);
                     await utils.timeout(5000);
-                    disabled_restart=false;
+                    disabled_restart = false;
                 },
                 "title": "Restart",
             });
 
-            /* var view_url_button = new ui.Link(`<i class="fas fa-arrow-up-right-from-square"></i>`, {
-                "hidden": ()=>!target.url,
-                "href": ()=>target.url,
-            }); */
-
             var edit_button = new ui.Button(`<button><i class="fas fa-edit"></i></button>`, {
                 "click":()=>{
-                    new TargetEditMenu().show(target)
+                    app.edit_target_menu.show(target)
                 },
-                "hidden":()=>{
-                    return !is_editable(target)
-                },
+                "hidden":()=>!target._can_edit,
                 "title": "Edit",
             });
 
@@ -4324,18 +4347,21 @@ export class TargetMenu extends Modal {
                             call: ["app", "delete_target"],
                             arguments: [target.id]
                         });
+                        delete this._value[target.id]
+                        this.update();
                     }
                 },
-                "hidden":()=>!is_editable(target),
+                "hidden":()=>!target._can_edit,
                 "title": "Delete",
             });
+
             var buttons_el = $(`<div class="buttons"></div>`)[0];
-            buttons_el.append(edit_button, config_button, delete_button, /*view_url_button, */ up_button, down_button, restart_button);
+            buttons_el.append(edit_button, config_button, delete_button, up_button, down_button, restart_button);
             elem.append(label_el, buttons_el);
 
             var name_elem = $(`<span class="name"></span>`)[0];
             var description_elem = $(`<div class="description"></div>`)[0];
-            set_inner_html(text_wrapper_elem, "");
+            dom.set_inner_html(text_wrapper_elem, "");
             text_wrapper_elem.append(name_elem, description_elem);
             var checkbox_input = elem.querySelector(`input[type="checkbox"]`);
 
@@ -4344,11 +4370,9 @@ export class TargetMenu extends Modal {
             if (target.locked) parts.push(` <i class="fas fa-lock"></i>`);
             if (target.builtin) parts.push(` <i class="fas fa-star"></i>`);
             if (target.url) parts.push(`<a href="${target.url}" target="_blank"><i class="fas fa-arrow-up-right-from-square"></i></a>`);
-            set_inner_html(name_elem, parts.join(" "));
-            set_inner_html(description_elem, utils.convert_links_to_html(target.description || ""));
-            checkbox_input.checked = this._enabled_target_ids.includes(target.id)
-            checkbox_input.style.display = targets_prop ? "" : "none";
-            checkbox_input.disabled = !targets_prop;
+            dom.set_inner_html(name_elem, parts.join(" "));
+            dom.set_inner_html(description_elem, utils.convert_links_to_html(target.description || ""));
+            checkbox_input.checked = this._enabled_target_ids.includes(target.id);
 
             return elem;
         };
@@ -4361,27 +4385,19 @@ export class TargetMenu extends Modal {
 
             var enabled_targets = this._enabled_targets;
             var disabled_targets = this._disabled_targets;
+            var style = `display: flex; justify-content: center; padding: 10px;`
 
-            if (targets_prop) {
-                utils.dom.rebuild(enabled_el, enabled_targets, { add });
+            if (this.item) {
+                dom.rebuild(enabled_list.elem, enabled_targets, { add });
                 if (enabled_targets.length == 0) {
-                    set_inner_html(enabled_el, `<span style="display: flex; justify-content: center; padding: 10px;">No Targets Selected.</span>`);
+                    dom.set_inner_html(enabled_list.elem, `<span style="${style}">No Targets Selected.</span>`);
                 }
             }
-            utils.dom.rebuild(disabled_el, disabled_targets, { add });
+            dom.rebuild(disabled_list.elem, disabled_targets, { add });
             if (disabled_targets.length == 0) {
-                set_inner_html(disabled_el, `<span style="display: flex; justify-content: center; padding: 10px;">No Remaining Targets.</span>`);
+                dom.set_inner_html(disabled_list.elem, `<span style="${style}">No Remaining Targets.</span>`);
             }
         });
-    }
-
-    apply() {
-        this._targets_prop.set_value(utils.json_copy(this._value), {trigger:true});
-    };
-    
-    update_value() {
-        this.update();
-        if (this._auto_apply) this.apply();
     }
 }
 
@@ -4424,11 +4440,8 @@ export class TargetsProperty extends ui.Property {
             this.validators.push(()=>(this._enabled_ids.length == 0) ? "No targets selected" : true);
         }
 
-        /** @type {TargetMenu} */
-        var modal;
         input.onclick = (e)=>{
-            if (!modal) modal = new TargetMenu(this);
-            modal.show();
+            app.targets_menu.show(this);
         }
 
         this.output_modifiers.push((value)=>{
@@ -4496,7 +4509,7 @@ export class SeekBar extends ui.UI {
         var set_hover_chapters = (chapters)=>{
             var indices = new Set(chapters.map(c=>+c.index));
             [...this.chapters_elem.children].forEach(e=>{
-                toggle_class(e, "hover", indices.has(+e.dataset.index));
+                dom.toggle_class(e, "hover", indices.has(+e.dataset.index));
             });
         };
 
@@ -4520,7 +4533,7 @@ export class SeekBar extends ui.UI {
             }
         });
 
-        var hover_listener = new utils.dom.TouchListener(this.seek_elem, {
+        var hover_listener = new dom.TouchListener(this.seek_elem, {
             mode: "hover",
             start: (e)=>{
                 var data = this.ticks_bar.parse_event(e);
@@ -4535,7 +4548,7 @@ export class SeekBar extends ui.UI {
             }
         });
         var last_time;
-        var seek_listener = new utils.dom.TouchListener(this.seek_elem, {
+        var seek_listener = new dom.TouchListener(this.seek_elem, {
             start: (e)=>{
                 last_time = this.ticks_bar.parse_event(e).time;
                 this.seek_elem.focus();
@@ -4559,7 +4572,7 @@ export class SeekBar extends ui.UI {
         });
 
         var curr_marker, moving_curr_marker, curr_marker_start_x;
-        var marker_listener = new utils.dom.TouchListener(this.seek_elem, {
+        var marker_listener = new dom.TouchListener(this.seek_elem, {
             start: (e)=>{
                 this.seek_elem.focus();
                 var data = this.ticks_bar.parse_event(e);
@@ -4620,15 +4633,15 @@ export class SeekBar extends ui.UI {
             
             this.time_left_elem.title = time_left_mode == 0 ? "Time Remaining" : "Duration";
 
-            toggle_attribute(this.seek_elem, "disabled", !seekable)
+            dom.toggle_attribute(this.seek_elem, "disabled", !seekable)
             this.elem.style.cursor = show_markers ? "copy" : "";
-            toggle_class(this.bar_elem, "d-none", show_markers);
+            dom.toggle_class(this.bar_elem, "d-none", show_markers);
             this.markers_elem.style.display = show_markers ? "" : "none";
 
             var ranges_hash = JSON.stringify([duration, ranges]);
             if (this._ranges_hash != ranges_hash) {
                 this._ranges_hash = ranges_hash;
-                utils.dom.empty(this.ranges_elem);
+                dom.remove_children(this.ranges_elem);
                 if (duration && ranges) {
                     for (var r of ranges) {
                         var e = $(`<div class="range"></div>`)[0];
@@ -4639,12 +4652,12 @@ export class SeekBar extends ui.UI {
                 }
             }
 
-            toggle_class(this.seek_elem, "buffering", buffering);
+            dom.toggle_class(this.seek_elem, "buffering", buffering);
 
             var markers_hash = JSON.stringify([markers, duration]);
             if (this._markers_hash != markers_hash) {
                 this._markers_hash = markers_hash;
-                utils.dom.empty(this.markers_elem);
+                dom.remove_children(this.markers_elem);
                 if (duration) {
                     for (var m of markers) {
                         var e = $(`<div class="marker"><div></div></div>`)[0];
@@ -4658,14 +4671,14 @@ export class SeekBar extends ui.UI {
             var chapters_hash = JSON.stringify([chapters, duration]);
             if (this._chapters_hash != chapters_hash) {
                 this._chapters_hash = chapters_hash;
-                utils.dom.empty(this.chapters_elem);
+                dom.remove_children(this.chapters_elem);
                 if (duration && chapters.length > 1) {
                     chapters.forEach((c,i)=>{
                         var d = Math.max(0, c.end-c.start);
                         var e = $(`<div class="chapter"></div>`)[0];
                         e.style.left = `${c.start / duration*100}%`;
                         e.style.width = `${d / duration*100}%`;
-                        set_style_property(e, "z-index", i+1);
+                        dom.set_style_property(e, "z-index", i+1);
                         e.dataset.index =  c.index;
                         this.chapters_elem.appendChild(e);
                     });
@@ -4695,11 +4708,11 @@ export class SeekBar extends ui.UI {
         var time_left = duration ? (duration - time_pos) : 0;
         this.time_elem.style.display = show_times ? "" : "none";
         this.time_left_elem.style.display = show_times ? "" : "none";
-        set_text(this.time_elem, `${utils.seconds_to_timespan_str(time_pos, app.user_time_format)}`);
+        dom.set_text(this.time_elem, `${utils.seconds_to_timespan_str(time_pos, app.user_time_format)}`);
         var time_left_str = "";
         if (time_left_mode === TimeLeftMode.TIME_LEFT) time_left_str = `-${utils.seconds_to_timespan_str(Math.max(0, time_left), app.user_time_format)}`;
         else if (time_left_mode === TimeLeftMode.DURATION) time_left_str = utils.seconds_to_timespan_str(Math.max(0, duration), app.user_time_format)
-        set_text(this.time_left_elem, time_left_str);
+        dom.set_text(this.time_left_elem, time_left_str);
     }
 
     clear_markers() {
@@ -4756,7 +4769,7 @@ export class MediaSeekBar extends SeekBar {
 
         var last_time = 0;
         var speed = 1;
-        var is_playing = ()=>app.$._session._is_running && app.$._stream.mpv.context.playing && !app.media.paused;
+        var is_playing = ()=>app.$._session._is_running && !app.media.paused && !app.$._stream.mpv.ctx.seeking;
         this.on("pre_update", ()=>{
             var time = app.media.time_pos;
             if (last_time != time || !is_playing()) this.settings["seek.time_pos"] = time;
@@ -4809,6 +4822,13 @@ export class StreamConfigurationMenu extends Modal {
             "modal.props": new ui.PropertyContainer({
                 "items":()=>[app.$._stream],
             }),
+            "modal.footer": true,
+            "modal.apply": ()=>{
+                app.request({
+                    call: ["session", "stream", "set_values"],
+                    arguments: this.props.named_property_lookup
+                });
+            },
         });
         var title_ui = new ui.Property(`<input type="text">`, {
             "name": "title",
@@ -4847,13 +4867,9 @@ export class StreamConfigurationMenu extends Modal {
 
         row.append(stream_targets)
 
-        this.props.on("change", (e)=>{
-            if (!e.name || !e.trigger) return;
-            app.request({
-                call: ["session", "stream", "update_values"],
-                arguments: [[e.name, e._value]]
-            });
-        })
+        this.footer.append(new ui.Button(`<button>Cancel</button>`, {
+            click:()=>this.cancel()
+        }));
     }
 }
 export class HandoverSessionMenu extends Modal {
@@ -4872,7 +4888,7 @@ export class HandoverSessionMenu extends Modal {
         })
         row.append(handover_stream_property);
 
-        this.footer_elem.append(new ui.Button(`<button>OK</button>`, {
+        this.footer.append(new ui.Button(`<button>OK</button>`, {
             "disabled": ()=>!handover_stream_property.value,
             "click": ()=>{
                 this.hide();
@@ -4888,7 +4904,7 @@ export class SavePlaylistSettings extends Modal {
     constructor() {
         super({
             "modal.title": ()=>`Save Playlist '<span>${playlist_name}</span>'`,
-            "modal.title-overflow": true,
+            "modal.title_overflow": true,
             "modal.footer": true,
             "modal.props": new ui.PropertyContainer({
                 "items": ()=>[app.settings.get("save_playlist_settings")],
@@ -5004,9 +5020,9 @@ export class SavePlaylistSettings extends Modal {
         this.cancel = new ui.Button(`<button>Cancel</button>`, {
             "click": ()=>this.hide()
         });
-        this.footer_elem.append(save_local_button, this.cancel)
+        this.footer.append(save_local_button, this.cancel)
 
-        this.on("show", ()=>{
+        this.on("before-show", ()=>{
             playlist_name = app.playlist.current._get_pretty_name() || app.$._session.name;
             filename = `${utils.sanitize_filename(playlist_name)}-${utils.date_to_string()}`;
             render_preview();
@@ -5025,7 +5041,7 @@ export class HistorySettings extends Modal {
             "modal.min-width": "900px",
             "modal.props": new ui.PropertyContainer(),
         });
-        add_class(this.props.elem, "autosave-history");
+        dom.add_class(this.props.elem, "autosave-history");
         var table_data = {
             "Time":(data)=>{
                 var mtime = new Date(data.mtime);
@@ -5083,7 +5099,7 @@ export class HistorySettings extends Modal {
         this.selectable_list.on("change", ()=>{
             var i = this.selectable_list.selected_index;
             var data = this.history[i];
-            utils.dom.empty(info_elem);
+            dom.remove_children(info_elem);
             this.update();
 
             if (!data) return;
@@ -5109,9 +5125,9 @@ export class HistorySettings extends Modal {
             }
         });
 
-        this.on("show", async ()=>{
+        this.on("before-show", async ()=>{
             this.selectable_list.select(null);
-            utils.dom.empty(tbody);
+            dom.remove_children(tbody);
 
             this.update_settings({"modal.title": `History [Fetching...]`});
 
@@ -5175,14 +5191,14 @@ export class PlaylistAddURLMenu extends Modal {
                 this.hide();
             }
         })
-        this.footer_elem.append(ok_button)
+        this.footer.append(ok_button)
         var cancel_button = new ui.Button(`<button>Cancel</button>`, {
             "click": ()=>{
                 this._resolve(null);
                 this.hide();
             }
         })
-        this.footer_elem.append(cancel_button)
+        this.footer.append(cancel_button)
         this.on("hide", ()=>this._resolve(null));
     }
     async show(resolve) {
@@ -5198,19 +5214,9 @@ export const MediaSettingsMode = {
 
 /** @extends {Modal<PlaylistItem>} */
 export class PlaylistModifySettings extends Modal {
-    async show(items, new_type) {
-        this._new_type = new_type;
-        this._saved = false;
-        await super.show(items);
-    }
-
-    hide(saved=false) {
-        this._saved = saved;
-        super.hide();
-    }
 
     get is_new() {
-        this.props.item === NULL_PLAYLIST_ITEM;
+        return !this.id;
     }
 
     get changes() {
@@ -5222,221 +5228,196 @@ export class PlaylistModifySettings extends Modal {
 
     constructor() {
         super({
-            "modal.props": new ui.PropertyContainer({
-                "nullify_defaults": true,
-            }),
-            "modal.close": ()=>{
-                if (!this._saved && this.is_new && !IS_ELECTRON) return window.confirm("This new item will be discarded. Continue?");
-                if (app.$._session._is_running && this.props.items.some(d=>d === app.$._session._current_playing_item) && this.changes.length) {
-                    app.prompt_for_reload_of_current_item();
-                }
-                return true;
-            },
+            "modal.props": new ui.PropertyContainer(),
             "modal.title": ()=>{
-                if (this.is_new) return `Add [${this._new_type}]`;
+                if (this.is_new) return `New Playlist Item`;
                 return `Modify '<span>${PlaylistItem.get_items_title(this.props.items)}</span>'`;
             },
-            "modal.title-overflow": true,
+            "modal.apply": ()=>{
+                if (app.$._session._is_running && this.props.items.some(d=>d === app.$._session._current_playlist_item) && this.changes.length) {
+                    window.prompt(`The item is currently playing and some changes may require reloading to apply changes.`);
+                    // app.prompt_for_reload_of_current_item();
+                }
+                if (this.is_new) {
+                    app.playlist_add({
+                        filename: this.filename.value,
+                        props: this.interface.named_property_lookup
+                    });
+                } else {
+                    var d = this.items.map((item,i)=>[[item.id], {
+                        filename: this.filename._values[i],
+                        props: Object.fromEntries(this.interface.named_properties.map(p=>[p.name, p._values[i]]))
+                    }])
+                    app.playlist_update(d);
+                }
+            },
+            "modal.title_overflow": true,
+            "modal.block_updates": true,
             "modal.footer":true,
         });
-        
-        this.props.items = [NULL_PLAYLIST_ITEM];
 
-        this.footer_elem.append(
-            this.save_button = new ui.Button(`<button>Save</button>`, {
-                "hidden":()=>!!this.props.item,
-                "disabled":()=>!this.props.valid,
-                "click":()=>{
-                    app.playlist_add({
-                        filename: `livestreamer://${this._new_type}`,
-                        props: this.props.named_property_lookup_not_null
-                    });
-                    this.hide(true);
-                }
+        this.interface = new MediaSettingsInterface(this);
+            
+        this.filename = new ui.Property(`<input type="text">`, {
+            "name": "filename",
+            "label": "File URI",
+            "default": (d,i)=>d.filename,
+            "nullify_defaults": false,
+            "reset": true,
+            "info": "A single wrong character will invalidate the file URI, edit with care."
+        });
+        this.filename.validators.push(VALIDATORS.not_empty);
+        this.filename.validators.push(VALIDATORS.media_exists);
+        this.props.append(this.filename);
+        this.props.append(new ui.Separator());
+
+        this.props.append(this.interface);
+
+        this.footer.append(
+            this.cancel_button = new ui.Button(`<button>Cancel</button>`, {
+                "click":()=>this.cancel()
             }),
             this.reset_button = new ui.Button(`<button>Reset</button>`, {
-                // necessary to remove possibly unused playlist_props vars (instead of running this.reset() which only removes the recognized props).
-                // "hidden":()=>this.is_new,
                 "click":()=>{
-                    if (this.is_new) {
-                        this.props.reset();
-                    } else {
-                        var changes = [];
-                        for (var item of this.props.items) {
-                            changes.push(...Object.keys(item.props).map(p=>[`${item.id}/props/${p}`, null]));
-                        }
-                        app.playlist_update(changes);
-                    }
+                    this.props.reset();
                 }
             })
         );
 
-        this.props.on("change", (e)=>{
-            if (this.is_new) return;
-            if (e.name && e.trigger) {
-                app.playlist_update(e.datas.map(data=>[`${data.id}/${e.name}`, e._value]));
-            }
+        this.on("before-show", ()=>{
+            this.interface.items = this.items;
         });
-
-        this.on("update", ()=>{
-            // if (!this.props.items.length) return;
-            this.props.update_layout(this.interface.get_layout());
-        });
-
-        this.interface = new MediaSettingsInterface(this);
     }
 }
 
-export class MediaSettingsInterface {
-    constructor(parent) {
-        /** @type {PlaylistModifySettings|MediaSettingsPanel} */
-        this.parent = parent;
-        var _this = this;
+export class MediaSettingsInterface extends ui.PropertyContainer {
 
-        let stream_to_text = (s,i,d)=>{
+    /** @param {PlaylistModifySettings|MediaSettingsPanel} parent */
+    constructor(parent) {
+        super({
+            "nullify_defaults": true,
+            "items": ()=>{
+                if (parent instanceof PlaylistModifySettings) return parent.props.items;
+                else if (parent instanceof MediaSettingsPanel) {
+                    if (parent._mode === MediaSettingsMode.current) return [app.$._session._current_playlist_item];
+                    else return [app.$._session.player_default_override];
+                }
+            },
+            "data": (item, path)=>{
+                if (parent instanceof MediaSettingsPanel && parent._mode === MediaSettingsMode.all) return utils.reflect.get(item, path);
+                return utils.reflect.get(item, ["props", ...path]);
+            }
+        });
+        
+        var _is_modify = ()=>parent instanceof PlaylistModifySettings;
+        /** @return {PlaylistItem[]} */
+        var _items = ()=>_is_modify() ? parent.props.items : [app.$._session._current_playlist_item];
+        var _item = ()=>_items()[0];
+
+        let stream_to_text = (s,i, use_prefix=true)=>{
             if (!s) return "None";
             var parts = [];
-            var prefix = (i === undefined) ? "" : `${i+1}. `;
-            parts.push(`${prefix}${s.title||"Untitled"}`);
-            if (s.language) parts.push(s.language);
-            if (d) parts.push("default")
+            var name = `${s.title||`Track ${i+1}`}`;
+            if (use_prefix) name = `${i+1}. ${name}`;
+            parts.push(name);
+            if (s.language && s.language != "und") parts.push(s.language);
             return parts.join(" | ")
         }
 
-        let is_item_playing = (item)=>{
-            item = item ?? app.$._session._current_playing_item;
-            return app.$._session._is_running && item.id == app.$._session._current_playing_item.id;
-        }
-
         /** @param {PlaylistItem} item @param {string} type */
-        let get_stream_options = (item, type)=>{
-            item = item ?? app.$._session._current_playing_item;
-            var is_playing = is_item_playing(item);
+        let get_stream_options = (type)=>{
+            var item = _item();
+            var is_playing = item._is_currently_playing;
             var streams = get_streams(item, type);
+            if (streams.length == 0) streams.push({type, title:"None"});
             let stream_to_option = (s,i)=>{
-                return {value: i+1, text: stream_to_text(s,i,s==default_stream) };
+                return {value: s.type_id || (i+1), text: stream_to_text(s,i) };
             };
-            let default_stream = utils.get_default_stream(streams, type);
+            let default_stream = get_default_stream(streams, type);
             let indeterminate_option = {value:"", text:"-", hidden:true};
-            var options = []
+            var options = [];
             options.push(indeterminate_option);
-            var id_key = type.slice(0,1)+"id_auto";
-            /* if (is_playing && app.$._stream.mpv.context.props[id_key] === "generated") {
-                indeterminate_option.text = "Generated";
-            } else { */
-            if (is_playing) {
-                default_stream = streams[app.$._stream.mpv.context.props[id_key]-1] || default_stream;
-            }
-            var auto_text = "Auto";
-            if (this.parent instanceof MediaSettingsPanel) auto_text = `${auto_text} [${stream_to_text(default_stream)}]`;
-            options.push({value:null, text:auto_text});
-            options.push({value:false, text:"None"}, ...streams.map(stream_to_option));
+            var auto_text = `Auto [${stream_to_text(default_stream, streams.indexOf(default_stream), false)}]`;
+            options.push({value:"auto", text:auto_text});
+            options.push(...streams.map(stream_to_option));
             // }
             if (options.length == 1 && options[0] === indeterminate_option) {
                 indeterminate_option.hidden = false;
             }
             return options;
         };
+        /** @param {PlaylistItem} item @param {string} type */
         let get_streams = (item, type)=>{
+            /** @type {MediaInfoStreamEx[]} */
             var streams;
-            item = item ?? app.$._session._current_playing_item;
             let mi = item._media_info;
             streams = mi ? mi.streams : null;
-            if (is_item_playing(item)) {
-                streams = app.$._stream.mpv.context.streams;
+            if (item._is_currently_playing) {
+                streams = app.$._stream.mpv.ctx.streams;
             }
             if (!streams) streams = [];
             if (type) streams = streams.filter(s=>s.type == type);
+            streams = streams.filter(s=>!s.albumart);
             return streams;
         };
-
-        let prop_name = (name)=>{
-            if (this.parent instanceof PlaylistModifySettings) return `props/${name}`;
-            return name;
-        }
-
-        /* let get_current_streams = (type)=>{
-            var streams = [];
-            var track_list = app.$.stream.mpv.context.props["track-list"] || EMPTY_ARRAY;
-            if (track_list.length > 0 && this.parent instanceof MediaSettingsPanel) {
-                streams = track_list.map(t=>({
-                    type: (t.type === "sub") ? "subtitle" : t.type,
-                    default: t.default,
-                    forced: t.forced,
-                    language: t.lang,
-                    title: t.title,
-                }));
-            }
-            if (type) streams = streams.filter(s=>s.type == type);
-            return streams;
-        }; */
-        
-        // var nullify = (v)=>v===undefined?null:v;
         
         let get_default = function() {
             var value;
-            var name = this.name.split("/").pop();
-            /* if (parent._mode === MediaSettingsMode.current) {
-                if (_this.parent instanceof MediaSettingsPanel) {
-                    value = utils.ref.get(app.$.session.player_default_override, name);
-                } else {
-                    value = utils.ref.get(app.$.session.current_playing_item.props, name);
-                }
-            } */
-            /* if (value === undefined && parent._mode === MediaSettingsMode.current) {
-                value = utils.try(()=>app.$.session.current_playing_item.props[name]);
-            } */
-            if (_this.parent instanceof PlaylistModifySettings || (_this.parent instanceof MediaSettingsPanel && _this.parent._mode === MediaSettingsMode.current)) {
-                value = utils.ref.get(app.$._session.player_default_override, name);
+            var path = this.name.split("/")
+            if (_is_modify() || (parent._mode === MediaSettingsMode.current)) {
+                value = utils.reflect.get(app.$._session.player_default_override, path);
             }
             if (value === undefined) {
-                value = utils.try(()=>app.$.properties.playlist.__enumerable__.props[name].__default__);
+                value = utils.try_catch(()=>utils.reflect.get(app.$.properties.playlist.__enumerable__.props, [...path, "__default__"]));
             }
-            /* if (value === undefined) {
-                // value = utils.try(()=>app.get_property("player_default_override", name).__default__);
-            } */
             if (value === undefined) value = null;
             return value;
         }
         
         let get_options = function() {
             var options;
-            var name = this.name.split("/").pop();
-            if (_this.parent instanceof PlaylistModifySettings) {
-                options = utils.try(()=>app.$.properties.playlist.__enumerable__.props[name].__options__);
+            var path = this.name.split("/")
+            if (_is_modify()) {
+                options = utils.try_catch(()=>utils.reflect.get(app.$.properties.playlist.__enumerable__.props, [...path, "__options__"]));
             }
             if (options === undefined) {
-                options = utils.try(()=>app.$.properties.player_default_override[name].__options__);
+                options = utils.try_catch(()=>utils.reflect.get(app.$.properties.player_default_override, [...path, "__options__"]));
             }
             return options || [];
         };
 
         this.aspect_ratio = new ui.Property(`<select></select>`, {
-            "name": prop_name("aspect_ratio"),
+            "name": "aspect_ratio",
             "label": "Aspect Ratio",
             "options": [[-1,"Default"],  [1.777778,"16:9"], [1.333333,"4:3"], [2.35,"2.35:1"]],
             "default": get_default,
         });
 
         this.deinterlace = new ui.Property(`<select></select>`, {
-            "name": prop_name("deinterlace_mode"),
+            "name": "deinterlace_mode",
             "label": "Deinterlace",
             "options": [["auto","Auto"],[false, "Off"],[true, "On"]],
             "default": get_default,
         });
 
-        this.aid_override = new ui.Property(`<select></select>`, {
-            "name": prop_name("aid_override"),
-            "label": "Audio Track",
-            "options": (item)=>{
-                return get_stream_options(item, "audio")
-            },
+        this.vid_override = new ui.Property(`<select></select>`, {
+            "name": "vid_override",
+            "label": "Video Track",
+            "options": ()=>get_stream_options("video"),
             "default": get_default,
-            "disabled": ()=>this.parent._mode === MediaSettingsMode.all,
+            "disabled": ()=>parent._mode === MediaSettingsMode.all,
+        });
+
+        this.aid_override = new ui.Property(`<select></select>`, {
+            "name": "aid_override",
+            "label": "Audio Track",
+            "options": ()=>get_stream_options("audio"),
+            "default": get_default,
+            "disabled": ()=>parent._mode === MediaSettingsMode.all,
         });
        
         this.audio_delay = new ui.Property(`<input type="number">`, {
-            "name": prop_name("audio_delay"),
+            "name": "audio_delay",
             "label": "Audio Delay",
             "suffix": "secs",
             "step":0.05,
@@ -5444,24 +5425,22 @@ export class MediaSettingsInterface {
         });
         
         this.audio_channels = new ui.Property(`<select></select>`, {
-            "name": prop_name("audio_channels"),
+            "name": "audio_channels",
             "label": "Audio Channels",
             "default": get_default,
             "options":()=>[["left", "Left → Mono"],["right", "Right → Mono"],["mix", "L + R → Mono"],["stereo", "Stereo"]],
         });
         
         this.sid_override = new ui.Property(`<select></select>`, {
-            "name": prop_name("sid_override"),
+            "name": "sid_override",
             "label": "Subtitle Track",
-            "options": (item)=>{
-                return get_stream_options(item, "subtitle")
-            },
+            "options": ()=>get_stream_options("subtitle"),
             "default": get_default,
-            "disabled": this.parent instanceof MediaSettingsPanel ? ()=>this.parent._mode === MediaSettingsMode.all : false,
+            "disabled": parent instanceof MediaSettingsPanel ? ()=>parent._mode === MediaSettingsMode.all : false,
         });
 
         this.subtitle_delay = new ui.Property(`<input type="number">`, {
-            "name": prop_name("sub_delay"),
+            "name": "sub_delay",
             "label": "Subtitle Delay",
             "suffix": `secs`,
             "precision":3,
@@ -5471,7 +5450,7 @@ export class MediaSettingsInterface {
         this.subtitle_delay.output_modifiers.push((v)=>Number(v).toFixed(2));
         
         this.subtitle_scale = new ui.Property(`<input type="number">`, {
-            "name": prop_name("sub_scale"),
+            "name": "sub_scale",
             "label": "Subtitle Scale",
             "precision":2,
             "step": 0.01,
@@ -5484,7 +5463,7 @@ export class MediaSettingsInterface {
         this.subtitle_scale.output_modifiers.push((v)=>Math.round(+v*100));
 
         this.subtitle_pos = new ui.Property(`<input type="number">`, {
-            "name": prop_name("sub_pos"),
+            "name": "sub_pos",
             "label": "Subtitle Position",
             "precision":2,
             "step": 1,
@@ -5497,7 +5476,7 @@ export class MediaSettingsInterface {
         this.subtitle_pos.output_modifiers.push((v)=>Math.round(+v));
 
         /* this.playback_speed = new ui.Property(`<input type="number">`, {
-            "name": prop_name("speed"),
+            "name": "speed",
             "label": "Playback Speed",
             "precision":2,
             "step": 0.05,
@@ -5506,7 +5485,7 @@ export class MediaSettingsInterface {
         });
         this.playback_speed.output_modifiers.push((v)=>Number(v).toFixed(2));
         this.pitch_correction = new ui.Property(`<select></select>`, {
-            "name": prop_name("audio_pitch_correction"),
+            "name": "audio_pitch_correction",
             "label": "Audio Pitch Correction",
             "options": [[false, "Off"],[true, "On"]],
             "default": get_default,
@@ -5514,16 +5493,16 @@ export class MediaSettingsInterface {
         }); */
         
         this.volume_normalization = new ui.Property(`<select></select>`, {
-            "name": prop_name("volume_normalization"),
+            "name": "volume_normalization",
             "label": "Volume Normalization",
             "options":()=>{
-                return [[false,"Off"], ...(utils.try(()=>app.$.properties.player_default_override.volume_normalization.__options__)||EMPTY_ARRAY).map(([f,_])=>[f,f])]
+                return [[false,"Off"], ...(utils.try_catch(()=>app.$.properties.player_default_override.volume_normalization.__options__)||EMPTY_ARRAY).map(([f,_])=>[f,f])]
             },
             "default": get_default,
         });
         
         this.volume_multiplier = new ui.Property(`<input type="number">`, {
-            "name": prop_name("volume_multiplier"),
+            "name": "volume_multiplier",
             "label": "Volume Multiplier",
             "step":0.05,
             "min": 0,
@@ -5535,56 +5514,83 @@ export class MediaSettingsInterface {
         this.volume_multiplier.input_modifiers.push((v)=>v/100);
         this.volume_multiplier.output_modifiers.push((v)=>Math.round(v*100).toString());
         
-        this.audio_visualization = new ui.Property(`<select></select>`, {
-            "name": prop_name("audio_visualization"),
-            "label": "Audio Visualization",
-            "options":()=>{
-                return [[false,"None"], ["waveform","Waveform"]];
-            },
-            "default": get_default,
-        });
-
-        // this.fps = new ui.Property(`<select></select>`, {
-        //     "name": prop_name("force_fps"),
-        //     "label": "Frame Rate",
-        //     "options": get_options,
-        //     "default": get_default,
-        // });
+        var create_filter = (pre)=>{
+            var name = pre ? "pre_filters" : "filters";
+            var list = new ui.PropertyList({
+                "name": name,
+                "label": pre ? "Pre-Filters" : "Filters",
+                "empty": "No filters",
+                "vertical": true,
+                "new": ()=>{
+                    return {name:"", props:{}, active:true};
+                },
+                ui(list_item) {
+                    list_item.buttons.prepend(
+                        new ui.Button(`<button title="Edit"><i class="fas fa-wrench"></i></button>`, {
+                            click() {
+                                app.filter_config_menu.show(list_item);
+                            },
+                        }),
+                        new ui.Button(`<button title="Toggle"><i class="fas fa-eye"></i><i class="fas fa-eye-slash"></i></button>`, {
+                            click() {
+                                var curr = list_item.value;
+                                list_item.set_value({...curr, active:!curr.active});
+                            },
+                            update() {
+                                this.elem.querySelector(".fa-eye").classList.toggle("d-none", !list_item.value.active);
+                                this.elem.querySelector(".fa-eye-slash").classList.toggle("d-none", list_item.value.active);
+                                this.elem.toggleAttribute("data-toggled", !list_item.value.active);
+                            }
+                        })
+                    );
+                    list_item.content.append(new class extends ui.PropertyContainer {
+                        constructor() {
+                            super();
+                            var e = $(`<span class="filter-list-item"></span>`)[0];
+                            this.elem.append(e);
+                            this.on("update", ()=>{
+                                var str = "";
+                                /** @type {FilterInput} */
+                                var value = list_item.value;
+                                /** @type {Filter} */
+                                var f = filters[value.name];
+                                if (f) {
+                                    str = `<i class="fas ${f.type === "audio" ? "fa-music" : "fa-film"}"></i>${f.descriptive_name}`;
+                                } else {
+                                    str = `-`;
+                                }
+                                dom.toggle_class(e, "disabled", !value.active);
+                                dom.set_inner_html(e, str);
+                            })
+                        }
+                    })
+                },
+                "default": get_default,
+                "hidden": ()=>{
+                    if (_is_modify() && pre) return true;
+                    return !!((pre && parent._mode === MediaSettingsMode.current) || (!pre && parent._mode === MediaSettingsMode.all));
+                },
+            });
+            return list;
+        }
+        this.filters = create_filter(false);
+        this.pre_filters = create_filter(true);
 
         this.loop = new ui.Property(`<select></select>`, {
-            "name": prop_name("loop_file"),
+            "name": "loop_file",
             "label": "Loop",
             "options": [[false, "Off"],["inf", "On"]],
             "default": get_default,
         });
 
-        if (this.parent instanceof PlaylistModifySettings) {
-
-            /** @return {PlaylistItem} */
-            let _item = ()=>this.parent.props.item;
-            /** @return {PlaylistItem[]} */
-            let _items = ()=>this.parent.props.items;
-
+        if (_is_modify()) {
             /** @param {PlaylistItem} item */
             let get_default_duration = (item)=>{
                 return (item || _item())._userdata.media_duration;
             };
-            
-            this.filename = new ui.Property(`<input type="text">`, {
-                "name": "filename",
-                "label": "File URI",
-                "default": (d,i)=>{
-                    return this.parent.items_on_show[i].filename || ""
-                },
-                "nullify_defaults": false,
-                "reset": true,
-                "info": "A single wrong character will invalidate the file URI, edit with care."
-            });
-            this.filename.validators.push(VALIDATORS.not_empty);
-            this.filename.validators.push(VALIDATORS.media_exists);
 
             this.playlist_mode = new ui.Property(`<select>`, {
-                "name": prop_name("playlist_mode"),
+                "name": "playlist_mode",
                 "label": "Playlist Mode",
                 "info": `Setting to 'Merged' or '2-Track', the media player will attempt to merge the playlist's contents as if it were a single file, with each item represented as a chapter. A merged playlist may only include local files (ie, no URIs or special items).`,
                 "options": get_options,
@@ -5592,30 +5598,33 @@ export class MediaSettingsInterface {
             });
 
             this.playlist_end_on_shortest_track = new ui.Property(`<select>`, {
-                "name": prop_name("playlist_end_on_shortest_track"),
+                "name": "playlist_end_on_shortest_track",
                 "label": "End Playlist on Shortest Track",
                 "info": `Enabling sets the item to end when the track with the shortest duration ends. Disabling will pad the shortest track to match the duration of the longer track.`,
                 "options": ()=>{
                     return [[false, "Off"], [true, "On"]];
                 },
+                /** @param {PlaylistItem} item */
                 "hidden": (item)=>item.props.playlist_mode != PLAYLIST_MODE.DUAL_TRACK,
                 "default": get_default,
             });
 
             this.playlist_revert_to_video_track_audio = new ui.Property(`<select>`, {
-                "name": prop_name("playlist_revert_to_video_track_audio"),
+                "name": "playlist_revert_to_video_track_audio",
                 "label": "Revert to Video Track Audio",
                 "info": `If the audio track is shorter than the video track, revert to the audio supplied in the video track.`,
                 "options": ()=>{
                     return [[false, "Off"], [true, "On"]];
                 },
+                /** @param {PlaylistItem} item */
                 "disabled": (item)=>item.props.playlist_end_on_shortest_track,
+                /** @param {PlaylistItem} item */
                 "hidden": (item)=>item.props.playlist_mode != PLAYLIST_MODE.DUAL_TRACK,
                 "default": get_default,
             });
 
             this.clip_start = new ui.TimeSpanProperty({
-                "name": prop_name("clip_start"),
+                "name": "clip_start",
                 "label": "Clip Start",
                 "timespan.format": "h:mm:ss.SSS",
                 "min": 0,
@@ -5625,9 +5634,9 @@ export class MediaSettingsInterface {
             this.clip_
 
             this.clip_end = new ui.TimeSpanProperty({
-                "name": prop_name("clip_end"),
+                "name": "clip_end",
                 "label": null,
-                "label": ()=>utils.dom.is_visible(this.clip_start.elem) ? "Clip End" : "Duration",
+                "label": ()=>dom.is_visible(this.clip_start.elem) ? "Clip End" : "Duration",
                 "timespan.format": "h:mm:ss.SSS",
                 "min": ()=>this.clip_start.value,
                 "max": ()=>get_default_duration(),
@@ -5655,14 +5664,14 @@ export class MediaSettingsInterface {
             };
 
             this.clip_offset = new ui.TimeSpanProperty({
-                "name": prop_name("clip_offset"),
+                "name": "clip_offset",
                 "label": "Clip Offset",
                 "timespan.format": "h:mm:ss.SSS",
                 "default": 0,
             });
 
             this.clip_loops = new ui.Property(`<input type="number">`, {
-                "name": prop_name("clip_loops"),
+                "name": "clip_loops",
                 "label": "Clip Loops",
                 "min": 0,
                 "step": 0.1,
@@ -5686,6 +5695,7 @@ export class MediaSettingsInterface {
                 "min": 0,
                 "max": ()=>get_default_duration(),
                 "step": 0.001,
+                /** @param {PlaylistItem} item */
                 "default": (item)=>[0, get_default_duration(item)],
                 "hidden": ()=>!get_default_duration(),
                 "reset": false,
@@ -5724,7 +5734,7 @@ export class MediaSettingsInterface {
             // -------------------------------------
 
             this.fade_in_time = new ui.Property(`<input type="number">`, {
-                "name": prop_name("fade_in"),
+                "name": "fade_in",
                 "label": "Fade In Duration",
                 "suffix": "secs",
                 "step":0.1,
@@ -5733,7 +5743,7 @@ export class MediaSettingsInterface {
             })
 
             this.fade_out_time = new ui.Property(`<input type="number">`, {
-                "name": prop_name("fade_out"),
+                "name": "fade_out",
                 "label": "Fade Out Duration",
                 "suffix": "secs",
                 "step":0.1,
@@ -5741,76 +5751,61 @@ export class MediaSettingsInterface {
                 "min": 0,
             });
 
-            /* this.fade_in_out_time = new ui.Property(`<input type="number">`, {
-                "name": prop_name("fade_in"),
-                "label": "Fade In/Out",
-                "suffix": `secs`,
-                "step": 0.1,
-                "min": 0,
-                "default": 0,
-            });
-            this.fade_in_out_time.on("change", (e)=>{
-                if (e.trigger) {
-                    this.fade_in_time.set_value(e._value, true);
-                    this.fade_out_time.set_value(e._value, true);
-                }
-            }) */
-
-            /** @param {PlaylistItem} item */
-            var is_special = (item)=>item && item.filename.startsWith("livestreamer:");
-            /** @param {Playlistitem} item */
-            var is_empty = (item)=>item && item.filename == "livestreamer://empty";
-
-            /** @param {Playlistitem} item */
-            function get_background_options(item) {
-                var options = utils.json_copy(get_options.apply(this));
-                if (is_special(item)) options = options.filter(o=>!["embedded","external"].includes(o[0]));
-                // if (is_empty(item)) options = options.filter(o=>!["default"].includes(o[0]));
-                return options
-            };
-
-            [this.background_mode, this.background_color, this.background_file, this.background_file_start, this.background_file_end] = create_background_properties({
-                "name": prop_name("background"),
-                "label": "Replace Video",
+            // var background_mode_prop = ()=>app.$.properties.playlist.__enumerable__.props.background_mode;
+            this.background_mode = new ui.Property(`<select></select>`, {
+                "name": "background_mode",
+                "info": background_mode_info,
+                "label": "Background Mode",
                 /** @this {ui.Property} */
-                /** @param {Playlistitem} item */
-                "options":function(item){
-                    var options = get_background_options.apply(this,[item]);
-                    if (item.filename == "livestreamer://intertitle") {
-                        options = options.filter(o=>o[0]=="color" || o[0]==null || o[0]=="default");
-                    } else {
-                        var default_opt = options.find(o=>o[0]=="default") || options.find(o=>o[0]==null);
-                        var background_mode_option = app.$.properties.background_mode.__options__.find(o=>o[0]==app.$._session.background_mode);
-                        if (default_opt && background_mode_option) {
-                            default_opt[1] = `Default Background (${background_mode_option[1]})`;
-                        }
+                /** @param {PlaylistItem} item */
+                "options": function(item) {
+                    var options = utils.json_copy(get_options.apply(this));
+                    if (item._is_special) {
+                        options = options.filter(o=>!["embedded","external"].includes(o[0]));
                     }
+                    // } else {
+                    // utils.sort(options, o=>o[0]==background_mode_prop().__default__ ? 0 : 1);
+                    var default_opt = options.find(o=>o[0]=="default") || options.find(o=>o[0]==null);
+                    var background_mode_option = app.$.properties.background_mode.__options__.find(o=>o[0]==app.$._session.background_mode);
+                    if (default_opt && background_mode_option) {
+                        default_opt[1] = `Default Background (${background_mode_option[1]})`;
+                    }
+                    var auto_option = options.find(o=>o[0]=="auto");
+                    var ao = get_auto_background_mode(item, item._media_info);
+                    var auto_option_link = options.find(o=>o[0]==ao);
+                    auto_option[1] = `Auto (${auto_option_link?auto_option_link[1]:"-"})`;
+
                     return options;
                 },
-                "default": null,
+                "default": get_default,
+            });
+        
+            this.background_color = new ui.Property(`<input type="color">`, {
+                "name": `background_color`,
+                "label": "Background Color",
+            });
+            [this.video_file, this.video_file_start, this.video_file_end] = create_video_file_start_end_properties({
+                "name": "video_file",
+                "label": "Video File",
             });
 
             this.audio_file = new FileProperty({
-                "name": prop_name("audio_file"),
-                "label": "Add Audio",
+                "name": "audio_file",
+                "label": "Audio File",
                 "file.options": { files: true, filter: ["audio", "video"] },
             });
             this.audio_file.validators.push(VALIDATORS.media_audio);
 
             this.subtitle_file = new FileProperty({
-                "name": prop_name("subtitle_file"),
-                "label": "Add Subtitles",
+                "name": "subtitle_file",
+                "label": "Subtitle File",
                 "file.options": { files: true, filter: ["text"] },
             })
             this.subtitle_file.validators.push(VALIDATORS.media_subtitle);
             
             this.crop = new ui.MultiProperty({
-                "name": prop_name("crop"),
+                "name": "crop",
                 "label": "Crop (Left/Top/Right/Bottom)",
-                "step": 0.01,
-                "min": 0,
-                "max": CROP_LIMIT*100,
-                "precision":4,
                 "spinner": false,
                 "default": get_default,
                 "props": ["left","up","right","down"].map((dir,i)=>{
@@ -5820,57 +5815,68 @@ export class MediaSettingsInterface {
                         "step": 0.01,
                         "min": 0,
                         "max": 1,
+                        "precision":4,
                         // "prefix": `<i class="fa-solid fa-arrow-${dir}"></i>`,
                         "suffix": `%`,
                     });
                     p.input_modifiers.push((v)=>v/100);
-                    p.output_modifiers.push((v)=>Math.round(v*100));
+                    p.output_modifiers.push((v)=>(v*100).toFixed(2));
                     return p;
                 })
             });
+            this.crop.on("change", ()=>{
+                this.detected_crops_images.update();
+            });
 
+            /** @type {DetectedCrop} */
+            var last_detected_crop = null;
             var auto_cropping = false;
             this.auto_crop_button = new ui.Button(null, {
                 "flex": 0,
                 "disabled":()=>auto_cropping,
-                "content":()=>auto_cropping ? `Crop Detecting <i class="fas fa-sync fa-spin"></i>` : `Crop Detect`,
+                "content":()=>auto_cropping ? `Detecting <i class="fas fa-sync fa-spin"></i>` : `Crop Detect`,
                 "click":async ()=>{
                     auto_cropping = true;
                     this.auto_crop_button.update()
-                    await app.request({
-                        call: ["session", "detect_crop_and_apply"],
+                    last_detected_crop = await app.request({
+                        call: ["session", "detect_crop"],
                         arguments: [_item().id]
                     }, {
                         show_spinner: false,
                         timeout: 0
                     }).catch(utils.noop);
+
+                    var r = new utils.Rectangle(last_detected_crop.combined);
+                    this.crop.set_value(r.left, r.top, 1-r.right, 1-r.bottom, {trigger:true});
                     auto_cropping = false;
                     this.auto_crop_button.update();
+                    this.detected_crops_images.update();
                 }
             });
 
             var old_hash;
             var crop_el = $(`<div class="crop-image-container"></div>`)[0];
             this.detected_crops_images = new ui.UI(crop_el, {
-                "hidden": function() {
-                    return _items().length != 1 || !_item()._detected_crops;
+                "hidden": ()=>{
+                    return _items().length != 1 || !(last_detected_crop || _item()._detected_crops);
                 },
                 /** @this {ui.Property} */
-                "update": function() {
-                    var item = _item();
-                    var data = item._detected_crops;
-                    var hash = JSON.stringify([data, item._crop, item.id]);
+                "update": ()=>{
+                    var data = last_detected_crop || _item()._detected_crops;
+                    var hash = JSON.stringify([data, this.crop.value, _item().id]);
                     if (hash === old_hash) return;
                     old_hash = hash;
 
-                    utils.dom.empty(crop_el);
+                    dom.remove_children(crop_el);
                     if (data && _items().length == 1) {
                         data.crops.forEach((d,i)=>{
-                            var p = new CropPreview(d.url, d.rect, item._crop, false, data.width, data.height);
+                            var v = this.crop.value
+                            var r = new utils.Rectangle({left:v[0], top:v[1], right:1-v[2], bottom:1-v[3]});
+                            var p = new CropPreview(d.url, d.rect, r, false, data.width, data.height);
                             var container = $(`<div></div>`)[0];
                             container.appendChild(p.elem);
                             crop_el.appendChild(container);
-                            p.elem.onclick = ()=>new CropEditMenu(_item(), i, item._crop).show();
+                            p.elem.onclick = ()=>new CropEditMenu(this.crop, data, i).show();
                         });
                     }
                 }
@@ -5878,19 +5884,24 @@ export class MediaSettingsInterface {
 
             // -------------------------------------
             
-            this.empty_duration = new ui.TimeSpanProperty({
-                "name": prop_name("empty_duration"),
+            this.duration = new ui.TimeSpanProperty({
+                "name": "duration",
                 "label": "Duration",
                 "min":0,
-                "timespan.zero_infinity": true,
+                "timespan.zero_infinity": ()=>{
+                    return !_items().some(i=>i._root_merged_playlist);
+                },
                 "timespan.format": "h:mm:ss.SSS",
-                "default":get_default,
+                "default": function() {
+                    if (_items().some(i=>i._root_merged_playlist)) return 60;
+                    return get_default.apply(this);
+                },
             });
 
             // -------------------------------------
             
             this.title_text = new ui.TextAreaProperty({
-                "name": prop_name("title_text"),
+                "name": "title_text",
                 "label": "Text",
                 "default":get_default,
                 "placeholder":"Insert Text Here",
@@ -5899,28 +5910,11 @@ export class MediaSettingsInterface {
                 "textarea.grow": true,
             });
             this.title_text.validators.push(VALIDATORS.not_empty);
-            
-            this.title_duration = new ui.TimeSpanProperty({
-                "name": prop_name("title_duration"),
-                "label": "Duration",
-                "min":0,
-                "timespan.format": "h:mm:ss.SSS",
-                "default": get_default
-            });
-            this.title_fade_in_out = new ui.Property(`<input type="number">`, {
-                "name": prop_name("title_fade"),
-                "label": "Fade In/Out",
-                "suffix": `secs`,
-                "precision":3,
-                "step": 0.1,
-                "min": 0,
-                "default": get_default
-            });
 
             //Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 
             this.title_font = new ui.Property(`<select>`, {
-                "name": prop_name("title_font"),
+                "name": "title_font",
                 "label": "Font",
                 "default": get_default,
                 "options": get_options,
@@ -5933,38 +5927,38 @@ export class MediaSettingsInterface {
             })) */
 
             this.title_size = new ui.Property(`<input type="number">`, {
-                "name": prop_name("title_size"),
+                "name": "title_size",
                 "label": "Size",
                 "default": get_default,
                 "min": 10,
                 "max": 100,
             });
             this.title_color = new ui.Property(`<input type="color">`, {
-                "name": prop_name("title_color"),
+                "name": "title_color",
                 "label": "Color",
                 "default": get_default,
             });
             this.title_style = new ui.Property(`<select>`, {
-                "name": prop_name("title_style"),
+                "name": "title_style",
                 "label": "Style",
                 "default": get_default,
                 "options": get_options,
             });
             this.title_alignment = new ui.Property(`<select>`, {
-                "name": prop_name("title_alignment"),
+                "name": "title_alignment",
                 "label": "Alignment",
                 "default": get_default,
                 "options": get_options,
             });
             this.title_spacing = new ui.Property(`<input type="number">`, {
-                "name": prop_name("title_spacing"),
+                "name": "title_spacing",
                 "label": "Letter Spacing",
                 "default": get_default,
                 "min": -50,
                 "min": 50,
             });
             this.title_outline_thickness = new ui.Property(`<input type="number"></div>`, {
-                "name": prop_name("title_outline_thickness"),
+                "name": "title_outline_thickness",
                 "label": "Outline Thickness",
                 "precision":1,
                 "step": 0.5,
@@ -5973,12 +5967,12 @@ export class MediaSettingsInterface {
                 "default": get_default
             });
             this.title_outline_color = new ui.Property(`<input type="color">`, {
-                "name": prop_name("title_outline_color"),
+                "name": "title_outline_color",
                 "label": "Outline Color",
                 "default": get_default
             });
             this.title_shadow_depth = new ui.Property(`<input type="number">`, {
-                "name": prop_name("title_shadow_depth"),
+                "name": "title_shadow_depth",
                 "label": "Shadow Depth",
                 "precision":1,
                 "step": 0.5,
@@ -5987,18 +5981,18 @@ export class MediaSettingsInterface {
                 "default": get_default,
             });
             this.title_shadow_color = new ui.Property(`<input type="color">`, {
-                "name": prop_name("title_shadow_color"),
+                "name": "title_shadow_color",
                 "label": "Shadow Color",
                 "default": get_default,
             });
             this.title_underline = new ui.Property(`<select>`, {
-                "name": prop_name("title_underline"),
+                "name": "title_underline",
                 "label": "Underline",
                 "default": get_default,
                 "options": YES_OR_NO,
             });
             this.title_rotation = new ui.MultiProperty({
-                "name": prop_name("title_rotation"),
+                "name": "title_rotation",
                 "label": "3D Rotation (degrees)",
                 "default": get_default,
                 props: ["x","y","z"].map((d,i)=>{
@@ -6010,7 +6004,7 @@ export class MediaSettingsInterface {
                 })
             });
             this.title_margin = new ui.Property(`<input type="number">`, {
-                "name": prop_name("title_margin"),
+                "name": "title_margin",
                 "label": "Margin",
                 "default": get_default,
                 "min": 0,
@@ -6018,7 +6012,7 @@ export class MediaSettingsInterface {
             });
             
             var alignments = ["bottom left", "bottom center", "bottom right", "center left", "center", "center right", "top left", "top center", "top right"];
-            var alignment_styles = [{"text-align":"left", bottom:0}, {"text-align":"center", bottom:0}, {"text-align":"right", bottom:0}, {top: "50%", transform: "translateY(-50%)", "text-align":"left"}, {top: "50%", transform: "translateY(-50%)", "text-align":"center"}, {top: "50%", transform: "translateY(-50%)", "text-align":"right"},{top:0, "text-align":"left"}, {top:0, "text-align":"center"}, {top:0, "text-align":"right"}];
+
             (()=>{
                 var _title_hash, _anim_hash;
                 var title_preview_content_el = $(`<div class="title-preview"></div>`)[0];
@@ -6026,12 +6020,12 @@ export class MediaSettingsInterface {
                     "label": "Preview",
                     "reset": false,
                     "update": ()=>{
-                        var hash = JSON.stringify([this.title_text, this.title_size, this.title_color, this.title_style, this.title_alignment, this.title_spacing, this.title_outline_thickness, this.title_outline_color, this.title_shadow_depth, this.title_shadow_color, this.title_underline, this.title_rotation, this.title_margin, this.background_mode, this.background_color, this.background_file, this.background_file_start, this.background_file_end].map(p=>p.value));
+                        var hash = JSON.stringify([this.title_text, this.title_size, this.title_color, this.title_style, this.title_alignment, this.title_spacing, this.title_outline_thickness, this.title_outline_color, this.title_shadow_depth, this.title_shadow_color, this.title_underline, this.title_rotation, this.title_margin, this.background_mode, this.background_color, this.video_file, this.video_file_start, this.video_file_end].map(p=>p.value));
                         if (_title_hash != hash) {
                             _title_hash = hash;
                             update_preview();
                         }
-                        var hash = JSON.stringify([this.title_duration,this.title_fade_in_out].map(p=>p.value));
+                        var hash = JSON.stringify([this.duration,this.fade_in_time,this.fade_out_time].map(p=>p.value));
                         if (_anim_hash != hash) {
                             _anim_hash = hash;
                             restart_animation();
@@ -6105,24 +6099,28 @@ export class MediaSettingsInterface {
                     "z-index":2,
                 });
                 inner.append(container);
-                var outline_elem = $(`<div class="preview-text"></div>`)[0];
-                container.append(outline_elem);
-                var text_elem = $(`<div class="preview-text"></div>`)[0];
-                container.append(text_elem);
-
-                var shadow_container = container.cloneNode(true);
-                Object.assign(shadow_container.style, {
-                    "z-index":1,
-                });
-                inner.prepend(shadow_container);
+                
+                var [w,h] = [384, 288];
+                var svg = $(`<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+                    <defs>
+                        <filter id="shadow">
+                            <feDropShadow dx="0" dy="0" stdDeviation="0" />
+                        </filter>
+                    </defs>
+                    <text></text>
+                </svg>`)[0];
+                svg.style.width = "100%";
+                svg.style.height = "100%";
+                /** @type {SVGTextElement} */
+                var svg_text = svg.querySelector("text");
+                container.append(svg);
 
                 title_preview_content_el.onanimationend = ()=>{
                     setTimeout(()=>restart_animation(), 500);
                 };
 
                 var restart_animation = ()=>{
-                    var duration = this.title_duration.value;
-                    var fade_duration = this.title_fade_in_out.value;
+                    var duration = this.duration.value || Number.MAX_SAFE_INTEGER;
                     if (!title_preview_style) {
                         title_preview_style = $(`<style></style>`)[0];
                         app.body_elem.append(title_preview_style);
@@ -6133,66 +6131,77 @@ export class MediaSettingsInterface {
                         100% { width:100%; }
                     }`;
 
-                    if (fade_duration) {
-                        var fade_in_duration_percent = (fade_duration / duration)*100;
-                        var fade_out_duration_percent = 100 - fade_in_duration_percent;
-                        style_text += "\n" + `@keyframes title-preview-fade {
-                            0% { opacity:0; }
-                            ${fade_in_duration_percent}% { opacity:1; }
-                            ${fade_out_duration_percent}% { opacity:1; }
-                            100% { opacity:0; }
-                        }
-                        @keyframes black-overlay-fade {
-                            0% { opacity:1; }
-                            ${fade_in_duration_percent}% { opacity:0; }
-                            ${fade_out_duration_percent}% { opacity:0; }
-                            100% { opacity:1; }
-                        }`;
-                        black_overlay.style.animation = `black-overlay-fade linear ${duration}s 1 forwards`;
+                    var fade_in_duration_percent = Math.max(0, this.fade_in_time.value / duration);
+                    var lines1 = [
+                        `0% { opacity:0; }`,
+                        `${fade_in_duration_percent*100}% { opacity:1; }`
+                    ];
+                    var lines2 = [
+                        `0% { opacity:1; }`,
+                        `${fade_in_duration_percent*100}% { opacity:0; }`
+                    ];
+                    if (this.fade_out_time.value) {
+                        var fade_out_duration_percent = 1-Math.max(0, this.fade_out_time.value / duration);
+                        lines1.push(`${fade_out_duration_percent*100}% { opacity:1; }`, `100% { opacity:0; }`);
+                        lines2.push(`${fade_out_duration_percent*100}% { opacity:0; }`, `100% { opacity:1; }`);
                     } else {
-                        black_overlay.style.opacity = 0;
+                        lines1.push(`100% { opacity:1; }`);
+                        lines2.push(`100% { opacity:0; }`);
                     }
-                    title_preview_style.textContent = style_text;
-                    set_style_property(timeline_elem.firstElementChild, "animation", `title-preview-timeline linear ${duration}s 1 forwards`)
-                    utils.dom.restart_animation(title_preview_content_el);
-                }
+                    style_text += "\n" + `@keyframes title-preview-fade { ${lines1.join(" ")} }`
+                    style_text += "\n" + `@keyframes black-overlay-fade { ${lines2.join(" ")} }`;
+                    black_overlay.style.animation = `black-overlay-fade linear ${duration}s 1 forwards`;
 
+                    title_preview_style.textContent = style_text;
+                    dom.set_style_property(timeline_elem.firstElementChild, "animation", duration ? `title-preview-timeline linear ${duration}s 1 forwards` : "");
+                    dom.restart_animation(title_preview_content_el);
+                }
                 var update_preview = ()=>{
                     Object.assign(title_preview_content_el.style, {
-                        "background":this.background_mode.value == "color" ? this.background_color.value : "#000000",
+                        "background":this.background_color.value || app.$._session.background_color || "#000000",
                     });
-
+                    var margin = this.title_margin.value || 0;
                     var style = (this.title_style.value||"");
-                    var scale = 1.25;
-
-                    Object.assign(padding.style, {
-                        "padding":`${this.title_margin.value*scale}px`,
+                    var lines = (this.title_text.value||"").split(/\n/);
+                    var ha = (this.title_alignment.value-1)%3;
+                    var va = Math.floor((this.title_alignment.value-1)/3);
+                    svg_text.innerHTML = "";
+                    lines.forEach((line,i)=>{
+                        var tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+                        tspan.textContent = line;
+                        tspan.setAttribute("x", ["0%","50%","100%"][ha]);
+                        tspan.setAttribute("dy", i?this.title_size.value:0);
+                        svg_text.append(tspan);
                     });
-
-                    title_preview_content_el.querySelectorAll(".preview-text").forEach(e=>{
-                        set_inner_html(e, this.title_text.value);
-                        Object.assign(e.style, {
-                            "white-space": "pre-wrap",
-                            "transition":"all 0.5s",
-                            "position": "absolute",
-                            "width":"100%",
-                            "user-select": "none",
-                            "top":"",
-                            "bottom":"",
-                            "left":"",
-                            "right":"",
-                            "text-align":"center",
-                            "transform": "",
-                            "font-weight": style.includes("bold") ? "bold" : "normal",
-                            "font-style": style.includes("italic") ? "italic" : "normal",
-                            "font-family": this.title_font.value,
-                            "font-size": `${this.title_size.value*scale}px`,
-                            "letter-spacing": `${this.title_spacing.value*scale}px`,
-                            "color":this.title_color.value,
-                            "text-decoration": this.title_underline.value ? "underline" : "",
-                        }, alignment_styles[this.title_alignment.value-1],
-                        );
+                    
+                    Object.assign(svg.style, {
+                        "transition":"all 0.5s",
+                        "user-select": "none",
+                        "font-weight": style.includes("bold") ? "bold" : "normal",
+                        "font-style": style.includes("italic") ? "italic" : "normal",
+                        "font-family": this.title_font.value,
+                        "letter-spacing": `${this.title_spacing.value}px`,
+                        "text-decoration": this.title_underline.value ? "underline" : "",
                     });
+                    if (this.title_shadow_depth.value) {
+                        svg_text.style.filter = "url(#shadow)";
+                    }
+                    svg_text.setAttribute("y", 0);
+                    svg_text.setAttribute("text-anchor", ["start","middle","end"][ha]);
+                    svg_text.setAttribute("stroke-width", this.title_outline_thickness.value);
+                    svg_text.setAttribute("stroke", this.title_outline_color.value ? this.title_outline_color.value : "none");
+                    svg_text.setAttribute("fill", this.title_color.value);
+                    svg_text.setAttribute("font-size", `${this.title_size.value}`);
+
+                    var fe = svg.querySelector("filter#shadow feDropShadow");
+                    fe.setAttribute("dx", this.title_shadow_depth.value);
+                    fe.setAttribute("dy", this.title_shadow_depth.value);
+                    fe.setAttribute("flood-color", this.title_shadow_color.value);
+                    
+                    var bbox = svg_text.getBBox();
+
+                    svg_text.setAttribute("x", [margin,(w-bbox.width)/2,w-bbox.width-margin][ha]);
+                    svg_text.setAttribute("y", [h-bbox.height-margin,(h-bbox.height)/2,margin][va] - bbox.y);
                     
                     var rotation = this.title_rotation.value || [0,0,0];
                     title_preview_content_el.querySelectorAll(".preview-container").forEach(e=>{
@@ -6203,31 +6212,13 @@ export class MediaSettingsInterface {
                             "transform": `perspective(100px) rotateY(${rotation[1]}deg) rotateX(${rotation[0]}deg) rotateZ(${rotation[2]}deg)`,
                         });
                     })
-                    Object.assign(outline_elem.style, {
-                        "opacity":this.title_outline_thickness.value?1:0,
-                        "color": "transparent",
-                        "-webkit-text-stroke-width": `${this.title_outline_thickness.value*scale*2}px`,
-                        "-webkit-text-stroke-color": this.title_outline_color.value,
-                    });
-                    var shadow_offset = this.title_shadow_depth.value*scale*1.25;
-                    set_style_property(shadow_container, "transform", `translate(${shadow_offset}px,${shadow_offset}px) `+shadow_container.style["transform"]);
-                    Object.assign(shadow_container.style, {
-                        "opacity":this.title_shadow_depth.value?1:0,
-                    });
-                    [...shadow_container.children].forEach(e=>{
-                        Object.assign(e.style, {
-                            "-webkit-text-stroke-width": `${this.title_outline_thickness.value*scale*2}px`,
-                            "-webkit-text-stroke-color": this.title_shadow_color.value,
-                            "color": this.title_shadow_color.value,
-                        });
-                    })
                 }
             })();
 
             // -------------------------------------
 
             this.macro_function = new ui.Property(`<select>`, {
-                "name": prop_name("function"),
+                "name": "function",
                 "label": "Function",
                 "options":get_options,
                 "default":get_default,
@@ -6235,7 +6226,7 @@ export class MediaSettingsInterface {
             // this.macro_function.validators.push(VALIDATORS.not_empty);
 
             this.macro_handover_session = new ui.Property(`<select>`, {
-                "name": prop_name("function_handover_session"),
+                "name": "function_handover_session",
                 "label": "Handover Session",
                 "options":()=>app.get_handover_sessions_options(),
                 "default":get_default,
@@ -6247,7 +6238,7 @@ export class MediaSettingsInterface {
             // -------------------------------------
 
             this.label = new ui.Property(`<input type="text">`, {
-                "name": prop_name("label"),
+                "name": "label",
                 "label": "Label",
                 /** @param {PlaylistItem} item */
                 "default": (item)=>{
@@ -6256,137 +6247,142 @@ export class MediaSettingsInterface {
             });
 
             this.color = new ui.Property(`<select></select>`, {
-                "name": prop_name("color"),
+                "name": "color",
                 "label": "Item Color",
                 "options": Object.keys(item_colors).map(k=>{
                     return {value:k, text:utils.capitalize(k), style:{"background-color":item_colors[k]||"#fff"}};
                 }),
                 "update":function() {
-                    set_style_property(this.input, "background-color", item_colors[this.value || "none"]);
+                    dom.set_style_property(this.input, "background-color", item_colors[this.value || "none"]);
                 },
                 "default": "none",
             });
         }
-    }
 
-    get_default_layout(is_empty) {
-        var rows = [[this.loop, this.aspect_ratio, this.deinterlace]];
-        if (is_empty) rows.push([this.audio_delay, this.audio_channels])
-        else rows.push([this.aid_override, this.audio_delay, this.audio_channels]);
-        if (!is_empty) rows.push([this.sid_override, this.subtitle_delay, this.subtitle_scale, this.subtitle_pos]);
-        // if (IS_ELECTRON)
-        // rows.push([this.playback_speed, this.pitch_correction]);
-        rows.push([this.volume_normalization, this.volume_multiplier, this.audio_visualization]);
-        return rows;
-    }
+        this.on("update", ()=>{
+            var layout = [];
 
-    get_layout() {
-        if (this.parent instanceof MediaSettingsPanel) {
-            return this.get_default_layout();
-        }
-        
-        var items = this.parent.props.items;
+            var items = _items();
 
-        var background_layout = [
-            [this.background_mode, this.background_color, this.background_file, this.background_file_start, this.background_file_end]
-        ];
-        var clip_layout = [
-            [this.clip_start, this.clip_end, ...(this.clip_length ? [this.clip_length] : [])],
-            [this.start_end_time_range],
-            [this.clip_offset, this.clip_loops, this.total_duration],
-        ];
-        var types = {};
-        /** @param {PlaylistItem} item */
-        var get_type = (item)=>{
-            if (item._is_playlist) return "playlist";
-            if (item.filename === "livestreamer://empty") return "empty";
-            if (item.filename === "livestreamer://macro") return "macro";
-            if (item.filename === "livestreamer://exit") return "exit";
-            if (item.filename === "livestreamer://intertitle") return "intertitle";
-            if (item.filename === "livestreamer://rtmp") return "rtmp";
-            return "normal";
-        }
-        var types = items.map(get_type);
-        
-        var is_playlist = this.parent._new_type === "playlist" || types.every(t=>t==="playlist");
-        var is_empty = this.parent._new_type === "empty" || types.every(t=>t==="empty");
-        var is_macro = this.parent._new_type === "macro" || types.every(t=>t==="macro");
-        var is_intertitle = this.parent._new_type === "intertitle" || types.every(t=>t==="intertitle");
-        var is_rtmp = this.parent._new_type === "rtmp" || types.every(t=>t==="rtmp");
-        var is_normal = !this.parent._new_type && types.every(t=>t==="normal");
-        
-        // var is_2_track_playlist = items.every(i=>i._num_tracks == 2);
-        var is_merged_playlist = items.every(i=>i._is_merged_playlist);
-        var is_parent_merged = items.every(i=>i._root_merged_playlist);
-        // var is_youtube = items.every(i=>utils.try(()=>i._media_info.probe_method === "youtube-dl"));
-        var is_image = items.every(i=>utils.try(()=>i._media_info.duration <= IMAGE_DURATION));
-        var is_url = items.every(i=>i._is_url);
-        // var exists = items.every(i=>utils.try(()=>i._media_info.exists));
-
-        var crop_layout = [
-            [this.crop]
-        ];
-        if (is_normal && !is_url) {
-            crop_layout[0].push(this.auto_crop_button);
-            crop_layout.push(this.detected_crops_images);
-        }
-
-        var layout = [];
-        if (is_normal || is_empty) {
-            if (!is_empty) {
-                layout.push([this.filename]);
-                layout.push("---");
+            var add_video_layout = [
+                [this.video_file, this.video_file_start, this.video_file_end]
+            ];
+            var clip_layout = [
+                [this.clip_start, this.clip_end, ...(this.clip_length ? [this.clip_length] : [])],
+                [this.start_end_time_range],
+                [this.clip_offset, this.clip_loops, this.total_duration],
+            ];
+            var types = {};
+            /** @param {PlaylistItem} item */
+            var get_type = (item)=>{
+                if (item._is_playlist) return "playlist";
+                if (item.filename === "livestreamer://empty") return "empty";
+                if (item.filename === "livestreamer://macro") return "macro";
+                if (item.filename === "livestreamer://exit") return "exit";
+                if (item.filename === "livestreamer://intertitle") return "intertitle";
+                if (item.filename === "livestreamer://rtmp") return "rtmp";
+                return "normal";
             }
-            if (is_empty || is_image) {
-                layout.push([this.empty_duration]);
-                layout.push("---");
+            var types = items.map(get_type);
+            
+            var is_playlist = types.every(t=>t==="playlist");
+            var is_empty = types.every(t=>t==="empty");
+            var is_macro = types.every(t=>t==="macro");
+            var is_intertitle = types.every(t=>t==="intertitle");
+            var is_rtmp = types.every(t=>t==="rtmp");
+            var is_normal = types.every(t=>t==="normal");
+            
+            // var is_2_track_playlist = items.every(i=>i._num_tracks == 2);
+            var is_merged_playlist = items.every(i=>i._is_merged_playlist);
+            var is_parent_merged = items.every(i=>i._root_merged_playlist);
+            // var is_youtube = items.every(i=>utils.try_catch(()=>i._media_info.probe_method === "youtube-dl"));
+            var is_image = items.every(i=>utils.try_catch(()=>i._media_info.duration <= IMAGE_DURATION));
+            var is_remote = items.every(i=>i._is_remote);
+            // var exists = items.every(i=>utils.try_catch(()=>i._media_info.exists));
+            
+            var get_default_layout = (is_empty)=>{
+                var layout = [
+                    [this.loop, this.aspect_ratio, this.deinterlace]
+                ];
+                if (is_empty) layout.push([this.audio_delay, this.audio_channels])
+                else {
+                    layout.push([this.vid_override]);
+                    layout.push([this.aid_override, this.audio_delay, this.audio_channels]);
+                }
+                if (!is_empty) layout.push([this.sid_override, this.subtitle_delay, this.subtitle_scale, this.subtitle_pos]);
+                // if (IS_ELECTRON)
+                // rows.push([this.playback_speed, this.pitch_correction]);
+                layout.push([this.volume_normalization, this.volume_multiplier]);
+                layout.push([this.pre_filters, this.filters]);
+                return layout;
+            }
+
+            var crop_layout = [
+                [this.crop]
+            ];
+            if (is_normal && !is_remote) {
+                crop_layout[0].push(this.auto_crop_button);
+                crop_layout.push(this.detected_crops_images);
+            }
+            
+            if (parent instanceof MediaSettingsPanel) {
+                layout.push(...get_default_layout());
             } else {
-                layout.push(...clip_layout);
-                layout.push("---");
-            }
-            layout.push([this.fade_in_time, this.fade_out_time]);
-            if (!is_parent_merged) {
-                layout.push(...background_layout);
-                layout.push([this.audio_file, this.subtitle_file]);
-                layout.push(...crop_layout);
-                layout.push("---");
-                layout.push(...this.get_default_layout(is_empty))
-            }
-        } else if (is_playlist) {
-            // layout.push([this.filename]);
-            layout.push([this.playlist_mode, this.playlist_end_on_shortest_track, this.playlist_revert_to_video_track_audio]);
-            if (is_merged_playlist) {
-                layout.push("---");
-                layout.push(...clip_layout);
-                layout.push("---");
-                layout.push([this.fade_in_time, this.fade_out_time]);
-                layout.push(...background_layout);
-                layout.push([this.audio_file, this.subtitle_file]);
-                layout.push(...crop_layout);
-                layout.push("---");
-                layout.push(...this.get_default_layout());
-            }
-        } else if (is_intertitle) {
-            layout.push([this.title_text]);
-            layout.push([this.title_size, this.title_duration, this.title_fade_in_out]);
-            layout.push([this.title_font, this.title_size, this.title_color]);
-            layout.push([this.title_style, this.title_alignment, this.title_spacing]);
-            layout.push([this.title_underline,this.title_margin]);
-            layout.push([this.title_rotation]);
-            layout.push([this.title_outline_thickness, this.title_outline_color, this.title_shadow_depth, this.title_shadow_color]);
-            layout.push(...background_layout);
-            layout.push([this.title_preview]);
-            layout.push("---");
-            layout.push([this.audio_file]);
-        } else if (is_macro) {
-            layout.push([this.macro_function]);
-            layout.push([this.macro_handover_session]);
-        } else if (is_rtmp) {
+                if (is_normal || is_empty) {
+                    if (is_empty || is_image) {
+                        layout.push([this.duration]);
+                        layout.push("---");
+                    } else {
+                        layout.push(...clip_layout);
+                        layout.push("---");
+                    }
+                    layout.push([this.fade_in_time, this.fade_out_time]);
+                    if (!is_parent_merged) {
+                        layout.push([this.background_mode, this.background_color]);
+                        layout.push(...add_video_layout);
+                        layout.push([this.audio_file, this.subtitle_file]);
+                        layout.push(...crop_layout);
+                        layout.push("---");
+                        layout.push(...get_default_layout(is_empty))
+                    }
+                } else if (is_playlist) {
+                    // layout.push([this.filename]);
+                    layout.push([this.playlist_mode, this.playlist_end_on_shortest_track, this.playlist_revert_to_video_track_audio]);
+                    if (is_merged_playlist) {
+                        layout.push("---");
+                        layout.push(...clip_layout);
+                        layout.push("---");
+                        layout.push([this.fade_in_time, this.fade_out_time]);
+                        layout.push([this.background_mode, this.background_color]);
+                        layout.push(...add_video_layout);
+                        layout.push([this.audio_file, this.subtitle_file]);
+                        layout.push(...crop_layout);
+                        layout.push("---");
+                        layout.push(...get_default_layout());
+                    }
+                } else if (is_intertitle) {
+                    layout.push([this.title_text]);
+                    layout.push([this.duration, this.fade_in_time, this.fade_out_time]);
+                    layout.push([this.title_font, this.title_size, this.title_color]);
+                    layout.push([this.title_style, this.title_alignment, this.title_spacing]);
+                    layout.push([this.title_underline,this.title_margin]);
+                    layout.push([this.title_rotation]);
+                    layout.push([this.title_outline_thickness, this.title_outline_color, this.title_shadow_depth, this.title_shadow_color]);
+                    layout.push([this.background_color]);
+                    layout.push([this.title_preview]);
+                    layout.push("---");
+                    layout.push([this.audio_file]);
+                } else if (is_macro) {
+                    layout.push([this.macro_function]);
+                    layout.push([this.macro_handover_session]);
+                } else if (is_rtmp) {
 
-        }
-        if (layout.length) layout.push("---");
-        layout.push([this.label, this.color]);
-        return layout;
+                }
+                if (layout.length) layout.push("---");
+                layout.push([this.label, this.color]);
+            }
+            this.update_layout(layout)
+        });
     }
 }
 
@@ -6412,6 +6408,155 @@ export class FileProperty extends ui.Property {
     }
 }
 
+/** @extends {Modal<ui.PropertyListItem>} */
+export class FilterConfigurationMenu extends Modal {
+    /** @returns {FilterInput} */
+    get filter_data (){ return utils.json_copy(this.item.value); }
+    
+    constructor() {
+        super({
+            "modal.title": "Configure Filter",
+            "modal.footer": true,
+            "modal.props": new ui.PropertyContainer({
+                "data": (_,path)=>utils.reflect.get(this.filter_data, path),
+            }),
+            "modal.apply": ()=>{
+                this.item.set_value({
+                    ...this.props.named_property_lookup,
+                    props: {
+                        ...filter_props_container.named_property_lookup
+                    }
+                }, {trigger:true});
+            },
+            "modal.block_updates": true,
+        });
+        
+        var row = new ui.FlexRow();
+        var filter_name = new ui.Property(`<select>`, {
+            name: "name",
+            label: "Filter",
+            options: [
+                {value:"", text:"-", hidden:true, default:true},
+                ...[...utils.group_by(utils.sort(Object.values(filters),f=>f.type === "video" ? -1 : 1), f=>f.type)].map(([type, filters])=>({group: utils.capitalize(type), options: filters.map(f=>({text: f.descriptive_name, value: f.name}))}))
+            ],
+            reset: false,
+        });
+        filter_name.on("change", (e)=>rebuild());
+        var filter_active = new ui.Property(`<select>`, {
+            name: "active",
+            label: "Active",
+            options: YES_OR_NO,
+            reset: false,
+        });
+        var filter_type = new ui.Property(`<input>`, {
+            readonly: true,
+            label: "Type",
+            reset: false,
+        });
+        var filter_description = new ui.Property(`<input>`, {
+            readonly: true,
+            label: "Description",
+            reset: false,
+        });
+        row.append(filter_name, filter_active, filter_type);
+        this.props.append(row);
+        this.props.append(filter_description);
+        this.props.append(new ui.Separator());
+        
+        var filter_props_container = new ui.PropertyContainer({
+            "nullify_defaults": true,
+            "items": ()=>[this.filter_data.props],
+        });
+
+        this.props.append(filter_props_container);
+
+        var rebuild = ()=>{
+            filter_props_container.empty();
+
+            /** @type {ui.Property} */
+            var presets;
+            var filter_def = filters[filter_name.value];
+            if (!filter_def) return;
+            var preset_map = Object.fromEntries(Object.keys(filter_def.presets).map(k=>[JSON.stringify(filter_def.presets[k]),k]));
+
+            filter_type.set_value(utils.capitalize(filter_def.type));
+            filter_description.set_value(filter_def.description);
+
+            presets = new ui.Property(`<select>`, {
+                label: "Preset",
+                default: "default",
+                options: [{value:"", text:"-", hidden:true, default:true}, ...Object.keys(filter_def.presets).map(k=>[k,k])],
+                reset: false,
+            });
+
+            filter_props_container.append(presets);
+            filter_props_container.append(new ui.Separator());
+            presets.on("change", (e)=>{
+                if (e.trigger) {
+                    var props = filter_props_container.named_property_map;
+                    var preset = filter_def.presets[presets.value];
+                    for (var k in props) {
+                        props[k].set_value(preset[k], {trigger:true});
+                    }
+                }
+            });
+
+            for (let k in filter_def.props) {
+                let p = filter_def.props[k];
+                let prop;
+                let default_prop_def = {
+                    label: p.__name__,
+                    name: k,
+                    default: p.__default__,
+                    info: p.__description__,
+                };
+                if (p.__options__) {
+                    prop = new ui.Property(`<select>`, {
+                        ...default_prop_def,
+                        options: p.__options__,
+                    });
+                } else if (p.__type__ === "boolean") {
+                    prop = new ui.Property(`<select>`, {
+                        ...default_prop_def,
+                        options: YES_OR_NO
+                    });
+                } else if (p.__type__ === "color") {
+                    prop = new ui.Property(`<input type="color">`, {
+                        ...default_prop_def,
+                    });
+                } else if (p.__type__ === "number") {
+                    prop = new ui.Property(`<input type="number">`, {
+                        ...default_prop_def,
+                        min: p.__min__,
+                        max: p.__max__,
+                        step: p.__step__||1,
+                    });
+                } else {
+                    prop = new ui.Property(`<input type="text">`, {
+                        ...default_prop_def,
+                    });
+                }
+                filter_props_container.append(prop);
+            }
+            
+            var update_preset = utils.debounce(()=>{
+                var k = preset_map[JSON.stringify(Object.fromEntries(filter_props_container.named_properties.map(p=>[p.name, p.value])))];
+                presets.set_value(k||"");
+            });
+            filter_props_container.on("change", (e)=>{
+                update_preset();
+            });
+        };
+
+        this.footer.append(new ui.Button(`<button>Cancel</button>`, {
+            "click": ()=>this.cancel()
+        }));
+
+        this.on("show", ()=>{
+            rebuild()
+        });
+    }
+}
 
 export class EditAccessControlMemberMenu extends Modal {
     /** @param {AccessControlProperty} prop */
@@ -6479,7 +6624,7 @@ export class EditAccessControlMemberMenu extends Modal {
                 }
             },
         });
-        this.footer_elem.append(this.save_button, delete_button)
+        this.footer.append(this.save_button, delete_button)
 
         this.props.on("change", (e)=>{
             if (is_new() || !e.name || !e.trigger) return;
@@ -6537,13 +6682,13 @@ export class AccessControlProperty extends ui.Property {
         var thead_elem = $(`<thead></thead>`)[0];
         var tbody_elem = $(`<tbody></tbody>`)[0];
         var tfoot_elem = $(`<tfoot><tr><td></td></tr></tfoot>`)[0];
-        var add_button = $(`<button class="button" style="width:100%"></button>`)[0];
+        var add_button = $(`<button style="width:100%"></button>`)[0];
         table_elem.append(thead_elem);
         table_elem.append(tbody_elem);
         table_elem.append(tfoot_elem);
         elem.append(table_elem);
         var footer_cell = tfoot_elem.querySelector("td");
-        set_attribute(footer_cell, "colspan", Object.keys(columns).length);
+        dom.set_attribute(footer_cell, "colspan", Object.keys(columns).length);
         footer_cell.style.padding = 0;
         footer_cell.append(add_button);
         add_button.addEventListener("click", async ()=>{
@@ -6560,9 +6705,9 @@ export class AccessControlProperty extends ui.Property {
             if (hash === old_hash) return;
             old_hash = hash;
 
-            utils.dom.empty(tbody_elem);
+            dom.remove_children(tbody_elem);
             add_button.innerText = add_button.title = this._access_control._owners.length == 0 ? "Claim Ownership" : "Add User";
-            toggle_attribute(add_button, "disabled", !this._access_control._self_can_edit);
+            dom.toggle_attribute(add_button, "disabled", !this._access_control._self_can_edit);
             for (let user of this._access_control._users) {
                 var tr = $(`<tr></tr>`)[0];
                 if (user.suspended) tr.style.color = "rgba(0,0,0,0.4)";
@@ -6705,7 +6850,7 @@ export class Panel extends ui.UI {
         this.panel_id = title.toLowerCase().replace(/[^\w]+/, "-");
         app.panels[this.panel_id] = this;
 
-        add_class(this.elem, "drawer");
+        dom.add_class(this.elem, "drawer");
         this.elem.dataset.id = this.panel_id;
         var header_container_elem = $(`<div class="header"><div class="inner"></div><div class="collapse-arrow"><i class="fas fa-chevron-down"></i></div></div>`)[0];
         this.body_elem = $(`<div class="body"></div>`)[0];
@@ -6715,7 +6860,7 @@ export class Panel extends ui.UI {
         this.collapse_arrow_elem = header_container_elem.querySelector(".collapse-arrow");
 
         var title_elem = $(`<span></span>`)[0];
-        set_inner_html(title_elem, title);
+        dom.set_inner_html(title_elem, title);
         this.header_elem.append(title_elem, $(`<span class="gap"></span>`)[0]);
 
         this.elem.append(header_container_elem, this.body_elem);
@@ -6738,7 +6883,7 @@ export class Panel extends ui.UI {
             ...opts,
         }
         var g = $(`<div class="buttons border-group"></div>`)[0];
-        var reset_button = new ui.Button(`<button class="reset icon" title="Reset"><i class="fas fa-undo"></i></button>`, {
+        var reset_button = new ui.Button(`<button class="reset mini icon" title="Reset"><i class="fas fa-undo"></i></button>`, {
             "disabled": ()=>props.is_default || !!opts.disabled(),
             "click": ()=>props.reset(),
         })
@@ -6750,7 +6895,7 @@ export class Panel extends ui.UI {
     }
 
     toggle(value) {
-        toggle_class(this.elem, "hide", value)
+        dom.toggle_class(this.elem, "hide", value)
     }
 }
 
@@ -6767,7 +6912,7 @@ export class StreamSettings extends Panel {
         var right = new ui.Row({ "flex":0, "gap":0 });
         var inner = new ui.UI();
         inner.append(left, right);
-        add_class(inner.elem, "stream-settings");
+        dom.add_class(inner.elem, "stream-settings");
         this.props.append(inner);
 
         this.add_reset_button(this.props, { "disabled":()=>app.$._session._is_running });
@@ -6778,7 +6923,7 @@ export class StreamSettings extends Panel {
             "align":"end",
             "hidden": ()=>app.$._session._is_running || app.$._session.type !== SessionTypes.INTERNAL
         })
-        this.info_ui = new ui.UI({
+        this.info_ui = new ui.UI(null, {
             "class":"stream-info",
             "hidden": ()=>!app.$._session._is_running
         });
@@ -6790,8 +6935,8 @@ export class StreamSettings extends Panel {
         var restart_elem = $(`<div>Restarting... [<span class="restart-time"></span>] <a class="restart-cancel" href="javascript:void(0)">Cancel</a></div>`)[0];
         this.on("update", ()=>{
             var restart_time = app.$._session.stream.restart;
-            toggle_class(restart_elem, "d-none", restart_time == 0);
-            set_text(restart_elem.querySelector(".restart-time"), `${restart_time}s`);
+            dom.toggle_class(restart_elem, "d-none", restart_time == 0);
+            dom.set_text(restart_elem.querySelector(".restart-time"), `${restart_time}s`);
         });
         restart_elem.querySelector(".restart-cancel").addEventListener("click", ()=>{
             app.request({
@@ -6865,13 +7010,13 @@ export class StreamSettings extends Panel {
             "hidden":()=>!app.$._session._is_running || app.$._stream.test
         });
         var row = new ui.FlexRow({gap:0});
-        set_style_property(row.elem, "flex-wrap", "nowrap");
+        dom.set_style_property(row.elem, "flex-wrap", "nowrap");
         row.append(this.schedule_stream_button, this.handover_button, this.config_button);
         this.button_group_ui.append(restart_elem, this.toggle_streaming_button, row);
 
-        function get_default() { return utils.try(()=>app.$.properties.stream_settings[this.name].__default__); }
+        function get_default() { return utils.try_catch(()=>app.$.properties.stream_settings[this.name].__default__); }
         function get_options() {
-            return utils.try(()=>app.$.properties.stream_settings[this.name].__options__) ?? (utils.try(()=>typeof app.$.properties.stream_settings[this.name].__default__) === "boolean" ? YES_OR_NO : []);
+            return utils.try_catch(()=>app.$.properties.stream_settings[this.name].__options__) ?? (utils.try_catch(()=>typeof app.$.properties.stream_settings[this.name].__default__) === "boolean" ? YES_OR_NO : []);
         }
 
         this.targets = new TargetsProperty({
@@ -6985,15 +7130,15 @@ export class StreamSettings extends Panel {
             var session = app.$._session || EMPTY_OBJECT;
             var stream = session.stream;
 
-            toggle_class(this.properties_ui.elem, "d-none", session._is_running);
-            toggle_class(this.info_ui.elem, "d-none", !session._is_running);
+            dom.toggle_class(this.properties_ui.elem, "d-none", session._is_running);
+            dom.toggle_class(this.info_ui.elem, "d-none", !session._is_running);
     
             var state;
             if (stream.state === "stopped") state = `Start`;
             else if (stream.state === "started") state = `Stop`;
             else if (stream.state === "stopping") state = `Stopping...`;
             else if (stream.state === "starting") state = `Starting...`;
-            set_text(this.toggle_streaming_button, state);
+            dom.set_text(this.toggle_streaming_button, state);
 
             var stream_info = {};
             if (app.$._session.type === SessionTypes.INTERNAL) {
@@ -7051,7 +7196,7 @@ export class StreamSettings extends Panel {
             var hash = JSON.stringify(stream_info);
             if (hash !== last_stream_info_hash) {
                 last_stream_info_hash = hash;
-                utils.dom.rebuild(this.info_ui.elem, Object.keys(stream_info), {
+                dom.rebuild(this.info_ui.elem, Object.keys(stream_info), {
                     id_callback: (k)=>utils.sanitize_filename(k),
                     add: (k, elem, index)=>{
                         if (!elem) elem = $(`<span></span>`)[0];
@@ -7071,7 +7216,7 @@ export class StreamSettings extends Panel {
 export class MediaPlayerPanel extends Panel {
 
     get video_buffer_length() {
-        return utils.try(()=>(this.flv_player._mediaElement.buffered.end(0)-this.flv_player.currentTime));
+        return utils.try_catch(()=>(this.flv_player._mediaElement.buffered.end(0)-this.flv_player.currentTime));
     }
 
     constructor() {
@@ -7081,12 +7226,12 @@ export class MediaPlayerPanel extends Panel {
         });
         this.body_elem.append(this.props);
 
-        add_class(this.elem, "player-interface-wrapper");
+        dom.add_class(this.elem, "player-interface-wrapper");
 
         var bg = $(`<div class="buttons border-group">
-            <button class="show_live_feed icon" data-setting__show_live_feed title="Show/Hide Live Feed"><i class="fas fa-tv"></i></button>
-            <button class="time_display_ms icon" data-setting__time_display_ms title="Show/Hide Milliseconds">MS</button>
-            <button class="show_chapters icon" data-setting__show_chapters title="Show/Hide Chapters"><i class="fas fa-bookmark"></i></button>
+            <button class="show_live_feed mini icon" data-setting__show_live_feed title="Show/Hide Live Feed"><i class="fas fa-tv"></i></button>
+            <button class="time_display_ms mini icon" data-setting__time_display_ms title="Show/Hide Milliseconds">MS</button>
+            <button class="show_chapters mini icon" data-setting__show_chapters title="Show/Hide Chapters"><i class="fas fa-bookmark"></i></button>
         </div>`)[0];
         this.header_elem.append(bg);
 
@@ -7095,9 +7240,9 @@ export class MediaPlayerPanel extends Panel {
                 <div class="video-wrapper"></div>
                 <div class="overlay">
                     <div class="buttons">
-                        <button class="mini reload" title="Reload"><i class="fas fa-sync"></i></button>
-                        <button class="mini popout" title="Pop-out Player"><i class="fas fa-external-link-alt"></i></button>
-                        <button class="mini" data-setting__show_player_info title="Toggle Player Info"><i class="fas fa-circle-info"></i></button>
+                        <button class="mini icon reload" title="Reload"><i class="fas fa-sync"></i></button>
+                        <button class="mini icon popout" title="Pop-out Player"><i class="fas fa-external-link-alt"></i></button>
+                        <button class="mini icon" data-setting__show_player_info title="Toggle Player Info"><i class="fas fa-circle-info"></i></button>
                     </div>
                 </div>
                 <span class="info"></span>
@@ -7129,11 +7274,11 @@ export class MediaPlayerPanel extends Panel {
                 height = Math.min(720, height);
                 width = height * ratio;
                 // yay this works well.
-                var test_url = new URL("/blank.html", utils.dom.get_url(null, "main").toString());
+                var test_url = new URL("/blank.html", dom.get_url(null, "main").toString());
                 w = windows["test-"+id] = window.open(test_url, id, `width=${width},height=${height},scrollbars=1,resizable=1`);
                 w.onload=()=>{
                     w.document.head.append($(`<title>Test Stream ${id}</title>`)[0]);
-                    /* await */ utils.dom.clone_document_head(app.root_elem, w.document.head);
+                    /* await */ dom.clone_document_head(app.root_elem, w.document.head);
                     var style = w.document.createElement("style");
                     style.textContent =
 `body {
@@ -7148,7 +7293,7 @@ video {
     width: 100% !important;
     height: 100% !important;
 }`;
-                    //+"\n"+utils.dom.get_all_css(document, true);
+                    //+"\n"+dom.get_all_css(document, true);
                     w.document.head.append(style);
                     w.document.body.append(this.test_stream_elem);
                     this.refresh_player(true);
@@ -7188,9 +7333,9 @@ video {
                 "title":"Previous Playlist Item",
                 "class":"player-button",
                 "click": (e)=>{
-                    app.playlist_play(app.$._session._current_playing_item._previous);
+                    app.playlist_play(app.$._session._current_playlist_item._previous);
                 },
-                "disabled":()=>!app.$._session._current_playing_item._previous
+                "disabled":()=>!app.$._session._current_playlist_item._previous
             }),
             this.backward_button = new ui.Button(`<button><i class="fas fa-backward"></i></button>`, {
                 "title":"-30 Seconds",
@@ -7203,9 +7348,9 @@ video {
             this.toggle_play_pause_button = new ui.Button(null, {
                 "title":"Play/Pause",
                 "class":"player-button",
-                "content": ()=>app.$._stream.mpv.context.props.pause ? `<i class="fas fa-play"></i>` : `<i class="fas fa-pause"></i>`,
+                "content": ()=>app.$._stream.mpv.ctx.props.pause ? `<i class="fas fa-play"></i>` : `<i class="fas fa-pause"></i>`,
                 "click": (e)=>{
-                    var new_pause = !app.$._stream.mpv.context.props.pause;
+                    var new_pause = !app.$._stream.mpv.ctx.props.pause;
                     app.$._push([`sessions/${app.$._session.id}/stream/mpv/props/pause`, new_pause]);
                     app.request({
                         call: ["session", "mpv", "set_property"],
@@ -7237,9 +7382,9 @@ video {
                 "title":"Next Playlist Item",
                 "class":"player-button",
                 "click": (e)=>{
-                    app.playlist_play(app.$._session._current_playing_item._next);
+                    app.playlist_play(app.$._session._current_playlist_item._next);
                 },
-                "disabled":()=>!app.$._session._current_playing_item._next
+                "disabled":()=>!app.$._session._current_playlist_item._next
             }),
             this.prev_chapter_button = new ui.Button(`<button><i class="fas fa-fast-backward"></i></button>`, {
                 "title":"Previous Chapter",
@@ -7298,7 +7443,7 @@ video {
         this.vol_speed = new ui.Property(`<select>`, {
             "name": "volume_speed",
             "title": "Volume Transition Speed",
-            "default": 1.0,
+            "default": 4,
             "reset": false,
             "options": [[0.5, "Very Slow"], [1.0, "Slow"], [2.0, "Medium"], [4.0, "Fast"], [8.0, "Very Fast"], [0, "Immediate"]],
             "hidden": true,
@@ -7358,7 +7503,7 @@ video {
             "title":"Mute",
             "hidden": true,
             "click": (e)=>{
-                var new_muted = !app.$.stream.mpv.context.muted;
+                var new_muted = !app.$.stream.mpv.ctx.muted;
                 app.request({
                     call:["session", "stream", "mpv", "set_property"],
                     arguments: ["muted", new_muted]
@@ -7366,7 +7511,7 @@ video {
                 app.$.push([`sessions/${app.$.session.id}/mpv/muted`, new_muted]);
             },
             "update":function() {
-                toggle_class(this.elem, "mute", !!app.$.stream.mpv.context.muted);
+                toggle_class(this.elem, "mute", !!app.$.stream.mpv.ctx.muted);
             }
         }); */
         this.volume_wrapper.append(this.set_volume_button, this.vol_down_button, this.volume, this.vol_up_button /*,this.mute_button */, this.vol_speed);
@@ -7377,28 +7522,28 @@ video {
         // this.fader_controls_elem = $(`<div class="fader-controls"></div>`)[0];
         // this.body.append(this.fader_controls_elem);
 
-        var wrap = new utils.dom.WrapDetector(this.player_inline_elem);
+        var wrap = new dom.WrapDetector(this.player_inline_elem);
         
         this.on("destroy", ()=>{
         });
 
         this.on("update", ()=>{
             var started = app.$._session._is_running;
-            set_inner_html(this.status_prefix_elem, `${app.media.status}: `);
-            app.build_playlist_breadcrumbs(this.status_path_elem, app.$._session._current_playing_item, true, true);
+            dom.set_inner_html(this.status_prefix_elem, `${app.media.status}: `);
+            app.build_playlist_breadcrumbs(this.status_path_elem, app.$._session._current_playlist_item, true, true);
             
             var stats_html = Object.entries(app.media.stats).map(([k,v])=>`<span>${k}: ${v}</span>`).join(" | ");
-            set_inner_html(this.stats_elem, stats_html);
-            toggle_class(this.stats_elem, "d-none", !started);
+            dom.set_inner_html(this.stats_elem, stats_html);
+            dom.toggle_class(this.stats_elem, "d-none", !started);
             // toggle_class(this.status_elem, "d-none", app.$._session._current_playing_item.id == -1);
 
-            toggle_class(this.test_stream_info_elem, "d-none", !app.settings.get("show_player_info"));
-            toggle_class(this.elem, "chapters-available", app.media.chapters.length > 0);
+            dom.toggle_class(this.test_stream_info_elem, "d-none", !app.settings.get("show_player_info"));
+            dom.toggle_class(this.elem, "chapters-available", app.media.chapters.length > 0);
             
             if (app.media.chapters.length) {
                 this.chapters_elem.style.display = "";
                 let html = `Chapter(s): `+(app.media.curr_chapters.map(c=>app.chapter_to_string(c)).join(" | ") || "-");
-                set_inner_html(this.chapters_elem, `<span>${html}</span>`);
+                dom.set_inner_html(this.chapters_elem, `<span>${html}</span>`);
             } else {
                 this.chapters_elem.style.display = "none";
             }
@@ -7409,20 +7554,20 @@ video {
 
     async refresh_player(force) {
         
-        var test_video_url = new URL(`/internal/${app.$._session.id}.flv`, utils.dom.get_url(null, "media-server", true));
+        var test_video_url = new URL(`/internal/${app.$._session.id}.flv`, dom.get_url(null, "media-server", true));
         var show = !!(app.$._session._is_running && !app.$._stream._is_only_gui);
-        toggle_class(this.elem, "live-feed-available", show);
+        dom.toggle_class(this.elem, "live-feed-available", show);
         if (!app.settings.get("show_live_feed")) show = false;
         var is_popped_out = !!windows["test-"+app.$._session.id];
         var is_playable = !!(show && app.$._session._get_connected_nms_session_with_appname("internal"));
 
-        toggle_class(this.test_stream_container_elem, "d-none", !show);
-        toggle_class(this.test_stream_overlay_elem, "d-none", !is_playable);
-        toggle_class(this.test_stream_popout_button, "d-none", is_popped_out);
+        dom.toggle_class(this.test_stream_container_elem, "d-none", !show);
+        dom.toggle_class(this.test_stream_overlay_elem, "d-none", !is_playable);
+        dom.toggle_class(this.test_stream_popout_button, "d-none", is_popped_out);
         // this.test_stream_popout_button.dataset.toggled = is_popped_out;
         
         var buffer_length = this.video_buffer_length;
-        set_inner_html(this.test_stream_info_elem, `Buffered: ${buffer_length ? buffer_length.toFixed(2) : "-"} secs`);
+        dom.set_inner_html(this.test_stream_info_elem, `Buffered: ${buffer_length ? buffer_length.toFixed(2) : "-"} secs`);
 
         if (!force && (!!this.flv_player == is_playable)) return;
 
@@ -7483,7 +7628,6 @@ export class MediaSettingsPanel extends Panel {
     toggle_mode(v) {
         this._mode = v;
         this.update();
-        this.props.update_layout(this.interface.get_layout());
     }
 
     constructor() {
@@ -7491,7 +7635,7 @@ export class MediaSettingsPanel extends Panel {
             "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL,
         });
 
-        var item = ()=>app.$._session._current_playing_item;
+        var item = ()=>app.$._session._current_playlist_item;
         /* var header = new ui.Header(`<p><span>Modifying:</span> <span class="current-item"></span> <a class="modify" href="javascript:void(0);" title="Modify..."><i class="fas fa-wrench"></i></a></p>`, {
             "render":()=>{
                 app.build_playlist_breadcrumbs(header_item_el, item(), true, true);
@@ -7504,14 +7648,6 @@ export class MediaSettingsPanel extends Panel {
             app.playlist_modify_menu.show(item());
         }
         this.body.append(header); */
-
-        this.props = new ui.PropertyContainer({
-            "nullify_defaults": true,
-            "items": ()=>(this._mode === MediaSettingsMode.current) ? [item().props] : [app.$._session.player_default_override],
-        });
-        this.body.append(this.props);
-
-        this.add_reset_button(this.props);
 
         this.header_elem.append($(`<div class="buttons border-group">
             <button class="player-settings-toggle-current mini" title="Current File Media Settings">current</button>
@@ -7532,8 +7668,10 @@ export class MediaSettingsPanel extends Panel {
             var toggle = (this._mode === MediaSettingsMode.current) ? "0" : "1";
             if (p.dataset.toggle != toggle) p.dataset.toggle = toggle;
         });
+
+        this.interface = new MediaSettingsInterface(this);
         
-        this.props.on("change", (e)=>{
+        this.interface.on("change", (e)=>{
             if (!e.name || !e.trigger) return;
             app.request({
                 call: ["session","set_player_property"],
@@ -7545,8 +7683,11 @@ export class MediaSettingsPanel extends Panel {
                 app.$.push([`sessions/${app.$.session.id}/stream/mpv/props/${e.name}`, e._value]);
             } */
         });
+        
+        this.body.append(this.interface);
 
-        this.interface = new MediaSettingsInterface(this);
+        this.add_reset_button(this.interface);
+
         this.toggle_mode(MediaSettingsMode.current);
     }
 }
@@ -7554,7 +7695,7 @@ export class MediaSettingsPanel extends Panel {
 export class LogViewerPanel extends Panel {
     constructor(name) {
         super(name);
-        add_class(this.body_elem, "no-padding");
+        dom.add_class(this.body_elem, "no-padding");
 
         this.logs_wrapper = $(`<div class="logs-wrapper"></div>`)[0];
         this.logs_container = $(`<div class="logs"></div>`)[0];
@@ -7599,7 +7740,7 @@ export class LogViewerPanel extends Panel {
         this.i = 0;
     
         this.storage_name = `log-viewer-settings:${this.panel_id}`;
-        add_class(this.logs_container, "thin-scrollbar");
+        dom.add_class(this.logs_container, "thin-scrollbar");
         $(this.logs_wrapper).resizable({handles:"s"});
 
         var button_defs = [
@@ -7638,7 +7779,7 @@ export class LogViewerPanel extends Panel {
                         else button.elem.dataset.toggled = 1;
                     }
                 });
-                button.elem.classList.add("icon");
+                button.elem.classList.add("mini", "icon");
                 return button;
             }))
             return group_elem;
@@ -7648,14 +7789,14 @@ export class LogViewerPanel extends Panel {
 
         this.on("render", ()=>{
             for (var k in this._logger_settings) {
-                toggle_attribute(this.logs_wrapper, `data-show-${k}`, this._logger_settings[k]);
+                dom.toggle_attribute(this.logs_wrapper, `data-show-${k}`, this._logger_settings[k]);
             }
         });
     }
 
     /** @param {{level:string, message:string, ts:Number}[]} logs */
     update_logs(logs) {
-        var scroll_bottom = utils.dom.scroll_y_percent(this.logs_container) == 1;
+        var scroll_bottom = dom.scroll_y_percent(this.logs_container) == 1;
         this._new_log_elems = [];
         for (var id in logs) {
             var log = logs[id];
@@ -7702,7 +7843,7 @@ export class LogViewerPanel extends Panel {
                 this._logs[log.level].total--;
             }
         }
-        if (scroll_bottom) utils.dom.scroll_y_percent(this.logs_container, 1);
+        if (scroll_bottom) dom.scroll_y_percent(this.logs_container, 1);
         this.update();
     }
 
@@ -7718,7 +7859,7 @@ export class LogViewerPanel extends Panel {
     }
 
     empty() {
-        set_inner_html(this.logs_container, "");
+        dom.set_inner_html(this.logs_container, "");
         utils.clear(this._logs);
         this.last_log_elem = null;
         this._num_logs = 0;
@@ -7753,7 +7894,7 @@ export class StreamMetricsPanel extends Panel {
         
         var button_group = $(`<div class="buttons border-group">`)[0];
         Object.entries(modes).forEach(([t,d])=>{
-            var button = $(`<button class="mini" title="${d.title}">${d.icon}</button>`)[0];
+            var button = $(`<button class="mini icon" title="${d.title}">${d.icon}</button>`)[0];
             button.onclick = ()=>set_mode(t);
             button_group.append(button);
             d.button = button;
@@ -7781,7 +7922,7 @@ export class StreamMetricsPanel extends Panel {
         this.body_elem.append(inner_el, this.chart_info_elem);
 
         var button_group = $(`<div class="buttons border-group">`)[0];
-        button_group.append($(`<button class="icon" data-setting__show_metrics_info title="Toggle Encoder Info"><i class="fas fa-info-circle"></i></button>`)[0]);
+        button_group.append($(`<button class="mini icon" data-setting__show_metrics_info title="Toggle Encoder Info"><i class="fas fa-info-circle"></i></button>`)[0]);
         this.header_elem.append(button_group);
 
         this.on("update", ()=>{
@@ -8055,8 +8196,8 @@ export class StreamMetricsPanel extends Panel {
         var hash = JSON.stringify(info_rows);
         if (this.__info_rows_hash != hash) {
             this.__info_rows_hash = hash;
-            var table = utils.dom.build_table(info_rows);
-            set_children(this.chart_info_elem, [table]);
+            var table = dom.build_table(info_rows);
+            dom.set_children(this.chart_info_elem, [table]);
         }
     }
 }
@@ -8084,7 +8225,7 @@ export class PlaylistPanel extends Panel {
     /** @return {PlaylistItem} */
     get current() { return app.$._session.playlist[this.#current_id] || app.$._session.playlist["0"] || NULL_PLAYLIST_ITEM; }
 
-    /** @type {utils.dom.DropdownMenu} */
+    /** @type {dom.DropdownMenu} */
     context_menu;
 
     /** @param {Element} elem */
@@ -8139,8 +8280,8 @@ export class PlaylistPanel extends Panel {
                     <button id="pl-add-other" title="Other..."><i class="fas fa-ellipsis-v"></i></button>
                 </div>
             </div>`
-        add_class(this.body_elem, "playlist-body");
-        add_class(this.elem, "playlist-wrapper");
+        dom.add_class(this.body_elem, "playlist-body");
+        dom.add_class(this.elem, "playlist-wrapper");
         
         this.zoom = 1.0;
         /** @type {ResponsiveSortable[]} */
@@ -8150,13 +8291,13 @@ export class PlaylistPanel extends Panel {
         
         this.header_elem.append(...$(
             `<div class="timeline-controls buttons border-group">
-                <button class="playlist-goto-playhead icon" title="Go to Playhead"><i class="fas fa-map-marker"></i></button>
+                <button class="playlist-goto-playhead mini icon" title="Go to Playhead"><i class="fas fa-map-marker"></i></button>
             </div>
             <div class="timeline-controls buttons border-group">
                 <input class="playlist-zoom-input mini" type="text"></input>
-                <button class="playlist-zoom-into icon" title="Zoom Into Selection"><i class="fas fa-arrows-alt-h"></i></button>
-                <button class="playlist-zoom-out icon" title="Zoom Out"><i class="fas fa-search-minus"></i></button>
-                <button class="playlist-zoom-in icon" title="Zoom In"><i class="fas fa-search-plus"></i></button>
+                <button class="playlist-zoom-into mini icon" title="Zoom Into Selection"><i class="fas fa-arrows-alt-h"></i></button>
+                <button class="playlist-zoom-out mini icon" title="Zoom Out"><i class="fas fa-search-minus"></i></button>
+                <button class="playlist-zoom-in mini icon" title="Zoom In"><i class="fas fa-search-plus"></i></button>
             </div>
             <div class="buttons border-group">
                 <select data-setting__playlist_display_mode class="playlist-display-mode mini" title="Playlist Display Mode">
@@ -8165,9 +8306,9 @@ export class PlaylistPanel extends Panel {
                 </select>
             </div>
             <div class="buttons border-group">
-                <button class="icon" data-setting__playlist_sticky title="Toggle Sticky Mode"><i class="fas fa-thumbtack"></i></button>
-                <button class="icon" data-setting__wrap_playlist_items title="Toggle Line Wrap"><i class="fas fa-level-down-alt"></i></button>
-                <button class="icon" data-setting__show_extra_playlist_icons title="Toggle Media Info Icons"><i class="far fa-play-circle"></i></button>
+                <button class="mini icon" data-setting__playlist_sticky title="Toggle Sticky Mode"><i class="fas fa-thumbtack"></i></button>
+                <button class="mini icon" data-setting__wrap_playlist_items title="Toggle Line Wrap"><i class="fas fa-level-down-alt"></i></button>
+                <button class="mini icon" data-setting__show_extra_playlist_icons title="Toggle Media Info Icons"><i class="far fa-play-circle"></i></button>
             </div>`
         ));
         
@@ -8181,12 +8322,12 @@ export class PlaylistPanel extends Panel {
                 return text.join(" | ");
             }
             let g = $(`<div class="buttons border-group"></div>`)[0]
-            var undo = new ui.Button(`<button class="icon"><i class="fas fa-arrow-left"></i></button>`, {
+            var undo = new ui.Button(`<button class="mini icon"><i class="fas fa-arrow-left"></i></button>`, {
                 "disabled": ()=>!app.$._session.playlist_history._prev,
                 "click": ()=>app.playlist_undo(),
                 "title": ()=>build_title(`Playlist Undo [Ctrl+Z]`, app.$._session.playlist_history._prev),
             });
-            var redo = new ui.Button(`<button class="icon"><i class="fas fa-arrow-right"></i></button>`, {
+            var redo = new ui.Button(`<button class="mini icon"><i class="fas fa-arrow-right"></i></button>`, {
                 "disabled": ()=>!app.$._session.playlist_history._next,
                 "click": ()=>app.playlist_redo(),
                 "title": ()=>build_title(`Playlist Redo [Ctrl+Y]`, app.$._session.playlist_history._next),
@@ -8301,7 +8442,7 @@ export class PlaylistPanel extends Panel {
         });
         if (IS_ELECTRON) this.pl_upload_file_button.style.display = "none";
         this.pl_upload_file_button.addEventListener("click", async (e)=>{
-            var files = await utils.dom.open_file_dialog({multiple:true}) // directories:true
+            var files = await dom.open_file_dialog({multiple:true}) // directories:true
             app.playlist_add(files.map(file=>({file})));
         });
 
@@ -8602,9 +8743,10 @@ export class PlaylistPanel extends Panel {
                 "icon": `<i class="fas fa-plus"></i>`,
                 "click": ()=>{
                     app.playlist_add({
-                        filename:"livestreamer://empty",
+                        filename: "livestreamer://empty",
                         props: {
-                            background_mode: "default"
+                            background_mode: "default",
+                            duration: 60,
                         }
                     });
                 }
@@ -8614,7 +8756,7 @@ export class PlaylistPanel extends Panel {
                 "icon": `<i class="fas fa-plus"></i>`,
                 "click": ()=>{
                     app.playlist_add({
-                        filename:"livestreamer://playlist",
+                        filename: "livestreamer://playlist",
                     });
                 }
             }),
@@ -8623,7 +8765,7 @@ export class PlaylistPanel extends Panel {
                 "icon": `<i class="fas fa-plus"></i>`,
                 "click": ()=>{
                     app.playlist_add({
-                        filename:"livestreamer://rtmp",
+                        filename: "livestreamer://rtmp",
                     });
                 },
                 "disabled": ()=>!!this.current._is_merged
@@ -8632,8 +8774,13 @@ export class PlaylistPanel extends Panel {
                 "label": ()=>"Add Intertitle",
                 "icon": `<i class="fas fa-plus"></i>`,
                 "click": async()=>{
-                    var ids = await app.playlist_add({
-                        filename:"livestreamer://intertitle",
+                    app.playlist_modify_menu.show({
+                        filename: "livestreamer://intertitle",
+                        props: {
+                            duration: 5,
+                            fade_in: 1,
+                            fade_out: 1,
+                        }
                     });
                     // this.playlist_modify_settings.show(ids);
                 },
@@ -8644,7 +8791,7 @@ export class PlaylistPanel extends Panel {
                 "icon": `<i class="fas fa-plus"></i>`,
                 "click": async ()=>{
                     var ids = await app.playlist_add({
-                        filename:"livestreamer://macro",
+                        filename: "livestreamer://macro",
                         props: {
                             function: "stop"
                         }
@@ -8657,7 +8804,7 @@ export class PlaylistPanel extends Panel {
                 "icon": `<i class="fas fa-plus"></i>`,
                 "click": async ()=>{
                     var ids = await app.playlist_add({
-                        filename:"livestreamer://macro",
+                        filename: "livestreamer://macro",
                         props: {
                             function: "handover"
                         }
@@ -8670,7 +8817,7 @@ export class PlaylistPanel extends Panel {
                 "icon": `<i class="fas fa-plus"></i>`,
                 "click": async ()=>{
                     var ids = await app.playlist_add({
-                        filename:"livestreamer://exit",
+                        filename: "livestreamer://exit",
                     });
                 },
                 "visible": ()=>!!this.current._parent
@@ -8678,7 +8825,7 @@ export class PlaylistPanel extends Panel {
             unload_current: new PlaylistCommand({
                 "label": ()=>"Unload Current File",
                 "icon": `<i class="fas fa-minus-circle"></i>`,
-                "disabled": ()=>app.$._session._current_playing_item === NULL_PLAYLIST_ITEM,
+                "disabled": ()=>app.$._session._current_playlist_item === NULL_PLAYLIST_ITEM,
                 "click": ()=>app.playlist_play(NULL_PLAYLIST_ITEM),
             }),
             rescan_all: new PlaylistCommand({
@@ -8699,7 +8846,7 @@ export class PlaylistPanel extends Panel {
             })
         }
 
-        var menu = new utils.dom.DropdownMenu({
+        var menu = new dom.DropdownMenu({
             target: this.pl_add_other_button,
             items:()=>{
                 var c = this.commands;
@@ -8731,7 +8878,7 @@ export class PlaylistPanel extends Panel {
                     app.playlist_update(changes)
                 },
                 "render":(items, elem)=>{
-                    add_class(elem, "color");
+                    dom.add_class(elem, "color");
                     var colors = new Set(items.map(i=>i.props.color||"none"));
                     var inner = colors.has(color_key) ? ((colors.size == 1) ? `✓` : "-") : "";
                     var el = $(`<div class="color" style="background: ${color}; outline: 1px solid #ddd; text-align: center;">${inner}</div>`)[0];
@@ -8800,7 +8947,7 @@ export class PlaylistPanel extends Panel {
         });
         
         window.addEventListener("keydown", this.on_keydown = (e)=>{
-            if (utils.dom.has_focus(this.timeline_container_elem)) {
+            if (dom.has_focus(this.timeline_container_elem)) {
                 this.try_command_shortcut(e);
             }
         }, true);
@@ -8830,10 +8977,10 @@ export class PlaylistPanel extends Panel {
             var current_ud = current._userdata;
             var duration = current_ud.duration;
             var timeline_duration = current_ud.timeline_duration;
-            var self_and_parents = [app.$._session._current_playing_item, ...app.$._session._current_playing_item._parents];
+            var self_and_parents = [app.$._session._current_playlist_item, ...app.$._session._current_playlist_item._parents];
             var a_index = self_and_parents.indexOf(current);
-            var timeline_time = utils.sum(self_and_parents.slice(0, a_index).map(item=>utils.try(()=>item._userdata.timeline_start)||0)) + Math.min(app.$._session.time_pos, app.$._session._current_playing_item._userdata.timeline_duration);
-            var time = utils.sum(self_and_parents.slice(0, a_index).map(item=>utils.try(()=>item._userdata.start)||0)) + Math.min(app.$._session.time_pos, app.$._session._current_playing_item._userdata.duration);
+            var timeline_time = utils.sum(self_and_parents.slice(0, a_index).map(item=>utils.try_catch(()=>item._userdata.timeline_start)||0)) + Math.min(app.$._session.time_pos, app.$._session._current_playlist_item._userdata.timeline_duration);
+            var time = utils.sum(self_and_parents.slice(0, a_index).map(item=>utils.try_catch(()=>item._userdata.start)||0)) + Math.min(app.$._session.time_pos, app.$._session._current_playlist_item._userdata.duration);
     
             this.time = timeline_time;
             this.duration = timeline_duration;
@@ -8846,8 +8993,8 @@ export class PlaylistPanel extends Panel {
     
             this.playlist_back_button.disabled = !current._parent;
             
-            set_inner_html(this.playlist_time_total_elem, `(${utils.seconds_to_timespan_str(duration)})`);
-            set_inner_html(this.playlist_time_left_elem, `[-${utils.seconds_to_timespan_str(duration-time)}]`);
+            dom.set_inner_html(this.playlist_time_total_elem, `(${utils.seconds_to_timespan_str(duration)})`);
+            dom.set_inner_html(this.playlist_time_left_elem, `[-${utils.seconds_to_timespan_str(duration-time)}]`);
     
             this.playlist_time_left_elem.style.display = current === app.$._session.playlist["0"] ? "" : "none"
             
@@ -8897,12 +9044,12 @@ export class PlaylistPanel extends Panel {
 
         this.#tracks_hash = tracks_hash;
         this.#tracks = tracks;
-        utils.dom.empty(this.tracks_elem);
-        utils.dom.empty(this.headers_elem);
-        utils.dom.empty(this.highlights_elem);
+        dom.remove_children(this.tracks_elem);
+        dom.remove_children(this.headers_elem);
+        dom.remove_children(this.highlights_elem);
         this.sortables.forEach(s=>s.destroy());
 
-        toggle_class(this.timeline_container_elem, "single-track", num_tracks == 1);
+        dom.toggle_class(this.timeline_container_elem, "single-track", num_tracks == 1);
 
         this.sortables = tracks.map((t,i)=>{
             // var playlist_top = $(`<div class="playlist-top" title="${utils.capitalize(t.name)}">${t.icon}</div>`)[0];
@@ -8938,8 +9085,8 @@ export class PlaylistPanel extends Panel {
                 this.update();
             });
             sortable.el.addEventListener("active-change", (e)=>{
-                toggle_class(playlist_header, "active", e.active);
-                toggle_class(playlist_highlight, "active", e.active);
+                dom.toggle_class(playlist_header, "active", e.active);
+                dom.toggle_class(playlist_highlight, "active", e.active);
             });
             sortable.el.addEventListener("end", (evt)=>{
                 this.sync_positions();
@@ -8997,7 +9144,7 @@ export class PlaylistPanel extends Panel {
         var current_playlist = this.current;
         var current_playlist_tracks = current_playlist._tracks;
         /** @type {PlaylistItem} */
-        var current_item = app.$._session._current_playing_item;
+        var current_item = app.$._session._current_playlist_item;
         var current_item_parents = new Set(current_item._parents);
 
         this.set_tracks(current_playlist_tracks.length, current_playlist && current_playlist.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK);
@@ -9007,7 +9154,7 @@ export class PlaylistPanel extends Panel {
         this.sortables.forEach((sortable,i)=>{
             /** @type {PlaylistItem[]} */
             var items = current_playlist_tracks[i] || EMPTY_ARRAY;
-            utils.dom.rebuild(sortable.el, items, {
+            dom.rebuild(sortable.el, items, {
                 add: (item, elem, index)=>{
                     if (!elem) {
                         new_items.push(item);
@@ -9040,7 +9187,7 @@ export class PlaylistPanel extends Panel {
                     let background_color, outline_color;
                     let badges = {};
     
-                    toggle_class(elem, "cutting", is_cutting);
+                    dom.toggle_class(elem, "cutting", is_cutting);
                     var is_uploading = !!item.upload_id;
                     
                     var play_icons_elem = elem.querySelector(".play-icons");
@@ -9077,8 +9224,8 @@ export class PlaylistPanel extends Panel {
                         if (blocks.length == 1 && blocks[0].width == 1) blocks = [];
                     }
                     let clips_html = blocks.map(b=>`<div style="left:${b.x.toFixed(5)*100}%;width:${b.width.toFixed(5)*100}%;"></div>`).join("");
-                    set_inner_html(clips_elem, clips_html);
-                    toggle_class(clips_elem, "repeats", !!(ud.clipping && ud.clipping.loops > 1))
+                    dom.set_inner_html(clips_elem, clips_html);
+                    dom.toggle_class(clips_elem, "repeats", !!(ud.clipping && ud.clipping.loops > 1))
                     
                     if (ud.is_processing) {
                         play_icons.push(`<i class="fas fa-sync fa-spin"></i>`);
@@ -9096,9 +9243,9 @@ export class PlaylistPanel extends Panel {
                     }
                     
                     if (!is_uploading) {
-                        if (media_info.exists === false) {
+                        if (!item._is_special && media_info.exists === false) {
                             problems.push({level:3, text:"Media does not exist."});
-                        } else if (!utils.is_empty(media_info) && !media_info.streams && media_info.protocol !== "livestreamer:" && !item._is_playlist && !ud.is_processing) {
+                        } else if (!item._is_special && !utils.is_empty(media_info) && !media_info.streams && media_info.protocol !== "livestreamer:" && !item._is_playlist && !ud.is_processing) {
                             problems.push({level:1, text:"Possibly invalid media."});
                         } else if (root_merged_playlist && !item._is_mergable) {
                             problems.push({level:2, text:"Merged items must be local files or empties."});
@@ -9107,7 +9254,7 @@ export class PlaylistPanel extends Panel {
                     
                     if (item.props.color) {
                         background_color = item_colors[item.props.color];
-                        outline_color = new utils.Color(item_colors[item.props.color]).rgb_mix("#000",0.3).to_rgb_hex();
+                        outline_color = Color(item_colors[item.props.color]).mix(Color("#000"),0.3).hex();
                     }
                     if (is_playlist) {
                         main_icon = `<i class="fas fa-folder-open" title="Playlist"></i>`;
@@ -9120,8 +9267,7 @@ export class PlaylistPanel extends Panel {
                     }
                     // userdata.number = String(i+1).padStart(2,"0")
                     
-                    var is_special = item.filename.startsWith("livestreamer://");
-                    if (is_special) {
+                    if (item._is_special) {
                         var type = item.filename.replace("livestreamer://", "");
                         if (!(type in badges)) badges[type] = type;
                         if (type == "macro") {
@@ -9145,7 +9291,7 @@ export class PlaylistPanel extends Panel {
                         } 
                     }
                     
-                    if (media_info.downloadable && item.filename.match(/^https?:/)) {
+                    if (item.filename.match(/^https?:/)) {
                         let icon = $(`<i class="fas fa-globe"></i>`)[0]; //  style="color:cornflowerblue"
                         icon.title = item.filename;
                         main_icon = icon.outerHTML;
@@ -9204,35 +9350,34 @@ export class PlaylistPanel extends Panel {
                             let canceled = d.status == UPLOAD_STATUS.CANCELED;
                             let p = d.total ? ( d.bytes / d.total) : 0;
                             bar_el.title = canceled ? "Canceled" : `${utils.capitalize(t)}ing [${utils.format_bytes(d.bytes || 0)} / ${utils.format_bytes(d.total || 0)}]`;
-                            set_style_property(bar_el, "--progress",`${p*100}%`);
+                            dom.set_style_property(bar_el, "--progress",`${p*100}%`);
                             let percent_text = [];
                             if (d.stages) percent_text.push(`${d.stage+1}/${d.stages}`);
                             percent_text.push(`${(p * 100).toFixed(2)}%`);
-                            set_inner_html(percent_el, canceled ? "Canceled" : percent_text.join(" | "));
-                            set_inner_html(speed_el, canceled ? "Canceled" : `${utils.format_bytes(d.speed || 0)}ps`);
+                            dom.set_inner_html(percent_el, canceled ? "Canceled" : percent_text.join(" | "));
+                            dom.set_inner_html(speed_el, canceled ? "Canceled" : `${utils.format_bytes(d.speed || 0)}ps`);
                             icons.push(`<i class="fas fa-${t}"></i>`);
-                            set_children(extra_elem, [bar_el]);
+                            dom.set_children(extra_elem, [bar_el]);
                         } else {
-                            set_children(extra_elem, []);
+                            dom.set_children(extra_elem, []);
                         }
                     }
 
-                    set_inner_html(badges_elem, Object.entries(badges).map(([k,v])=>{
+                    dom.set_inner_html(badges_elem, Object.entries(badges).map(([k,v])=>{
                         var parts = v.split(" ");
                         parts[0] = parts[0].toUpperCase();
-                        return `<i class="badge" data-badge-type="${k}">${parts.join(" ")}</i>`
+                        return `<i class="badge" data-badge-type="${k}">${parts.join(" ")}</i>`;
                     }).join(""));
 
-                    if (!is_special && ud.modified) {
+                    // !is_special && 
+                    if (ud.modified) {
                         icons.push(`<i class="fas fa-wrench"></i>`);
                     }
-    
-                    var duration_str = null;
-                    if (!duration_str) {
-                        if (ud.duration || ud.media_duration) duration_str = utils.seconds_to_timespan_str(ud.duration || ud.children_duration, "h?:mm:ss");
-                    }
+                    
+                    let d = ud.duration || ud.children_duration;
+                    let duration_str = d ? utils.seconds_to_timespan_str(d, "h?:mm:ss") : " - ";
 
-                    set_inner_html(duration_elem, duration_str || "  -  ");
+                    dom.set_inner_html(duration_elem, duration_str);
                     
                     if (problems.length) {
                         var problem_groups = utils.group_by(problems, p=>p.level);
@@ -9247,20 +9392,20 @@ export class PlaylistPanel extends Panel {
                         }
                     }
     
-                    set_inner_html(play_icons_elem, play_icons.join(""));
+                    dom.set_inner_html(play_icons_elem, play_icons.join(""));
 
                     // if (!main_icon) main_icon = `<i class="fas fa-file"></i>`;
-                    set_inner_html(icons_elem, [main_icon, ...icons].join(""));
+                    dom.set_inner_html(icons_elem, [main_icon, ...icons].join(""));
     
-                    set_inner_html(filename_elem, filename_parts.join(" "));
+                    dom.set_inner_html(filename_elem, filename_parts.join(" "));
     
-                    set_style_property(elem, "--duration", ud.timeline_duration);
-                    set_style_property(elem, "--start", ud.timeline_start);
-                    set_style_property(elem, "--end", ud.timeline_end);
-                    set_style_property(elem, "--background-color", background_color || "");
-                    set_style_property(elem, "--outline-color", outline_color || "");
+                    dom.set_style_property(elem, "--duration", ud.timeline_duration);
+                    dom.set_style_property(elem, "--start", ud.timeline_start);
+                    dom.set_style_property(elem, "--end", ud.timeline_end);
+                    dom.set_style_property(elem, "--background-color", background_color || "");
+                    dom.set_style_property(elem, "--outline-color", outline_color || "");
                     elem.title = title_parts.join(" ");
-                    toggle_class(elem, "current", is_current_item);
+                    dom.toggle_class(elem, "current", is_current_item);
                     
                     changed = true;
     
@@ -9290,7 +9435,7 @@ export class PlaylistPanel extends Panel {
         var current = this.current;
         var parent = current._parent;
         if (!parent) return;
-        if (app.$._session._is_running && current == app.$._session._current_playing_item && current._calculate_contents_hash() != current.__private.hash_on_open) {
+        if (app.$._session._is_running && current == app.$._session._current_playlist_item && current._calculate_contents_hash() != current.__private.hash_on_open) {
             app.prompt_for_reload_of_current_item();
         }
         this.open(parent, [current]);
@@ -9305,15 +9450,15 @@ export class PlaylistPanel extends Panel {
     }
     move_selection_back() {
         var elems = this.get_selection();
-        var first_index = Math.max(0,utils.dom.get_index(elems[0])-1);
-        elems.forEach((e,i)=>utils.dom.insert_at(e.parentElement, e, first_index+i));
+        var first_index = Math.max(0,dom.get_index(elems[0])-1);
+        elems.forEach((e,i)=>dom.insert_at(e.parentElement, e, first_index+i));
         this.scroll_into_view(elems[0]);
         this.sync_positions();
     }
     move_selection_forward() {
         var elems = this.get_selection();
-        var last_index = Math.min(elems[0].parentElement.childElementCount, utils.dom.get_index(elems[elems.length-1])+2);
-        elems.forEach((e,i)=>utils.dom.insert_at(e.parentElement, e, last_index));
+        var last_index = Math.min(elems[0].parentElement.childElementCount, dom.get_index(elems[elems.length-1])+2);
+        elems.forEach((e,i)=>dom.insert_at(e.parentElement, e, last_index));
         this.scroll_into_view(elems[elems.length-1])
         this.sync_positions();
     }
@@ -9361,7 +9506,7 @@ export class PlaylistPanel extends Panel {
     } */
     
     open_context_menu(e) {
-        this.context_menu = new utils.dom.DropdownMenu({
+        this.context_menu = new dom.DropdownMenu({
             items: ()=>{
                 var items = this.get_selection_datas();
                 var c = this.commands;
@@ -9443,7 +9588,7 @@ export class PlaylistPanel extends Panel {
         var default_name = item._get_pretty_name({label:false});
 
         filename.contentEditable = true;
-        set_inner_html(filename, item.props.label || default_name);
+        dom.set_inner_html(filename, item.props.label || default_name);
         filename.focus();
         window.getSelection().selectAllChildren(filename);
         var blur_listener, keydown_listener;
@@ -9463,7 +9608,7 @@ export class PlaylistPanel extends Panel {
             filename.removeEventListener("keydown", keydown_listener);
             var new_name = filename.innerText.trim();
             if (!new_name || new_name == default_name) new_name = null;
-            set_inner_html(filename, `<span>${new_name || default_name}</span>`);
+            dom.set_inner_html(filename, `<span>${new_name || default_name}</span>`);
 
             if (old_name != new_name) {
                 app.playlist_update([[`${item.id}/props/label`, new_name]]);
@@ -9524,7 +9669,7 @@ export class PlaylistPanel extends Panel {
         return this.get_selection().map(e=>app.$._session.playlist[e.dataset.id]).filter(i=>i);
     }
     get_selection_indices() {
-        return this.get_selection().map(e=>utils.dom.get_index(e));
+        return this.get_selection().map(e=>dom.get_index(e));
     }
     get_first_selected_data() {
         return this.get_selection_datas()[0];
@@ -9556,9 +9701,9 @@ export class PlaylistPanel extends Panel {
         if (this.clipboard) {
             info["Clipboard"] = `${this.clipboard.cutting ? `<i class="fas fa-scissors"></i>` : `<i class="far fa-clipboard"></i>`} [${this.clipboard.items.length}]`;
         }
-        set_inner_html(this.playlist_info_text, Object.entries(info).map(([name,text])=>`<span title="${name}">${text}</span>`).join(""));
-        set_inner_html(this.toggle_selection_button, `${selected_items.length?"Deselect":"Select"} All`);
-        toggle_attribute(this.toggle_selection_button, "disabled", len == 0);
+        dom.set_inner_html(this.playlist_info_text, Object.entries(info).map(([name,text])=>`<span title="${name}">${text}</span>`).join(""));
+        dom.set_inner_html(this.toggle_selection_button, `${selected_items.length?"Deselect":"Select"} All`);
+        dom.toggle_attribute(this.toggle_selection_button, "disabled", len == 0);
         this.toggle_selection_button.onclick = ()=>{
             if (selected_items.length) this.active_sortable.deselect_all();
             else this.active_sortable.select_all();
@@ -9617,14 +9762,14 @@ export class PlaylistPanel extends Panel {
                     `<div style="left:0; width:${Math.max(0,(this.clipping.start - this.view_start)/this.view_duration*100).toFixed(3)}%"></div>`,
                     `<div style="right:0; width:${Math.max(0,(this.view_end - this.clipping.end)/this.view_duration*100).toFixed(3)}%"></div>`,
                 ].join("");
-                set_inner_html(this.limits_elem, limits_html);
+                dom.set_inner_html(this.limits_elem, limits_html);
             }
             
             this.limits_elem.style.display = this.clipping ? "" : "none";
 
             // var max_width = Math.max(...this.sortables.map(s=>s.el.offsetWidth));
             // set_style_property(this.elem, "--timeline-width", `${max_width}px`);
-            set_style_property(this.timeline_container_elem, "--timeline-width", `${this.duration * this.zoom}px`)
+            dom.set_style_property(this.timeline_container_elem, "--timeline-width", `${this.duration * this.zoom}px`)
 
             this.ticks_bar.update(this.view_start, this.view_end);
 
@@ -9641,7 +9786,7 @@ export class PlaylistPanel extends Panel {
         }
 
         this.scrollbar_width = Math.max(...get_scrollbar_width(this.tracks_elem));
-        set_style_property(this.timeline_container_elem, "--scrollbar-width", `${this.scrollbar_width}px`);
+        dom.set_style_property(this.timeline_container_elem, "--scrollbar-width", `${this.scrollbar_width}px`);
     }
     
     get timeline_window_duration() {
@@ -9657,7 +9802,7 @@ export class PlaylistPanel extends Panel {
     set_timeline_zoom(v){
         this.zoom = utils.clamp(v, PLAYLIST_ZOOM_MIN, PLAYLIST_ZOOM_MAX);
         if (isNaN(this.zoom) || !isFinite(this.zoom)) this.zoom = 1.0;
-        set_style_property(this.timeline_container_elem, "--playlist-zoom", this.zoom);
+        dom.set_style_property(this.timeline_container_elem, "--playlist-zoom", this.zoom);
     }
     reset_scroll(){
         this.tracks_elem.scrollLeft = this.tracks_elem.scrollTop = 0;
@@ -9700,7 +9845,7 @@ export class Loader {
     update(opts) {
         var msg = this.el.querySelector(".msg");
         if ("text" in opts) {
-            set_inner_html(msg, opts.text);
+            dom.set_inner_html(msg, opts.text);
         }
         if ("visible" in opts) {
             if (opts.visible && this.el.parentElement != document.body) document.body.append(this.el);
@@ -9715,8 +9860,8 @@ export class Loader {
 export class Area extends ui.Column {
     constructor(elem, settings) {
         super(elem, settings);
-        add_class(this.elem, "area");
-        add_class(this.elem, `area-${app.areas.length+1}`);
+        dom.add_class(this.elem, "area");
+        dom.add_class(this.elem, `area-${app.areas.length+1}`);
         app.areas.push(this);
     }
 }
@@ -9725,7 +9870,7 @@ export class MainWebApp extends utils.EventEmitter {
     /** @type {MainWebApp} */
     static instance;
 
-    get playlist_item_props_class() { return utils.try(()=>this.$.properties.playlist.__enumerable__.props); }
+    get playlist_item_props_class() { return utils.try_catch(()=>this.$.properties.playlist.__enumerable__.props); }
     get focused_element() { return this.root_elem.activeElement; }
     get dev_mode() { return this.$.conf["debug"] || new URLSearchParams(window.location.search.slice(1)).has("dev"); }
     get is_os_gui() { return this.$.sysinfo.platform.match(/^win/i); }
@@ -9874,13 +10019,13 @@ export class MainWebApp extends utils.EventEmitter {
         var settings_defaults = Object.fromEntries(Object.entries(this.settings_prop_defs).map(([k,v])=>[k, v.__default__]));
         // console.log(settings_defaults);
         
-        this.settings = new utils.dom.LocalStorageBucket("livestreamer-1.0", {
+        this.settings = new dom.LocalStorageBucket("livestreamer-1.0", {
             ...settings_defaults,
             "layout": null,
             "session_order": null,
             "last_session_id": null
         });
-        this.passwords = new utils.dom.LocalStorageBucket("livestreamer-passwords");
+        this.passwords = new dom.LocalStorageBucket("livestreamer-passwords");
 
         this.loader = new Loader();
         this.loader.update({visible:true, text:"Initializing..."});
@@ -9907,7 +10052,7 @@ export class MainWebApp extends utils.EventEmitter {
         this.show_help_button = this.root_elem.querySelector("#show-help");
         this.show_config_button = this.root_elem.querySelector("#show-config");
         this.show_admin_button = this.root_elem.querySelector("#show-admin");
-        toggle_class(this.show_admin_button, "d-none", true); // !app.user.is_admin
+        dom.toggle_class(this.show_admin_button, "d-none", true); // !app.user.is_admin
         this.session_elem = this.root_elem.querySelector("#session");
         this.session_controls_wrapper_elem = this.root_elem.querySelector(".session-controls-wrapper");
         this.session_controls_elem = this.root_elem.querySelector("#session-controls");
@@ -9974,7 +10119,6 @@ export class MainWebApp extends utils.EventEmitter {
         // this.advanced_functions_menu = new AdvancedFunctionsMenu();
         this.system_manager = new SystemManagerMenu();
         this.file_manager_menu = new FileManagerMenu();
-        this.configure_targets_menu = new TargetMenu();
         this.configure_external_session_menu = new ExternalSessionConfigurationMenu();
         this.user_config_menu = new UserConfigurationSettings();
         this.admin_menu = new AdminSettings();
@@ -9983,6 +10127,9 @@ export class MainWebApp extends utils.EventEmitter {
         this.change_log_menu = new ChangeLog();
         this.split_menu = new SplitSettings();
         this.uploads_downloads_menu = new UploadsDownloadsMenu();
+        this.filter_config_menu = new FilterConfigurationMenu();
+        this.targets_menu = new TargetsMenu();
+        this.edit_target_menu = new EditTargetMenu();
         
         // this.fonts_menu = new FontSettings();
 
@@ -10003,7 +10150,7 @@ export class MainWebApp extends utils.EventEmitter {
                 this.password.input.addEventListener("keydown", (e)=>{
                     if (e.key === "Enter") button.click();
                 });
-                let button = $(`<button class="button" title="Sign in"><i class="fas fa-key"></i></button>`)[0];
+                let button = $(`<button title="Sign in"><i class="fas fa-key"></i></button>`)[0];
                 button.addEventListener("click", ()=>{
                     app.passwords.set(app.$._session.id, this.password.value);
                     if (!app.$._session.access_control._self_has_access(this.password.value)) {
@@ -10028,7 +10175,7 @@ export class MainWebApp extends utils.EventEmitter {
                 handle: ".drawer>.header",
                 filter: (e)=>{
                     if (e.target.closest(".drawer>.header")) {
-                        if (utils.dom.has_touch_screen() || e.target.closest("button,input,select")) return true;
+                        if (dom.has_touch_screen() || e.target.closest("button,input,select")) return true;
                     }
                 },
                 onEnd: ()=>this.save_layout(),
@@ -10055,7 +10202,7 @@ export class MainWebApp extends utils.EventEmitter {
 
         this.footer_buttons = new ui.Row().elem;
         this.main_elem.append(this.footer_buttons);
-        set_style_property(this.footer_buttons, "justify-content", "end");
+        dom.set_style_property(this.footer_buttons, "justify-content", "end");
 
         {
             let row = new ui.Row({
@@ -10092,7 +10239,7 @@ export class MainWebApp extends utils.EventEmitter {
         ) */
         this.footer_buttons.append(
             new ui.Button(`<button>Configure Targets</button>`, {
-                "click": ()=>this.configure_targets_menu.show()
+                "click": ()=>this.targets_menu.show(null)
             }),
             new ui.Button(`<button>System Manager</button>`, {
                 "click": ()=>this.system_manager.show()
@@ -10160,13 +10307,13 @@ export class MainWebApp extends utils.EventEmitter {
                         c.value = v;
                     }
                     if (type === "boolean") {
-                        toggle_attribute(body, `data-setting__${k}`, v);
+                        dom.toggle_attribute(body, `data-setting__${k}`, v);
                         for (var c of [...w.document.querySelectorAll(`button[data-setting__${k}]`)]) {
                             if (v) delete c.dataset.toggled;
                             else c.dataset.toggled = 1;
                         }
                     } else if (type != "object" && type != "function") {
-                        set_attribute(body, `data-setting__${k}`, v);
+                        dom.set_attribute(body, `data-setting__${k}`, v);
                     }
                 }
             }
@@ -10190,16 +10337,16 @@ export class MainWebApp extends utils.EventEmitter {
                     }
                 }
             }
-            utils.dom.closest(elem, (e)=>e.matches("button") && get_data_setting_attribute(e));
+            dom.closest(elem, (e)=>e.matches("button") && get_data_setting_attribute(e));
             if (data_setting_key) {
                 this.settings.toggle(data_setting_key);
             }
             // if (elem.matches("a")) {
-            //     var url = utils.dom.get_anchor_url(e.target);
-            //     var file_manager_url = utils.dom.get_url(null, "file-manager");
+            //     var url = dom.get_anchor_url(e.target);
+            //     var file_manager_url = dom.get_url(null, "file-manager");
             //     if (url.host === file_manager_url.host && url.pathname === "/index.html") {
-            //         console.log(utils.try_file_uri_to_path(url).toString());
-            //         open_file_manager({start: utils.try_file_uri_to_path(url).toString()})
+            //         console.log(utils.try_catch_file_uri_to_path(url).toString());
+            //         open_file_manager({start: utils.try_catch_file_uri_to_path(url).toString()})
             //         console.log(e.target);
             //         e.preventDefault();
             //     }
@@ -10270,7 +10417,7 @@ export class MainWebApp extends utils.EventEmitter {
             if (!elem) return;
             e.preventDefault();
             curr = this.$.sessions[elem.dataset.id];
-            var menu = new utils.dom.DropdownMenu({
+            var menu = new dom.DropdownMenu({
                 x: e.clientX,
                 y: e.clientY,
                 items: [
@@ -10332,7 +10479,7 @@ export class MainWebApp extends utils.EventEmitter {
                     /** @type {FileSystemDirectoryEntry} */
                     let dir_entry = entry;
                     let [item] = app.playlist_add({
-                        filename:"livestreamer://playlist",
+                        filename: "livestreamer://playlist",
                         props: {
                             label: dir_entry.name
                         }
@@ -10360,12 +10507,12 @@ export class MainWebApp extends utils.EventEmitter {
         this.settings.load();
         
         var key = new URL(window.location.href).searchParams.get("ls_key");
-        var ws_url = utils.dom.get_url(null, "main", true);
+        var ws_url = dom.get_url(null, "main", true);
         var session_id = window.location.hash.slice(1) || this.settings.get("last_session_id");
         if (session_id) ws_url.searchParams.set("session_id", session_id);
         if (key) ws_url.searchParams.set("ls_key", key);
 
-        this.ws = new utils.dom.WebSocket();
+        this.ws = new dom.ReconnectingWebSocket();
         this.ws.on("open", ()=>{
             this.$ = new Remote();
             this.$.on("update", (changes)=>this.#update(changes));
@@ -10374,9 +10521,9 @@ export class MainWebApp extends utils.EventEmitter {
             if (data.$) this.$._push(data.$);
         });
         this.ws.on("close", ()=>{
+            for (var m of Modal.showing) m.hide();
             this.#update();
             this.loader.update({visible:true, text:"Lost connection..."});
-            Fancybox.close(true);
         });
         
         this.tick_interval = setInterval(()=>this.tick(), 1000/10);
@@ -10393,7 +10540,9 @@ export class MainWebApp extends utils.EventEmitter {
 
     update = utils.debounce(this.#update, 0);
 
-    #update(changes = {}) {
+    async #update(changes = {}) {
+        
+        await Promise.all([...Modal.showing].filter(m=>m.block_updates).map(m=>m.showing_promise));
 
         this.loader.update({visible:false});
         this.elem.style.display = "";
@@ -10416,26 +10565,26 @@ export class MainWebApp extends utils.EventEmitter {
             window.location.hash = client_changes.session_id || "";
         }
 
-        utils.dom.set_dataset_value(this.session_elem, "session-type", this.$._session.type);
-        toggle_class(this.session_elem, "d-none", is_null_session);
-        toggle_class(this.session_inner_elem, "d-none", !has_access);
-        toggle_class(this.session_controls_wrapper_elem, "d-none", is_null_session);
-        toggle_class(this.no_sessions_elem, "d-none", !is_null_session && has_access);
-        toggle_class(this.no_sessions_elem.querySelector(".no-session"), "d-none", !has_access);
-        toggle_class(this.no_sessions_elem.querySelector(".no-access"), "d-none", has_access);
-        toggle_class(this.no_sessions_elem.querySelector(".owner"), "d-none", has_access);
-        set_inner_html(this.no_sessions_elem.querySelector(".owner"), `This session is owned by ${access_control._owners.map(u=>`[${u.username}]`).join(" | ")}`);
-        this.session_password.hidden = (has_access || !requires_password);
+        dom.set_dataset_value(this.session_elem, "session-type", this.$._session.type);
+        dom.toggle_class(this.session_elem, "d-none", is_null_session);
+        dom.toggle_class(this.session_inner_elem, "d-none", !has_access);
+        dom.toggle_class(this.session_controls_wrapper_elem, "d-none", is_null_session);
+        dom.toggle_class(this.no_sessions_elem, "d-none", !is_null_session && has_access);
+        dom.toggle_class(this.no_sessions_elem.querySelector(".no-session"), "d-none", !has_access);
+        dom.toggle_class(this.no_sessions_elem.querySelector(".no-access"), "d-none", has_access);
+        dom.toggle_class(this.no_sessions_elem.querySelector(".owner"), "d-none", has_access);
+        dom.set_inner_html(this.no_sessions_elem.querySelector(".owner"), `This session is owned by ${access_control._owners.map(u=>`[${u.username}]`).join(" | ")}`);
+        this.session_password.is_hidden = (has_access || !requires_password);
 
-        toggle_attribute(this.load_session_button, "disabled", !has_access || !has_ownership);
-        toggle_attribute(this.save_session_button, "disabled", !has_access || !has_ownership);
-        toggle_attribute(this.history_session_button, "disabled", !has_access || !has_ownership);
+        dom.toggle_attribute(this.load_session_button, "disabled", !has_access || !has_ownership);
+        dom.toggle_attribute(this.save_session_button, "disabled", !has_access || !has_ownership);
+        dom.toggle_attribute(this.history_session_button, "disabled", !has_access || !has_ownership);
         
-        toggle_class(this.sign_out_session_button, "d-none", has_ownership || !(requires_password && has_access));
-        toggle_attribute(this.config_session_button, "disabled", !has_access || !has_ownership);
-        toggle_attribute(this.destroy_session_button, "disabled", !has_ownership);
+        dom.toggle_class(this.sign_out_session_button, "d-none", has_ownership || !(requires_password && has_access));
+        dom.toggle_attribute(this.config_session_button, "disabled", !has_access || !has_ownership);
+        dom.toggle_attribute(this.destroy_session_button, "disabled", !has_ownership);
 
-        toggle_class(this.app_log_section, "d-none", !this.$._client.is_admin);
+        dom.toggle_class(this.app_log_section, "d-none", !this.$._client.is_admin);
 
         if (is_new_session) {
             this.session_logger.empty();
@@ -10713,7 +10862,7 @@ export class MainWebApp extends utils.EventEmitter {
         /** @type {PlaylistItem[]} */
         var new_items = [];
         var add_file = async (data, index, parent_id, track_index)=>{
-            let id = utils.dom.uuid4();
+            let id = dom.uuid4();
             let filename, props, children;
             if (typeof data === "string") {
                 filename = data;
@@ -10795,7 +10944,7 @@ export class MainWebApp extends utils.EventEmitter {
                 arguments: [group.map(i=>i.id)]
             });
             var next_item, current_item;
-            next_item = current_item = this.$._session._current_playing_item;
+            next_item = current_item = this.$._session._current_playlist_item;
             if (all_deleted_items.has(next_item)) {
                 if (this.$._session._is_running) {
                     while (all_deleted_items.has(next_item)) {
@@ -10815,8 +10964,12 @@ export class MainWebApp extends utils.EventEmitter {
     async playlist_update(changes) {
         var session_id = app.$._session.id;
         changes = utils.tree_from_pathed_entries(changes);
+        for (var id of Object.keys(changes)) {
+            if (!this.$._session.playlist[id]) delete changes[id];
+        }
         // recursviely remove any changes where identical to the original values.
         changes = cull_equal_props(changes, this.$.sessions[session_id].playlist);
+
         if (changes) {
             this.$._push([`sessions/${session_id}/playlist`, changes]);
             this.request({
@@ -10890,16 +11043,7 @@ export class MainWebApp extends utils.EventEmitter {
         var options = {pause:false};
         var root_merged = item._root_merged_playlist;
         if (root_merged) {
-            var t = 0;
-            for (var p of [item, ...item._iterate_parents(root_merged)]) {
-                t += p._userdata.start;
-                p = p._parent;
-                var ud = p._userdata;
-                if (ud.clipping) {
-                    // damn this gets complicated... but it works.
-                    t = utils.loop(t - ud.clipping.offset, ud.clipping.start, ud.clipping.end) - ud.clipping.start;
-                }
-            }
+            var t = utils.sum([item, ...item._iterate_parents(root_merged)].map(p=>p._userdata.start));
             item = root_merged;
             start += t;
         }
@@ -10974,7 +11118,7 @@ export class MainWebApp extends utils.EventEmitter {
         let num_items = parent._get_track(track_index).length;
         if (insert_pos === undefined) {
             let last_active = this.playlist.sortables[track_index].get_last_active();
-            insert_pos = (last_active) ? utils.dom.get_index(last_active) + 1 : num_items;
+            insert_pos = (last_active) ? dom.get_index(last_active) + 1 : num_items;
         }
         insert_pos = utils.clamp(insert_pos, 0, num_items);
         track_index = utils.clamp(track_index, 0, 1);
@@ -10989,17 +11133,17 @@ export class MainWebApp extends utils.EventEmitter {
         var path_hash = JSON.stringify([this.playlist.current.id, path.map(i=>[i.id, i._hash])]);
         if (parent_elem._path_hash === path_hash) return;
         parent_elem._path_hash = path_hash;
-        utils.dom.empty(parent_elem);
-        add_class(parent_elem, "breadcrumbs");
+        dom.remove_children(parent_elem);
+        dom.add_class(parent_elem, "breadcrumbs");
         path.forEach((item,i)=>{
             var elem = $(`<a></a>`)[0];
             var name = item._get_pretty_name() || "[Untitled]";
             if (item._is_root) {
                 if (exclude_root) return;
                 elem.style.overflow = "visible";
-                set_inner_html(elem, `<i class="fas fa-house"></i>`);
+                dom.set_inner_html(elem, `<i class="fas fa-house"></i>`);
             } else {
-                set_inner_html(elem, name);
+                dom.set_inner_html(elem, name);
             }
             elem.href = "javascript:void(0)";
             parent_elem.append(elem);
@@ -11027,7 +11171,7 @@ export class MainWebApp extends utils.EventEmitter {
     }
 
     update_request_loading() {
-        toggle_class(this.request_loading_elem, "v-none", this.$._pending_requests.size == 0);
+        dom.toggle_class(this.request_loading_elem, "v-none", this.$._pending_requests.size == 0);
     }
 
     request_no_timeout(data) {
@@ -11113,7 +11257,7 @@ export class MainWebApp extends utils.EventEmitter {
     }
 
     tick() {
-        toggle_class(this.body_elem, "is-touch", utils.dom.has_touch_screen());
+        dom.toggle_class(this.body_elem, "is-touch", dom.has_touch_screen());
     }
 
     #rebuild_clients() {
@@ -11132,15 +11276,15 @@ export class MainWebApp extends utils.EventEmitter {
         ];
         for (var i of items) i.id = utils.md5(JSON.stringify(i));
 
-        utils.dom.rebuild(this.users_elem, items, {
+        dom.rebuild(this.users_elem, items, {
             add: (item, elem, i)=>{
                 elem = $(`<span class="user"></span>`)[0];
                 var is_self = this.$._client.username == item.username;
                 var text = is_self ? `Me` : item.username;
-                toggle_class(elem, "is-self", is_self);
+                dom.toggle_class(elem, "is-self", is_self);
                 if (item.type === "owner") {
                     elem.append($(`<i class="fas fa-user-tie"></i>`)[0]);
-                    add_class(elem, "is-owner");
+                    dom.add_class(elem, "is-owner");
                 } else {
                     elem.append($(`<i class="fas fa-user"></i>`)[0]);
                     if (item.number > 1) text += ` (${item.number})`;
@@ -11169,7 +11313,7 @@ export class MainWebApp extends utils.EventEmitter {
         await this.session_sortable.last_drag;
         var items = this.sessions_ordered;
         var session_id = this.$._client.session_id;
-        utils.dom.rebuild(this.session_tabs_elem, items, {
+        dom.rebuild(this.session_tabs_elem, items, {
             add: (item, elem, i)=>{
                 if (!elem) elem = $(`<a class="session-tab"><div class="handle"><i class="fas fa-grip-lines"></i></div><span class="name"></span><span class="icons"></span></a>`)[0];
                 var access_control = item.access_control;
@@ -11185,7 +11329,7 @@ export class MainWebApp extends utils.EventEmitter {
 
                 var handle = elem.querySelector(".handle");
                 // toggle_class(handle, "d-none", !access_control.self_can_edit)
-                set_attribute(elem, "href", `#${item.id}`);
+                dom.set_attribute(elem, "href", `#${item.id}`);
                 elem.querySelector(".name").textContent = item.name;
                 elem.title = item.name;
                 // toggle_class(elem, "unmovable", !item.movable);
@@ -11203,7 +11347,7 @@ export class MainWebApp extends utils.EventEmitter {
                     option_data.text += ` [Locked]`
                 }
                 elem.option_data = option_data;
-                toggle_class(elem, "locked", !has_access);
+                dom.toggle_class(elem, "locked", !has_access);
                 var schedule_start_time = item.schedule_start_time ? +new Date(item.schedule_start_time) : 0;
                 if (["starting","stopping"].includes(state)) {
                     icons_html += `<i class="fas fa-sync fa-spin"></i>`;
@@ -11212,15 +11356,15 @@ export class MainWebApp extends utils.EventEmitter {
                 } else if (schedule_start_time > Date.now()) {
                     icons_html += `<i class="far fa-clock"></i>`;
                 }
-                set_inner_html(icons, icons_html);
-                toggle_class(elem, "active", is_active);
-                toggle_class(elem, "owned", is_owner);
-                toggle_class(elem, "live", state !== "stopped");
+                dom.set_inner_html(icons, icons_html);
+                dom.toggle_class(elem, "active", is_active);
+                dom.toggle_class(elem, "owned", is_owner);
+                dom.toggle_class(elem, "live", state !== "stopped");
                 return elem;
             },
         });
-        set_select_options(this.session_select, [["","-",{style:{"display":"none"}}], ...[...this.session_tabs_elem.children].map(e=>e.option_data)]);
-        set_value(this.session_select, this.$._client.session_id || "");
+        dom.set_select_options(this.session_select, dom.fix_options([["","-",{style:{"display":"none"}}], ...[...this.session_tabs_elem.children].map(e=>e.option_data)]));
+        dom.set_value(this.session_select, this.$._client.session_id || "");
     }
 
     get_user(id) {
@@ -11278,7 +11422,7 @@ export class MainWebApp extends utils.EventEmitter {
             var close_button = this.help_container.querySelector("button.close");
             close_button.onclick = ()=>this.toggle_help();
         }
-        toggle_class(this.body_elem, "show-side-panel");
+        dom.toggle_class(this.body_elem, "show-side-panel");
     }
     chapter_to_string(c, show_time=false) {
         var item = this.$._session.playlist[c.id];
@@ -11300,7 +11444,7 @@ export class MainWebApp extends utils.EventEmitter {
         }
     }
     prompt_for_reload_of_current_item() {
-        if (window.confirm(`The item is currently playing and requires reloading to apply changes.\nDo you want to reload?`)) {
+        if (window.confirm(`The item is currently playing and some changes may require reloading to apply changes.\nDo you want to reload?`)) {
             app.request({
                 call: ["session", "reload"]
             });

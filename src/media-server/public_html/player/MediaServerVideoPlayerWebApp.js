@@ -1,5 +1,9 @@
-import * as utils from "../../../utils/all.js";
-import {jQuery, $} from '../../../jquery-global.js';
+import {clamp} from "../../../utils/clamp.js";
+import {sort} from "../../../utils/sort.js";
+import {try_catch} from "../../../utils/try_catch.js";
+import {nearest} from "../../../utils/nearest.js";
+import * as dom from "../../../utils/dom/exports.js";
+import {$} from '../../../jquery-global.js';
 import Hls from "hls.js";
 import videojs from "video.js/core";
 import "video.js/dist/video-js.css";
@@ -47,7 +51,7 @@ const CROP_DETECT_INTERVAL = 100;
 const VIDEO_UI_UPDATE_INTERVAL = 100;
 const IS_EMBED = window.parent !== window.self;
 
-var settings = new utils.dom.LocalStorageBucket("player", {
+var settings = new dom.LocalStorageBucket("player", {
     time_display_mode: 0,
     volume: 1,
     crop_mode: "auto",
@@ -74,7 +78,7 @@ export class MediaServerVideoPlayerWebApp {
         var src = new URL(`../media/live/${params.get("id")}/master.m3u8`, window.location.origin+window.location.pathname).toString();
         console.log(src);
 
-        var messenger = new utils.dom.WindowCommunicator();
+        var messenger = new dom.WindowCommunicator();
         messenger.on("set_aspect_ratio", (ar)=>{
             this.aspect_ratio = ar;
             return true;
@@ -138,7 +142,7 @@ class VideoPlayer {
         // this.video_wrapper.append(this.video_el);
     }
 
-    update = utils.dom.debounce_next_frame(()=>this.__update())
+    update = dom.debounce_next_frame(()=>this.__update())
 
     __update() {
         if (!this.player) return;
@@ -224,7 +228,7 @@ class VideoPlayer {
                 var scale = 1;
                 var height = window.innerWidth / ar;
                 var correction_ratio = window.innerHeight / height;
-                scale = utils.clamp((ar * correction_ratio), 1, 4/3);
+                scale = clamp((ar * correction_ratio), 1, 4/3);
                 this.video_el.style.transform = `scale(${scale})`;
             } else {
                 this.video_el.style.transform = ``;
@@ -355,7 +359,7 @@ class VideoPlayer {
             }
             createItems() {
                 this.hideThreshold_ = 1;
-                var levels = utils.sort([...this.options_.levels], l=>-l.bitrate);
+                var levels = sort([...this.options_.levels], l=>-l.bitrate);
                 return levels.map((level)=>{
                     var item = new MenuItem(this.player_, { label: level.text, selectable: true });
                     item.level = level.value;
@@ -597,7 +601,7 @@ class VideoPlayer {
         if (conf.logo_url) {
             // let target = IS_EMBED ? `_parent` : `_blank`;
             let target = `_blank`;
-            utils.dom.load_image("../logo").then(img=>{
+            dom.load_image("../logo").then(img=>{
                 this.logo_el = $(`<a target="${target}" class="logo" href="${conf.logo_url}"></a>`)[0];
                 this.logo_el.append(img);
                 this.player.el_.append(this.logo_el);
@@ -639,7 +643,7 @@ class VideoPlayer {
                 _this.seekBarMouseTimeDisplay.el_.style.left = `${seekBarRect.width * seekBarPoint}px`;
                 var w = this.el_.offsetWidth;
                 var x = seekBarRect.width * seekBarPoint;
-                var left = utils.clamp(x, w/2, window.innerWidth-w/2);
+                var left = clamp(x, w/2, window.innerWidth-w/2);
                 var cx = Math.round(left - x - w/2);
                 this.el_.style.transform = `translateX(${cx}px)`;
             };
@@ -673,7 +677,7 @@ class VideoPlayer {
     }
 
     get_time_until_live_edge_area(use_latency){
-        const liveCurrentTime = utils.try(()=>this.liveTracker.liveCurrentTime(), 0);
+        const liveCurrentTime = try_catch(()=>this.liveTracker.liveCurrentTime(), 0);
         const currentTime = this.player.currentTime();
         return Math.max(0, Math.abs(liveCurrentTime - currentTime) - (use_latency ? this.hls.targetLatency/2 : 0));
     };
@@ -735,7 +739,7 @@ class CropDetect {
 
         var {vw,vh} = this;
         var ar = vw / vh;
-        ar = utils.nearest(ar, (4/3), (16/9));
+        ar = nearest(ar, (4/3), (16/9));
 
         // if source is 16/9
         var crops;

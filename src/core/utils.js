@@ -8,9 +8,11 @@ import is_image from "is-image";
 import { execa } from "execa";
 import pidtree from "pidtree";
 import { glob, Glob } from "glob";
-import * as utils from "../utils/utils.js";
+import {noop} from "../utils/noop.js";
+import {pathify} from "../utils/pathify.js";
 
-export * from "../utils/utils.js";
+export * from "../utils/exports.js";
+
 /** @import { Path } from "glob"; */
 
 //command: string, args: ReadonlyArray<string>, options: SpawnOptions
@@ -108,7 +110,7 @@ export async function unique_filename(filepath) {
     let filename = path.basename(filepath, ext);
     let dir = path.dirname(filepath);
     while (true) {
-        let stat = await fs.stat(filepath).catch(utils.noop);
+        let stat = await fs.stat(filepath).catch(noop);
         if (!stat) return filepath;
         let suffix = (n == 0) ? ` - Copy` : ` - Copy (${n+1})`;
         filepath = path.join(dir, filename + suffix + ext);
@@ -186,7 +188,7 @@ export async function  compress_logs_directory(dir){
             var t = Date.now();
             promises.push(
                 (async()=>{
-                    await tar.create({gzip:true, file:tar_path, cwd:dir, portable:true}, [filename]).catch(utils.noop);
+                    await tar.create({gzip:true, file:tar_path, cwd:dir, portable:true}, [filename]).catch(noop);
                     // core.logger.info(`Compressed '${fullpath}' in ${Date.now()-t}ms.`);
                     await fs.utimes(tar_path, stats.atime, stats.mtime);
                     await fs.unlink(fullpath);
@@ -323,12 +325,12 @@ export function ffmpeg_escape_file_path(str) {
 }
 
 export function ffmpeg_escape(str) {
-    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/,/g, '\\,'); // not sure about the comma
 }
 
 export function ffmpeg_escape_av_file_path(str) {
     // if (is_windows()) str = str.replace(/\\/g, "/");
-    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'\\''").replace(/:/g, '\\:');
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'\\''").replace(/:/g, '\\:').replace(/,/g, '\\,'); // not sure about the comma
 }
 
 /* export function ffmpeg_escape_av_file_path(str) {
@@ -341,7 +343,7 @@ export function ffmpeg_escape_av_file_path(str) {
 // }
 
 export async function append_line_truncate(filePath, line, maxLines=512) {
-    var data = await fs.readFile(filePath, 'utf8').catch(utils.noop);
+    var data = await fs.readFile(filePath, 'utf8').catch(noop);
     let lines = data ? data.split('\n') : [];
     lines.push(line);
     if (lines.length > maxLines) {
@@ -399,4 +401,10 @@ export function* infinite_iterator(generator) {
             yield undefined;
         }
     }
+}
+
+export function url_exists(url) {
+    if (typeof url !== "string") url = url.toString();
+    if (url.match(/^file:/)) return fs.exists(pathify(url));
+    return fetch(url, { method: 'head' }).then((res)=>!String(res.status).match(/^4\d\d$/)).catch(()=>false);
 }

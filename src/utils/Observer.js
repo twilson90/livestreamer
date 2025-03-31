@@ -1,6 +1,11 @@
-import * as utils from "./utils.js";
+import {is_iterable} from "./is_iterable.js";
+import {reverse_iterator} from "./reverse_iterator.js";
+import {json_copy} from "./json_copy.js";
+import {clear} from "./clear.js";
+import {debounce} from "./debounce.js";
 import EventEmitter from "./EventEmitter.js";
 
+var uid = 0;
 export const Observer_core = Symbol("Observer_core");
 export const Observer_target = Symbol("Observer_target");
 
@@ -19,19 +24,20 @@ export class ObserverChangeEvent {
     constructor(path, type, old_value, new_value, subtree=false) {
         this.path = path;
         this.type = type;
-        this.old_value = utils.json_copy(old_value);
-        this.new_value = utils.json_copy(new_value);
+        this.old_value = json_copy(old_value);
+        this.new_value = json_copy(new_value);
         this.subtree = subtree;
     }
 }
 
-/** @typedef {{change:ObserverChangeEvent, changes:ObserverChangeEvent}} EventMap */
+/** @typedef {{change:ObserverChangeEvent}} EventMap */ // delayed_change:ObserverChangeEvent
 /** @template T @extends {EventEmitter<EventMap>} */
 export class Observer extends EventEmitter {
-    /** @type {Map<string, Observer>} */
+    /** @type {Map<string, [Observer,string]>} */
     #parents = new Map();
     #$;
     #opts;
+    id = uid++;
     /** @type {T} */
     get $(){ return this.#$; }
 
@@ -47,7 +53,6 @@ export class Observer extends EventEmitter {
         opts = {
             subtree: true,
             recursive: true,
-            delete_nulls: false,
             ...opts
         };
         this.#opts = opts;
@@ -74,10 +79,12 @@ export class Observer extends EventEmitter {
             if (!child_observer) return;
             if (this.#opts.subtree) {
                 klaw(child, (path,value)=>{
-                    this.emit("change", new ObserverChangeEvent([prop, ...path], Observer_DELETE, value, undefined, true));
+                    var full_path = [prop, ...path];
+                    this.emit("change", new ObserverChangeEvent(full_path, Observer_DELETE, value, undefined, true));
                 });
             }
-            child_observer.#parents.delete(prop);
+            var key = JSON.stringify([this.id, prop]);
+            child_observer.#parents.delete(key);
         };
         var try_register_child = (child, prop)=>{
             if (!opts.recursive) return;
@@ -85,10 +92,12 @@ export class Observer extends EventEmitter {
             if (!child_observer) return;
             if (this.#opts.subtree) {
                 walk(child, (path,value)=>{
-                    this.emit("change", new ObserverChangeEvent([prop, ...path], Observer_SET, undefined, value, true));
+                    var full_path = [prop, ...path];
+                    this.emit("change", new ObserverChangeEvent(full_path, Observer_SET, undefined, value, true));
                 });
             }
-            child_observer.#parents.set(prop, this);
+            var key = JSON.stringify([this.id, prop]);
+            child_observer.#parents.set(key, [this, prop]);
         };
 
         // -----------------
@@ -108,26 +117,22 @@ export class Observer extends EventEmitter {
                     try_unregister_child(old_value, prop);
                     var exists = (prop in target);
                     
-                    if (new_value == null && this.#opts.delete_nulls) {
-                        delete target[prop];
-                        new_value = undefined;
-                    } else {
-                        target[prop] = new_value;
-                    }
+                    target[prop] = new_value;
+
+                    try_register_child(new_value, prop);
 
                     var e = new ObserverChangeEvent([prop], exists ? Observer_UPDATE : Observer_SET, old_value, new_value, false);
                     this.emit("change", e);
-                    try_register_child(new_value, prop);
                 }
                 return true;
             },
             deleteProperty: (target, prop)=>{
                 if (prop in target) {
                     var old_value = target[prop];
-                    try_unregister_child(old_value, prop);
                     delete target[prop];
                     var e = new ObserverChangeEvent([prop], Observer_DELETE, old_value, undefined, false);
                     this.emit("change", e);
+                    try_unregister_child(old_value, prop);
                 }
                 return true;
             }
@@ -136,11 +141,28 @@ export class Observer extends EventEmitter {
         for (var k in this.#$) this.#$[k] = this.#$[k];
     }
 
+    // /** @type {ObserverChangeEvent[]} */
+    // #recent_changes = [];
+    // #debounced_change = debounce(()=>{
+    //     var seen = {};
+    //     for (var e of this.#recent_changes) {
+    //         seen[JSON.stringify(e.path)] = e;
+    //     }
+    //     for (var e of Object.values(seen)) {   
+    //         this.emit("delayed_change", e);
+    //     }
+    //     clear(this.#recent_changes);
+    // }, 0);
+
     emit(event, e) {
         super.emit(event, e);
-        for (var [key, parent] of this.#parents) {
-            if (e instanceof ObserverChangeEvent) e = new ObserverChangeEvent([key, ...e.path], e.type, e.old_value, e.new_value, e.subtree);
-            parent.emit(event, e);
+        if (e instanceof ObserverChangeEvent) {
+            // this.#recent_changes.push(e);
+            // this.#debounced_change();
+            for (var [parent, key] of this.#parents.values()) {
+                e = new ObserverChangeEvent([key, ...e.path], e.type, e.old_value, e.new_value, e.subtree);
+                parent.emit(event, e);
+            }
         }
     }
 
@@ -149,16 +171,6 @@ export class Observer extends EventEmitter {
     static get_observer(proxy) {
         if (proxy) return proxy[Observer_core];
     }
-    static get_target(proxy, recursive=false) {
-        if (!proxy) return;
-        var ob = proxy[Observer_target];
-        if (recursive) {
-            for (var k in ob) {
-                ob[k] = get_target(ob[k]) ?? ob[k];
-            }
-        }
-        return ob;
-    };
     static is_proxy(proxy) {
         return !!Observer.get_observer(proxy);
     };
@@ -179,13 +191,15 @@ export class Observer extends EventEmitter {
     /** @param {Iterable<ObserverChangeEvent>} changes */
     static flatten_changes(changes, reverse=false) {
         let result = {};
-        if (reverse) changes = utils.reverse_iterator(changes);
+        if (reverse) changes = reverse_iterator(changes);
         for (let c of changes) {
             let key = c.path[c.path.length-1];
             let r = result;
+            let last_r;
             for (let i = 0; i < c.path.length-1; i++) {
                 let p = c.path[i];
                 if (r[p] === undefined) r[p] = {};
+                last_r = r;
                 r = r[p];
             }
             if (typeof r === "object" && r !== null) {
@@ -215,11 +229,11 @@ export class Observer extends EventEmitter {
                         try { new_constructor = changes[k][Observer.RESET_KEY]; } catch { }
                         
                         if (target[k] && !globalThis[old_constructor]) {
-                            Object.assign(utils.clear(target[k]), new (target[k].constructor)());
+                            Object.assign(clear(target[k]), new (target[k].constructor)());
                         } else if (target[k] && old_constructor === "Object" && old_constructor === new_constructor) {
-                            utils.clear(target[k]);
+                            clear(target[k]);
                         } else {
-                            target[k] = new (globalThis[new_constructor])();
+                            target[k] = new (globalThis[new_constructor])(); // so weird
                         }
                     }
                     if (typeof target[k] !== "object" || target[k] === null) {
@@ -235,11 +249,10 @@ export class Observer extends EventEmitter {
                 }
             }
         };
-        if (utils.is_iterable(changes)) {
+        if (is_iterable(changes)) {
             changes = Observer.flatten_changes(changes);
         }
         apply(target, changes);
     }
 }
-
 export default Observer;

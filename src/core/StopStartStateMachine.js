@@ -39,8 +39,11 @@ export class StopStartStateMachine extends DataNodeID {
         clearInterval(this.#restart_interval);
         this.$.start_time = Date.now();
         this.$.state = constants.State.STARTING;
-        await this._start(...args);
-        this.$.state = constants.State.STARTED;
+        if (await this._start(...args)) {
+            this.$.state = constants.State.STARTED;
+        } else {
+            this.$.state = constants.State.STOPPED;
+        }
     }
 
     async stop(reason) {
@@ -48,8 +51,9 @@ export class StopStartStateMachine extends DataNodeID {
         if (this.state === constants.State.STOPPED) return;
         this.$.state = constants.State.STOPPING;
         this.$.stop_reason = reason || "unknown";
-        await this._stop(reason);
-        this.$.state = constants.State.STOPPED;
+        if (await this._stop(reason)) {
+            this.$.state = constants.State.STOPPED;
+        }
     }
     
     async restart() {

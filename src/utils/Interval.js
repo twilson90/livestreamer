@@ -1,4 +1,5 @@
-import * as utils from "./utils.js";
+import {noop} from "./noop.js";
+import {options_proxy} from "./options_proxy.js";
 
 /** @typedef {{interval:number, immediate:bool, await:bool, context:any}} IntervalOptions  */
 export class Interval {
@@ -28,7 +29,7 @@ export class Interval {
 			context: null
 		}, opts);
 		/** @type {IntervalOptions} */
-		this.options = utils.options_proxy(this.#options);
+		this.options = options_proxy(this.#options);
 		if (!this.options.immediate) this.#last_tick = Date.now();
 		this.callback = callback;
 		
@@ -42,7 +43,7 @@ export class Interval {
 
 	async tick(callback_args=null) {
 		var ticks = ++this.#ticks;
-		if (this.#options.await) await Promise.resolve(this.#current_promise).catch(utils.noop);
+		if (this.#options.await) await Promise.resolve(this.#current_promise).catch(noop);
 		if (!this.#destroyed && ticks == this.#ticks) {
 			this.#last_tick = Date.now();
 			this.#current_promise = Promise.resolve(this.callback.apply(this.options.context, callback_args));

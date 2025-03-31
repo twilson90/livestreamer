@@ -18,7 +18,7 @@ export class History$ extends DataNode$ {
 
 /** @extends {DataNode<HistoryEntry$>} */
 export class HistoryEntry extends DataNode {
-    /** @param {History} parent @param {utils.ObserverChangeEvent[]} changes */
+    /** @param {History} parent @param {ObserverChangeEvent[]} changes */
     constructor(name, changes) {
         super(new HistoryEntry$())
         var ts = Date.now();
@@ -43,7 +43,7 @@ export class History extends DataNode {
     get position() { return this.$.position; }
     get size() { return this.end-this.start; }
 
-    /** @param {utils.Observer} target @param {function(utils.ObserverChangeEvent):boolean} filter */
+    /** @param {utils.Observer} target @param {function(ObserverChangeEvent):boolean} filter */
     constructor(target, filter) {
         super(new History$());
         this.clear();

@@ -225,6 +225,8 @@ export class Stream extends StopStartStateMachine {
         if (this.session.type === SessionTypes.INTERNAL) {
             
             let [width, height] = this.$.resolution.split("x").map(d=>parseInt(d));
+            width = Math.round(width/2)*2;
+            height = Math.round(height/2)*2;
 
             this.mpv = new MPVSessionWrapper(this, {
                 width,
@@ -234,36 +236,52 @@ export class Stream extends StopStartStateMachine {
                 this.logger.log(log);
             });
 
-            this.mpv_log_file = path.join(globals.app.logs_dir, `mpv-${utils.date_to_string(Date.now())}.log`);
+            await this.mpv.ready;
+
+            var mpv_custom = "orealtime" in this.mpv.allowed_mpv_args;
+            this.mpv_log_file = path.join(globals.app.logs_dir, `mpv-${this.id}-${utils.date_to_string(Date.now())}.log`);
 
             var mpv_args = [];
             
             mpv_args.push(
                 "--no-config",
-                `--demuxer-max-bytes=${32*1024*1024}`,
-                `--demuxer-readahead-secs=5`,
                 "--sub-font-size=66",
+                `--sub-margin-x=50`,
                 "--sub-margin-y=30",
+                `--sub-fix-timing=yes`,
+                // `--sub-ass-vsfilter-aspect-compat=no`, // fixes fucked up sub scaling on ass files for anamorphic vids (vids with embedded aspect ratio)
                 `--autoload-files=no`,
                 // -----------------------------
                 "--stream-buffer-size=4k",
                 "--interpolation=no",
                 "--force-window=yes",
-                `--ytdl-format=${globals.app.conf["main.youtube_dl_format"]}`,
+                `--ytdl-format=${globals.app.conf["core.ytdl_format"]}`,
                 `--script-opts-append=ytdl_hook-try_ytdl_first=yes`, // <-- important for detecting youtube edls on load hook in livestreamer.lua
-                `--script-opts-append=ytdl_hook-ytdl_path=${globals.app.conf["main.youtube_dl"]}`,
+                `--script-opts-append=ytdl_hook-ytdl_path=${globals.app.conf["core.ytdl_path"]}`,
                 `--script=${path.join(globals.app.mpv_lua_dir, "livestreamer.lua")}`,
                 "--quiet",
                 `--log-file=${this.mpv_log_file}`,
                 //--------------------
-                `--sub-margin-x=50`,
                 // "--sub-use-margins=no", // new
                 // "--image-subs-video-resolution=yes",
                 //--------------------
-                `--end-on-eof=${this.is_encode ? "yes" : "no"}`,
             );
+            if (mpv_custom) {
+                mpv_args.push(`--end-on-eof=${this.is_encode ? "yes" : "no"}`);
+            }
+            
             if (this.is_realtime) {
-                mpv_args.push("--orealtime");
+                mpv_args.push(
+                    "--cache=yes",
+                    "--cache-secs=1",
+                    // `--demuxer-max-bytes=${32*1024*1024}`,
+                    // `--demuxer-readahead-secs=5`,
+                    "--demuxer-readahead-secs=1",
+                    "--demuxer-hysteresis-secs=1",
+                    // -----------------
+                );
+
+                if(mpv_custom) mpv_args.push("--orealtime");
             }
             if (use_hardware && globals.app.conf["core.mpv_hwdec"]) {
                 mpv_args.push(`--hwdec=${globals.app.conf["core.mpv_hwdec"]}-copy`);
@@ -274,8 +292,6 @@ export class Stream extends StopStartStateMachine {
                     "--audio-format=float",
                     "--audio-samplerate=48000",
                     `--audio-channels=stereo`,
-                    // `--sub-ass-vsfilter-aspect-compat=no`, // fixes fucked up sub scaling on ass files for anamorphic vids (vids with embedded aspect ratio)
-                    `--sub-fix-timing=yes`,
                     "--framedrop=no",
                     `--o=-`,
                     "--ofopts-add=strict=+experimental",
@@ -286,8 +302,10 @@ export class Stream extends StopStartStateMachine {
                     // `--demuxer-lavf-o-add=use_wallclock_as_timestamps=1`,
                     // ----------------
                     "--no-ocopy-metadata",
-                    `--ocontinue-on-fail`,
                 );
+                if (mpv_custom) {
+                    mpv_args.push("--ocontinue-on-fail");
+                }
                 if (ffmpeg_copy) {
                     mpv_args.push(
                         // "--of=fifo",
@@ -317,7 +335,6 @@ export class Stream extends StopStartStateMachine {
                         // `--ovcopts-add=tune=zerolatency`, // <-- new
                         // `--ovcopts-add=rc_init_occupancy=${Math.floor(this.$.video_bitrate)}k`,
                         `--ovcopts-add=strict=+experimental`,
-                        `--ovcopts-add=x264opts=no-scenecut`, // only if using force key frames
                         // `--ovcopts-add=x264opts=rc-lookahead=0`,
                         // `--ovcopts-add=flags=+low_delay`,
                         // `--ovcopts-add=keyint_min=30`,
@@ -329,7 +346,24 @@ export class Stream extends StopStartStateMachine {
                         `--oac=aac`,
                         `--oacopts-add=b=${this.$.audio_bitrate}k`,
                         // --------------
-                        `--oforce-key-frames=expr:gte(t,n_forced*2)`, // keyframe every 2 seconds.
+                        // `--ovcopts-add=x264opts=no-scenecut`, // only if using force key frames
+                        // `--oforce-key-frames=expr:gte(t,n_forced*2)`, // keyframe every 2 seconds.
+                    );
+                    var x264opts = {
+                        "nal-hrd": `cbr`,
+                        "force-cfr": `1`,
+                        "scenecut": `0`,
+                    }
+                    if (mpv_custom) {
+                        mpv_args.push(
+                            `--oforce-key-frames=expr:gte(t,n_forced*${keyframes_per_second})`,
+                        );
+                    } else {
+                        x264opts["keyint"] = this.fps*keyframes_per_second;
+                        x264opts["min-keyint"] = this.fps*keyframes_per_second;
+                    }
+                    mpv_args.push(
+                        `--ovcopts-add=x264opts=${Object.entries(x264opts).map(([k,v])=>`${k}=${v}`).join(":")}`,
                     );
                 } else {
                     if (use_hardware && !globals.app.conf["core.mpv_hwdec"]) {
@@ -386,22 +420,29 @@ export class Stream extends StopStartStateMachine {
             
             // -------------------------------------------------------
 
-            await this.mpv.start(mpv_args);
-            this.logger.info("Started MPV");
+            this.mpv.mpv.on("before-start", ()=>{
+                if (this.ffmpeg && this.mpv) {
+                    this.mpv.mpv.process.stdout.pipe(this.ffmpeg.process.stdin);
+                    this.ffmpeg.process.stdin.on("error", (e)=>{
+                        this.logger.warn(e);
+                    }); // needed to swallow 'Error: write EOF' when unpiping!!!
+                    this.mpv.mpv.on("before-quit", ()=>{
+                        this.mpv.mpv.process.stdout.unpipe(this.ffmpeg.process.stdin);
+                    })
+                }
+            })
+
+            let res = await this.mpv.start(mpv_args);
+            if (!res) {
+                return;
+            }
+            this.logger.info("Started MPV successfully");
 
             if (this.mpv.allowed_mpv_props["output-pts"]) {
                 this.mpv.on("speed",(speed)=>{
                     this.register_metric(`mpv:speed`, this.time_running, speed);
                 });
             }
-        }
-
-        if (this.ffmpeg && this.mpv) {
-            this.mpv.mpv.process.stdout.pipe(this.ffmpeg.process.stdin);
-            this.ffmpeg.process.stdin.on("error", (e)=>{}); // needed to swallow 'Error: write EOF' when unpiping!!!
-            this.mpv.mpv.on("before-quit", ()=>{
-                this.mpv.mpv.process.stdout.unpipe(this.ffmpeg.process.stdin);
-            })
         }
 
         this.mpv.mpv.on("quit", async ()=>{
@@ -417,6 +458,8 @@ export class Stream extends StopStartStateMachine {
             this.emit("started");
             this.tick()
         });
+
+        return true;
     }
     async tick() {
         this.#ticks++;
@@ -482,6 +525,7 @@ export class Stream extends StopStartStateMachine {
         this.emit("stopped");
         
         this.logger.info(`Stream stopped, total duration was ${utils.ms_to_timespan_str(Math.round(Date.now()-this.$.start_time))}`);
+        return true;
     }
 
     register_metric(key, x, y) {

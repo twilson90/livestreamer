@@ -20,21 +20,20 @@ export class FFMPEGWrapper extends events.EventEmitter {
     constructor(opts) {
         super();
         this.opts = {
-            exec: "ffmpeg",
             info_interval: 1000,
             ...opts
         }
-        this.#logger = new Logger(this.opts.exec);
+        this.#logger = new Logger("ffmpeg");
     }
 
     /** @param {string[]} args @param {child_process.SpawnOptionsWithoutStdio} spawn_opts */
     start(args, spawn_opts) {
         return new Promise((resolve)=>{
                 
-            this.#logger.info(`Starting ${this.opts.exec}...`);
-            this.#logger.debug(`${this.opts.exec} args:`, args);
+            this.#logger.info(`Starting ffmpeg...`);
+            this.#logger.debug(`ffmpeg args:`, args);
             
-            this.#process = child_process.spawn(this.opts.exec === "ffmpeg" ? globals.app.conf["core.ffmpeg_executable"]: globals.app.conf["core.ffplay_executable"], args, {windowsHide: true, ...spawn_opts});
+            this.#process = child_process.spawn(globals.app.ffmpeg_path, args, {windowsHide: true, ...spawn_opts});
 
             globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
 
@@ -74,6 +73,7 @@ export class FFMPEGWrapper extends events.EventEmitter {
             listener.on("line", line=>{
                 last_line = line;
                 this.#logger.debug(line);
+                // console.info(line);
                 this.emit("line", line);
                 if (!initialized) init_str += line+"\n";
                 var m = line.match(/^(?:frame=\s*(.+?)\s+)?(?:fps=\s*(.+?)\s+)?(?:q=\s*(.+?)\s+)?(?:size=\s*(.+?)\s+)(?:time=\s*(.+?)\s+)(?:bitrate=\s*(.+?)\s+)(?:speed=(.+?)x\s+)/);

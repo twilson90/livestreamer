@@ -16,16 +16,9 @@ export const SessionProps = {
     },
     stream_settings: {
         targets: {
+            __custom__: true,
             __default__: {
-                "local": {
-                    enabled:true
-                }
-            },
-            __enumerable__: {
-                __custom__: true,
-                enabled: {
-                    __default__: false
-                }
+                "local": {enabled:true}
             },
         },
         title: {
@@ -60,10 +53,8 @@ export const SessionProps = {
         },
     },
     access_control: {
+        __custom__:true,
         __default__: { "*": { "access":"allow" } },
-        __enumerable__:{
-            __custom__:true,
-        }
     },
 }
 export default SessionProps;

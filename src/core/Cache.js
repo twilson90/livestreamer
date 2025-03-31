@@ -2,8 +2,12 @@ import path from "node:path";
 import fs from "fs-extra";
 import {globals, utils} from "./exports.js";
 
+/** @typedef {{data:any, expires:number}} CacheData */
+
 export class Cache extends utils.EventEmitter {
+    /** @type {Record<string, CacheData>} */
     #cache = {};
+    /** @type {Record<string, NodeJS.Timeout>} */
     #timeouts = {};
     #dir;
     #opts;
@@ -25,7 +29,7 @@ export class Cache extends utils.EventEmitter {
         return Object.keys(this.#cache);
     }
     get entries() {
-        return Object.entries(this.#cache);
+        return Object.entries(this.#cache).map(([key, d])=>[key, d.data]);
     }
     get values() {
         return Object.values(this.#cache).map(d=>d.data);
@@ -37,8 +41,7 @@ export class Cache extends utils.EventEmitter {
             let filepath = path.join(this.#dir, key);
             try {
                 let d = JSON.parse(await fs.readFile(filepath, "utf8"));
-                this.#cache[key] = d;
-                if (d.expires) this.#setup_expire(key, d.expires);
+                this.#set(key, d);
             } catch {
                 await fs.rm(filepath).catch(utils.noop);
             }
@@ -55,9 +58,21 @@ export class Cache extends utils.EventEmitter {
         return path.join(this.#dir, key);
     }
 
-    #setup_expire(key, expires) {
-        clearTimeout(this.#timeouts[key]);
-        this.#timeouts[key] = setTimeout(()=>this.delete(key), expires - Date.now());
+    #delete(key) {
+        delete this.#cache[key];
+        this.emit("delete", {key, data});
+    }
+
+    /** @param {string} key @param {CacheData} d */
+    #set(key, d) {
+        this.#cache[key] = d;
+        this.emit("set", {key, data:d.data});
+        if (d.expires) {
+            clearTimeout(this.#timeouts[key]);
+            var t = d.expires - Date.now();
+            if (t <= 0) this.delete(key);
+            else this.#timeouts[key] = setTimeout(()=>this.delete(key), d.expires - Date.now());
+        }
     }
 
     /** @param {string} key */
@@ -70,22 +85,18 @@ export class Cache extends utils.EventEmitter {
     async delete(key) {
         if (!this.#cache[key]) return;
         var {data} = this.#cache[key];
-        this.emit("delete", {key, data});
         clearTimeout(this.#timeouts[key]);
-        delete this.#cache[key];
+        this.#delete(key);
         var filename = this.#get_cache_filename(key);
         await fs.rm(filename).catch(utils.noop);
     }
 
-    /** @param {string} key */
+    /** @param {string} key @param {any} data @param {number} ttl */
     async set(key, data, ttl=null) {
         if (!ttl) ttl = this.#opts.ttl;
-        var d = {data};
-        if (ttl) d.expires = (Date.now() + ttl);
-        this.#cache[key] = d;
-        this.emit("set", {key, data});
-
-        if (d.expires) this.#setup_expire(key, d.expires);
+        /** @type {CacheData} */
+        var d = {data, expires: ttl ? (Date.now() + ttl) : null};
+        this.#set(key, d);
         var filename = this.#get_cache_filename(key);
         await fs.writeFile(filename, JSON.stringify(d));
     }

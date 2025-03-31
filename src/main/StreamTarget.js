@@ -91,12 +91,12 @@ export class StreamTarget extends StopStartStateMachine {
                     "--no-correct-pts",
                     `--osc=${opts.osc?"yes":"no"}`
                 ];
-                this.#mpv = child_process.spawn(globals.app.conf["core.mpv_executable"], mpv_args);
+                this.#mpv = child_process.spawn(globals.app.mpv_path, mpv_args);
                 this.#mpv.on("close",()=>{
                     this._handle_end();
                 });
             } else {
-                let is_file_output = utils.try(()=>new URL(output_url)).protocol === "file:";
+                let is_file_output = utils.try_catch(()=>new URL(output_url)).protocol === "file:";
                 let output = output_url;
                 if (is_file_output) {
                     output = url.fileURLToPath(output_url);

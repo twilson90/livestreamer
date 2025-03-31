@@ -82,6 +82,8 @@ export class Core extends DataNode {
     get change_log_path() { return path.resolve(this.conf["core.changelog"]); }
     get cwd() { return this.#cwd; }
     get ready() { return this.#ready; }
+    get mpv_path() { return this.conf["core.mpv_path"] || "mpv"; }
+    get ffmpeg_path() { return this.conf["core.ffmpeg_path"] || "ffmpeg"; }
     
     /** @param {string} name @param {object|typeof T} master_opts */
     constructor(name, $, master_opts) {
@@ -220,6 +222,7 @@ export class Core extends DataNode {
         if (this.#is_master) {
             await fs.mkdir(this.appdata_dir, { recursive: true });
             await fs.mkdir(this.tmp_dir, { recursive: true });
+            await fs.emptyDir(this.tmp_dir, {recursive:true}).catch(utils.noop);
             await fs.mkdir(this.logs_dir, { recursive: true });
             await fs.mkdir(this.cache_dir, { recursive: true });
             await fs.mkdir(this.clients_dir, { recursive:true });

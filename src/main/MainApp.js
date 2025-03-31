@@ -12,16 +12,42 @@ import checkDiskSpace from "check-disk-space";
 import readline from "node:readline";
 import child_process from "node:child_process";
 import {globals, Stream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, WebServer, ClientUpdater, ClientServer, Cache, utils, Core, Core$} from "./exports.js";
+
 /** @import {StreamTarget, Session, Session$, MainClient$, Log$, Target$, Upload$, Download$} from "./exports.js" */
 
+/** @typedef {"video"|"audio"|"subtitle"} MediaInfoStreamType */
 /** @typedef {{index:number, start:number, end:number, title:string}} MediaInfoChapter */
-/** @typedef {{type:"audio"|"video"|"subtitle", codec:string, bitrate:number, default:boolean, forced:boolean, title:string, language:string, width:number, height:number, albumart:boolean, channels:number, duration:number}} MediaInfoStream */
-/** @typedef {{filename:string, streams:MediaInfoStream[], exists:boolean, duration:number, size:number, mtime:number, format:string, bitrate:number, chapters:MediaInfoChapter[], avg_fps:number, fps:number, interlaced:boolean, downloadable:boolean, direct:boolean}} MediaInfo */
+/** @typedef {{type:MediaInfoStreamType, codec:string, bitrate:number, default:boolean, forced:boolean, title:string, language:string, width:number, height:number, albumart:boolean, channels:number, duration:number}} MediaInfoStream */
+/** @typedef {{filename:string, type:MediaInfoStreamType, streams:MediaInfoStream[]}} MediaInfoExternalFile */
+/** @typedef {{filename:string, streams:MediaInfoStream[], external_files:MediaInfoExternalFile[], exists:boolean, duration:number, size:number, mtime:number, format:string, bitrate:number, chapters:MediaInfoChapter[], avg_fps:number, fps:number, interlaced:boolean, direct:boolean, ytdl:boolean}} MediaInfo */
+/** @typedef {{cache:boolean, force:boolean, silent:boolean}} ProbeMediaOpts */
 
 const dirname = import.meta.dirname;
-const MEDIA_INFO_VERSION = 2;
-const MAX_CONCURRENT_MEDIA_INFO_PROMISES = 8;
 const TICK_INTERVAL = 1 * 1000;
+
+export const MEDIA_INFO_VERSION = 2;
+export const MAX_CONCURRENT_MEDIA_INFO_PROMISES = 8;
+export const DEFAULT_PROBE_MEDIA_OPTS = {
+    force: false, // forces rescan despite still valid in cache
+    silent: false, // if true doesn't set processing flag
+    cache: true, // if true uses cache
+}
+
+const ALBUMART_FILENAMES = Object.fromEntries([
+    "albumart", "album", "cover", "front", "albumartsmall", "folder", ".folder", "thumb",
+].map((ext)=>[ext, 1]));
+
+const SUBTITLE_EXTS = Object.fromEntries([
+    ".utf", ".utf8", ".utf-8", ".idx", ".sub", ".srt", ".rt", ".ssa", ".ass", ".mks", ".vtt", ".sup", ".scc", ".smi", ".lrc", ".pgs"
+].map((ext)=>[ext, 1]));
+
+const AUDIO_EXTS = Object.fromEntries([
+    ".mp3", ".aac", ".mka", ".dts", ".flac", ".ogg", ".m4a", ".ac3", ".opus", ".wav", ".wv", ".eac3"
+].map((ext)=>[ext, 1]));
+
+const IMAGE_EXTS = Object.fromEntries([
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"
+].map((ext)=>[ext, 1]));
 
 const mpv_args = ["--no-config", '--frames=0', '--vo=null', '--ao=null'];
 
@@ -48,18 +74,14 @@ export class MainApp$ extends Core$ {
     uploads = {};
     /** @type {Record<PropertyKey,Download$>} */
     downloads = {};
-    /** @type {Record<PropertyKey,any>} */
     nms_sessions = {};
+    processes = {};
+    process_info = {};
+    detected_crops = {};
+    properties = utils.json_copy(InternalSessionProps);
     sysinfo = {
         platform: process.platform
     };
-    /** @type {Record<PropertyKey,any>} */
-    processes = {};
-    /** @type {Record<PropertyKey,any>} */
-    process_info = {};
-    /** @type {Record<PropertyKey,any>} */
-    detected_crops = {};
-    properties = utils.json_copy(InternalSessionProps);
 }
 
 /** @extends {Core<MainApp$>} */
@@ -81,7 +103,6 @@ export class MainApp extends Core {
     #media_info_promise_pool;
     // /** @type {utils.PromisePool} */
     // #prepare_promise_pool;
-    null_stream_duration = 60
     netstats = [];
 
     SESSION_PUBLIC_PROPS = [
@@ -117,9 +138,6 @@ export class MainApp extends Core {
         this.curr_saves_dir = path.resolve(this.saves_dir, "curr");
         this.old_saves_dir = path.resolve(this.saves_dir, "old");
         this.public_html_dir = path.resolve(dirname, "public_html");
-        this.null_video_path = path.resolve(this.tmp_dir, `nv`);
-        this.null_audio_path = path.resolve(this.tmp_dir, `na`);
-        this.null_audio_video_path = path.resolve(this.tmp_dir, `nav`);
         
         this.detected_crops_cache = new Cache("detected_crops", {
             ttl: 1000 * 60 * 60 * 24 * 7,
@@ -292,7 +310,7 @@ export class MainApp extends Core {
             res.status(200).send(html);
         });
 
-        exp.use("/detected_crops", express.static(this.detected_crops_cache.dir));
+        exp.use("/screenshots", express.static(this.screenshots_dir));
         
         exp.use("/", await this.serve({
             root: this.public_html_dir
@@ -327,7 +345,6 @@ export class MainApp extends Core {
         await fs.mkdir(this.curr_saves_dir, { recursive: true });
         await this.detected_crops_cache.ready;
         await this.#media_info_cache.ready;
-        await this.#generate_null_media_files();
 
         await this.load_sessions();
 
@@ -509,25 +526,6 @@ export class MainApp extends Core {
     //     }
     // }
 
-    async #generate_null_media_files() {
-        var [w,h] = [1280,720];
-        var t0 = Date.now();
-        if (!(await fs.exists(this.null_video_path))) {
-            this.logger.info(`Generating null video stream...`);
-            await utils.execa(this.conf["core.ffmpeg_executable"], ["-f", "lavfi", "-i", `color=c=black:s=${w}x${h}:r=30`, "-c:v", "libx264", "-b:v", "10m", `-force_key_frames`, `expr:gte(t,n_forced*1)`, "-r", "30", "-pix_fmt", "yuv420p", "-f", "matroska", "-t", String(this.null_stream_duration), this.null_video_path]);
-        }
-        if (!(await fs.exists(this.null_audio_path))) {
-            this.logger.info(`Generating null audio stream...`);
-            await utils.execa(this.conf["core.ffmpeg_executable"], ["-f", "lavfi", "-i", "anullsrc,aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo", "-c:a", "flac", "-f", "flac", "-t", String(this.null_stream_duration), this.null_audio_path]);
-        }
-        if (!(await fs.exists(this.null_audio_video_path))) {
-            this.logger.info(`Generating null audio/video stream...`);
-            await utils.execa(this.conf["core.ffmpeg_executable"], ["-i", this.null_audio_path, "-i", this.null_video_path, "-map", "0:a:0", "-map", "1:v:0", "-c", "copy", "-f", "matroska", this.null_audio_video_path]);
-        }
-        var t1 = Date.now();
-        this.logger.info(`Finished generating null [${t1-t0}ms]`);
-    }
-
     async save_sessions() {
         /** @type {InternalSession[]} */
         var sessions = Object.values(this.sessions).filter(s=>s instanceof InternalSession);
@@ -650,6 +648,7 @@ export class MainApp extends Core {
         }
     }
 
+    /** @param {string} filename @param {ProbeMediaOpts} opts */
     get_media_info(filename, opts) {
         var key = JSON.stringify([filename, opts]);
         if (!this.#media_info_promise_map[key]) {
@@ -661,51 +660,158 @@ export class MainApp extends Core {
         return this.#media_info_promise_map[key];
     }
 
-    /** @returns {Promise<MediaInfo>} */
-    #probe_media(filename, opts) {
+    /** @param {string} filename @param {ProbeMediaOpts} opts @returns {Promise<MediaInfo>} */
+    async #probe_media(filename, opts) {
+        if (!filename) return {exists:false};
+        opts = {
+            ...DEFAULT_PROBE_MEDIA_OPTS,
+            ...opts
+        };
         return this.#media_info_promise_pool.enqueue(async ()=>{
             let t0 = Date.now();
-
             let uri = utils.urlify(filename);
-            let stat, abspath, size, mtime;
+            let abspath = utils.pathify(filename) || uri.toString();
+            let stat = (await fs.stat(abspath).catch(utils.noop));
 
-            if (uri.protocol === "file:") {
-                abspath = utils.pathify(uri);
-                stat = (await fs.stat(abspath).catch(utils.noop));
-                if (stat) {
-                    size = stat.size;
-                    mtime = stat.mtimeMs;
-                } else {
-                    return {exists:false};
-                }
-            }
-            // await utils.timeout(2000);
+            /** @type {MediaInfo} */
+            let mi;
+            let cache_key = utils.md5(JSON.stringify([abspath, MEDIA_INFO_VERSION, stat ? stat.size : 0, stat ? stat.mtimeMs : 0]));
+            let cached = this.#media_info_cache.get(cache_key);
 
-            let cache_key = utils.md5(JSON.stringify([filename, size, mtime, MEDIA_INFO_VERSION]));
-            let cached_data = this.#media_info_cache.get(cache_key);
-
-            let new_data;
-            if (!opts.force && cached_data) {
-                new_data = cached_data;
+            if (!opts.force && opts.cache && cached) {
+                mi = cached;
             } else {
-                if ((stat && uri.protocol === "file:") || uri.protocol === "edl:") {
-                    let header = await read_file(abspath, 0, 32).then((buffer)=>buffer.toString("utf-8")).catch(()=>"");
+                mi: {
+                    mi = {exists:false};
+                    if (uri.protocol.match(/^https?:/)) {
+                        let raw = await ytdl_probe(abspath).catch(()=>null);
+                        if (raw) {
+                            mi.ytdl = true;
+                            mi.size = +raw.filesize_approx;
+                            mi.mtime = +raw.timestamp;
+                            mi.name = raw.is_playlist ? raw.items[0].playlist_title : raw.fulltitle;
+                            mi.filename = raw._filename;
+                            mi.direct = !!raw.direct;
+                            mi.exists = true;
+                            if (raw.is_playlist) {
+                                mi.playlist = raw.items.map(i=>i.url || i.webpage_url);
+                            } else {
+                                mi.duration = raw.duration;
+                                mi.streams = [
+                                    {
+                                        type: "video",
+                                        bitrate: raw.vbr,
+                                        codec: raw.vcodec,
+                                        width: raw.width,
+                                        height: raw.height,
+                                    },
+                                    {
+                                        type: "audio",
+                                        bitrate: raw.abr,
+                                        codec: raw.acodec,
+                                        channels: 2,
+                                    }
+                                ];
+                            }
+                            break mi;
+                        }
+                    }
+                    
+                    if (stat) {
+                        mi.exists = true;
+                        mi.size = stat.size;
+                        mi.mtime = stat.mtimeMs;
+                        
+                        let raw = await ffprobe(abspath).catch(()=>null);
+                        if (raw) {
+                            var parse_stream = (s)=>{
+                                let stream = {};
+                                stream.type = s.codec_type;
+                                stream.codec = s.codec_name;
+                                stream.bitrate = +s.bit_rate || 0;
+                                stream.duration = +s.duration || 0;
+                                stream.default = !!s.disposition.default;
+                                stream.forced = !!s.disposition.forced;
+                                if (s.tags && s.tags.title) stream.title = s.tags.title;
+                                if (s.tags && s.tags.language) stream.language = s.tags.language;
+                                if (s.codec_type === "video") {
+                                    stream.width = +s.width;
+                                    stream.height = +s.height;
+                                    stream.albumart = !!s.disposition.attached_pic;
+                                } else if (s.codec_type === "audio") {
+                                    stream.channels = +s.channels;
+                                }
+                                return stream;
+                            }
+
+                            mi.duration = parseFloat(raw.format.duration) || 0;
+                            mi.chapters = raw.chapters.map((c,i)=>({ index: i, start: +c.start_time, end: +c.end_time, title: (c.tags) ? c.tags.title : null }));
+                            mi.format = raw.format.format_name;
+                            mi.bitrate = +raw.format.bit_rate || 0;
+                            mi.streams = [];
+                            for (let s of raw.streams) mi.streams.push(parse_stream(s));
+                            let default_video = raw.streams.find(s=>s.codec_type === "video" && !s.disposition.attached_pic);
+                            if (default_video) {
+                                try { mi.fps = utils.safe_eval(default_video.r_frame_rate); } catch { }
+                                try { mi.avg_fps = utils.safe_eval(default_video.avg_frame_rate); } catch { }
+                                mi.interlaced = !!(default_video.field_order && default_video.field_order !== "progressive");
+                            }
+                            
+                            let dir = path.dirname(abspath);
+                            let basename = path.basename(abspath);
+                            let files = await fs.readdir(dir);
+                            mi.external_files = [];
+                            
+                            var add_external = async(filename, type)=>{
+                                var raw = await ffprobe(filename);
+                                if (!raw || !raw.streams) return;
+                                mi.external_files.push({filename, type, streams:raw.streams.map(s=>parse_stream(s))});
+                            }
+                            for (let f of files) {
+                                if (f == basename) continue;
+                                let f_lower = f.toLowerCase();
+                                let ext = path.extname(f_lower);
+                                let name = path.basename(f_lower, ext);
+                                let similar_name = basename.startsWith(name);
+                                if (similar_name && ext in SUBTITLE_EXTS) {
+                                    await add_external(path.join(dir, f), "subtitle");
+                                }
+                                if (similar_name && ext in AUDIO_EXTS) {
+                                    await add_external(path.join(dir, f), "audio");
+                                }
+                                if (ext in IMAGE_EXTS && (similar_name || name in ALBUMART_FILENAMES)) {
+                                    await add_external(path.join(dir, f), "video");
+                                }
+                            }
+                            break mi;
+                        }
+                    }
+                    
+                    let header = "";
+                    if (uri.protocol === "file:") header = await read_file(abspath, 0, 32).then((buffer)=>buffer.toString("utf-8")).catch(()=>"");
+                    else if (uri.protocol.match(/^https?:/)) header = await fetch(abspath, {headers:{"Range":"bytes=0-32"}}).then(res=>res.text()).catch(()=>"");
+
+                    if (header) mi.exists = true;
+
                     let is_edl_file = header.startsWith("# mpv EDL v0\n");
-                    let is_playlist_file = header.startsWith("// livestreamer playlist");
+                    let is_playlist_file = header.startsWith("// livestreamer playlist\n");
+
                     if (is_playlist_file) {
                         let header_and_json = utils.split_after_first_line(await fs.readFile(abspath, "utf8"));
-                        try{
-                            new_data = {exists:true};
-                            new_data.playlist = JSON.parse(header_and_json[1]);
+                        try {
+                            mi.playlist = JSON.parse(header_and_json[1]);
                         } catch {
                             this.logger.warn("Playlist error:", header_and_json[1]);
                         }
-                    } else if (is_edl_file || uri.protocol === "edl:") {
-                        let raw = await this.edl_probe(filename).catch(e=>this.logger.warn("EDL error:", e));
-                        new_data = {exists:!!raw};
+                        break mi;
+                    }
+                    
+                    if (is_edl_file || uri.protocol === "edl:") {
+                        raw = await edl_probe(abspath).catch(e=>this.logger.warn("EDL error:", e));
                         if (raw) {
-                            new_data.duration = raw.duration;
-                            new_data.streams = raw["track-list"].map(t=>{
+                            mi.exists = true;
+                            mi.duration = raw.duration;
+                            mi.streams = raw["track-list"].map(t=>{
                                 let stream = {};
                                 stream.type = (t.type === "sub") ? "subtitle" : t.type;
                                 stream.codec = t.codec;
@@ -723,84 +829,17 @@ export class MainApp extends Core {
                                 }
                                 return stream;
                             });
-                        }
-                    } else {
-                        new_data = {exists: !!stat};
-                        if (size) new_data.size = size;
-                        if (mtime) new_data.mtime = mtime;
-                        let raw = await this.ffprobe(abspath).catch(()=>null);
-                        if (raw) {
-                            new_data.duration = parseFloat(raw.format.duration) || 0;
-                            // let orig_duration = info.duration;
-                            new_data.chapters = raw.chapters.map((c,i)=>({ index: i, start: +c.start_time, end: +c.end_time, title: (c.tags) ? c.tags.title : null }));
-                            new_data.format = raw.format.format_name;
-                            new_data.bitrate = +raw.format.bit_rate || 0;
-                            new_data.streams = raw.streams.map(s=>{
-                                let stream = {};
-                                stream.type = s.codec_type;
-                                stream.codec = s.codec_name;
-                                stream.bitrate = +s.bit_rate || 0;
-                                stream.duration = +s.duration || 0;
-                                stream.default = !!s.disposition.default;
-                                stream.forced = !!s.disposition.forced;
-                                if (s.tags && s.tags.title) stream.title = s.tags.title;
-                                if (s.tags && s.tags.language) stream.language = s.tags.language;
-                                if (s.codec_type === "video") {
-                                    stream.width = +s.width;
-                                    stream.height = +s.height;
-                                    stream.albumart = s.disposition.attached_pic;
-                                } else if (s.codec_type === "audio") {
-                                    stream.channels = +s.channels;
-                                }
-                                return stream;
-                            });
-                            let default_video = raw.streams.find(s=>s.codec_type === "video" && !s.disposition.attached_pic);
-                            if (default_video) {
-                                try { new_data.fps = utils.safe_eval(default_video.r_frame_rate); } catch { }
-                                try { new_data.avg_fps = utils.safe_eval(default_video.avg_frame_rate); } catch { }
-                                new_data.interlaced = !!(default_video.field_order && default_video.field_order !== "progressive");
-                            }
-                        }
-                    }
-                } else if (uri.protocol === "http:" || uri.protocol === "https:") {
-                    let raw = await this.youtubedl_probe(filename).catch(()=>null);
-                    new_data = {exists:!!raw};
-                    if (raw) {
-                        new_data.size = +raw.filesize_approx;
-                        // data.atime = data.mtime = data.ctime = data.btime = +rmi.epoch;
-                        new_data.name = raw.is_playlist ? raw.items[0].playlist_title : raw.fulltitle;
-                        new_data.filename = raw._filename;
-                        new_data.downloadable = true;
-                        new_data.direct = !!raw.direct;
-                        if (raw.is_playlist) {
-                            new_data.playlist = raw.items.map(i=>i.url || i.webpage_url);
-                        } else {
-                            new_data.duration = raw.duration;
-                            new_data.streams = [
-                                {
-                                    type: "video",
-                                    bitrate: raw.vbr,
-                                    codec: raw.vcodec,
-                                    width: raw.width,
-                                    height: raw.height,
-                                },
-                                {
-                                    type: "audio",
-                                    bitrate: raw.abr,
-                                    codec: raw.acodec,
-                                    channels: 2,
-                                }
-                            ];
+                            break mi;
                         }
                     }
                 }
-                if (new_data) this.#media_info_cache.set(cache_key, new_data);
+                if (!opts.silent) {
+                    let t1 = Date.now();
+                    this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
+                }
+                if (mi.exists && opts.cache) this.#media_info_cache.set(cache_key, mi);
             }
-            if (!opts.silent && new_data && new_data !== cached_data) {
-                let t1 = Date.now();
-                this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
-            }
-            return new_data;
+            return mi;
         });
     }
 
@@ -882,60 +921,17 @@ export class MainApp extends Core {
 
     parse_targets(targets) {
         if (typeof targets === "string") {
-            var t = utils.try(()=>JSON.parse(targets));
+            var t = utils.try_catch(()=>JSON.parse(targets));
             if (!t) t = targets.split(/,\s*/).map(s=>s.trim()).filter(t=>t);
             targets = t;
         }
         if (Array.isArray(targets)) {
-            targets = Object.fromEntries(Array.from(targets).map(id=>[id, {enabled:true}]));
+            targets = Object.fromEntries([...targets].map(id=>[id, {}]));
         }
-        return targets || null;
-    }
-
-    async youtubedl_probe(uri) {
-        var proc = await utils.execa(globals.app.conf["main.youtube_dl"] || "yt-dlp", [
-            uri,
-            "--dump-json",
-            "--no-warnings",
-            "--no-call-home",
-            "--no-check-certificate",
-            // "--prefer-free-formats",
-            // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
-            "--flat-playlist",
-            "--format", globals.app.conf["main.youtube_dl_format"]
-        ]);
-        var lines = proc.stdout.split("\n");
-        var arr = lines.map(line=>JSON.parse(line));
-        if (arr.length > 1) {
-            return {
-                is_playlist: true,
-                items: arr
-            };
+        for (var id in targets) {
+            targets[id].enabled = targets[id].enabled ?? true;
         }
-        return arr[0];
-    }
-    
-    async ffprobe(uri) {
-        var proc = await utils.execa("ffprobe", [
-            '-show_streams',
-            '-show_chapters',
-            '-show_format',
-            '-print_format', 'json',
-            uri
-        ]);
-        return JSON.parse(proc.stdout);
-    }
-    
-    async edl_probe(uri) {
-        var output = await utils.execa(globals.app.conf["core.mpv_executable"], [...mpv_args,`--script=${path.resolve(globals.app.mpv_lua_dir, 'get_media_info.lua')}`, uri]);
-        var m = output.stdout.match(/^\[get_media_info\] (.+)/);
-        try { return JSON.parse(m[1].trim()); } catch { }
-    }
-    
-    async youtube_url_to_edl(filename) {
-        var output = await utils.execa(globals.app.conf["core.mpv_executable"], [...mpv_args, `--script=${path.resolve(globals.app.mpv_lua_dir, 'get_stream_open_filename.lua')}`, filename]);
-        var m = output.stdout.match(/^\[get_stream_open_filename\] (.+)/m);
-        try { return JSON.parse(m[1].trim()); } catch { }
+        return targets;
     }
 
     async destroy() {
@@ -952,6 +948,52 @@ async function read_file(filename, start, length) {
         chunks.push(chunk);
     }
     return Buffer.concat(chunks);
+}
+
+async function ytdl_probe(uri) {
+    var proc = await utils.execa(globals.app.conf["core.ytdl_path"] || "yt-dlp", [
+        uri,
+        "--dump-json",
+        "--no-warnings",
+        "--no-call-home",
+        "--no-check-certificate",
+        // "--prefer-free-formats",
+        // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
+        "--flat-playlist",
+        "--format", globals.app.conf["core.ytdl_format"]
+    ]);
+    var lines = proc.stdout.split("\n");
+    var arr = lines.map(line=>JSON.parse(line));
+    if (arr.length > 1) {
+        return {
+            is_playlist: true,
+            items: arr
+        };
+    }
+    return arr[0];
+}
+
+async function ffprobe(filename) {
+    var proc = await utils.execa("ffprobe", [
+        '-show_streams',
+        '-show_chapters',
+        '-show_format',
+        '-print_format', 'json',
+        filename
+    ]);
+    return JSON.parse(proc.stdout);
+}
+
+async function edl_probe(uri) {
+    var output = await utils.execa(globals.app.mpv_path, [...mpv_args,`--script=${path.resolve(globals.app.mpv_lua_dir, 'get_media_info.lua')}`, uri]);
+    var m = output.stdout.match(/^\[get_media_info\] (.+)/);
+    try { return JSON.parse(m[1].trim()); } catch { }
+}
+
+async function youtube_url_to_edl(filename) {
+    var output = await utils.execa(globals.app.mpv_path, [...mpv_args, `--script=${path.resolve(globals.app.mpv_lua_dir, 'get_stream_open_filename.lua')}`, filename]);
+    var m = output.stdout.match(/^\[get_stream_open_filename\] (.+)/m);
+    try { return JSON.parse(m[1].trim()); } catch { }
 }
 
 export default MainApp;

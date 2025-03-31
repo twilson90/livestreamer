@@ -1,4 +1,4 @@
-import EventEmitter from "./EventEmitter.js";
+import {EventEmitter} from "./EventEmitter.js";
 export class StopWatch extends EventEmitter {
 	get time() { return (this._paused ? this._pause_time : Date.now()) - this._start_time; }
 	get paused() { return this._paused; }
@@ -42,3 +42,4 @@ export class StopWatch extends EventEmitter {
 		this.removeAllListeners();
 	}
 }
+export default StopWatch;

@@ -43,7 +43,6 @@ export class Download extends DataNodeID {
                 this.$.total = 0;
                 this.$.speed = 0;
                 var mi = await this.session.update_media_info(this.filename, {force:true});
-
                 if (!mi) return;
                 
                 var name = mi.filename;
@@ -56,53 +55,80 @@ export class Download extends DataNodeID {
                     globals.app.logger.info(`'${this.filename}' already exists.`);
                 } else {
                     globals.app.logger.info(`Starting download '${this.filename}'...`);
+                    if (mi.ytdl) {
                     this.$.stage = 0;
                     this.$.stages = 1;
                     tmp_download_path = path.join(os.tmpdir(), name)
-                    var proc = utils.execa(globals.app.conf["main.youtube_dl"], [
-                        this.filename,
-                        "--no-warnings",
-                        "--no-call-home",
-                        "--no-check-certificate",
-                        // "--prefer-free-formats", // this uses MKV on ubuntu...
-                        // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
-                        `--format`, globals.app.conf["main.youtube_dl_format"],
-                        `--no-mtime`,
-                        "--output", tmp_download_path
-                    ], {buffer:false});
-                    this.#cancel = ()=>utils.tree_kill(proc.pid, 'SIGINT');
-                    this.stdout_listener = readline.createInterface(proc.stdout);
-                    var first = false;
-                    this.stdout_listener.on("line", line=>{
-                        var m;
-                        // console.log(line);
-                        if (line.match(/^\[download\] Destination\:/i)) {
-                            if (first) this.$.stage++;
-                            if (this.$.stage >= this.$.stages) this.$.stages = this.$.stage+1;
-                            first = true;
-                        } else if (m = line.match(/^\[download\]\s+(\S+)\s+of\s+(\S+)\s+at\s+(\S+)\s+ETA\s+(\S+)/i)) {
-                            var percent = parseFloat(m[1]) / 100;
-                            this.$.total = Math.floor(utils.string_to_bytes(m[2]));
-                            this.$.bytes = Math.floor(percent * this.$.total);
-                            this.$.speed = Math.floor(utils.string_to_bytes(m[3]));
-                            var now = Date.now();
+                        var proc = utils.execa(globals.app.conf["core.ytdl_path"], [
+                            this.filename,
+                            "--no-warnings",
+                            "--no-call-home",
+                            "--no-check-certificate",
+                            // "--prefer-free-formats", // this uses MKV on ubuntu...
+                            // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
+                            `--format`, globals.app.conf["core.ytdl_format"],
+                            `--no-mtime`,
+                            "--output", tmp_download_path
+                        ], {buffer:false});
+                        this.#cancel = ()=>utils.tree_kill(proc.pid, 'SIGINT');
+                        this.stdout_listener = readline.createInterface(proc.stdout);
+                        var first = false;
+                        this.stdout_listener.on("line", line=>{
+                            var m;
+                            // console.log(line);
+                            if (line.match(/^\[download\] Destination\:/i)) {
+                                if (first) this.$.stage++;
+                                if (this.$.stage >= this.$.stages) this.$.stages = this.$.stage+1;
+                                first = true;
+                            } else if (m = line.match(/^\[download\]\s+(\S+)\s+of\s+(\S+)\s+at\s+(\S+)\s+ETA\s+(\S+)/i)) {
+                                var percent = parseFloat(m[1]) / 100;
+                                this.$.total = Math.floor(utils.string_to_bytes(m[2]));
+                                this.$.bytes = Math.floor(percent * this.$.total);
+                                this.$.speed = Math.floor(utils.string_to_bytes(m[3]));
+                                var now = Date.now();
 
+                                if ((now - this.#last_log) > log_interval) {
+                                    this.#last_log = now;
+                                    this.emit("info", `Downloading '${this.filename}', ${this.$.bytes}/${this.$.total}, ${(percent*100).toFixed(2)}%, ${utils.format_bytes(this.$.speed)}ps...`)
+                                }
+                            } else if (line.match(/^ERROR\:/i)) {
+                                this.emit("error", line);
+                                // globals.app.logger.error(`[download] ${line}`)
+                            }
+                        });
+                        proc.on("error", (e)=>{
+                            globals.app.logger.error(e);
+                            globals.app.logger.warn(`Download [${this.filename}] interrupted.`);
+                            fail = true;
+                        });
+
+                        await new Promise(resolve=>proc.on("exit", resolve));
+                    } else {
+                        const response = await fetch(this.filename);
+                        const reader = response.body.getReader();
+                        const writer = fs.createWriteStream(tmp_download_path);
+                        this.$.total = parseInt(response.headers.get('content-length'));
+                        let receivedBytes = 0;
+
+                        while (true) {
+                            const {done, value} = await reader.read();
+                            if (done) break;
+
+                            receivedBytes += value.length;
+                            writer.write(value);
+                            this.$.bytes = receivedBytes;
+                            this.$.total = Math.max(this.$.total, receivedBytes);
+                            this.$.speed = receivedBytes / ((Date.now() - this.#last_log) / 1000);
+
+                            const now = Date.now();
                             if ((now - this.#last_log) > log_interval) {
                                 this.#last_log = now;
-                                this.emit("info", `Downloading '${this.filename}', ${this.$.bytes}/${this.$.total}, ${(percent*100).toFixed(2)}%, ${utils.format_bytes(this.$.speed)}ps...`)
+                                const percent = (receivedBytes / this.$.total * 100).toFixed(2);
+                                this.emit("info", `Downloading '${this.filename}', ${receivedBytes}/${this.$.total}, ${percent}%, ${utils.format_bytes(this.$.speed)}ps...`);
                             }
-                        } else if (line.match(/^ERROR\:/i)) {
-                            this.emit("error", line);
-                            // globals.app.logger.error(`[download] ${line}`)
                         }
-                    });
-                    proc.on("error", (e)=>{
-                        globals.app.logger.error(e);
-                        globals.app.logger.warn(`Download [${this.filename}] interrupted.`);
-                        fail = true;
-                    });
-
-                    await new Promise(resolve=>proc.on("exit", resolve));
+                        writer.end();
+                    }
 
                     if (!fail && tmp_download_path) {
                         await fs.rename(tmp_download_path, dest_path);

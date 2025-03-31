@@ -309,7 +309,7 @@ export class ElFinder {
 		if (!Array.isArray(names)) names = [names];
 		var res = {};
 		for (var c of names) {
-			var clazz = utils.tryRequire(path.resolve(dirname, "editors"), c)
+			var clazz = utils.try_catch(path.resolve(dirname, "editors"), c)
 			if (clazz) {
 				var editor = new clazz(this, opts.args);
 				res[c] = editor.enabled();

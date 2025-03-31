@@ -1,6 +1,6 @@
-import * as utils from "./utils.js";
-
-export class Timer extends utils.EventEmitter {
+import { EventEmitter } from "events";
+import { StopWatch } from "./StopWatch.js";
+export class Timer extends EventEmitter {
 	static TICK_INTERVAL = 1000/60;
 
 	get time_left() { return Math.max(0, this._total_time - this._stopwatch.time); }

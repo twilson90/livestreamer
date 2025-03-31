@@ -1,5 +1,3 @@
-
-
 /** @typedef {{[0]:number, [1]:number, next:RangeTreeNode}} RangeTreeNode */
 export class RangeTree {
 	constructor(values) {

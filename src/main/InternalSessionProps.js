@@ -1,8 +1,22 @@
 import {SessionProps} from "./exports.js";
-/** @import {Property} from "../core/exports.js" */
+
+class FiltersProperty {
+    __default__ = [];
+    __enumerable__ = {
+        name: {
+            __default__: "",
+        },
+        active: {
+            __default__: true,
+        },
+        props: {
+            __custom__: true,
+        }
+    }
+}
 
 export const PerFileProps = {
-    __default__: {},
+    // __default__: {},
     aspect_ratio: {
         __default__: -1,
     },
@@ -10,13 +24,13 @@ export const PerFileProps = {
         __default__: false,
     },
     vid_override: {
-        __default__: null,
+        __default__: "auto",
     },
     aid_override: {
-        __default__: null,
+        __default__: "auto",
     },
     sid_override: {
-        __default__: null,
+        __default__: "auto",
     },
     audio_delay: {
         __default__: 0,
@@ -50,9 +64,8 @@ export const PerFileProps = {
             "loudnorm"
         ].map(o=>[o,o]),
     },
-    audio_visualization: {
-        __default__: false,
-    },
+    filters: new FiltersProperty(),
+    pre_filters: new FiltersProperty(),
     /* force_fps: {
         __default__: null,
         __options__: [[null, "Variable"], 23.976, 24, 25, 30, 50, 60],
@@ -62,7 +75,8 @@ export const PerFileProps = {
     },
 };
 
-const background_mode_options = [["logo",`Logo`], ["color", "Color"], ["embedded", "Embedded Artwork"], ["external", "External Artwork"]];
+
+const background_mode_options = [["logo",`Logo`], ["embedded", "Embedded Artwork"], ["external", "External Artwork"]];
 
 export const PlaylistItemProps = {
     id: {
@@ -107,8 +121,8 @@ export const PlaylistItemProps = {
             __default__: 0,
         },
         background_mode: {
-            __default__: null,
-            __options__: [[null, "None"], ["default", "Default Background"], ...background_mode_options],
+            __default__: "auto",
+            __options__: [["auto", "Auto"], ["none", "None"], ["default", "Default"], ...background_mode_options],
         },
         background_color: {
             __default__: "#000000",
@@ -130,14 +144,8 @@ export const PlaylistItemProps = {
         },
         crop: {
             __default__: [0, 0, 0, 0],
-            __enumerable__: {
-                "0": { __default__: 0 },
-                "1": { __default__: 0 },
-                "2": { __default__: 0 },
-                "3": { __default__: 0 },
-            },
         },
-        empty_duration: {
+        duration: {
             __default__: 0,
         },
         title_text: {
@@ -145,12 +153,6 @@ export const PlaylistItemProps = {
         },
         title_size: {
             __default__: 50,
-        },
-        title_fade: {
-            __default__: 0.5,
-        },
-        title_duration: {
-            __default__: 5,
         },
         title_font: {
             __default__: "Arial",
@@ -187,11 +189,6 @@ export const PlaylistItemProps = {
         },
         title_rotation: {
             __default__: [0,0,0],
-            __enumerable__: {
-                "0": { __default__: 0 },
-                "1": { __default__: 0 },
-                "2": { __default__: 0 },
-            },
         },
         title_margin: {
             __default__: 10,
@@ -233,7 +230,7 @@ export const InternalSessionProps = {
     },
     background_mode: {
         __default__: "logo",
-        __options__: background_mode_options,
+        __options__: [["none", "None"], ...background_mode_options, ["file", "File"]],
     },
     background_color: {
         __default__: "#000000",

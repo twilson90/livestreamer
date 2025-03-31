@@ -89,3 +89,15 @@
 [ ] chat data-pause too frequent, on mobile fullscreen it pauses for no reason.
 [ ] mini buttons under chat too packed, no wrap.
 [ ] playlist undo messes up media infos
+[ ] fade to next item button
+[x] numeric textbox focused still jittering with server feedback when holding down up or down
+[x] intertitles scaling with video size, should be fixed.
+[ ] detected_crops_cache is bollocks, screenshots not being loaded on start.
+[ ] seekbar flickers on seek again...
+[ ] rejigger playlist modify menu prompt, most changes are now applied immediately.
+[ ] playlist modify menu should really ho th
+[ ] random error when editing filter to do with playlist history
+[ ] if any configuration modals open FREEZE ALL SESSION UPDATES, get around filter edit menu rubbish, go back to changing list instead of updating playlist direct.
+
+[ ] property container should inherit property, filter config menu should not have to state the filter props individually (line 6515)
+[ ] deep_merge reset can work if split into 2 operations, delete with set null and then deep merge with new value

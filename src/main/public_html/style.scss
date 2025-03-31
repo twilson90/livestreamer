@@ -10,7 +10,6 @@
 	--timeline-ticks-size: 15px;
 	--timeline-track-header-size: 25px;
 	--ui-property-input-height: 30px;
-	--mini-height: 30px;
 	--help-size: 40%;
 	--timeline-track-height: 90px;
 	--main-padding: 10px;
@@ -351,7 +350,7 @@ select, input, textarea, button, .button, .fake-input {
 	border-left:0;
 }
 select {
-	padding: 0 0 0 3px;
+	padding: 0;
 }
 *[tabindex="-1"]:not(.fancybox__container):focus-within {
 	@include focus();
@@ -540,7 +539,7 @@ button, input[type=button], input[type=submit] {
 	}
 	.buttons {
 		position: absolute;
-		display:flex;
+		display: flex;
 		top: 10px;
 		left: 10px;
 	}
@@ -2787,7 +2786,7 @@ table.keyboard-shortcuts {
 /* ------------------------------------------ */
 .fancybox__container {
 	--fancybox-bg: rgba(0,0,0, 0.7) !important;
-	backdrop-filter: blur(2px);
+	// backdrop-filter: blur(2px);
 }
 .fancybox__slide {
 	padding-left: 10px;
@@ -2888,31 +2887,48 @@ figure {
 	display:flex;
 }
 
-$font-size: 11px;
-$size: 25px;
 button, .button, input, textarea, select {
 	&.mini, &.icon {
 		display: flex;
-		font-size: $font-size;
 		text-transform: uppercase;
-		height: $size;
-		min-width: $size;
-		min-height: auto;
 		justify-content: center;
 		align-items: center;
 		line-height: 0;
 	}
-	&.mini {
-		padding: 0 5px;
-		flex: 1 0 auto;
-	}
 	&.icon {
-		padding: 0;
-		flex: none !important;
-		width: $size;
+		display: flex;
+		text-transform: uppercase;
+		justify-content: center;
+		align-items: center;
+		line-height: 0;
+		width: var(--ui-property-input-height);
+		height: var(--ui-property-input-height);
+	}
+	&.mini {
+		--ui-property-input-height: 25px;
+		font-size: 11px;
+		flex: 1 0 auto;
+		min-width: var(--ui-property-input-height);
+		min-height: var(--ui-property-input-height);
+		width: auto;
+		padding: 0 5px;
 	}
 }
-.uis.button.reset {
-	@extend .mini;
+
+.property-list-item-buttons>button {
+	@extend .icon, .mini;
+	height:100%;
+}
+
+.property-buttons>button {
 	@extend .icon;
+}
+.filter-list-item {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap:5px;
+	&.disabled {
+		text-decoration: line-through;
+	}
 }

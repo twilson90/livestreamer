@@ -365,7 +365,7 @@ export class MediaServerApp extends Core {
             // /** @type {string} */
             // let live_id = StreamPath.split("/").pop();
             if (session.appname === "live") {
-                var opts = args.opts ? utils.try(()=>JSON.parse(args.opts)) : undefined;
+                var opts = args.opts ? utils.try_catch(()=>JSON.parse(args.opts)) : undefined;
                 var live_id = StreamPath.split("/").pop();
                 let live = this.get_live(live_id) || new Live(live_id);
                 await live.stop();
@@ -759,7 +759,7 @@ export class Live extends StopStartStateMachine {
             "-y",
             thumbnail_path
         );
-        await utils.execa(globals.app.conf["core.ffmpeg_executable"], ffmpeg_args, {cwd: level.dir});
+        await utils.execa(globals.app.ffmpeg_path, ffmpeg_args, {cwd: level.dir});
         this.$.thumbnail_url = `${this.url}/thumbnails/${thumbnail_name}`;
     };
 

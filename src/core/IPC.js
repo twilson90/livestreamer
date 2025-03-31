@@ -79,7 +79,7 @@ export class IPC extends events.EventEmitter {
             });
         }
         this.respond("internal:get", (...paths)=>{
-            return paths.map(p=>utils.ref.get(globals.app, p));
+            return paths.map(p=>utils.reflect.get(globals.app, p));
         });
     }
     async connect() {

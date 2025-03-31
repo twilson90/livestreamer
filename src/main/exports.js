@@ -1,13 +1,17 @@
 export {default as globals} from "./globals.js";
 export * from "../core/exports.js";
+export * from "./SessionProps.js";
+export * from "./InternalSessionProps.js";
+export * from "./Filter.js";
+export * from "./FilterContext.js";
+export * from "./shared.js";
+
 export * from "./API.js";
 export * from "./Download.js";
 export * from "./Session.js";
-export * from "./SessionProps.js";
 export * from "./SessionTypes.js";
 export * from "./ExternalSession.js";
 export * from "./InternalSession.js";
-export * from "./InternalSessionProps.js";
 export * from "./MainClient.js";
 export * from "./MPVEDL.js";
 export * from "./MPVSessionWrapper.js";

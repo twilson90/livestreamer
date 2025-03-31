@@ -1,5 +1,6 @@
 import Sortable from 'sortablejs';
-import * as utils from '../../utils/all.js';
+import * as utils from '../../utils/exports.js';
+import * as dom from '../../utils/dom/exports.js';
 
 // -----------------------------
 // Sortable bullshit.
@@ -49,7 +50,7 @@ export class ResponsiveSortable extends Sortable {
     static closest(e) {
         if (!e) return null;
         if (e instanceof Sortable) return e;
-        var el = utils.dom.closest(e, c=>Sortable.get(c));
+        var el = dom.closest(e, c=>Sortable.get(c));
         return el ? Sortable.get(el) : null;
     }
     
@@ -98,7 +99,7 @@ export class ResponsiveSortable extends Sortable {
         // --------------------------------------
         
         window.addEventListener("keydown", this._on_key_down = (e)=>{
-            if (!utils.dom.has_focus(this.el, true)) return;
+            if (!dom.has_focus(this.el, true)) return;
             if (!this.options.multiDrag) return;
             if (!this.is_active_sortable_in_group()) return;
             var items = this.get_items();

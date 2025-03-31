@@ -94,10 +94,10 @@ export class Client extends DataNodeID {
         var result, error;
         // var fn_path = Array.isArray(request.path) ? request.path : String(request.path).split(/[\.\/]+/);
         var run = ()=>{
-            if (request.call) result = utils.ref.call(this, request.call, request.arguments);
-            else if (request.get) result = utils.ref.get(this, request.get);
-            else if (request.set) result = utils.ref.set(this, request.set, request.value);
-            else if (request.delete) result = utils.ref.deleteProperty(this, request.delete);
+            if (request.call) result = utils.reflect.call(this, request.call, request.arguments);
+            else if (request.get) result = utils.reflect.get(this, request.get);
+            else if (request.set) result = utils.reflect.set(this, request.set, request.value);
+            else if (request.delete) result = utils.reflect.deleteProperty(this, request.delete);
             else error = `Invalid request: ${JSON.stringify(request)}`;
         };
         if (globals.app.debug) {
