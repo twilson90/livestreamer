@@ -1,5 +1,6 @@
 
 
+/** @param {any} o @param {(this:any, key:string, value:any, path:string[])=>boolean} delegate_filter */
 export function walk(o, delegate_filter) {
 	var next = (o, delegate_filter, path) => {
 		if (typeof o !== "object" || o === null) return;

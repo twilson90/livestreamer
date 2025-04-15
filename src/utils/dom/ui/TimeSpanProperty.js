@@ -1,25 +1,34 @@
 import { seconds_to_timespan_str } from "../../seconds_to_timespan_str.js";
 import { timespan_str_to_seconds } from "../../timespan_str_to_seconds.js";
 import { $ } from "../render_html.js";
-import { Property } from "./Property.js";
-/** @import {PropertySettings} from "./Property.js" */
+import { InputProperty } from "./InputProperty.js";
+/** @import {InputPropertySettings} from "./exports.js" */
 
 /**
- * @typedef {PropertySettings & {
- *   'timespan.zero_infinity': UISetting<boolean>,
- *   'timespan.format': UISetting<string>
+ * @template ItemType
+ * @template ValueType
+ * @template {TimeSpanProperty} ThisType
+ * @typedef {InputPropertySettings<ItemType,ValueType,ThisType> & {
+ *   'timespan.zero_infinity': UISetting<ThisType,boolean>,
+ *   'timespan.format': UISetting<ThisType,string>
  * }} TimeSpanPropertySettings
  */
-/** @extends {Property<TimeSpanPropertySettings>} */
-export class TimeSpanProperty extends Property {
-    /** @param {TimeSpanPropertySettings} settings */
+
+/** 
+ * @template ItemType
+ * @template {number} ValueType
+ * @template {TimeSpanPropertySettings<ItemType,ValueType,TimeSpanProperty>} Settings
+ * @template {PropertyEvents} Events
+ * @extends {InputProperty<ItemType, ValueType, Settings, Events>} 
+ */
+export class TimeSpanProperty extends InputProperty {
+    /** @param {Settings} settings */
     constructor(settings) {
         var input = $(`<input type="text">`)[0];
         super(input, {
             "timespan.format": "hh:mm:ss",
             "timespan.zero_infinity": false,
             "step": 1.0,
-            "default": 0,
             ...settings
         });
         this.input_modifiers.push((v) => {

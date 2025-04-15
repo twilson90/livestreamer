@@ -7,7 +7,7 @@ export function get_auto_background_mode(item, media_info) {
 	if (item) {
 		if (!item.filename || item.filename === "livestreamer://empty") return "default";
 		if (item.filename === "livestreamer://intertitle") return "none";
-		if (media_info.streams) {
+		if (media_info && media_info.streams) {
 			var audio_streams = media_info.streams.filter(s=>s.type=="audio");
 			var video_streams = media_info.streams.filter(s=>s.type=="video");
 			if (video_streams.length && video_streams.every(s=>s.albumart) && audio_streams.length) return "embedded";

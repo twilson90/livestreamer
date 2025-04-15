@@ -12,7 +12,7 @@ import nms_ctx from "node-media-server/src/node_core_ctx.js";
 import NodeFlvSession from "node-media-server/src/node_flv_session.js";
 import NodeRtmpSession from "node-media-server/src/node_rtmp_session.js";
 
-import {utils, globals, Blocklist, FFMPEGWrapper, WebServer, Core, Core$, Logger, StopStartStateMachine, StopStartStateMachine$} from "./exports.js";
+import {utils, globals, Blocklist, FFMPEGWrapper, WebServer, CoreFork, Logger, StopStartStateMachine, StopStartStateMachine$} from "./exports.js";
 
 /** @import {Request, Response} from "express" */
 
@@ -105,17 +105,13 @@ const APPNAMES = new Set([
     "private", "session", // session playlist items
     "internal", // internal
 ]);
-
-export class MediaServerApp$ extends Core$ {}
-
-/** @extends {Core<MediaServerApp$>} */
-export class MediaServerApp extends Core {
+export class MediaServerApp extends CoreFork {
     /** @type {Record<PropertyKey,Live>} */
     lives = {};
     sessions = {};
 
     constructor() {
-        super("media-server", new MediaServerApp$());
+        super("media-server");
         globals.app = this;
     }
 
@@ -206,7 +202,11 @@ export class MediaServerApp extends Core {
                 chunk_size: 60000,
                 gop_cache: true,
                 ping: 60,
-                ping_timeout: 30
+                ping_timeout: 30,
+                // ssl: {
+                //     ...await this.get_ssl_certs(),
+                //     port: this.conf["media-server.rtmps_port"],
+                // },
             },
         });
 
@@ -530,7 +530,7 @@ export class Live extends StopStartStateMachine {
         
         /** @param {any[]} outputs */
         var fix_outputs = (outputs)=>{
-            (outputs && outputs.length) ? outputs : utils.json_copy(globals.app.conf["media-server.outputs"]);
+            if (!outputs || !outputs.length) outputs = utils.json_copy(globals.app.conf["media-server.outputs"]);
             for (var c of outputs) {
                 c.resolution = +c.resolution || session.videoHeight;
                 if (typeof c.video_bitrate == "number") c.video_bitrate = `${c.video_bitrate}k`;
@@ -543,6 +543,8 @@ export class Live extends StopStartStateMachine {
         }
 
         this.$.outputs = fix_outputs(this.$.outputs);
+        if (!this.$.outputs.length) throw new Error("No outputs found.");
+        
         this.$.hls_list_size = globals.app.conf["media-server.hls_list_size"];
         this.$.hls_max_duration = globals.app.conf["media-server.hls_max_duration"];
         this.$.segment_duration = +globals.app.conf["media-server.hls_segment_duration"];

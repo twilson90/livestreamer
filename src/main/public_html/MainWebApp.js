@@ -4,7 +4,7 @@ import * as ui from "../../utils/dom/ui/exports.js";
 import { jQuery, $ } from '../../jquery-global.js';
 import 'jquery-ui/dist/jquery-ui.js';
 import 'jquery-ui/dist/themes/base/jquery-ui.css';
-import { Fancybox as _Fancybox } from "@fancyapps/ui";
+import { Fancybox as _Fancybox } from "@fancyapps/ui/src/Fancybox/Fancybox.js";
 import "@fancyapps/ui/dist/fancybox.css";
 import noUiSlider from 'nouislider';
 import "nouislider/dist/nouislider.css";
@@ -19,13 +19,14 @@ import { terminalCodesToHtml } from "terminal-codes-to-html";
 import * as constants from "../../core/constants.js" ;
 import { get_default_stream, get_auto_background_mode } from "../shared.js";
 import { filters } from "../filters.js";
+import { InternalSessionProps, PlaylistItemProps } from "../InternalSessionProps.js";
 
 import "../../utils/dom/dom.scss";
 import "./style.scss";
 
-/** @import * as ui from "../../utils/dom/ui/ui.js" */
 /** @import {API as noUiSliderAPI} from "nouislider" */
-/** @import {MediaInfo, FilterInput, Filter} from "../exports.js" */
+/** @import {MediaInfo, FilterInput, Filter, Log} from "../exports.js" */
+/** @import {Fancybox as FancyboxType} from "@fancyapps/ui/src/Fancybox/Fancybox.js" */
 
 /** @type {MainWebApp} */
 let app;
@@ -66,13 +67,18 @@ export const ignore_logging_session_$ = new Set([
     "player/output-pts",
 ]);
 
-export const UPLOAD_STATUS = { STARTED:1, FINISHED:2, CANCELED:3, ERROR:4 };
+export const UPLOAD_STATUS = { STARTED:1, FINISHED:2, CANCELLED:3, ERROR:4 };
 export const PLAYLIST_VIEW = { LIST: "list", TIMELINE: "timeline" };
 export const PLAYLIST_MODE = { NORMAL: 0, MERGED: 1, DUAL_TRACK: 2 };
 
-export let plugins = [];
-
 // --------------------------------------------------------------------
+
+export function replace_undefined_with_null(obj) {
+    utils.walk(obj, function(k,v,path) {
+        if (v === undefined) this[k] = null;
+    });
+    return obj;
+}
 
 export function time_to_minutes(s) {
     return Math.round(s / (60*1000));
@@ -102,6 +108,7 @@ export function moving_average(points, windowSize) {
 // --------------------------------------------------------------------
 
 const VALIDATORS = (()=>{
+    /** @this {ui.InputProperty} */
     let media_type = function(type) {
         var v = this.value;
         if (!v) return true;
@@ -191,7 +198,7 @@ export const CHUNK_SIZE = 2 * 1024 * 1024;
 export const UploadStatus = {
     STARTED: 1,
     FINISHED: 2,
-    CANCELED: 3,
+    CANCELLED: 3,
     // ERROR: 4,
 }
 
@@ -315,8 +322,8 @@ export class UploadQueue {
             ALL_XHRS.delete(xhr);
             let msg = `Chunk ${ci} [${Date.now()-ts}ms]`;
             done = true;
-            if (xhr.canceled || utils.try_catch(()=>response.uploads[c.id].status === UploadStatus.CANCELED)) {
-                console.warn(`${msg} failed. Canceled.`);
+            if (xhr.cancelled || utils.try_catch(()=>response.uploads[c.id].status === UploadStatus.CANCELLED)) {
+                console.warn(`${msg} failed. Cancelled.`);
             } else if (response && !response.err) {
                 console.log(`${msg} succeeded.`);
             } else {
@@ -334,7 +341,7 @@ export class UploadQueue {
         this.chunks = this.chunks.filter(c=>c.id !== id);
         for (let xhr of this.xhrs) {
             if (xhr.id === id) {
-                xhr.canceled = true;
+                xhr.cancelled = true;
                 xhr.abort();
             }
         }
@@ -387,16 +394,16 @@ export function round_ms(num) {
 
 // removes properties from o1 if o2 has exact same property (recursive). If both identical returns null.
 export function cull_equal_props(o1, o2) {
-    var cull = (o1,o2) =>{
-        if (Array.isArray(o1) || Array.isArray(o2)) {
-            return (JSON.stringify(o1) === JSON.stringify(o2));
+    var cull = (o1, o2)=>{
+        if (Array.isArray(o2)) {
+            return JSON.stringify(o1) === JSON.stringify(o2);
         } else if (typeof o1 === "object" && typeof o2 === "object" && o1 !== null && o2 !== null) {
-            for (var k in o1) {
+            for (var k of Object.keys(o1)) {
                 if (cull(o1[k], o2[k])) delete o1[k];
             }
             return utils.is_empty(o1);
         } else {
-            return ((o1 === o2) || (o1 == null && o2 == null));
+            return (o1 === o2);
         }
     }
     return cull(o1,o2) ? null : o1;
@@ -536,7 +543,7 @@ export function hash(str) {
     return hash;
 }
 
-/** @this {ui.Property} */
+/** @this {ui.InputProperty} */
 function background_mode_info() {
     if (this.value == "embedded") return `Shows the currently playing audio file's embedded artwork.`;
     if (this.value == "external") return `Shows the external artwork relative to the audio file (a file named AlbumArt.jpg, Cover.jpg, etc.)`;
@@ -547,6 +554,7 @@ export function create_video_file_start_end_properties(settings) {
         name: "video",
         label: "Video File",
         hidden: false,
+        default: undefined,
         ...settings,
     }
     var get_file_duration = ()=>app.$._session.media_info[file.value] ? app.$._session.media_info[file.value].duration : 0;
@@ -557,6 +565,7 @@ export function create_video_file_start_end_properties(settings) {
         "label": `${settings.label}`,
         "file.options": { files: true, filter: ["image", "video"] },
         "hidden": settings.hidden,
+        "default": settings.default,
     });
 
     var file_start = new ui.TimeSpanProperty({
@@ -564,8 +573,8 @@ export function create_video_file_start_end_properties(settings) {
         "label": `${settings.label} Loop Start Time`,
         "timespan.format": "h:mm:ss.SSS",
         "min":0,
-        "default": 0,
-        "hidden": ()=>file.is_hidden ||is_file_image(),
+        "hidden": ()=>file.is_hidden || is_file_image(),
+        "default": settings.default || 0,
     });
     
     var file_end = new ui.TimeSpanProperty({
@@ -573,8 +582,8 @@ export function create_video_file_start_end_properties(settings) {
         "label": `${settings.label} Loop End Time`,
         "timespan.format": "h:mm:ss.SSS",
         "min": 0,
-        "default": ()=>get_file_duration(),
-        "hidden": ()=>file.is_hidden ||is_file_image(),
+        "hidden": ()=>file.is_hidden || is_file_image(),
+        "default": settings.default || get_file_duration,
     });
 
     return [file, file_start, file_end]
@@ -723,13 +732,14 @@ function get_file_manager_url(opts) {
     return url.toString();
 }
 
+/** @typedef {{id:any, hidden_id:any, folders:boolean, files:boolean, multiple:boolean, filter:string[], start:string}} FileManagerOptions */
 /**
- * @param {{id:any, hidden_id:any, folders:boolean, files:boolean, multiple:boolean, filter:string[], start:string}} options 
+ * @param {FileManagerOptions} options 
  */
 async function open_file_manager(options) {
-    console.log(options);
+    // console.log(options);
     options = Object.assign({
-        "new_window" : app.settings.get("open_file_manager_in_new_window")
+        "new_window" : app.local_settings.get("open_file_manager_in_new_window")
     }, default_file_manager_options, options);
     if (!options.standalone && options.id === undefined) options.id = dom.uuidb64();
     // if ("start" in options && !Array.isArray(options.start)) options.start = [options.start];
@@ -766,11 +776,13 @@ async function open_file_manager(options) {
             }
         }
         var results = await electron.dialog.showOpenDialog(electron_options);
-        if (results.canceled) return null;
+        if (results.cancelled) return null;
         return results.filePaths;
     } else if (app.$.processes["file-manager"]) {
         /** @type {Window} */
         var win;
+        /** @type {FileManagerMenu} */
+        var menu;
         var win_id = options.hidden_id || options.id;
         var use_window = options.new_window;
         var messenger = new dom.WindowCommunicator();
@@ -796,86 +808,25 @@ async function open_file_manager(options) {
                     resolve();
                 });
             } else {
-                app.file_manager_menu.show(url);
-                win = app.file_manager_menu.iframe.contentWindow;
-                app.file_manager_menu.once("hide", ()=>{
+                menu = new FileManagerMenu(url);
+                menu.show();
+                win = menu.iframe.contentWindow;
+                menu.once("hide", ()=>{
                     resolve();
                 });
             }
         }).finally(()=>{
             messenger.destroy();
             if (use_window) win.close();
-            else app.file_manager_menu.hide();
+            else menu.hide();
         })
     } else {
         console.error("File Manager not present")
     }
 }
 
-export function fancybox_prompt(title, inputs, settings) {
-    settings = Object.assign({
-        ok:"OK",
-        cancel:"Cancel",
-        valid:()=>true
-    }, settings);
-
-    var modal = new Modal({
-        "modal.title": title,
-        "modal.footer": true,
-    });
-
-    if (!Array.isArray(inputs)) inputs = [inputs];
-    var props = inputs.map(input=>{
-        var prop;
-        if (input instanceof ui.Property) {
-            prop = input;
-        } else if (dom.is_html(input)) {
-            prop = new ui.Property(input, { "reset": false });
-        } else if (typeof input === "number") {
-            prop = new ui.Property(`<input type="number"></input>`, { "default": input, "reset": false });
-        } else if (typeof input === "boolean") {
-            prop = new ui.Property(`<input type="checkbox"></input>`, { "default": input, "reset": false });
-        } else {
-            prop = new ui.Property(`<input type="text"></input>`, { "default": input, "reset": false });
-        }
-        return prop;
-    });
-    modal.props.append(...props);
-    
-    modal.show();
-    if (props[0]) props[0].input.focus();
-
-    return new Promise((resolve,reject)=>{
-        if (settings.ok) {
-            var ok_button = new ui.Button(`<button>${settings.ok}</button>`, {
-                "disabled": ()=>!settings.valid(),
-                "click": ()=>{
-                    var result = {length:0}
-                    props.forEach((prop, i)=>{
-                        var value = prop.value;
-                        result[i] = value;
-                        result.length++;
-                        // if (input.id) result[input.id] = value
-                    })
-                    if (result.length == 1) result = result[0];
-                    resolve(result);
-                }
-            })
-            modal.footer.append(ok_button)
-        }
-        if (settings.cancel) {
-            var cancel_button = new ui.Button(`<button>${settings.cancel}</button>`, {
-                "click": ()=>resolve(null)
-            })
-            modal.footer.append(cancel_button)
-        }
-        modal.on("hide", ()=>resolve(null))
-    }).finally(()=>{
-        modal.hide();
-    });
-}
 export class PlaylistCommand {
-    /** @typedef {function(PlaylistItem[])} PLCFunc */
+    /** @typedef {function(PlaylistItem$[])} PLCFunc */
     /** @param {Record<PropertyKey, PLCFunc>} options */
     constructor(options) {
         this.options = {
@@ -922,7 +873,7 @@ export class PlaylistCommand {
 
 // -----------------------------
 
-/** @typedef {{username:string, access:string, suspended:boolean, password:string}} User */
+/** @typedef {{username:string, access:string, suspended:boolean, password:string}} AccessControlUser */
 export class AccessControl {
     constructor(data) {
         Object.assign(this, data);
@@ -939,7 +890,7 @@ export class AccessControl {
         var user = this[username];
         if (data == null) {
             if (user && user.access === "owner" && username === app.$._client.username && this._owners.length > 1) {
-                if (!confirm("Deleting your ownership may revoke your access. Are you sure?")) return false;
+                if (!confirm("Deleting your ownership may revoke access. Are you sure?")) return false;
             }
             delete this[username];
         } else {
@@ -947,10 +898,12 @@ export class AccessControl {
             Object.assign(this[username], data);
         }
         if (this._owners.length == 0) {
-            utils.clear(this);
             Object.assign(this, { "*": {"access":"allow"} });
         }
         return true;
+    }
+    _delete(username) {
+        this._edit(username, null);
     }
     get _self_can_edit() { return !IS_ELECTRON && (this._owners.length == 0 || this._self_is_owner_or_admin); }
     get _self_is_owner() { return this._has_ownership(app.$._client.username); }
@@ -965,36 +918,25 @@ export class AccessControl {
         return false;
     }
     _claim() {
-        utils.clear(this);
-        Object.assign(this, AccessControl.DEFAULT_ACCESS_FOR_SELF);
-    }
-    static get DEFAULT_ACCESS_FOR_SELF() {
-        return {
-            "*": { access: "allow" },
-            [app.$._client.username] : { access: "owner" },
-        }
+        this._edit(app.$._client.username, { access: "owner" });
     }
     static ACCESS_ORDER = {"owner":1,"allow":2,"deny":3};
 }
 
-
-
-
 // --------------------------------------------
 
-
-/** @template T @param {new () => T} clazz @return {Record<PropertyKey,T>} */
-export function create_proxy(clazz) {
+/** @template T @param {(key:string,value:any)=>T} cb @return {Record<PropertyKey,T>} */
+export function create_proxy(cb) {
     return new Proxy({}, {
         set(target, prop, value) {
-            target[prop] = new clazz();
-            Object.assign(target[prop], value);
+            target[prop] = cb(prop, value);
             return true;
         }
     });
 }
 
-const EMPTY_CHAPTERS = [];
+const EMPTY_CHAPTERS = Object.freeze([]);
+
 export class Media {
     time_pos = 0;
     playback_speed = 1;
@@ -1006,9 +948,7 @@ export class Media {
     loaded;
     running = false;
     #cache = {};
-    constructor() {
-        this.update();
-    }
+
     update() {
         var session = app.$._session;
         var stream = app.$._stream;
@@ -1059,20 +999,59 @@ export class Media {
 /** @typedef {{url:string,rect:utils.Rectangle}} Crop */
 /** @typedef {{crops:Crop[],combined:utils.Rectangle,width:number,height:number}} DetectedCrop */
 
-export class Remote extends utils.EventEmitter {
+
+const Node$_Target = Symbol("Node$_Target");
+const Node$_passthrough = (_,v)=>v;
+
+class Node$ {
+    /** @param {any} data @param {(prop:string,newValue:any)=>T} handler */
+    constructor(handler = Node$_passthrough) {
+        var proxy = new Proxy(this, {
+            set(target, prop, value) {
+                target[prop] = handler(prop, value);
+                return true;
+            },
+            get(target, prop) {
+                if (prop === Node$_Target) return target;
+                return target[prop];
+            }
+        });
+        return proxy;
+    }
+}
+
+/** @template T @param {()=>T} handler @returns {Record<PropertyKey,T>} */
+function Collection$(handler) {
+    return new Node$((key,value)=>{
+        var n = handler();
+        return utils.deep_merge(n, value);
+    });
+}
+
+class Progress$ {
+    id = "";
+    bytes = 0;
+    total = 0;
+    speed = 0;
+    cancelled = false;
+    status = 0;
+    stage = 0;
+    stages = 0;
+}
+
+export class Remote$ extends Node$ {
     client_id = null;
-    clients = create_proxy(Client);
-    sessions = create_proxy(Session);
-    targets = create_proxy(Target);
+    clients = Collection$(()=>new Client$());
+    sessions = Collection$(()=>new Session$());
+    targets = Collection$(()=>new Target$());
+    streams = Collection$(()=>new Stream$());
     volumes = {};
     change_log = {};
-    logs = {};
+    logs = app.logger.create_proxy();
     nms_sessions = {};
-    /** @type {typeof import("../InternalSessionProps.js").default} */
-    properties = {};
     fonts = {};
-    uploads = {};
-    downloads = {};
+    uploads = Collection$(()=>new Progress$());
+    downloads = Collection$(()=>new Progress$());
     processes = {};
     sysinfo = {
         platform: ""
@@ -1081,40 +1060,29 @@ export class Remote extends utils.EventEmitter {
     conf = {};
     /** @type {Record<string,DetectedCrop>} */
     detected_crops = {};
+    ts = 0;
+    local_ts = Date.now();
 
     _changes = [];
     _pending_requests = new Set();
-    /** @type {Session} */
+    /** @type {Session$} */
     _last_session = null;
-    get _ping() { return app.ws.last_ping };
-    ts = this._ts = Date.now();
 
-    _refresh_ping(){
-        return app.ws.ping();
-    }
+    _NULL_CLIENT = Object.freeze(new Client$());
+    _NULL_SESSION = Object.freeze(new Session$());
+    _NULL_STREAM = Object.freeze(new Stream$());
+    _NULL_PLAYLIST_ITEM = Object.freeze(new PlaylistItem$(undefined, this._NULL_SESSION));
 
-    _debounced_update = dom.debounce_next_frame(()=>this._update());
-    _update() {
-        var changes = utils.tree_from_pathed_entries(this._changes);
-        utils.clear(this._changes);
-        // !! IMPORTANT FOR DATES AND THINGS LIKE THAT.
-        // this will automatically do any toJSON calls and not pollute the original data structure.
-        changes = utils.json_copy(changes);
-        Observer.apply_changes(this, changes);
-        this.emit("update", changes);
-    }
-    _push(...items) {
-        this._changes.push(...items.map(i=>utils.json_copy(i)));
-        this._debounced_update();
-    }
-    /** @type {Session} */
-    get _session() { return this.sessions[this._client.session_id] || NULL_SESSION; }
-    /** @type {Client} */
-    get _client() { return this.clients[this.client_id] || NULL_CLIENT; }
-    get _stream() { return this._session.stream; }
-    get _streams() { return Object.fromEntries(Object.values(this.sessions).map(s=>s.stream).filter(s=>s).map((s)=>[s.id, s])); }
+    _refresh_ping() {return app.ws.ping(); }
+    get _ping() { return app.ws.last_ping; }
+    /** @type {Session$} */
+    get _session() { return this.sessions[this._client.session_id] || this._NULL_SESSION; }
+    /** @type {Client$} */
+    get _client() { return this.clients[this.client_id] || this._NULL_CLIENT; }
+    get _stream() { return this._session._stream; }
+    get _streams() { return Object.fromEntries(Object.values(this.sessions).map(s=>s._stream).filter(s=>s).map((s)=>[s.id, s])); }
     // gets server time
-    get _now() { return Date.now() - (this._ts - this.ts); }
+    get _now() { return Date.now() - (this.local_ts - this.ts); }
     get _targets() {
         var targets = Object.values(this.targets);
         targets = targets.filter(t=>t.locked?true:t.access_control._self_has_access());
@@ -1123,15 +1091,19 @@ export class Remote extends utils.EventEmitter {
     }
 }
 
-export class Client {
+export class Client$ extends Node$ {
     id = "";
     session_id = undefined;
     is_admin = false;
     username = null;
     email = null;
+
+    get _is_null() {
+        return !this.id;
+    }
 }
 
-export class Target {
+export class Target$ extends Node$ {
     id = "";
     name = ""
     description = ""
@@ -1150,13 +1122,17 @@ export class Target {
     // get _stream_targets() { return Object.values(app.$._streams).map(s=>s._get_stream_target(this.id)).filter(st=>st); }
 }
 
-/** @typedef {{index:number,start:number,end:number,id:string}} Chapter */
-/** @typedef {{filenames:string[]}} PlaylistInfo */
-/** @typedef {{duration:Number,media_duration:Number,children_duration:Number}} PlaylistItemDurations */
-/** @typedef {{start:Number,end:Number,duration:Number,offset:Number}} PlaylistItemClipping */
-/** @typedef {{download:Download,is_processing:boolean,color:string,modified:boolean,clipping:PlaylistItemClipping,is_playlist:boolean, is_merged:boolean,display_name:string,chapters:Chapter[],timeline_duration:Number,start:Number,end:Number,timeline_start:Number,timeline_end:Number,parent_ids:string[]} & PlaylistItemDurations} PlaylistUserData */
+export class Chapter$ {
+    index = 0;
+    start = 0;
+    end = 0;
+    id = "";
+    constructor(data) {
+        Object.assign(this, data);
+    }
+}
 
-export class StreamTarget {
+export class StreamTarget$ extends Node$ {
     id = "";
     state = "stopped";
     stream_id = "";
@@ -1173,18 +1149,21 @@ export class StreamTarget {
     }
 }
 
-export class Stream {
+export class Stream$ extends Node$ {
     id = "";
     start_time = 0;
     state = "stopped";
-    metrics = {};
+    metrics = new Node$((prop,value)=>{
+        return value;
+    });
     session_id = 0;
     mpv = {
         special_seeking: false,
-        ctx: new MPVContext(this),
+        ctx: new MPVContext$(this),
     };
-    targets = {};
-    stream_targets = create_proxy(StreamTarget);
+    targets = [];
+    target_opts = {};
+    stream_targets = Collection$(()=>new StreamTarget$());
     test = false;
     bitrate = 0;
     internal_path;
@@ -1212,7 +1191,7 @@ export class Stream {
     }
 }
 
-export class ParsedItem {
+export class ParsedItem$ {
     id = "";
     filename = "";
     map = {
@@ -1224,8 +1203,8 @@ export class ParsedItem {
     };
 }
 
-export class MPVContext {
-    item = new ParsedItem();
+export class MPVContext$ {
+    item = new ParsedItem$();
     preloaded = false;
     loaded = false;
     seeking = false;
@@ -1239,84 +1218,84 @@ export class MPVContext {
     props = {};
     playback_speed = 1;
 }
-export class Session {
+
+export class Session$ extends Node$ {
     id = "";
     type;
     index = 0;
-    playlist_id = -1;
+    playlist_id = "";
     time_pos = 0;
-    logs = {};
+    creation_time = 0;
+    /** @type {Record<string,Log>} */
+    logs = app.session_logger.create_proxy();
     downloads = {};
     access_control = new AccessControl();
-    player = {};
     player_default_override = {};
     stream_settings = {};
-    stream = new Stream();
     /** @type {Record<string,MediaInfo>} */
     media_info = {};
-    // current_item_on_load = null;
-    // current_descendents_on_load = null;
     name = "";
     background_mode = "";
     volume_target = 100;
     volume_speed = 0;
-    /** @type {Record<PropertyKey,PlaylistItem>} */
-    playlist = new Proxy({}, {
-        /** @param {Record<PropertyKey,PlaylistItem>} target */
-        get: (target, prop)=>{
-            if (prop == "0") return this._root_playlist_item;
-            return target[prop];
-        },
-        /** @param {Record<PropertyKey,PlaylistItem>} target */
+    stream_id = "";
+
+    /** @type {Record<PropertyKey,PlaylistItem$>} */
+    playlist = new Proxy({
+        "0": new PlaylistItem$({id:"0", parent_id:null}, this),
+    }, {
+        /** @param {Record<PropertyKey,PlaylistItem$>} target */
         set:(target, prop, value)=>{
-            if (prop in target) target[prop].__private.register_parent(null);
-            target[prop] = new PlaylistItem(value, this);
-            target[prop].__private.register_parent();
+            target[prop] = new PlaylistItem$(value, this);
             return true;
         },
-        /** @param {Record<PropertyKey,PlaylistItem>} target */
+        /** @param {Record<PropertyKey,PlaylistItem$>} target */
         deleteProperty: (target, prop)=>{
-            if (prop != "0" && prop in target) {
-                target[prop].parent_id = null;
-                target[prop].__private.register_parent();
+            if (prop == "0") return false;
+            if (prop in target) {
+                target[prop]._parent._private.children = null;
                 delete target[prop];
             }
             return true;
         }
     });
+
     /** @typedef {{filenames:string[]}} PlaylistInfo */
     /** @type {Record<PropertyKey,PlaylistInfo>} */
-    playlist_info = {};
-    playlist_history = new class{
-        position = 0;
-        start = 0;
-        end = 0;
-        stack = {};
-        get _size() { return this.end-this.start; }
-        get _next() { return this.stack[this.position]; }
-        get _prev() { return this.stack[this.position-1]; }
+    playlist_info = Collection$(()=>new PlaylistInfo$());
+
+    playlist_history = {
+        position: 0,
+        start: 0,
+        end: 0,
+        stack: {},
+        get _size() { return this.end-this.start; },
+        get _next() { return this.stack[this.position]; },
+        get _prev() { return this.stack[this.position-1]; },
     };
 
-    _root_playlist_item = new PlaylistItem({id:"0"}, this);
+    get _root_playlist_item() {
+        return this.playlist["0"];
+    }
     
     get _connected_nms_sessions() {
         return Object.values(app.$.nms_sessions).filter(s=>s.publishStreamPath.split("/").pop() === this.id);
     }
-    /** @return {PlaylistItem} */
+    /** @return {PlaylistItem$} */
     get _current_playlist_item() {
-        return this.playlist[this.playlist_id] || NULL_PLAYLIST_ITEM;
+        return this.playlist[this.playlist_id] || app.$._NULL_PLAYLIST_ITEM;
     }
     get _is_running() {
-        return this.stream._is_running;
+        return this._stream._is_running;
     }
-    /** @return {Chapter[]} */
+    /** @return {Chapter$[]} */
     get _current_chapters() {
         return this._current_playlist_item._userdata.chapters;
     }
     get _current_duration() {
         var d = 0;
-        if (this.stream._is_running) {
-            d = this.stream.mpv.ctx.duration || 0;
+        if (this._stream._is_running) {
+            d = this._stream.mpv.ctx.duration || 0;
         } else {
             var item = this._current_playlist_item;
             if (!item._is_playlist || item._is_merged_playlist) d = item._userdata.duration;
@@ -1324,7 +1303,7 @@ export class Session {
         return round_ms(d || 0);
     }
     get _current_seekable_ranges() {
-        if (this.stream._is_running) return this.stream.mpv.ctx.seekable_ranges;
+        if (this._stream._is_running) return this._stream.mpv.ctx.seekable_ranges;
         return [];
     }
     _get_connected_nms_session_with_appname(...appnames) {
@@ -1336,104 +1315,87 @@ export class Session {
     _get_current_chapter_at_time(t) {
         return this._get_current_chapters_at_time(t).pop();
     }
+    get _is_null() {
+        return !this.id;
+    }
+    get _stream() {
+        return app.$.streams[this.stream_id]||app.$._NULL_STREAM;
+    }
 }
 
-class PlaylistItemPrivate {
-    /** @type {PlaylistItem} */
+class PlaylistInfo$ {
+    filenames = [];
+}
+
+class PlaylistItemPrivate$ {
+    /** @type {PlaylistItem$} */
     item;
-    /** @type {Session} */
+    /** @type {Session$} */
     session;
-    num_updates = 0;
-    /** @type {PlaylistUserData} */
-    userdata = null;
-    /** @type {Set<PlaylistItem>} */
-    children = new Set();
-    /** @type {PlaylistItem[]} */
-    children_ordered = null;
-    /** @type {PlaylistItem} */
-    parent = null;
+    num_user_updates = 0;
+    /** @type {PlaylistItemUserData$} */
+    userdata;
+    /** @type {PlaylistItem$[]} */
+    children;
+    /** @param {PlaylistItem$} item @param {Session$} session */
     constructor(item, session) {
         this.item = item;
         this.session = session;
     }
-    register_parent() {
-        var new_parent = this.item._parent;
-        if (this.parent == new_parent) return;
-        let old_parent = this.parent;
-        if (old_parent) {
-            old_parent.__private.clear_userdata();
-            old_parent.__private.children.delete(this.item);
-            old_parent.__private.children_ordered = null;
-            this.parent = null;
-        }
-        if (new_parent) {
-            new_parent.__private.children.add(this.item);
-            new_parent.__private.children_ordered = null;
-            this.parent = new_parent;
-        }
-    }
-    clear_userdata() {
-        this.userdata = null;
-        for (var p of this.item._iterate_parents()) {
-            p.__private.userdata = null;
-        }
-    }
 }
-export class PlaylistItem {
-    id = "-1";
-    /** @type {String} */
-    parent_id = null;
+
+export class PlaylistItem$ extends Node$ {
+    id = "";
+    parent_id = "0";
     filename = "";
     index = 0;
     track_index = 0;
     props = {};
+    /** @type {string} */
     upload_id = null;
-    /** @type {PlaylistItemPrivate} */
-    __private;
 
-    /** @param {Session} session */
+    /** @type {PlaylistItemPrivate$} */
+    get _private() { return this.__private; }
+
+    /** @param {Session$} session */
     constructor(data, session) {
-        if (!session) session = NULL_SESSION;
-        var _this = new Proxy(this, {
-            set: (_, prop, value)=>{
-                this.__private.num_updates++;
-                this.__private.clear_userdata();
-                var res = Reflect.set(this, prop, value);
-                if (this._is_connected) {
-                    if (prop == "parent_id") {
-                        this.__private.register_parent();
-                    } else if (prop == "track_index" || prop == "index") {
-                        if (this.__private.parent) this.__private.parent.__private.children_ordered = null;
-                    }
-                }
-                return res;
-            },
+        if (!session) session = app.$._session;
+        super((prop, value)=>{
+            this._clear_userdata();
+            if (prop == "parent_id") {
+                let old_parent = this._parent;
+                let new_parent = this._session.playlist[value];
+                if (old_parent) old_parent._private.children = null;
+                if (new_parent) new_parent._private.children = null;
+            } else if (prop == "track_index" || prop == "index") {
+                let parent = this._parent;
+                if (parent) parent._private.children = null;
+            }
+            return value;
         });
         Object.defineProperty(this, "__private", {
-            value: new PlaylistItemPrivate(_this, session),
+            value: new PlaylistItemPrivate$(this, session),
             enumerable: false,
         });
-        Object.assign(_this, data);
-        return _this;
+        Object.assign(this[Node$_Target], data);
     }
-    /** @return {Session} */
+    /** @return {Session$} */
     get _session() {
-        return this.__private.session;
+        return this._private.session;
     }
     get _is_connected() {
         return this.id in this._session.playlist;
     }
-    /** @return {PlaylistUserData} */
+    /** @return {PlaylistItemUserData$} */
     get _userdata() {
-        if (!this.__private.userdata) {
-            this._update_userdata();
-            this.__private.num_updates++;
+        if (!this._private.userdata) {
+            this._private.userdata = new PlaylistItemUserData$(this);
+            this._private.num_user_updates++;
         }
-        return this.__private.userdata;
+        return this._private.userdata;
     }
     get _hash() {
-        this._userdata;
-        return this.__private.num_updates;
+        return this._private.num_user_updates;
     }
     get _parent() {
         return this._session.playlist[this.parent_id];
@@ -1450,14 +1412,21 @@ export class PlaylistItem {
     get _is_current() {
         return this.id === this._session._current_playlist_item.id;
     }
+    get _is_descendent_of_current() {
+        for (var i of this._session._current_playlist_item._get_children(null, true)) {
+            if ( i === this) return true;
+        }
+        return false;
+    }
     get _is_currently_playing() {
-        return this.id === this._session.stream.mpv.ctx.item.id;
+        var stream = this._session._stream;
+        return stream._is_running && this.id === stream.mpv.ctx.item.id;
     }
     get _is_root() {
         return this.id == "0";
     }
     get _is_null() {
-        return this === NULL_PLAYLIST_ITEM;
+        return !this.id;
     }
     get _is_modifiable() {
         return !this._is_root && !this._is_null;
@@ -1481,180 +1450,24 @@ export class PlaylistItem {
         return this._is_merged_playlist || !!this._root_merged_playlist;
     }
     get _has_children() {
-        return this.__private.children.size != 0;
+        return this._children.length != 0;
     }
     _calculate_contents_hash() {
-        return hash(JSON.stringify([this.id,this.parent_id,this.filename,this.index,this.track_index,this.props,this._children.map(c=>c._calculate_contents_hash())]))
-        // return hash(JSON.stringify({self:this.props, children:this.children.map(c=>c.calculate_contents_hash())}));
+        return hash(JSON.stringify([this, this._children.map(c=>c._calculate_contents_hash())]))
     }
-    /** @return {Iterable<PlaylistItem>} */
+    /** @return {Iterable<PlaylistItem$>} */
     *_get_children(track_index=null, recursive=false) {
         var children = this._children;
         if (track_index != null) children = children.filter(i=>track_index == null || i.track_index == track_index);
         for (var item of children) {
             yield item;
-            if (recursive) {
-                for (var c of item._get_children(null, true)) yield c;
-            }
+            if (recursive) yield* item._get_children(null, true);
         }
     }
-    _update_userdata() {
-        /** @type {PlaylistUserData} */
-        let ud = this.__private.userdata = {};
-        let media_info = this._media_info || EMPTY_OBJECT;
-        let download = this._download;
-        let upload = this._upload;
-        let children = this._children;
-        var is_playlist = this._is_playlist;
-        let is_processing = this._is_processing;
-        let root_merged_playlist = this._root_merged_playlist;
-
-        let filenames = new Set();
-        filenames.add(this.filename);
-        if (this.props.video_file) filenames.add(this.props.video_file);
-        if (this.props.audio_file) filenames.add(this.props.audio_file);
-        if (this.props.subtitle_file) filenames.add(this.props.subtitle_file);
-        ud.filenames = [...filenames];
-
-        ud.name = this._get_pretty_name();
-        
-        let media_duration = round_ms(media_info.duration || 0);
-        if (media_duration <= IMAGE_DURATION) media_duration = 0;
-        let children_duration = 0;
-        let timeline_duration = media_duration;
-        if (children.length) {
-            /** @param {PlaylistItem[]} t */
-            var get_track_duration = (t, tl=false)=>{
-                var total = 0;
-                var key = tl ? "timeline_duration" : "duration";
-                for (var i of t) {
-                    if (i.filename === "livestreamer://exit") break;
-                    total += i._userdata[key];
-                }
-                return total;
-            }
-            var track_durations = this._tracks.map((t)=>get_track_duration(t));
-            var track_timeline_durations = this._tracks.map((t)=>get_track_duration(t, true));
-            if (this.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK && this.props.playlist_end_on_shortest_track && track_durations.every(t=>t>0)){
-                children_duration = Math.min(...track_durations);
-                timeline_duration = Math.min(...track_timeline_durations);
-            } else {
-                children_duration = Math.max(...track_durations);
-                timeline_duration = Math.max(...track_timeline_durations);
-            }
-            media_duration = children_duration;
-        } else {
-            if (this.props.duration != null) {
-                media_duration = this.props.duration;
-            } else if (root_merged_playlist) {
-                media_duration = 60;
-            }
-        }
-
-        let start = this.props.clip_start || 0;
-        let end = this.props.clip_end || media_duration;
-        let clip_length = Math.max(0, (end - start));
-        let clip_loops = this.props.clip_loops || 1;
-        let duration = round_ms(Math.max(0, clip_length * clip_loops));
-        timeline_duration = round_ms(Math.max(ZERO_DURATION, timeline_duration * clip_loops));
-        
-        if (download) ud.download = download;
-        if (upload) ud.upload = upload;
-        if (is_processing) ud.is_processing = true;
-
-        var props = new Set(Object.keys(this.props));
-        props.delete("label");
-        props.delete("color");
-        if (props.size) {
-            ud.modified = true;
-        }
-        if ("clip_start" in this.props || "clip_end" in this.props || "clip_loops" in this.props || "clip_offset" in this.props) {
-            let start = this.props.clip_start || 0;
-            let end = this.props.clip_end || media_duration;
-            let length = end-start;
-            let loops = this.props.clip_loops ?? 1;
-            let duration = length * loops;
-            let offset = ((this.props.clip_offset || 0) % length) || 0;
-            ud.clipping = { start, end, length, duration, offset, loops };
-        }
-
-        ud.is_merged = this._is_merged;
-        ud.duration = duration || 0;
-        ud.media_duration = media_duration || 0;
-        ud.children_duration = children_duration || 0;
-        ud.timeline_duration = timeline_duration || 0;
-        ud.num_updates = this._num_updates;
-        /* ud.pending_changes = (()=>{
-            if (!this.session.is_running || !this.is_current_playing_item) return false;
-            if (!this.session.current_item_on_load) return false;
-            var props_on_load = this.session.current_item_on_load.props;
-            if (props_on_load.playlist_mode && !utils.deep_equals(this.descendents, this.session.current_descendents_on_load)) {
-                return true;
-            }
-            var filter = (k,v)=>k !== "label" && k !== "color";
-            var e1 = utils.filter_object(this.props, filter);
-            var e2 = utils.filter_object(props_on_load, filter);
-            if (!utils.deep_equals(e1, e2)) {
-                return true;
-            }
-            return false;
-        })(); */
-        
-        var chapters;
-        if (is_playlist) {
-            chapters = [];
-            for (var items of this._tracks) {
-                var t = 0;
-                var tt = 0;
-                for (var c of items) {
-                    var cud = c._userdata;
-                    cud.start = t;
-                    cud.timeline_start = tt;
-                    t += cud.duration;
-                    tt += cud.timeline_duration;
-                    cud.end = t;
-                    cud.timeline_end = tt;
-                    if (ud.is_merged) {
-                        chapters.push({ id: c.id, start: cud.start, end: cud.end });
-                    }
-                }
-            }
-        } else {
-            chapters = utils.json_copy(media_info.chapters || EMPTY_ARRAY);
-        }
-        if (chapters) {
-            var min = 0
-            var max = Number.POSITIVE_INFINITY;
-            if (ud.clipping) {
-                var segments = get_clip_segments(ud.clipping);
-                if (segments.length == 1) {
-                    min = segments[0].start;
-                    max = segments[0].end;
-                } else {
-                    var t = 0;
-                    chapters = segments.map((s,index)=>{
-                        var start = t;
-                        t += s.duration;
-                        return {start, end:t, title:`${ud.name}`}
-                        // return {start, end:t, title:`Segment ${index+1}`}
-                    });
-                }
-            }
-            chapters = chapters.filter((c)=>c.end >= min && c.start <= max);
-            chapters.sort((a,b)=>a.start-b.start);
-            chapters.forEach((c,i)=>{
-                c.index = i;
-                c.start = Math.max(0, c.start-min);
-                c.end = Math.min(max-min, c.end-min);
-                if (!c.id && !c.title) c.title = `Chapter ${i+1}`;
-            });
-            ud.chapters = chapters;
-        }
-    }
-    /** @return {PlaylistItem[]} */
+    /** @return {PlaylistItem$[]} */
     get _children() {
-        if (!this.__private.children_ordered) this.__private.children_ordered = [...this.__private.children].sort((a,b)=>a.track_index-b.track_index || a.index-b.index);
-        return [...this.__private.children_ordered];
+        if (!this._private.children) this._private.children = Object.values(this._session.playlist).filter(i=>this.id == i.parent_id).sort((a,b)=>(a.track_index-b.track_index) || (a.index-b.index));
+        return [...this._private.children];
     }
     get _descendents() {
         return [...this._get_children(null, true)];
@@ -1674,6 +1487,7 @@ export class PlaylistItem {
     get _related_media_infos() {
         return this._filenames.map(f=>this._session.media_info[f]).filter(mi=>mi);
     }
+    /** @return {boolean} */
     get _is_processing() {
         return this._related_media_infos.some(mi=>mi.processing) || this._children.some(i=>i._is_processing);
     }
@@ -1686,7 +1500,7 @@ export class PlaylistItem {
     _get_track(t) {
         return [...this._get_children(t)];
     }
-    /** @return {PlaylistItem[][]} */
+    /** @return {PlaylistItem$[][]} */
     get _tracks() {
         var tracks = [];
         if (this.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK) {
@@ -1747,7 +1561,7 @@ export class PlaylistItem {
         return parent && parent._children[this.index+a];
     }
     _get_adjacent(a=1, skip_playlists=true) {
-        /** @type {PlaylistItem} */
+        /** @type {PlaylistItem$} */
         var next;
         if (a>0) {
             if (this._has_children && !this._is_merged_playlist) {
@@ -1775,7 +1589,7 @@ export class PlaylistItem {
     get _next_sibling() { return this._get_adjacent_sibling(1); }
     get _previous_sibling() { return this._get_adjacent_sibling(-1); }
 
-    get _is_special() { return this.filename.match(/^livestreamer:/); }
+    get _is_special() { return !!this.filename.match(/^livestreamer:/); }
     get _ls_path() { return this._is_special ? this._url.host : undefined; }
 
     _get_pretty_name(opts) {
@@ -1811,10 +1625,10 @@ export class PlaylistItem {
         if (this._is_root) next = this;
         app.playlist.open(next, [this]);
     }
-    /** @param {PlaylistItem} [until] @return {Iterable<PlaylistItem>} */
+    /** @param {PlaylistItem$} [until] @return {Iterable<PlaylistItem$>} */
     *_iterate_parents(until) {
         var item = this;
-        while (item) {
+        while (!item._is_root) {
             item = item._parent;
             if (until === item) break;
             if (item) yield item;
@@ -1824,22 +1638,154 @@ export class PlaylistItem {
         if (include_non_enumerable) return Object.fromEntries((utils.get_property_keys(this).map(k=>[k,utils.json_copy(this[k])])));
         return utils.json_copy(this);
     }
-    /** @param {PlaylistItem[]} items */
-    static get_items_title(items) {
-        items = items.filter(i=>i);
-        if (items.length > 1) return `${items.length} Files`;
-        if (items.length == 1) {
-            return `${items[0]._get_pretty_name()}`;
-        }
-        return `[No Item]`;
+    _clear_userdata() {
+        this._private.userdata = null;
+        var parent = this._parent;
+        if (parent) parent._clear_userdata();
     }
 }
 
-export const NULL_CLIENT = Object.freeze(new Client());
-export const NULL_SESSION = Object.freeze(new Session());
-export const NULL_PLAYLIST_ITEM = Object.freeze(new PlaylistItem());
-export const NULL_STREAM = Object.freeze(new Stream());
-export const NULL_STREAM_TARGET = Object.freeze(new StreamTarget());
+var playlist_item_userdata_uid = 0;
+class PlaylistItemUserData$ {
+    /** @param {PlaylistItem$} item */
+    constructor(item) {
+        let media_info = item._media_info || EMPTY_OBJECT;
+        let children = item._children;
+        var is_playlist = item._is_playlist;
+        let is_processing = item._is_processing;
+        let root_merged_playlist = item._root_merged_playlist;
+        var is_merged = item._is_merged;
+
+        let name = item._get_pretty_name();
+        
+        let media_duration = round_ms(media_info.duration || 0);
+        if (media_duration <= IMAGE_DURATION) media_duration = 0;
+        let children_duration = 0;
+        let timeline_duration = media_duration;
+        if (children.length) {
+            /** @param {PlaylistItem$[]} t */
+            var get_track_duration = (t, tl=false)=>{
+                var total = 0;
+                var key = tl ? "timeline_duration" : "duration";
+                for (var i of t) {
+                    if (i.filename === "livestreamer://exit") break;
+                    total += i._userdata[key];
+                }
+                return total;
+            }
+            var track_durations = item._tracks.map((t)=>get_track_duration(t));
+            var track_timeline_durations = item._tracks.map((t)=>get_track_duration(t, true));
+            if (item.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK && item.props.playlist_end_on_shortest_track && track_durations.every(t=>t>0)){
+                children_duration = Math.min(...track_durations);
+                timeline_duration = Math.min(...track_timeline_durations);
+            } else {
+                children_duration = Math.max(...track_durations);
+                timeline_duration = Math.max(...track_timeline_durations);
+            }
+            media_duration = children_duration;
+        } else {
+            if (item.props.duration != null) {
+                media_duration = item.props.duration;
+            } else if (root_merged_playlist) {
+                media_duration = 60;
+            }
+        }
+
+        let start = item.props.clip_start || 0;
+        let end = item.props.clip_end || media_duration;
+        let clip_length = Math.max(0, (end - start));
+        let clip_loops = item.props.clip_loops || 1;
+        let duration = round_ms(Math.max(0, clip_length * clip_loops));
+        timeline_duration = round_ms(Math.max(ZERO_DURATION, timeline_duration * clip_loops));
+
+        var props = new Set(Object.keys(item.props));
+        props.delete("label");
+        props.delete("color");
+
+        let clipping;
+
+        if ("clip_start" in item.props || "clip_end" in item.props || "clip_loops" in item.props || "clip_offset" in item.props) {
+            let start = item.props.clip_start || 0;
+            let end = item.props.clip_end || media_duration;
+            let length = end-start;
+            let loops = item.props.clip_loops ?? 1;
+            let duration = length * loops;
+            let offset = ((item.props.clip_offset || 0) % length) || 0;
+            clipping = { start, end, length, duration, offset, loops };
+        }
+
+        var chapters;
+        if (is_playlist) {
+            chapters = [];
+            for (var items of item._tracks) {
+                var t = 0;
+                var tt = 0;
+                for (var c of items) {
+                    var cud = c._userdata;
+                    cud.start = t;
+                    cud.timeline_start = tt;
+                    t += cud.duration;
+                    tt += cud.timeline_duration;
+                    cud.end = t;
+                    cud.timeline_end = tt;
+                    if (is_merged) {
+                        chapters.push(new Chapter$({ id: c.id, start: cud.start, end: cud.end }));
+                    }
+                }
+            }
+        } else {
+            chapters = utils.json_copy((media_info.chapters || EMPTY_ARRAY).map(c=>new Chapter$(c)));
+        }
+        if (chapters) {
+            var min = 0
+            var max = Number.POSITIVE_INFINITY;
+            if (clipping) {
+                var segments = get_clip_segments(clipping);
+                if (segments.length == 1) {
+                    min = segments[0].start;
+                    max = segments[0].end;
+                } else {
+                    var t = 0;
+                    chapters = segments.map((s,index)=>{
+                        var start = t;
+                        t += s.duration;
+                        return new Chapter$({start, end:t, title:`${name}`});
+                    });
+                }
+            }
+            chapters = chapters.filter((c)=>c.end >= min && c.start <= max);
+            chapters.sort((a,b)=>a.start-b.start);
+            chapters.forEach((c,i)=>{
+                c.index = i;
+                c.start = Math.max(0, c.start-min);
+                c.end = Math.min(max-min, c.end-min);
+                if (!c.id && !c.title) c.title = `Chapter ${i+1}`;
+            });
+        }
+        
+        this.name = name;
+        this.is_processing = is_processing;
+        this.is_modified = !!(props.size && !item._is_special);
+        this.duration = duration || 0;
+        this.media_duration = media_duration || 0;
+        this.children_duration = children_duration || 0;
+        this.timeline_duration = timeline_duration || 0;
+        this.clipping = clipping;
+        this.chapters = chapters;
+        this.id = ++playlist_item_userdata_uid;
+    }
+}
+
+/** @param {PlaylistItem$[]} items */
+function get_items_title(items) {
+    items = items.filter(i=>i);
+    if (items.length > 1) return `${items.length} Files`;
+    if (items.length == 1) {
+        return `${items[0]._get_pretty_name()}`;
+    }
+    return `[No Item]`;
+}
+
 export class CropPreview extends ui.UI {
     rect = new utils.Rectangle();
 
@@ -2047,31 +1993,31 @@ function set_crop_border(elem, rect) {
         height:`${rect.height*100}%`,
     });
 }
-export class SelectableList extends utils.EventEmitter {
-    get selected() { return this._selected; }
-    get selected_index() { return this.items.indexOf(this._selected); }
-    constructor(elem, options) {
-        super();
-        /** @type {HTMLElement} */
-        this.elem = elem || $("<div></div>")[0];
+export class SelectableList extends ui.UI {
+    /** @type {HTMLElement} */
+    #selected;
+    get selected() { return this.#selected; }
+    get selected_index() { return this.items.indexOf(this.#selected); }
+    constructor(elem, settings) {
+        super(elem, {
+            ...settings,
+        });
         dom.add_class(elem, "selectable-list");
         dom.set_attribute(elem, "tabindex", "-1");
         $(elem).disableSelection();
-        this.options = Object.assign({
-            "selector":"*",
-            "selectedClass":"selected",
-        }, options);
         
         elem.addEventListener("click",(e)=>{
             var tr = this.items.find(elem=>elem.contains(e.target));
             if (!tr) return;
             this.toggle(tr);
         });
-        window.addEventListener("keydown", this.on_keydown = (e)=>{
+
+        var on_keydown;
+        window.addEventListener("keydown", on_keydown = (e)=>{
             if (!dom.has_focus(this.elem)) return;
             e.preventDefault();
             var items = this.items;
-            var index = items.indexOf(this._selected);
+            var index = items.indexOf(this.#selected);
             if (e.key === "ArrowUp") {
                 index--;
             } else if (e.key === "ArrowDown") {
@@ -2082,47 +2028,36 @@ export class SelectableList extends utils.EventEmitter {
             index = utils.clamp(index, 0, items.length-1);
             this.select(items[index]);
         });
-    }
-    get_item(i) {
-        return this.items[i];
+
+        this.on("destroy", ()=>{
+            window.removeEventListener("keydown", on_keydown);
+        });
     }
     get items() {
-        return Array.from(this.elem.children).filter(e=>e.matches(this.options.selector));
+        return Array.from(this.elem.children);
     }
+    /** @param {HTMLElement} item */
     toggle(item) {
-        if (this._selected === item) this.select(null);
+        if (this.#selected === item) this.select(null);
         else this.select(item);
     }
+    /** @param {HTMLElement} item */
     select(item) {
         this.elem.focus();
-        if (this._selected === item) return;
-        if (this._selected) {
-            dom.remove_class(this._selected, this.options.selectedClass);
-            this.emit("deselect", this._selected);
+        if (this.#selected === item) return;
+        if (this.#selected) {
+            dom.remove_class(this.#selected, "selected");
+            this.emit("deselect", this.#selected);
         }
-        this._selected = item;
-        if (this._selected) {
-            dom.add_class(this._selected, this.options.selectedClass);
-            this._selected.scrollIntoView({block:"nearest", inline:"nearest"})
-            this.emit("select", this._selected);
+        this.#selected = item;
+        if (this.#selected) {
+            dom.add_class(this.#selected, "selected");
+            this.#selected.scrollIntoView({block:"nearest", inline:"nearest"})
+            this.emit("select", this.#selected);
         }
-        this.emit("change", this._selected);
-    }
-
-    destroy() {
-        window.removeEventListener("keydown", this.on_keydown);
+        this.emit("selection_change");
     }
 }
-
-/* class Chapter {
-    constructor(c,i) {
-        Object.assign(this, c);
-        this.index = i;
-    }
-    toString(with_time=false) {
-        return `${String(this.index+1).padStart(2,"0")}. ${this.title}` + (with_time?` [${utils.ms_to_timespan_str(this.time*1000)}]`:"");
-    }
-} */
 
 
 //---------------------------------------------------------------------------------
@@ -2131,8 +2066,7 @@ export function get_rect_pt_percent(rect, pt) {
     return {x:(pt.x-rect.x)/rect.width, y:(pt.y-rect.y)/rect.height};
 }
 
-// fancy box fixes (ffs so fucking many)...
-
+// fancy box fixes...
 class Fancybox extends _Fancybox {
     attachEvents() {
         this.original_active_element = document.activeElement;
@@ -2150,6 +2084,7 @@ class Fancybox extends _Fancybox {
     }
     onClick(e) {
         if (this._content_mousedown) return;
+        if (!this.options.hideOnSlideClick && e.target.matches(".fancybox__slide")) return;
         super.onClick(e);
     }
 }
@@ -2278,67 +2213,92 @@ export class JSONContainer extends ui.UI {
 // -----------------------------------------------------------
 
 /**
- * @typedef {{
- *  "modal.title": UISetting<string>,
- *  "modal.title_overflow": UISetting<boolean>,
- *  "modal.close": UISetting<boolean>,
- *  "modal.footer": UISetting<boolean>,
- *  "modal.header": UISetting<boolean>,
- *  "modal.width": UISetting<number | string>,
- *  "modal.props": UISetting<ui.PropertyContainer>,
- *  "modal.hide": function(),
- *  "modal.show": function(),
- *  "modal.block_updates": UISetting<boolean>,
- * }} ModalSettings
+ * @template ItemType
+ * @template {Modal<ItemType>} ThisType
+ * @typedef {ui.UISettings<ThisType> & {
+*  "modal.title": ui.UISetting<ThisType, string>,
+*  "modal.title_overflow": ui.UISetting<ThisType, boolean>,
+*  "modal.hide_on_click_outside": ui.UISetting<ThisType, boolean>,
+*  "modal.footer": ui.UISetting<ThisType, boolean>,
+*  "modal.header": ui.UISetting<ThisType, boolean>,
+*  "modal.width": ui.UISetting<ThisType, number|string>,
+*  "modal.hide": (this: ThisType) => void,
+*  "modal.show": (this: ThisType) => void,
+*  "modal.data": (this: ThisType, item: ItemType, path: string[]) => any,
+* }} ModalSettings
+*/
+
+/** 
+ * @typedef {ui.UIEvents & {
+ *   show: any,
+ *   hide: any
+ * }} ModalEvents 
  */
 
-/** @template ItemType @extends {ui.UI<ModalSettings,{show:function(),hide:function()}>} */
+/**
+* @template ItemType
+* @template {ModalSettings<ItemType,Modal>} Settings
+* @template {ModalEvents} Events
+* @extends {ui.UI<Settings,Events>}
+*/
 export class Modal extends ui.UI {
     get showing() { return !!this.fb; }
     get modal_title() { return this.get_setting("modal.title"); }
     get changes() { return this.props.changes; }
+    get item() { return this.props.items[0]; }
+    /** @type {ItemType[]} */
     get items() { return this.props.items; }
-    get item() { return this.props.item; }
-    get block_updates() { return this.get_setting("modal.block_updates"); }
+    /** @template T @param {new() => T} type @returns {T[]} */
+    static get (type) {
+        return [...Modal.showing].filter(m=>m instanceof type);
+    }
 
-    /** @type {ui.PropertyContainer<ItemType>} */
+    /** @type {ui.PropertyGroup<ItemType>} */
     props;
 
     /** @type {Set<Modal>} */
     static showing = new Set();
     showing_promise = Promise.resolve();
     #showing_resolve;
-    #cancelled = false;
 
-    /** @param {ModalSettings} settings */
+    /** @param {Settings} settings */
     constructor(settings) {
         settings = {
             // modal_click: "close",
-            "modal.close": true,
+            "modal.hide_on_click_outside": true,
             "modal.title": "",
             "modal.title_overflow": false,
             "modal.footer": false,
             "modal.header": true,
             "modal.width": undefined,
-            "modal.props": false,
-            "modal.block_updates": false,
-            "modal.props": ()=>new ui.PropertyContainer(),
+            "modal.data": (item, path)=>utils.reflect.get(item, path),
+            "modal.items": [undefined],
+            "modal.return_value": (r)=>r,
             ...settings
         };
 
         super(settings);
         
-        this.header = new ui.UI($(`<div class="modal-header"></div>`)[0], {
+        this.header = new ui.UI(null, {
+            class: "modal-header",
             hidden: !this.get_setting("modal.header"),
         });
-        this.content = new ui.UI($(`<div class="modal-content"></div>`)[0]);
-        this.footer = new ui.UI($(`<div class="modal-footer"></div>`)[0], {
+        this.content = new ui.UI(null, {
+            class: "modal-content",
+        });
+        this.footer = new ui.UI({
+            class: "modal-footer",
             hidden: !this.get_setting("modal.footer"),
         });
 
         this.elem.append(this.header, this.content, this.footer);
 
-        this.props = this.get_setting("modal.props");
+        this.props = new ui.PropertyGroup({
+            "items": ()=>this.get_setting("modal.items"),
+            "data": (item, path)=>this.get_setting("modal.data", item, path),
+            "show_changed": true,
+            "show_not_default": true,
+        });
         this.content.append(this.props);
         
         this.props.on("change", ()=>{
@@ -2357,96 +2317,182 @@ export class Modal extends ui.UI {
             dom.set_inner_html(this.header.elem, this.get_setting("modal.title"));
             dom.toggle_class(this.header.elem, "overflow", this.get_setting("modal.title_overflow"));
         });
+
+        var on_key_down;
+        document.addEventListener("keydown", on_key_down = (e)=>{
+            if (e.code === "Escape") {
+                var modal = [...Modal.showing].pop();
+                if (modal === this) {
+                    modal.escape();
+                    return false;
+                }
+            }
+        });
+        this.on("destroy", ()=>{
+            document.removeEventListener("keydown", on_key_down);
+        });
+
+        app.emit("modal-create", this);
     }
 
     async load() {}
 
-    async show(items) {
-        if (this.fb) return;
-        this.#cancelled = false;
-        this.showing_promise = new Promise(resolve=>this.#showing_resolve = resolve);
-        Modal.showing.add(this);
-        if (!Array.isArray(items)) items = [items];
-        if (this.props) this.props.items = items;
-        
-        // remove close button created by fancybox
-        var close_button = this.elem.querySelector("button.carousel__button.is-close");
-        if (close_button) close_button.remove();
-        
-        this.emit("before-show");
+    /** @param {ItemType[]} items */
+    async show() {
+        if (!this.fb) {
+            app.emit("modal-show", this);
 
-        await this.load();
-        this.fb = new Fancybox([{
-            src: this.elem,
-            type: "html",
-        }], {
-            on: {
-                shouldClose:(e)=>{
-                    return this.get_setting("modal.close");
-                }
-            }
+            this.showing_promise = new Promise(resolve=>this.#showing_resolve = resolve);
+            app.blocking_updates.add(this.showing_promise);
+            Modal.showing.add(this);
+            
+            // remove close button created by fancybox
+            var close_button = this.elem.querySelector("button.carousel__button.is-close");
+            if (close_button) close_button.remove();
+            
+            this.emit("before-load");
+
+            await this.load();
+            await this.get_setting("modal.load");
+            
+            this.emit("before-show");
+
+            this.fb = new Fancybox([{
+                src: this.elem,
+                type: "html",
+            }], {
+                hideOnSlideClick: this.get_setting("modal.hide_on_click_outside"),
+            });
+            this.fb.on("closing",()=>{
+                this.fb = null;
+                Modal.showing.delete(this);
+                this.#showing_resolve();
+                this.emit("hide");
+            });
+
+            this.update();
+            
+            this.emit("show");
+        }
+
+        return this.showing_promise.then((result)=>{
+            return this.get_setting("modal.return_value", result);
         });
-        this.fb.on("closing",()=>{
-            this.fb = null;
-            Modal.showing.delete(this);
-            this.#showing_resolve();
-            if (!this.#cancelled) {
-                this.get_setting("modal.apply");
-                this.emit("apply");
-            }
-            this.emit("hide");
-        });
+    }
 
-        if (this.props) this.props.refresh();
-
-        await this.update();
-
-        if (this.props) this.props.save();
-        
-        this.emit("show");
+    escape() {
+        this.hide();
     }
 
     hide() {
         if (this.fb) this.fb.close();
     }
+}
 
+/**
+ * @template ItemType
+ * @typedef {ModalSettings<ItemType> & {
+*  "modal.apply": function(),
+*  "modal.auto_apply": boolean,
+* }} EditModalSettings
+*/
+
+/** @template ItemType @extends {Modal<ItemType,EditModalSettings<ItemType>>} */
+export class EditModal extends Modal {
+    #applied = false;
+    #cancelled = false;
+
+    /** @param {EditModalSettings<ItemType>} settings */
+    constructor(settings) {
+        super({
+            "modal.footer": true,
+            "modal.hide_on_click_outside": ()=>this.get_setting("modal.auto_apply"),
+            "modal.auto_apply": true,
+            "modal.ok": "OK",
+            "modal.cancel": "Cancel",
+            ...settings,
+        });
+        this.on("before-show", ()=>{
+            this.#cancelled = false;
+            this.#applied = false;
+        });
+        this.on("hide", ()=>{
+            if (this.get_setting("modal.auto_apply") && !this.#cancelled) {
+                this.apply();
+            }
+        });
+        
+        var save_button = new ui.Button(`<button>Save</button>`, {
+            "content":()=>this.get_setting("modal.ok") || "OK",
+            "click":()=>this.apply(),
+            "hidden": ()=>!this.get_setting("modal.ok"),
+        })
+        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
+            "content":()=>this.get_setting("modal.cancel") || "Cancel",
+            "hidden": ()=>!this.get_setting("modal.cancel"),
+            "click":()=>this.cancel()
+        })
+        this.footer.append(save_button, cancel_button);
+    }
+    apply() {
+        if (this.#applied) return;
+        this.#applied = true;
+        this.get_setting("modal.apply");
+        this.emit("apply");
+        this.hide();
+    }
     cancel() {
+        if (this.#cancelled) return;
         this.#cancelled = true;
         this.hide();
     }
+
+    escape() {
+        this.cancel();
+    }
 }
 
-/** @extends {Modal<TargetsMenu>} */
-export class TargetConfigMenu extends Modal {
+export class PromptModal extends EditModal {
+    constructor(message, defaultValue="") {
+        var modal = new Modal({
+            "modal.title": title,
+            "modal.return_value": ()=>input.value,
+        });
+        this.props.append(`<div>${message}</div>`);
+        input = new ui.InputProperty(`<input type="text"></input>`, {
+            "reset": false,
+            "default": defaultValue,
+        });
+        this.props.append(input);
+    }
+}
+
+/** @extends {EditModal<ExpandedTargetsProperty>} */
+export class TargetConfigMenu extends EditModal {
     get _target() { return app.$.targets[this._target_id]; }
     
-    /** @param {Target} target  */
-    constructor(target_id, title) {
+    /** @param {string} target_id @param {ExpandedTargetsProperty} prop */
+    constructor(target_id, title, prop) {
         super({
             "modal.title": `Configure ${title}`,
-            "modal.props": new ui.PropertyContainer({
-                "nullify_defaults": true,
-                "data": (_,path)=>utils.reflect.get(this.item._value[target_id], path),
-            }),
-            "modal.footer": true,
             "modal.apply": ()=>{
-                var enabled = this.item._value[target_id].enabled;
-                this.item._value[target_id] = {enabled, ...this.props.named_property_lookup};
-                this.item.update();
-            }
+                var value = prop.targets_prop.opts.value;
+                value[target_id] = {...this.props.raw_value};
+                prop.targets_prop.opts.set_value(value, {trigger:true});
+            },
+            "modal.items": [prop],
+            "modal.data": (_,path)=>{
+                return utils.reflect.get(prop.targets_prop.opts.value, [target_id, ...path]);
+            },
         });
         this._target_id = target_id;
-        app.target_config_menus[target_id] = this;
-        
-        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
-            "click":()=>this.cancel()
-        })
-        this.footer.append(cancel_button);
 
         var _this = this;
 
-        /** @this {ui.Property} */
-        this._get_default = function() { return _this._target.opts[this.name]; }
+        /** @this {ui.InputProperty} */
+        this._get_default = function() {
+            return _this._target.opts[this.name];
+        }
 
         this.config();
     }
@@ -2455,11 +2501,11 @@ export class TargetConfigMenu extends Modal {
 }
 
 export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
-    constructor() {
-        super("local", `Local Media Server`);
+    constructor(prop) {
+        super("local", `Local Media Server`, prop);
     }
     config() {
-        var use_hardware = new ui.Property(`<select>`, {
+        var use_hardware = new ui.InputProperty(`<select>`, {
             "name": "use_hardware",
             "label": "Use Hardware",
             "options": YES_OR_NO,
@@ -2467,7 +2513,7 @@ export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
             "info": "Use GPU to encode (much faster than using CPU)"
         });
         this.props.append(use_hardware);
-        var use_hevc = new ui.Property(`<select>`, {
+        var use_hevc = new ui.InputProperty(`<select>`, {
             "name": "use_hevc",
             "label": "Use HEVC",
             "options": YES_OR_NO,
@@ -2478,58 +2524,52 @@ export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
         var outputs = new ui.PropertyList({
             "name": "outputs",
             "label": "Outputs", 
-            "item_size": 300,
-            ui(list_item) {
-                list_item.content.append(new class extends ui.PropertyContainer {
-                    constructor() {
-                        super();
-                        var name = new ui.Property(`<input type="text">`, {
-                            "name": "name",
-                            "label": "Name",
-                            "reset": false,
-                            "placeholder": "Name of preset"
-                        });
-                        var resolution = new ui.Property(`<select>`, {
-                            "name": "resolution",
-                            "label": "Resolution",
-                            "options": [[0, "Pass-through"], ...[1080, 720, 480, 360, 240].map(o=>[o,String(o)+"p"])],
-                            "reset": false,
-                        });
-                        var video_bitrate = new ui.Property(`<input type="number">`, {
-                            "name": "video_bitrate",
-                            "label": "Video Bitrate",
-                            "suffix": `kbps`,
-                            "step": 50,
-                            "min": 100,
-                            "max": 5000,
-                            "reset": false,
-                        });
-                        var audio_bitrate = new ui.Property(`<input type="number">`, {
-                            "name": "audio_bitrate",
-                            "label": "Audio Bitrate",
-                            "suffix": `kbps`,
-                            "step": 1,
-                            "min": 64,
-                            "max": 320,
-                            "reset": false,
-                        });
-
-                        this.append(name);
-                        var row = new ui.FlexRow();
-                        row.append(resolution, video_bitrate, audio_bitrate);
-                        this.append(row);
-                    }
-                });
-            },
+            // "item_size": 300,
             "default": this._get_default,
+            ui(list_item) {
+                var name = new ui.InputProperty(`<input type="text">`, {
+                    "name": "name",
+                    "label": "Name",
+                    "placeholder": "Name of preset",
+                    "reset": false,
+                });
+                var resolution = new ui.InputProperty(`<select>`, {
+                    "name": "resolution",
+                    "label": "Resolution",
+                    "options": [[0, "Pass-through"], ...[1080, 720, 480, 360, 240].map(o=>[o,String(o)+"p"])],
+                    "reset": false,
+                });
+                var video_bitrate = new ui.InputProperty(`<input type="number">`, {
+                    "name": "video_bitrate",
+                    "label": "Video Bitrate",
+                    "suffix": `kbps`,
+                    "step": 50,
+                    "min": 100,
+                    "max": 5000,
+                    "reset": false,
+                });
+                var audio_bitrate = new ui.InputProperty(`<input type="number">`, {
+                    "name": "audio_bitrate",
+                    "label": "Audio Bitrate",
+                    "suffix": `kbps`,
+                    "step": 1,
+                    "min": 64,
+                    "max": 320,
+                    "reset": false,
+                });
+                list_item.props.append(name);
+                var row = new ui.FlexRow();
+                row.append(resolution, video_bitrate, audio_bitrate);
+                list_item.props.append(row);
+            },
         });
         this.props.append(outputs);
     }
 }
 
 export class FileTargetConfigMenu extends TargetConfigMenu {
-    constructor() {
-        super("file", `File`);
+    constructor(prop) {
+        super("file", `File`, prop);
     }
     config() {
         var keywords = {
@@ -2538,21 +2578,21 @@ export class FileTargetConfigMenu extends TargetConfigMenu {
             "date": "Date timestamp"
 
         }
-        var filename = new ui.Property(`<input type="text">`, {
+        var filename = new ui.InputProperty(`<input type="text">`, {
             "name": "filename",
             "label": "Output File Name",
             "default": this._get_default,
             "info": `<span>The name of the file which will be output to your session directory.<br>Special keywords:</span><ul>${Object.entries(keywords).map(([k,v])=>`<li style="margin:0">${k} => ${v}</li>`).join("")}</ul>`
         });
         this.props.append(filename);
-        var format = new ui.Property(`<select>`, {
+        var format = new ui.InputProperty(`<select>`, {
             "name": "format",
             "label": "Output Format",
             "default": "flv",
             "options": [["flv", "flv"], ["matroska", "matroska"], ["mp4", "mp4"]]
         });
         this.props.append(format);
-        var re = new ui.Property(`<select>`, {
+        var re = new ui.InputProperty(`<select>`, {
             "name": "re",
             "label": "Realtime",
             "options": YES_OR_NO,
@@ -2564,11 +2604,11 @@ export class FileTargetConfigMenu extends TargetConfigMenu {
 }
 
 export class GUITargetConfigMenu extends TargetConfigMenu {
-    constructor() {
-        super("gui", `GUI`);
+    constructor(prop) {
+        super("gui", `GUI`, prop);
     }
     config() {
-        var osc = new ui.Property(`<select></select>`, {
+        var osc = new ui.InputProperty(`<select></select>`, {
             "name": "osc",
             "label": "Show OSC",
             "options": YES_OR_NO,
@@ -2578,15 +2618,20 @@ export class GUITargetConfigMenu extends TargetConfigMenu {
         this.props.append(osc);
     }
 }
-
-export class UserConfigurationSettings extends Modal {
+export class UserConfigurationSettings extends EditModal {
     constructor() {
         super({
-            "modal.props": new ui.PropertyContainer({
-                "data": (_,k)=>app.settings.get(k[0]),
-            }),
             "modal.title": "Client Configuration",
-            "modal.footer":true,
+            /* "modal.data": (_,k)=>{
+                console.log(k)
+                return app.local_settings.get(k[0])
+            }, */
+            "modal.apply": ()=>{
+                var value = this.props.value;
+                for (var k in value) {
+                    app.local_settings.set(k, value[k]);
+                }
+            }
         });
 
         var groups = utils.group_by(Object.entries(app.settings_prop_defs), ([k,v])=>v.__group__);
@@ -2601,14 +2646,18 @@ export class UserConfigurationSettings extends Modal {
                     "title": def.__title__,
                     "options": def.__options__,
                     "default": def.__default__,
+                    "data": (_,k)=>{
+                        console.log(k)
+                        return app.local_settings.get(k[0])
+                    }
                 };
                 if (def.__info__) prop_settings.info = def.__info__;
                 
-                row.append(new ui.Property(def.__input__, prop_settings));
+                row.append(new ui.InputProperty(def.__input__, prop_settings));
             }
             this.props.append(box);
         });
-        var ping = new ui.Property(`<input type="text">`, {
+        var ping = new ui.InputProperty(`<input type="text">`, {
             "label": "Client Ping",
             "readonly": true,
             "default": ()=>`${app.$._ping} ms`,
@@ -2637,7 +2686,7 @@ export class UserConfigurationSettings extends Modal {
         
         var reset_layout_button = new ui.Button(`<button>Reset Layout</button>`, {
             "click": ()=>{
-                app.settings.set("layout", null);
+                app.local_settings.set("layout", null);
                 app.update_layout();
             }
         });
@@ -2652,18 +2701,12 @@ export class UserConfigurationSettings extends Modal {
             }
         });
         this.footer.append(logout_button);
-
-        this.props.on("change", (e)=>{
-            if (!e.name || !e.trigger) return;
-            app.settings.set(e.name, e._value);
-        })
     }
 }
-export class KeyboardShortcuts extends Modal {
+export class KeyboardShortcutsMenu extends Modal {
     constructor() {
         super({
             "modal.title": "Controls",
-            "modal.props": new ui.PropertyContainer(),
         });
         var sections = {
             "General": [
@@ -2703,7 +2746,6 @@ export class FileSystemInfoMenu extends Modal {
             "modal.title": "Local File System Tree",
             "modal.width": "80%",
             "modal.footer": true,
-            "modal.props": new ui.PropertyContainer(),
         });
         var uid = 0;
         var nodes = [];
@@ -2917,10 +2959,7 @@ export class FileSystemInfoMenu extends Modal {
         });
         this.footer.append(refresh_button)
         
-        var inited;
-        this.on("before-show", ()=>{
-            if (inited) return;
-            inited = true;
+        this.on("show", ()=>{
             init();
         })
     }
@@ -2929,8 +2968,7 @@ export class FileSystemInfoMenu extends Modal {
 export class SystemManagerMenu extends Modal {
     constructor() {
         super({
-            "modal.title": "System Manager",
-            "modal.props": new ui.PropertyContainer(),
+            "modal.title": "System Manager"
         });
         class Bar extends ui.UI {
             constructor(settings) {
@@ -3084,7 +3122,7 @@ export class SystemManagerMenu extends Modal {
 
 /** @extends {Modal<string>} */
 export class FileManagerMenu extends Modal {
-    constructor() {
+    constructor(url) {
         super({
             "modal.footer": false,
             "modal.header": false,
@@ -3094,7 +3132,7 @@ export class FileManagerMenu extends Modal {
             "height": "100%",
             "min-height": "200px",
         });
-        Object.assign(this.props.elem.style, {
+        Object.assign(this.content.elem.style, {
             "padding": 0,
             "height": "100%",
         });
@@ -3104,36 +3142,33 @@ export class FileManagerMenu extends Modal {
         this.props.elem.append(this.iframe);
 
         this.on("before-show", ()=>{
-            this.iframe.src = this.item;
+            this.iframe.src = url;
         });
     }
 }
 
 
-export class ScheduleGenerator extends Modal {
+export class ScheduleGeneratorMenu extends Modal {
     constructor() {
         super({
             "modal.title": "Schedule Generator",
-            "modal.props": new ui.PropertyContainer({
-                "items": ()=>[app.settings.get("schedule_generator") || {}],
-                "nullify_defaults": true,
-            }),
+            "modal.items": ()=>[app.local_settings.get("schedule_generator") || {}],
         });
 
         var row = this.props.append(new ui.FlexRow());
         row.append(
-            this.start_time = new ui.Property(`<input type="time">`, {
+            this.start_time = new ui.InputProperty(`<input type="time">`, {
                 "name": "start_time",
                 "label": "Start Time",
                 "default": ()=>"00:00" //new Date().toLocaleTimeString().slice(0,5)
             }),
-            this.time_rounding = new ui.Property(`<select>`, {
+            this.time_rounding = new ui.InputProperty(`<select>`, {
                 "name": "time_rounding",
                 "label": "Time Rounding",
                 "default": 5*60,
                 "options": [[1*60,"None"],[5*60,"5 mins"],[10*60,"10 mins"],[15*60,"15 mins"]],
             }),
-            this.min_duration_filter = new ui.Property(`<select>`, {
+            this.min_duration_filter = new ui.InputProperty(`<select>`, {
                 "name": "min_duration_filter",
                 "label": "Minimum Duration Filter",
                 "default": 0,
@@ -3150,13 +3185,13 @@ export class ScheduleGenerator extends Modal {
             //     "default": "24",
             //     "options": [["12","12 Hour"], ["24","24 Hour"]],
             // }),
-            this.remove_ext = new ui.Property(`<select>`, {
+            this.remove_ext = new ui.InputProperty(`<select>`, {
                 "name": "remove_ext",
                 "label": "Remove File Extensions",
                 "default": true,
                 "options": YES_OR_NO,
             }),
-            this.use_labels = new ui.Property(`<select>`, {
+            this.use_labels = new ui.InputProperty(`<select>`, {
                 "name": "use_labels",
                 "label": "Use Labels",
                 "default": true,
@@ -3182,7 +3217,7 @@ export class ScheduleGenerator extends Modal {
 
         this.props.on("change", (e)=>{
             if (!e.name || !e.trigger) return;
-            app.settings.set("schedule_generator", this.props.named_property_lookup_not_null);
+            app.local_settings.set("schedule_generator", this.props.raw_value);
         });
 
         this.on("update", ()=>{
@@ -3198,7 +3233,7 @@ export class ScheduleGenerator extends Modal {
                 var time_str = utils.seconds_to_timespan_str(time_r , "hh:mm");
                 rows.push(`${time_str} - ${name}`);
             };
-            /** @param {PlaylistItem} item */
+            /** @param {PlaylistItem$} item */
             var walk = (item)=>{
                 if (!item._is_normal_playlist) {
                     var t = item._userdata.duration;
@@ -3227,9 +3262,6 @@ export class ScheduleGenerator extends Modal {
 export class FontSettings extends Modal {
     constructor() {
         super({
-            "modal.props": new ui.PropertyContainer({
-                "items":()=>app.$.fonts,
-            }),
             "modal.title": `Font Manager`,
             "modal.footer":false,
         });
@@ -3239,7 +3271,7 @@ export class FontSettings extends Modal {
         var row = this.props.append(new ui.FlexRow());
         
         var left_elem = $(`<div class="left"></div>`)[0];
-        var list = new SelectableList($(`<div class="content thin-scrollbar"></div>`)[0], {});
+        var list = new SelectableList($(`<div class="content thin-scrollbar"></div>`)[0]);
         var left_footer_elem = $(`<div class="footer"></div>`)[0];
         left_elem.append(list.elem, left_footer_elem);
         left_elem.style.height="300px";
@@ -3301,19 +3333,24 @@ export class FontSettings extends Modal {
     }
 }
 
-/** @extends {Modal<PlaylistItem>} */
-export class SplitSettings extends Modal {
-    constructor() {
+/** @extends {Modal<PlaylistItem$>} */
+export class SplitMenu extends EditModal {
+    constructor(items) {
         super({
-            "modal.title": ()=>`Split '<span>${PlaylistItem.get_items_title(this.items)}</span>'`,
+            "modal.title": ()=>`Split '<span>${get_items_title(items)}</span>'`,
             "modal.title_overflow": true,
-            "modal.footer":true,
-            "modal.props": new ui.PropertyContainer(),
+            "modal.ok": "Split",
+            "modal.auto_apply": false,
+            "modal.apply": ()=>{
+                app.playlist_split(this.items, this.get_splits(), true);
+                this.time_list.set_value([]);
+            },
+            "modal.items": items,
         });
 
         var row = this.props.append(new ui.FlexRow());
         row.append(
-            this.split_type = new ui.Property(`<select>`, {
+            this.split_type = new ui.InputProperty(`<select>`, {
                 "name": "split_type",
                 "label": "Split Method",
                 "options":[["total", "# of Parts"], ["duration", "Duration"], ["time_list", "List of Time Codes"], ["every_chapter", "Every Chapter"], ["chapter_list", "List of Chapters"]],
@@ -3323,7 +3360,7 @@ export class SplitSettings extends Modal {
 
         var row = this.props.append(new ui.FlexRow());
         row.append(
-            this.total = new ui.Property(`<input type="number"></input>`, {
+            this.total = new ui.InputProperty(`<input type="number"></input>`, {
                 "name": "total",
                 "label": "# of Parts",
                 "info":`Number of pieces (evenly split)`,
@@ -3399,21 +3436,10 @@ export class SplitSettings extends Modal {
             times = utils.sort(times);
             this.time_list.set_value(times);
         });
-        
-        this.split_button = new ui.Button(`<button>Split</button>`, {
-            "click": ()=>{
-                app.playlist_split(this.items, this.get_splits(), true);
-                this.time_list.set_value([]);
-                this.hide();
-            }
-        });
-        this.footer.append(this.split_button)
 
         this.on("show", ()=>{
-            this.seek.update_settings({
-                "seek.duration": this.items[0]._userdata.duration,
-                "seek.chapters": this.items[0]._userdata.chapters
-            });
+            this.seek.settings["seek.duration"] = this.items[0]._userdata.duration;
+            this.settings["seek.chapters"] = this.items[0]._userdata.chapters;
             this.update_markers();
         });
     }
@@ -3448,18 +3474,21 @@ export class SplitSettings extends Modal {
     update_markers(){
         this.seek.clear_markers();
         this.get_splits().forEach(t=>this.seek.add_marker(t));
+        this.update();
     };
 }
 
-/** @extends {Modal<PlaylistItem>} */
-export class CropEditMenu extends Modal {
-    /** @param {Property} @param {DetectedCrop} data @param {Rectangle} rect */
+/** @extends {EditModal<PlaylistItem$>} */
+export class CropEditMenu extends EditModal {
+    /** @param {ui.MultiInputProperty} crop_property @param {DetectedCrop} data @param {Rectangle} rect */
     constructor(crop_property, data, index) {
         super({
             "modal.title": "Crop Editor",
-            "modal.footer": true,
+            "modal.ok": "Save",
             "modal.apply": ()=>{
-                crop_property.set_value([cp.rect.left, cp.rect.top, 1-cp.rect.right,1-cp.rect.bottom], {trigger:true});
+                var new_val = [cp.rect.left, cp.rect.top, 1-cp.rect.right, 1-cp.rect.bottom];
+                console.log(new_val);
+                crop_property.set_value(new_val, {trigger:true});
             }
         });
 
@@ -3469,26 +3498,15 @@ export class CropEditMenu extends Modal {
         var default_rect = new utils.Rectangle(0,0,1,1);
         var detected_crop_rect = new utils.Rectangle(0,0,1,1);
         
-        var reset_button0 = new ui.Button(`<button><i class="fas fa-arrow-rotate-left"></i></button>`, {
-            "title": "Undo",
-            "disabled": ()=>cp.rect.equals(rect),
-            "click": ()=>cp.update_crop(rect),
-        })
         var reset_button = new ui.Button(`<button>Set to Detected</button>`, {
-            "flex": 1,
             "disabled": ()=>cp.rect.equals(detected_crop_rect),
             "click": ()=>cp.update_crop(detected_crop_rect),
         })
         var reset_button2 = new ui.Button(`<button>Reset</button>`, {
-            "flex": 1,
             "disabled": ()=>cp.rect.equals(default_rect),
             "click": ()=>cp.update_crop(default_rect),
         })
-        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
-            "flex": 1,
-            "click":()=>this.cancel()
-        })
-        this.footer.append(reset_button0, reset_button, reset_button2, cancel_button);
+        this.footer.append(reset_button, reset_button2);
 
         var container = $(`<div class="crop-editor-container"></div>`)[0];
         var crop_container = $(`<div></div>`)[0];
@@ -3532,70 +3550,56 @@ export class CropEditMenu extends Modal {
 }
 
 
-export class ScheduleStreamSettings extends Modal {
+/** @extends {Modal<Session$>} */
+export class ScheduleStreamMenu extends EditModal {
     constructor() {
         super({
             "modal.title": "Schedule Stream Start",
-            "modal.props": new ui.PropertyContainer({
-                "items": ()=>[app.$._session],
-                "nullify_defaults": true,
-            }),
-            "modal.footer": true,
             "modal.apply": ()=>{
                 app.request({
-                    call: ["session", "set_values"],
-                    arguments: this.props.named_property_lookup
+                    call: ["session", "update_values"],
+                    arguments: this.props.raw_value
                 });
-            }
+            },
+            "modal.items": [app.$._session],
         });
 
+        this.schedule_start_time = new ui.DateTimeProperty({
+            "name": "schedule_start_time",
+            "label": function() {
+                var n = `Start Date/Time`;
+                if (this.value) {
+                    n += ` (<i>${utils.time_diff_readable(Date.now(), new Date(this.value))||"-"}</i>)`;
+                }
+                return n;
+            },
+            "default": null,
+            "datetime.after_now":true,
+        })
+
         var row = this.props.append(new ui.FlexRow());
-        row.append(
-            this.schedule_start_time = new ui.DateTimeProperty({
-                "name": "schedule_start_time",
-                "label": function() {
-                    var n = `Start Date/Time`;
-                    if (this.value) {
-                        n += ` (<i>${utils.time_diff_readable(Date.now(), new Date(this.value))}</i>)`;
-                    }
-                    return n;
-                },
-                "default": null,
-                "datetime.after_now":true,
-            })
-        )
-        
-        this.footer.append(new ui.Button(`<button>Cancel</button>`, {
-            click:()=>this.cancel()
-        }));
-        var reset_button = new ui.Button(`<button>Reset</button>`, {
-            "click": ()=>this.reset()
-        });
-        this.footer.append(reset_button);
+        row.append(this.schedule_start_time)
     }
 }
 
-export class SessionConfigurationSettings extends Modal {
+/** @extends {Modal<Session$>} */
+export class SessionConfigurationMenu extends EditModal {
     constructor() {
         super({
             "modal.title":"Session Configuration",
-            "modal.props": new ui.PropertyContainer({
-                "items": ()=>[app.$._session],
-            }),
-            "modal.footer": true,
             "modal.apply": ()=>{
                 app.request({
-                    call: ["session", "set_values"],
-                    arguments: this.props.named_property_lookup
+                    call: ["session", "update_values"],
+                    arguments: this.props.raw_value
                 });
             },
+            "modal.items": [app.$._session],
         });
 
-        function get_default() { return utils.try_catch(()=>app.$.properties[this.name].__default__); }
-        this.name = new ui.Property(`<input type="text">`, {
+        function get_default() { return utils.try_catch(()=>InternalSessionProps[this.name].__default__); }
+        this.name = new ui.InputProperty(`<input type="text">`, {
             "name": "name",
             "label": "Session Name",
-            "default": null,
             "reset": false,
         });
         this.name.validators.push(VALIDATORS.not_empty);
@@ -3604,23 +3608,19 @@ export class SessionConfigurationSettings extends Modal {
             "name": "default_stream_title",
             "label": "Default Stream Title",
             "placeholder":()=>this.name.value,
-            "default": "",
             "reset": true,
         }); */
         
-        this.creation_time = new ui.Property(`<input type="text">`, {
-            "name": "creation_time",
+        this.creation_time = new ui.InputProperty(`<input type="text">`, {
             "label": "Creation Date",
             "readonly": true,
-            "reset": false,
+            "value": ()=>new Date(this.item.creation_time).toLocaleString()
         });
-        this.creation_time.output_modifiers.push(v=>new Date(v).toLocaleString());
 
-        this.stream_host = new ui.Property(`<input type="text">`, {
+        this.stream_host = new ui.InputProperty(`<input type="text">`, {
             "label": "Stream Host",
             "readonly": true,
-            "default": ()=>app.get_media_server_base_url(),
-            "reset": false,
+            "value": ()=>app.get_media_server_base_url(),
             "copy": true,
             "info": "Connect and stream to dynamic RTMP playlist items. Use this RTMP host and key in OBS or your streaming software of preference",
         });
@@ -3631,8 +3631,7 @@ export class SessionConfigurationSettings extends Modal {
             "textarea.grow": true,
             "textarea.break_all": true,
             "readonly": true,
-            "default": ()=>`session/${app.$._session.id}`,
-            "reset": false,
+            "value": ()=>`session/${app.$._session.id}`,
             "copy": true,
         });
 
@@ -3647,22 +3646,24 @@ export class SessionConfigurationSettings extends Modal {
             "title": "Regenerate Key",
         });
         this.stream_key.group_elem.append(regenerate_button); */
-        this.background_mode = new ui.Property(`<select></select>`, {
+        this.background_mode = new ui.InputProperty(`<select></select>`, {
             "name": "background_mode",
             "label": "Background Mode",
-            "options": ()=>utils.try_catch(()=>app.$.properties.background_mode.__options__, []),
-            "default": ()=>utils.try_catch(()=>app.$.properties.background_mode.__default__, null),
+            "options": ()=>utils.try_catch(()=>InternalSessionProps.background_mode.__options__, []),
+            "default": ()=>utils.try_catch(()=>InternalSessionProps.background_mode.__default__, null),
         });
 
-        this.background_color = new ui.Property(`<input type="color">`, {
+        this.background_color = new ui.InputProperty(`<input type="color">`, {
             "name": "background_color",
             "label": "Background Color",
+            "default": get_default,
         });
         
-        [this.background_file, this.background_file_start, this.background_file_end] = create_video_file_start_end_properties({
-            "name": "background_file",
+        [this.video_file, this.video_file_start, this.video_file_end] = create_video_file_start_end_properties({
+            "name": "video_file",
             "label": "Background File",
             "hidden": ()=>this.background_mode.value !== "file",
+            "default": get_default,
         })
 
         this.files_dir = new FileProperty({
@@ -3674,7 +3675,7 @@ export class SessionConfigurationSettings extends Modal {
         });
         this.files_dir.validators.push(VALIDATORS.media_exists);
 
-        this.interpolation_mode = new ui.Property(`<select></select>`, {
+        this.interpolation_mode = new ui.InputProperty(`<select></select>`, {
             "name": "interpolation_mode",
             "label": "Interpolation Mode",
             "options":()=>{
@@ -3682,7 +3683,7 @@ export class SessionConfigurationSettings extends Modal {
             },
             "default": get_default,
         });
-        this.auto_interpolation_rate = new ui.Property(`<select></select>`, {
+        this.auto_interpolation_rate = new ui.InputProperty(`<select></select>`, {
             "name": "auto_interpolate_rate",
             "label": "Auto Interpolation Target FPS",
             "options":()=>{
@@ -3698,7 +3699,7 @@ export class SessionConfigurationSettings extends Modal {
             "info": "Owners: Full access.\nAllowed: Full access but cannot edit session confugration, delete the session, load/save session files or access history.\nDenied: No access rights whatsoever.",
         });
         
-        this.on("before-show", ()=>{
+        this.props.on("update", ()=>{
             var layout = [
                 [this.name],
                 // [this.default_stream_title],
@@ -3708,7 +3709,7 @@ export class SessionConfigurationSettings extends Modal {
                 layout.push(
                     [this.stream_host], [this.stream_key],
                     [this.background_mode, this.background_color],
-                    [this.background_file, this.background_file_start, this.background_file_end],
+                    [this.video_file, this.video_file_start, this.video_file_end],
                     [this.files_dir],
                     [this.auto_reconnect, this.auto_reconnect_delay, this.auto_reconnect_max_attempts]
                 );
@@ -3718,27 +3719,20 @@ export class SessionConfigurationSettings extends Modal {
                     layout.push([this.members]);
                 }
             }
-            this.props.update_layout(layout);
+            this.props.layout = layout;
         });
-
-        this.footer.append(new ui.Button(`<button>Cancel</button>`, {
-            click:()=>this.cancel()
-        }));
     }
 }
 
-export class AdminSettings extends Modal {
+export class AdminMenu extends Modal {
     constructor() {
         super({
-            "modal.props": new ui.PropertyContainer({
-                "items": ()=>[app.$._session],
-            }),
             "modal.title":"Admin",
         });
     }
 }
 
-export class ChangeLog extends Modal {
+export class ChangeLogMenu extends Modal {
     constructor() {
         super({
             "modal.title": "Change Log",
@@ -3749,7 +3743,7 @@ export class ChangeLog extends Modal {
                 // "font-family": "monospace",
                 "font-size": "1.2rem",
             });
-            app.settings.set("last_change_log", app.$.change_log.mtime);
+            app.local_settings.set("last_change_log", app.$.change_log.mtime);
         })
     }
     async load() {
@@ -3763,7 +3757,6 @@ export class UploadsDownloadsMenu extends Modal {
         super({
             "modal.title":"Uploads / Downloads",
             "modal.width": "70%",
-            "modal.props": new ui.PropertyContainer(),
         });
         var types = ["uploads", "downloads"];
         this.on("update", ()=>{
@@ -3812,36 +3805,10 @@ export class UploadsDownloadsMenu extends Modal {
     }
 }
 
-class JSONViewerSettings {
-    title = "";
-    data = {};
-    all_collapsed = false;
-    /** @param {JSONViewerSettings} d */
-    constructor(d) {
-        Object.assign(this, d);
-    }
-}
+export class PlaylistInfoMenu extends Modal {
+    /** @param {PlaylistItem$[]} items */
+    constructor(items, all_collapsed=false) {
 
-
-/** @extends {Modal<JSONViewerSettings>} */
-export class JSONViewer extends Modal {
-    constructor() {
-        super({
-            "modal.title": ()=>this.item.title||"JSON Viewer",
-        });
-        this.on("before-show", ()=>{
-            var json = new JSONContainer(this.item.data, this.item.all_collapsed);
-            this._json_root = json._json_root;
-            dom.remove_children(this.props);
-            dom.set_style_property(this.props.elem, "margin-bottom", 0);
-            this.props.elem.append(json);
-        });
-    }
-}
-
-export class InfoSettings extends JSONViewer {
-    /** @param {PlaylistItem[]} items */
-    async show(items) {
         var name;
         var special_keys = ["_media_info", "_info", "_userdata"];
         var data = items.map(d=>{
@@ -3855,98 +3822,92 @@ export class InfoSettings extends JSONViewer {
         } else {
             name = `[${items.length} Items]`
         }
-        await super.show(new JSONViewerSettings({title:name, data, all_collapsed:false}));
+        super({
+            "modal.title": name,
+        });
+
+        var json = new JSONContainer(data, all_collapsed);
+        var json_root = json._json_root;
+        dom.set_style_property(this.props.elem, "margin-bottom", 0);
+
         for (var k of special_keys) {
-            var n = this._json_root.find(k);
+            var n = json_root.find(k);
             if (n) n.collapse(true);
         }
+
+        this.props.append(json);
     }
 }
 
-export class SetTimePosSettings extends Modal {
+export class SetTimePosMenu extends EditModal {
     constructor() {
         super({
             "modal.title":"Precise Seek",
-            "modal.footer":true,
-            "modal.props": new ui.PropertyContainer(),
-        });
-        var row = this.props.append(new ui.FlexRow());
-        row.append(
-            this.chapter_select = new ui.Property(`<select>`, {
-                "label": "Chapter",
-                "disabled":()=>!app.settings.get("show_chapters") || app.$._session._current_chapters.length < 2,
-                "options":()=>{
-                    return app.$._session._current_chapters.map((c,i)=>[i, app.chapter_to_string(c, true)])
-                },
-                "reset":false,
-            }),
-            this.time_pos = new ui.TimeSpanProperty({
-                "name": null,
-                "label": "Time",
-                "timespan.format":()=>"h:mm:ss.SSS",
-                "min":0,
-                "reset":false,
-            })
-        );
-        this.time_pos.on("change",(e)=>{
-            if (!e.trigger) return;
-            this.chapter_select.set_values((app.$._session._get_current_chapter_at_time(e._value)||EMPTY_OBJECT).index);
-        })
-        this.chapter_select.on("change",(e)=>{
-            if (!e.trigger) return;
-            var c = app.$._session._current_chapters[e._value];
-            this.time_pos.set_values(c.start);
-        })
-
-        this.ok = new ui.Button(`<button>Seek</button>`, {
-            "click": ()=>{
-                app.seek(this.time_pos.value);
-                this.hide();
+            "modal.ok": "Seek",
+            "modal.apply": ()=>{
+                app.seek(time_pos.value);
             }
         });
-        this.cancel = new ui.Button(`<button>Cancel</button>`, {
-            "click": ()=>this.hide()
+        var chapter_select = new ui.InputProperty(`<select>`, {
+            "label": "Chapter",
+            "disabled":()=>!app.local_settings.get("show_chapters") || app.$._session._current_chapters.length < 2,
+            "options":()=>{
+                return app.$._session._current_chapters.map((c,i)=>[i, app.chapter_to_string(c, true)])
+            },
+            "reset":false,
         });
-        this.footer.append(this.ok, this.cancel);
-
-        this.on("before-show",()=>{
-            this.time_pos.settings.default = app.$._session.time_pos;
-            this.time_pos.reset();
+        var time_pos = new ui.TimeSpanProperty({
+            "label": "Time",
+            "timespan.format":()=>"h:mm:ss.SSS",
+            "default": app.$._session.time_pos,
+            "min": 0,
+            "reset":false,
+        })
+        var row = this.props.append(new ui.FlexRow());
+        row.append(chapter_select, time_pos);
+        time_pos.on("change",(e)=>{
+            if (!e.trigger) return;
+            chapter_select.set_values((app.$._session._get_current_chapter_at_time(e.value)||EMPTY_OBJECT).index);
+        })
+        chapter_select.on("change",(e)=>{
+            if (!e.trigger) return;
+            var c = app.$._session._current_chapters[e.value];
+            time_pos.set_values(c.start);
         })
     }
 }
 
-export class SetVolumeSettings extends Modal {
+export class SetVolumeSettings extends EditModal {
     constructor() {
         super({
             "modal.title":"Precise Volume Adjustment",
-            "modal.footer":true,
-            "modal.props": new ui.PropertyContainer(),
+            "modal.apply": ()=>{
+                app.media_player.volume.set_value(volume_input.value, {trigger:true});
+                app.media_player.vol_speed.set_value(volume_speed.value, {trigger:true});
+            }
         });
         var row = this.props.append(new ui.FlexRow());
         //<div style="padding:0 5px; border-left: 1px solid #aaa; border-bottom: 1px solid #aaa;">
-        var volume_input = new ui.Property(`<input type="number">`, {
+        var volume_input = new ui.InputProperty(`<input type="number">`, {
             "name": "volume_target",
             "label": "Volume (%)",
             "default": 100,
             "min": 0,
             "max": 200,
             "data": app.$._session.volume_target,
-            "nullify_defaults": true,
         });
         row.append(volume_input);
-        var volume_speed = new ui.Property(`<select>`, {
+        var volume_speed = new ui.InputProperty(`<select>`, {
             "name": "volume_speed",
             "label": "Volume Transition Speed",
             "default": 4.0,
             "options": [[0.5, "Very Slow"], [1.0, "Slow"], [2.0, "Medium"], [4.0, "Fast"], [8.0, "Very Fast"], [0, "Immediate"]],
             "data": app.$._session.volume_speed,
-            "nullify_defaults": true,
         });
         row.append(volume_speed);
         
         var row = this.props.append(new ui.FlexRow());
-        var volume_slider = new ui.Property(`<input type="range">`, {
+        var volume_slider = new ui.InputProperty(`<input type="range">`, {
             "label": "Volume (%)", //  style="margin-right:5px"
             "default": 100,
             "step": 1,
@@ -3956,39 +3917,17 @@ export class SetVolumeSettings extends Modal {
             "dblclick":()=>volume_slider.reset()
         });
         row.append(volume_slider);
-        
-        /* volume_input.on("change", (e)=>{
-            volume_slider.set_value(e._value);
-        });
-        volume_slider.on("change", (e)=>{
-            volume_input.set_value(e._value, {trigger:e.trigger})
-        }); */
 
-        this.ok = new ui.Button(`<button>Apply</button>`, {
-            "disabled": ()=>this.changes.length==0,
-            "click": ()=>{
-                app.media_player.volume.set_value(volume_input.value, {trigger:true});
-                app.media_player.vol_speed.set_value(volume_speed.value, {trigger:true});
-                this.hide();
-            }
-        });
-        this.cancel = new ui.Button(`<button>Cancel</button>`, {
-            "click": ()=>this.hide()
-        });
         this.footer.append(this.ok, this.cancel);
     }
 }
 
 export class ExternalSessionConfigurationMenu extends Modal {
-    /** @param {ui.Property} prop */
+    /** @param {ui.InputProperty} prop */
     constructor() {
         super({
-            "modal.props": new ui.PropertyContainer({
-                "nullify_defaults": true,
-                "items": ()=>[app.settings.get("external-session-config")||{}]
-            }),
-            "modal.title":"Setup External Session",
-            "modal.footer":false,
+            "modal.title": "Setup External Session",
+            "modal.items": ()=>[app.local_settings.get("external-session-config")||{}],
         });
         
         var row = this.props.append(new ui.FlexRow());
@@ -3997,7 +3936,7 @@ export class ExternalSessionConfigurationMenu extends Modal {
         var row = this.props.append(new ui.FlexRow());
         dom.set_inner_html(row.elem, `<hr/>`);
         
-        this.stream_name = new ui.Property(`<input type="text">`, {
+        this.stream_name = new ui.InputProperty(`<input type="text">`, {
             "name": "name",
             "label": "Name",
             "default": ()=>`${app.$._client.username}'s Stream`,
@@ -4012,26 +3951,25 @@ export class ExternalSessionConfigurationMenu extends Modal {
             "allow_empty": false,
             "reset": true,
             "show_in_use":false,
+            "opts_name": "target_opts",
         });
-        this.props.append(this.stream_targets)
+        this.props.append(this.stream_targets, this.stream_targets.opts);
 
         var input_props = [
             this.stream_name,
             this.stream_targets,
         ]
-        
-        var valid = ()=>input_props.every(i=>i.is_valid);
 
         this.props.append(new ui.Separator());
 
-        this.output_host = new ui.Property(`<input type="text">`, {
+        this.output_host = new ui.InputProperty(`<input type="text">`, {
             "label": "Stream Host",
             "readonly": true,
             "copy":true,
             "reset": false,
-            "disabled":()=>!valid()
+            "disabled":()=>!input_props.every(i=>i.is_valid)
         });
-        this.props.append(this.output_host)
+        this.props.append(this.output_host);
 
         this.output_key = new ui.TextAreaProperty({
             "label": "Stream Key", 
@@ -4041,20 +3979,21 @@ export class ExternalSessionConfigurationMenu extends Modal {
             "readonly": true,
             "copy": true,
             "reset": false,
-            "disabled": ()=>!valid()
+            "disabled": ()=>!input_props.every(i=>i.is_valid)
         });
         this.props.append(this.output_key);
 
         var host, key, old_hash;
-        this.on("update", ()=>{
-            var hash = JSON.stringify(this.props.named_property_lookup);
+        this.on("post_update", ()=>{
+            var hash = JSON.stringify(this.props.value);
             if (hash === old_hash) return;
             old_hash = hash;
 
             var name = this.stream_name.value.trim();
             var params = new URLSearchParams();
-            params.set("targets", this.stream_targets._has_opts ? JSON.stringify(this.stream_targets.value) : this.stream_targets._enabled_ids);
             if (name) params.set("name", name)
+            params.set("targets", this.stream_targets.value.join(","));
+            params.set("target_opts", JSON.stringify(this.stream_targets.opts.value));
             var query_str = params.toString();
             host = app.get_media_server_base_url();
             key = `external/${app.$._client.ip_hash}`;
@@ -4066,7 +4005,7 @@ export class ExternalSessionConfigurationMenu extends Modal {
 
         this.props.on("change", (e)=>{
             if (e.trigger) {
-                app.settings.set("external-session-config", this.props.named_property_lookup_not_null);
+                app.local_settings.set("external-session-config", this.props.raw_value);
             }
         })
     }
@@ -4077,31 +4016,33 @@ export const TimeLeftMode = {
     DURATION:1,
 }
 
-/** @extends {Modal<Target>} */
-export class EditTargetMenu extends Modal {
-    constructor() {
+/** @extends {Modal<Target$>} */
+export class EditTargetMenu extends EditModal {
+    /** @param {Target$} target */
+    constructor(target) {
+        var is_new = !target.id;
         super({
-            "modal.title": ()=>this.item.id ? `Edit '<span>${this.item.name}</span>'` : "New Target",
+            "modal.title": ()=>is_new ? "New Target" : `Edit '<span>${target.name}</span>'`,
             "modal.title_overflow": true,
-            "modal.footer":true,
-            "modal.props": new ui.PropertyContainer(),
+            "modal.items": [target],
+            "modal.auto_apply": !is_new,
             "modal.apply": ()=>{
-                if (this.item.id) {
+                if (is_new) {
                     app.request({
-                        call: ["app", "update_target"],
-                        arguments: [this.item.id, this.props.named_property_lookup]
+                        call: ["app", "create_target"],
+                        arguments: [this.props.value]
                     });
                 } else {
                     app.request({
-                        call: ["app", "create_target"],
-                        arguments: [this.props.named_property_lookup]
+                        call: ["app", "update_target"],
+                        arguments: [target.id, this.props.value]
                     });
                 }
             }
         });
 
         var row = this.props.append(new ui.FlexRow());
-        this.name = new ui.Property(`<input type="text">`, {
+        this.name = new ui.InputProperty(`<input type="text">`, {
             "name": "name",
             "label": "Name",
             "reset": false,
@@ -4109,7 +4050,7 @@ export class EditTargetMenu extends Modal {
             "placeholder": "My Stream",
         });
         this.name.validators.push(VALIDATORS.not_empty, (v)=>{
-            return Object.values(app.$.targets).filter((t)=>t!=this.item).map(t=>t.name).includes(v) ? "Name already exists." : true
+            return Object.values(app.$.targets).filter((t)=>t!=target).map(t=>t.name).includes(v) ? "Name already exists." : true
         });
         row.append(this.name)
 
@@ -4119,16 +4060,16 @@ export class EditTargetMenu extends Modal {
             "label": "Description",
             "textarea.rows": 2,
             "textarea.grow": true,
-            "reset":false,
+            "reset": false,
             "default": "",
         });
         row.append(this.description)
 
         var row = this.props.append(new ui.FlexRow());
-        this.rtmp_host = new ui.Property(`<input type="url">`, {
+        this.rtmp_host = new ui.InputProperty(`<input type="url">`, {
             "name": "rtmp_host",
             "label": "Stream Host",
-            "reset":false,
+            "reset": false,
             "default": "",
             "placeholder": "rtmp://streaming-service.com",
         });
@@ -4147,7 +4088,7 @@ export class EditTargetMenu extends Modal {
         row.append(this.rtmp_host, this.rtmp_key);
 
         var row = this.props.append(new ui.FlexRow());
-        this.url = new ui.Property(`<input type="url">`, {
+        this.url = new ui.InputProperty(`<input type="url">`, {
             "name": "url",
             "label": "View URL",
             "reset": false,
@@ -4168,103 +4109,89 @@ export class EditTargetMenu extends Modal {
         if (!IS_ELECTRON) {
             this.props.append(this.access_control);
         }
-        
-        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
-            "click": ()=>this.cancel()
-        });
-        this.footer.append(cancel_button);
 
-        this.on("before-show", ()=>{
-            if (!this.item.id) this.access_control._claim();
-        });
+        if (is_new) this.access_control._claim();
     }
 }
 
 /** @extends {Modal<TargetsProperty>} */
-export class TargetsMenu extends Modal {
-    /** @type {string[]} */
-    get _enabled_target_ids() { return Object.keys(filter_enabled_targets(this._value)); }
-    /** @type {Record<string, TargetOpts>} */
-    _value = {};
-
-    get _enabled_targets() {
-        var targets = app.$._targets;
-        return this._enabled_target_ids.map(id=>targets[id]).filter(t=>t);
-    }
-    get _disabled_targets() {
-        var targets = app.$._targets;
-        return [...utils.set_difference(Object.values(targets), new Set(this._enabled_targets))];
-    }
-    get _disabled_targets_ids() { return this._disabled_targets.map(t=>t.id); }
-
-    get _show_in_use() {
-        if (this.item) return this.item.get_setting("show_in_use");
-        return false;
-    }
-
-    constructor() {
+export class TargetsMenu extends EditModal {
+    /** @param {TargetsProperty} prop */
+    constructor(prop) {
         super({
             "modal.title": "Targets",
-            "modal.footer": true,
-            "modal.props": new ui.PropertyContainer(),
+            "modal.footer": !!prop,
             "modal.apply": ()=>{
-                if (!this.item) return;
-                this.item.set_value(this._value, {trigger:true});
+                if (prop) prop.set_value(this.targets.value, {trigger:true});
             }
         });
 
-        dom.add_class(this.props.elem, "target-config");
+        this.targets = new ExpandedTargetsProperty(prop);
+        this.props.append(this.targets);
+
+        this.on("show", ()=>{
+            this.targets.set_value(prop ? prop.value : null);
+        });
+    }
+}
+export class ExpandedTargetsProperty extends ui.Property {
+    /** @type {string[]} */
+    get values() {
+        var available_targets = this.available_targets;
+        return super.values.map(v=>(v?[...v]:[]).filter(v=>available_targets.find(t=>t.id==v)));
+    }
+    get available_targets() {
+        return Object.values(app.$._targets);
+    }
+    get available_target_ids() {
+        return this.available_targets.map(t=>t.id);
+    }
+    get enabled_target_ids() {
+        return this.value;
+    }
+    get disabled_targets_ids() {
+        return [...utils.set_difference(this.available_target_ids, new Set(this.enabled_target_ids))];
+    }
+    get enabled_targets() {
+        return this.enabled_target_ids.map(id=>this.get_target(id));
+    }
+    get disabled_targets() {
+        return this.disabled_targets_ids.map(id=>this.get_target(id));
+    }
+    get_target(id) { 
+        return app.$._targets[id];
+    }
+
+    /** @param {TargetsProperty} prop */
+    constructor(prop) {
+        var editing = !!prop;
+        super({
+            "show_in_use": ()=>prop ? prop.get_setting("show_in_use") : false,
+        });
+
+        this.targets_prop = prop;
+        
+        dom.add_class(this.elem, "target-config");
 
         var disabled_list = new ui.UI(`<div></div>`, {class:"target-list"});
         /** @type {HTMLElement} */
         var enabled_list = new ui.UI(`<div></div>`, {class:"target-list"});
 
-        this.on("before-show", ()=>{
-            var layout = [];
-            if (this.item) {
-                layout.push(
-                    [enabled_list],
-                    new ui.Separator()
-                );
-            }
-            layout.push(
-                [disabled_list],
-            );
-            this.props.update_layout(layout);
-            if (this.item) {
-                this._value = utils.json_copy(this.item.value);
-            }
-        });
-
         var new_button = new ui.Button(`<button>New Target <i class="fas fa-plus"></i></button>`, {
             "flex":1,
             "click":()=>{
-                app.edit_target_menu.show({});
+                new EditTargetMenu({}).show();
             },
             "title": "New Target",
         });
 
-        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
-            "hidden":()=>!this.item,
-            "click":()=>this.cancel()
-        });
-        this.footer.append(new_button, cancel_button);
-
         var update_target_ids = ()=>{
             var enabled_ids = [...enabled_list.elem.children, ...disabled_list.elem.children].filter(e=>e.dataset.id && e.querySelector("input").checked).map(e=>e.dataset.id);
-            var new_value = {};
-            for (var id of enabled_ids) {
-                new_value[id] = {...this._value[id], enabled: true};
-            }
-            var allowed = app.$._targets;
-            for (var id in this._value) {
-                if (id in allowed && !(id in new_value)) new_value[id] = {...this._value[id], enabled: false};
-            }
-            this._value = new_value;
-            this.update();
+            var new_value = [...enabled_ids];
+            this.set_value(new_value);
         }
 
-        /** @param {Target} target */
+        /** @param {Target$} target */
         var add = (target, elem, i)=>{
             elem = $(`<div></div>`)[0];
 
@@ -4277,7 +4204,7 @@ export class TargetsMenu extends Modal {
                 update_target_ids();
             };
             var checkbox = new ui.UI(checkbox_input, {
-                "hidden":()=>!this.item,
+                "hidden":()=>!editing,
             });
 
             label_el.append(checkbox, text_wrapper_elem);
@@ -4287,8 +4214,8 @@ export class TargetsMenu extends Modal {
                     dom.move(elem, -1);
                     update_target_ids();
                 },
-                "hidden":()=>this._enabled_target_ids.length<2 || !this._enabled_target_ids.includes(target.id),
-                "disabled":()=>this._enabled_target_ids.indexOf(target.id)==0,
+                "hidden":()=>this.enabled_target_ids.length<2 || !this.enabled_target_ids.includes(target.id),
+                "disabled":()=>this.enabled_target_ids.indexOf(target.id)==0,
                 "title": "Move Up",
             });
 
@@ -4297,28 +4224,30 @@ export class TargetsMenu extends Modal {
                     dom.move(elem, 1);
                     update_target_ids();
                 },
-                "hidden":()=>this._enabled_target_ids.length<2 || !this._enabled_target_ids.includes(target.id),
-                "disabled":()=>this._enabled_target_ids.indexOf(target.id) == this._enabled_target_ids.length-1,
+                "hidden":()=>this.enabled_target_ids.length<2 || !this.enabled_target_ids.includes(target.id),
+                "disabled":()=>this.enabled_target_ids.indexOf(target.id) == this.enabled_target_ids.length-1,
                 "title": "Move Down",
             });
 
             var get_config_menu = ()=>{
-                var menu = app.target_config_menus[target.id];
-                if (target.id === "gui" && !app.is_os_gui) menu = undefined;
-                return menu;
+                return new (app.target_config_menus[target.id])(this);
+            }
+            var has_config_menu = ()=>{
+                if (target.id === "gui" && !app.is_os_gui) return false;
+                return !!app.target_config_menus[target.id];
             }
 
             var config_button = new ui.Button(`<button><i class="fas fa-cog"></i></button>`, {
-                "hidden": ()=>!this.item || !get_config_menu(),
-                "click": ()=>get_config_menu().show(this),
+                "hidden": ()=>!editing || !has_config_menu(),
+                "click": ()=>get_config_menu().show(),
                 "title": "Configure",
             });
 
             var disabled_restart = false;
             var restart_button = new ui.Button(`<button><i class="fas fa-sync"></i></button>`, {
                 "hidden": ()=>{
-                    if (!this.item) return true;
-                    var stream = this.item._stream;
+                    if (!editing) return true;
+                    var stream = app.$._stream;
                     if (!stream) return true;
                     return !stream.stream_targets[target.id];
                 },
@@ -4334,7 +4263,7 @@ export class TargetsMenu extends Modal {
 
             var edit_button = new ui.Button(`<button><i class="fas fa-edit"></i></button>`, {
                 "click":()=>{
-                    app.edit_target_menu.show(target)
+                    new EditTargetMenu(target).show()
                 },
                 "hidden":()=>!target._can_edit,
                 "title": "Edit",
@@ -4347,8 +4276,6 @@ export class TargetsMenu extends Modal {
                             call: ["app", "delete_target"],
                             arguments: [target.id]
                         });
-                        delete this._value[target.id]
-                        this.update();
                     }
                 },
                 "hidden":()=>!target._can_edit,
@@ -4366,28 +4293,29 @@ export class TargetsMenu extends Modal {
             var checkbox_input = elem.querySelector(`input[type="checkbox"]`);
 
             var parts = [target.name || target.id];
-            if (this._show_in_use && target._in_use) parts.push(`<span class="flashing-slow">[Currently In Use]</span>`);
+            var show_in_use = this.get_setting("show_in_use");
+            if (show_in_use && target._in_use) parts.push(`<span class="flashing-slow">[Currently In Use]</span>`);
             if (target.locked) parts.push(` <i class="fas fa-lock"></i>`);
             if (target.builtin) parts.push(` <i class="fas fa-star"></i>`);
             if (target.url) parts.push(`<a href="${target.url}" target="_blank"><i class="fas fa-arrow-up-right-from-square"></i></a>`);
             dom.set_inner_html(name_elem, parts.join(" "));
             dom.set_inner_html(description_elem, utils.convert_links_to_html(target.description || ""));
-            checkbox_input.checked = this._enabled_target_ids.includes(target.id);
+            checkbox_input.checked = this.enabled_target_ids.includes(target.id);
 
             return elem;
         };
 
         var render_hash;
-        this.on("render", ()=>{
-            var hash = JSON.stringify([this._enabled_target_ids, this._disabled_targets_ids]);
+        this.on("update", ()=>{
+            var hash = JSON.stringify([this.enabled_target_ids, this.disabled_targets_ids]);
             if (hash === render_hash) return;
             render_hash = hash;
 
-            var enabled_targets = this._enabled_targets;
-            var disabled_targets = this._disabled_targets;
+            var enabled_targets = this.enabled_targets;
+            var disabled_targets = this.disabled_targets;
             var style = `display: flex; justify-content: center; padding: 10px;`
 
-            if (this.item) {
+            if (editing) {
                 dom.rebuild(enabled_list.elem, enabled_targets, { add });
                 if (enabled_targets.length == 0) {
                     dom.set_inner_html(enabled_list.elem, `<span style="${style}">No Targets Selected.</span>`);
@@ -4397,59 +4325,72 @@ export class TargetsMenu extends Modal {
             if (disabled_targets.length == 0) {
                 dom.set_inner_html(disabled_list.elem, `<span style="${style}">No Remaining Targets.</span>`);
             }
+
+            var layout = [];
+            if (editing) {
+                layout.push(
+                    [enabled_list],
+                    "-----"
+                );
+            }
+            layout.push(
+                [disabled_list],
+                [new_button],
+            );
+            this.layout = layout;
         });
     }
 }
 
-function filter_enabled_targets(value) {
-    return Object.fromEntries(Object.entries(value).filter(([k,v])=>v.enabled));
-}
-
-export class TargetsProperty extends ui.Property {
-    /** @type {Stream} */
-    get _stream() { return this.get_setting("stream"); }
-    get _enabled_ids() { return Object.entries(filter_enabled_targets(this.value)).map(([k,v])=>k); }
-    get _has_opts() {
-        for (var k in this.value) {
-            if (Object.keys(this.value[k]).length > 1) return true;
-        }
-        return false;
+/** 
+ * @template ItemType 
+ * @template {string[]} ValueType
+ * @template {ui.InputPropertySettings<ItemType,ValueType,TargetsProperty>} Settings
+ * @template {ui.InputPropertyEvents} Events
+ * @extends {ui.InputProperty<ItemType,ValueType,Settings,Events>} 
+ */
+export class TargetsProperty extends ui.InputProperty {
+    get values() {
+        return super.values.map(v=>v||[]);
     }
 
+    /** @param {Settings} settings */
     constructor(settings) {
-        settings = {
-            "default": { "local": {enabled:true} },
-            "reset": false,
-            "prefix": `<i class="far fa-circle-dot"></i>`,
-            "stream": null,
-            "show_in_use": true,
-            "allow_empty": false,
-            "auto_apply": true,
-            ...settings,
-            "readonly": true,
-            "width": 180,
-        };
-        
-        // var input = $(`<input type="text">`)[0];
         var input = $(`<div class="fake-input"></div>`)[0];
         input.style.cursor = "pointer";
 
-        super(input, settings);
+        super(input, {
+            "default": ["local"],
+            "reset": false,
+            "prefix": `<i class="far fa-circle-dot"></i>`,
+            "show_in_use": true,
+            "allow_empty": false,
+            "auto_apply": true,
+            "opts_name": "",
+            ...settings,
+            "readonly": true,
+            "width": 180,
+        });
+
+        this.opts = new ui.Property({
+            "name": this.get_setting("opts_name"),
+            "default": {},
+            "hidden": true,
+        });
 
         if (!this.get_setting("allow_empty")) {
-            this.validators.push(()=>(this._enabled_ids.length == 0) ? "No targets selected" : true);
+            this.validators.push(()=>(this.value.length == 0) ? "No targets selected" : true);
         }
 
         input.onclick = (e)=>{
-            app.targets_menu.show(this);
+            new TargetsMenu(this).show();
         }
 
-        this.output_modifiers.push((value)=>{
-            var ids = Object.keys(filter_enabled_targets(value));
-            var str = ids && ids.length ? ids.length == 1 ? (app.$.targets[ids[0]]||EMPTY_OBJECT).name : `${ids.length} Targets` : `None`
+        this.output_modifiers.push((ids)=>{
+            var str = (ids && ids.length) ? ids.length == 1 ? (app.$.targets[ids[0]]||EMPTY_OBJECT).name : `${ids.length} Targets` : `None`
             // return str;
             var html = `<span>${str}</span>`
-            if (this._has_opts) html += ` <i class="fas fa-wrench"></i>`
+            // if (this.has_opts) html += ` <i class="fas fa-wrench"></i>`
             return html;
         });
     }
@@ -4479,7 +4420,6 @@ export class SeekBar extends ui.UI {
             "disabled": ()=>!this.get_setting("seek.seekable"),
             //-----
             "seek.time_pos": 0,
-            "seek.paused": true,
             "seek.seekable": true,
             "seek.duration": 0,
             "seek.chapters": [],
@@ -4716,7 +4656,8 @@ export class SeekBar extends ui.UI {
     }
 
     clear_markers() {
-        this.update_settings({"seek.markers": []});
+        this.settings["seek.markers"] = [];
+        this.update_next_frame();
     }
     add_marker(t) {
         if (!this._marker_id) this._marker_id = 0;
@@ -4724,19 +4665,21 @@ export class SeekBar extends ui.UI {
         if (markers.length > 128) return;
         var marker = {time:t, id:++this._marker_id};
         markers.push(marker);
-        this.update_settings({"seek.markers": markers});
+        this.settings["seek.markers"] = markers;
+        this.update_next_frame();
         return marker;
     }
     remove_marker(m) {
         var markers = this.get_setting("seek.markers");
         utils.array_remove(markers, m);
-        this.update_settings({"seek.markers": markers});
+        this.settings["seek.markers"] = markers;
+        this.update_next_frame();
     }
 }
 export class MediaSeekBar extends SeekBar {
     constructor() {
         super({
-            "seek.time_pos_left_mode": ()=>app.settings.get("media_time_left_mode"),
+            "seek.time_pos_left_mode": ()=>app.local_settings.get("media_time_left_mode"),
         });
     
         var seek_time = 0, last_seek_time, seeking_interval;
@@ -4764,28 +4707,26 @@ export class MediaSeekBar extends SeekBar {
             }
         });
         this.on("time_left_mode", (v)=>{
-            app.settings.set("media_time_left_mode", v);
+            app.local_settings.set("media_time_left_mode", v);
         });
 
         var last_time = 0;
         var speed = 1;
-        var is_playing = ()=>app.$._session._is_running && !app.media.paused && !app.$._stream.mpv.ctx.seeking;
-        this.on("pre_update", ()=>{
+        var is_playing = ()=>app.$._session._is_running && !app.media.paused && !app.media.buffering;
+
+        this.on("update", ()=>{
             var time = app.media.time_pos;
             if (last_time != time || !is_playing()) this.settings["seek.time_pos"] = time;
             last_time = time;
             Object.assign(this.settings, {
-                "seek.paused": !is_playing(),
                 "seek.seekable": app.media.seekable,
                 "seek.duration": app.media.duration,
                 "seek.chapters": app.media.chapters,
                 "seek.ranges": app.media.ranges,
                 "seek.buffering": app.media.buffering,
             });
-        });
 
-        this.on("update", ()=>{
-            set_interpolation(app.settings.get("media_seek_time_interpolation"));
+            set_interpolation(app.local_settings.get("media_seek_time_interpolation"));
         })
 
         var interpolation_interval;
@@ -4815,22 +4756,21 @@ export class MediaSeekBar extends SeekBar {
         });
     }
 }
-export class StreamConfigurationMenu extends Modal {
+
+/** @extends {EditModal<Stream$>} */
+export class StreamConfigurationMenu extends EditModal {
     constructor(){
         super({
             "modal.title": "Stream Configuration",
-            "modal.props": new ui.PropertyContainer({
-                "items":()=>[app.$._stream],
-            }),
-            "modal.footer": true,
+            "modal.items": [app.$._stream],
             "modal.apply": ()=>{
                 app.request({
-                    call: ["session", "stream", "set_values"],
-                    arguments: this.props.named_property_lookup
+                    call: ["session", "stream", "update_values"],
+                    arguments: [this.props.raw_value]
                 });
             },
         });
-        var title_ui = new ui.Property(`<input type="text">`, {
+        var title_ui = new ui.InputProperty(`<input type="text">`, {
             "name": "title",
             "label": "Title",
             // "reset": false
@@ -4840,12 +4780,13 @@ export class StreamConfigurationMenu extends Modal {
         var row = this.props.append(new ui.FlexRow({
             "align":"end",
         }));
-        var stream_targets = new TargetsProperty({
+
+        var targets = new TargetsProperty({
             "name": "targets",
             "label": "Target(s)",
-            "stream": app.$._stream,
             "allow_empty": false,
             "auto_apply": false,
+            "opts_name": "target_opts",
         });
 
         var disabled = false;
@@ -4863,63 +4804,58 @@ export class StreamConfigurationMenu extends Modal {
             "title": "Restart Stream Targets",
             "flex": 0
         });
-        stream_targets.outer_el.append(restart_button);
+        targets.outer_el.append(restart_button);
 
-        row.append(stream_targets)
-
-        this.footer.append(new ui.Button(`<button>Cancel</button>`, {
-            click:()=>this.cancel()
-        }));
+        row.append(targets, targets.opts)
     }
 }
-export class HandoverSessionMenu extends Modal {
+export class HandoverSessionMenu extends EditModal {
     constructor(){
         super({
             "modal.title": "Handover Session",
-            "modal.footer": true,
-            "modal.props": new ui.PropertyContainer(),
+            "modal.items": [app.$._session],
+            "modal.auto_apply": false,
+            "modal.ok": "Handover",
+            "modal.apply": ()=>{
+                app.request({
+                    call: ["session", "handover"],
+                    arguments: [handover_stream_property.value]
+                });
+            },
         });
         var row = this.props.append(new ui.FlexRow());
-        var handover_stream_property = new ui.Property(`<select>`, {
+        var handover_stream_property = new ui.InputProperty(`<select>`, {
             "label": "Session",
             "options":()=>app.get_handover_sessions_options(),
             "reset":false,
             "info":"To seamlessly hand off to another session, select the session in the dropdown and click OK. Without interruption, the livestream will immediately start playing from the current playlist position in the selected stream."
         })
         row.append(handover_stream_property);
-
-        this.footer.append(new ui.Button(`<button>OK</button>`, {
-            "disabled": ()=>!handover_stream_property.value,
-            "click": ()=>{
-                this.hide();
-                app.request({
-                    call: ["session", "handover"],
-                    arguments: [handover_stream_property.value]
-                });
-            }
-        }));
     }
 }
-export class SavePlaylistSettings extends Modal {
+
+export class SavePlaylistMenu extends EditModal {
     constructor() {
         super({
             "modal.title": ()=>`Save Playlist '<span>${playlist_name}</span>'`,
             "modal.title_overflow": true,
-            "modal.footer": true,
-            "modal.props": new ui.PropertyContainer({
-                "items": ()=>[app.settings.get("save_playlist_settings")],
-            }),
+            "modal.items": [app.local_settings.get("save_playlist_settings")||{}],
+            "modal.ok": "Save",
+            "modal.apply": ()=>{
+                save_local_file(this.playlist_save_file.value+"."+this.playlist_save_format.value, serialize());
+            },
         });
         
         this.props.on("change", (e)=>{
             if (!e.name || !e.trigger) return;
-            app.settings.set("save_playlist_settings", this.props.named_property_lookup_not_null);
+            app.local_settings.set("save_playlist_settings", this.props.raw_value);
         });
 
-        var playlist_name, filename;
+        var playlist_name = app.playlist.current._get_pretty_name() || app.$._session.name;
+        var filename = `${utils.sanitize_filename(playlist_name)}-${utils.date_to_string()}`;
         
         var row = this.props.append(new ui.FlexRow());
-        this.playlist_save_file = new ui.Property(`<input type="text">`, {
+        this.playlist_save_file = new ui.InputProperty(`<input type="text">`, {
             "name": "playlist-save-file",
             "label": "Filename",
             flex: 2,
@@ -4928,7 +4864,7 @@ export class SavePlaylistSettings extends Modal {
         this.playlist_save_file.validators.push(VALIDATORS.not_empty);
         row.append(this.playlist_save_file);
 
-        this.playlist_save_format = new ui.Property(`<select></select>`, {
+        this.playlist_save_format = new ui.InputProperty(`<select></select>`, {
             "name": "playlist-save-format",
             "label": "Format",
             "default": "json",
@@ -4937,7 +4873,7 @@ export class SavePlaylistSettings extends Modal {
         });
         row.append(this.playlist_save_format);
 
-        this.playlist_save_children = new ui.Property(`<select></select>`, {
+        this.playlist_save_children = new ui.InputProperty(`<select></select>`, {
             "name": "playlist-save-children",
             "label": "Include Nested Playlists",
             "default": true,
@@ -4945,7 +4881,7 @@ export class SavePlaylistSettings extends Modal {
         });
         row.append(this.playlist_save_children);
 
-        this.playlist_json_spaces = new ui.Property(`<input type="number">`, {
+        this.playlist_json_spaces = new ui.InputProperty(`<input type="number">`, {
             "name": "playlist-json-spaces",
             "label": "JSON spaces",
             "default": 2,
@@ -4968,7 +4904,7 @@ export class SavePlaylistSettings extends Modal {
         
         var save_remote_button = new ui.Button(`<button>Save (Remote)</button>`, {
             "flex": 0,
-            "disabled":()=>!this.props.valid,
+            "disabled":()=>!this.props.is_valid,
             "click": ()=>{
                 app.request({
                     call: ["save_file"],
@@ -4984,7 +4920,7 @@ export class SavePlaylistSettings extends Modal {
         var last_hash;
         
         var preview_content = $(`<div class="text-block"></div>`)[0];
-        this.preview = new ui.Property(preview_content, {
+        this.preview = new ui.InputProperty(preview_content, {
             "label": "Preview",
             "update":()=>{
                 var hash = JSON.stringify([app.playlist.current.id, ...[this.playlist_save_format, this.playlist_save_children, this.playlist_json_spaces].map(p=>p.value)]);
@@ -4997,7 +4933,7 @@ export class SavePlaylistSettings extends Modal {
 
         var serialize = ()=>{
             if (this.playlist_save_format.value != "json") return;
-            /** @param {PlaylistItem} item */
+            /** @param {PlaylistItem$} item */
             var process = (item)=>{
                 var o = {filename: item.filename};
                 if (!utils.is_empty(item.props)) o.props = item.props;
@@ -5012,40 +4948,26 @@ export class SavePlaylistSettings extends Modal {
             return "// livestreamer playlist\n" + json;
         }
 
-        var save_local_button = new ui.Button(`<button>Save (Local)</button>`, {
-            "click": async ()=>{
-                if (await save_local_file(this.playlist_save_file.value+"."+this.playlist_save_format.value, serialize())) this.hide();
-            }
-        });
-        this.cancel = new ui.Button(`<button>Cancel</button>`, {
-            "click": ()=>this.hide()
-        });
-        this.footer.append(save_local_button, this.cancel)
-
-        this.on("before-show", ()=>{
-            playlist_name = app.playlist.current._get_pretty_name() || app.$._session.name;
-            filename = `${utils.sanitize_filename(playlist_name)}-${utils.date_to_string()}`;
-            render_preview();
-        });
-
         var render_preview = ()=>{
             preview_content.innerText = serialize();
         }
+        render_preview();
     }
 }
 
-export class HistorySettings extends Modal {
+export class HistoryMenu extends Modal {
     history = [];
     constructor() {
         super({
+            "modal.title": ()=>`History [${history.length}]`,
             "modal.min-width": "900px",
-            "modal.props": new ui.PropertyContainer(),
+            "modal.load": ()=>load(),
         });
-        dom.add_class(this.props.elem, "autosave-history");
+        
         var table_data = {
             "Time":(data)=>{
                 var mtime = new Date(data.mtime);
-                var e = $(`<span>${utils.time_diff_readable(new Date(), mtime)}</span>`)[0];
+                var e = $(`<span>${utils.time_diff_readable(new Date(), mtime)||"-"}</span>`)[0];
                 e.title = mtime.toLocaleString();
                 return e;
             },
@@ -5057,21 +4979,22 @@ export class HistorySettings extends Modal {
                 return data.prev.length.toLocaleString();
             },
         };
-        var row = this.props.append(new ui.FlexRow());
+        var body = new ui.FlexRow();
         var table_wrapper = $(`<div class="table-wrapper thin-scrollbar"></div>`)[0];
+        /** @type {HTMLTableElement} */
         var table = $(`<table><thead></thead><tbody></tbody></table>`)[0];
         var thead = table.querySelector("thead");
         var thead_tr = $(`<tr></tr>`)[0];
-        var tbody = table.querySelector("tbody");
+        var tbody = table.tBodies[0];
         Object.keys(table_data).forEach(k=>{
             $(thead_tr).append(`<th>${k}</th>`);
         });
         thead.append(thead_tr);
-        var table_col = row.append(new ui.Column());
+        var table_col = body.append(new ui.Column());
         table_wrapper.append(table);
         table_col.append(table_wrapper);
         
-        var info_col = row.append(new ui.Column());
+        var info_col = body.append(new ui.Column());
         var info_wrapper_elem = $(`<div class="info-wrapper"></div>`)[0];
         var info_elem = $(`<div class="info thin-scrollbar"></div>`)[0];
         info_wrapper_elem.append(info_elem);
@@ -5079,63 +5002,16 @@ export class HistorySettings extends Modal {
         info_wrapper_elem.append(info_footer_elem);
         info_col.append(info_wrapper_elem)
         
-        var loading = false;
-        this.load_button = new ui.Button(`<button>Load</button>`, {
-            "click":async ()=>{
-                loading = true;
-                await app.request({
-                    call: ["session","client_load_autosave"],
-                    arguments: [this.history[this.selectable_list.selected_index].filename]
-                });
-                loading = false;
-                this.hide();
-            },
-            "disabled":()=>!this.selectable_list.selected && !loading,
-        });
-        info_footer_elem.append(this.load_button)
-        this.selectable_list = new SelectableList(tbody, {
-            "selector":"tr",
-        });
-        this.selectable_list.on("change", ()=>{
-            var i = this.selectable_list.selected_index;
-            var data = this.history[i];
-            dom.remove_children(info_elem);
-            this.update();
-
-            if (!data) return;
-            // var diff_type_to_str = ["-", "created", "deleted", "changed"]
-            // ${diff_type_to_str[v[0]]}
-            for (var k of ["curr", "prev"]) {
-                var entries = data[k];
-                var title = k == "prev" ? "Previous Changes" : "Current Changes"
-                var box = $(`<div><h3>${title}</h3><ul></ul></div>`)[0];
-                info_elem.append(box);
-                var ul = box.querySelector("ul");
-                if (!entries || entries.length == 0) {
-                    $(ul).append(`<li>No changes.</li>`);
-                } else {
-                    entries.forEach(([path,v])=>{
-                        // path = path.map(p=>p.replace(/^_+/,""));
-                        if (path[0] == "player") path.shift();
-                        var from = (typeof v[2] === "object" && v[2] !== null) ? "Object" : v[2];
-                        var to = (typeof v[1] === "object" && v[1] !== null) ? "Object" : v[1];
-                        $(ul).append(`<li><i>[${path.join("•")}]</i>\n<strong>(${from}) => (${to})</strong></li>`);
-                    });
-                }
-            }
-        });
-
-        this.on("before-show", async ()=>{
-            this.selectable_list.select(null);
-            dom.remove_children(tbody);
-
-            this.update_settings({"modal.title": `History [Fetching...]`});
-
-            this.history = await app.request({
+        var history = [];
+        var load = async ()=>{
+            history = await app.request({
                 call: ["session","get_autosave_history"],
             });
+    
+            selectable_list.select(null);
+            dom.remove_children(table.tBodies[0]);
             
-            this.history.forEach((data)=>{
+            history.forEach((data)=>{
                 var values = Object.values(table_data).map(d=>d(data));
                 var tr = $(`<tr></tr>`)[0];
                 tr.dataset.filename = data.filename;
@@ -5144,26 +5020,74 @@ export class HistorySettings extends Modal {
                     $(td).append(v);
                     tr.append(td);
                 }
-                tbody.append(tr);
+                table.tBodies[0].append(tr);
             });
-            this.update_settings({"modal.title": `History [${this.history.length}]`});
-        });
-    }
+        };
 
-    destroy() {
-        super.destroy();
-        this.selectable_list.destroy();
+        this.props.append(body);
+        
+        dom.add_class(this.props.elem, "autosave-history");
+        
+        var loading = false;
+        var load_button = new ui.Button(`<button>Load</button>`, {
+            "click":async ()=>{
+                loading = true;
+                await app.request({
+                    call: ["session","client_load_autosave"],
+                    arguments: [history[selectable_list.selected_index].filename]
+                });
+                loading = false;
+                this.hide();
+            },
+            "disabled":()=>!selectable_list.selected && !loading,
+        });
+        info_footer_elem.append(load_button)
+        var selectable_list = new SelectableList(tbody);
+        selectable_list.on("selection_change", ()=>{
+            var i = selectable_list.selected_index;
+            var data = history[i];
+            dom.remove_children(info_elem);
+
+            if (data) {
+                // var diff_type_to_str = ["-", "created", "deleted", "changed"]
+                // ${diff_type_to_str[v[0]]}
+                for (var k of ["curr", "prev"]) {
+                    var entries = data[k];
+                    var title = k == "prev" ? "Previous Changes" : "Current Changes"
+                    var box = $(`<div><h3>${title}</h3><ul></ul></div>`)[0];
+                    info_elem.append(box);
+                    var ul = box.querySelector("ul");
+                    if (!entries || entries.length == 0) {
+                        $(ul).append(`<li>No changes.</li>`);
+                    } else {
+                        entries.forEach(([path,v])=>{
+                            // path = path.map(p=>p.replace(/^_+/,""));
+                            if (path[0] == "player") path.shift();
+                            var from = (typeof v[2] === "object" && v[2] !== null) ? "Object" : v[2];
+                            var to = (typeof v[1] === "object" && v[1] !== null) ? "Object" : v[1];
+                            $(ul).append(`<li><i>[${path.join("•")}]</i>\n<strong>(${from}) => (${to})</strong></li>`);
+                        });
+                    }
+                }
+            }
+            
+            this.update();
+        });
+        this.on("destroy", ()=>{
+            selectable_list.destroy();
+        });
     }
 }
 
-export class PlaylistAddURLMenu extends Modal {
+export class PlaylistAddURLMenu extends EditModal {
     constructor() {
         super({
             "modal.title": "Add URLs to Playlist",
-            "modal.footer":true,
-            "modal.props": new ui.PropertyContainer(),
+            "modal.return_value": ()=>{
+                return urls.value.split(/\n+/).map(s=>s.trim()).filter(s=>s);
+            }
         });
-        var urls = new ui.Property(`<textarea style="height:180px;white-space:pre"></textarea>`, {
+        var urls = new ui.InputProperty(`<textarea style="height:180px;white-space:pre"></textarea>`, {
             "label": "URLs",
             "info": "To enter multiple URLs seperate each one with a new line.",
             "placeholder": [
@@ -5182,137 +5106,118 @@ export class PlaylistAddURLMenu extends Modal {
 
         var row = this.props.append(new ui.FlexRow());
         row.append(...$(`<span>If you're having problems downloading some media it might be due to geo-blocking in the server's locale, try <a href="https://oleksis.github.io/youtube-dl-gui/" target="_blank">yt-dlg</a> to download the media in your locale and upload to the server.</span>`));
-
-        var ok_button = new ui.Button(`<button>OK</button>`, {
-            "disabled": ()=>!urls.value,
-            "click": ()=>{
-                this._resolve(urls.value);
-                urls.set_value("", {trigger:false});
-                this.hide();
-            }
-        })
-        this.footer.append(ok_button)
-        var cancel_button = new ui.Button(`<button>Cancel</button>`, {
-            "click": ()=>{
-                this._resolve(null);
-                this.hide();
-            }
-        })
-        this.footer.append(cancel_button)
-        this.on("hide", ()=>this._resolve(null));
-    }
-    async show(resolve) {
-        this._resolve = resolve;
-        await super.show();
     }
 };
 
-export const MediaSettingsMode = {
-    "current": "current",
-    "all": "all",
-}
-
-/** @extends {Modal<PlaylistItem>} */
-export class PlaylistModifySettings extends Modal {
-
-    get is_new() {
-        return !this.id;
-    }
+/** @extends {Modal<PlaylistItem$>} */
+export class PlaylistItemModifyMenu extends EditModal {
 
     get changes() {
-        var changes = new Set(super.changes);
-        changes.delete(this.interface.label.id);
-        changes.delete(this.interface.color.id);
-        return [...changes];
+        var changes = super.changes;
+        delete changes.label;
+        delete changes.color;
+        return changes;
     }
 
-    constructor() {
+    /** @param {PlaylistItem$[]} items */
+    constructor(items) {
+        var is_new = items.length == 1 && !items[0].id;
         super({
-            "modal.props": new ui.PropertyContainer(),
             "modal.title": ()=>{
-                if (this.is_new) return `New Playlist Item`;
-                return `Modify '<span>${PlaylistItem.get_items_title(this.props.items)}</span>'`;
+                if (is_new) return `New Playlist Item`;
+                return `Modify '<span>${get_items_title(this.props.items)}</span>'`;
             },
+            "modal.auto_apply": !is_new,
             "modal.apply": ()=>{
-                if (app.$._session._is_running && this.props.items.some(d=>d === app.$._session._current_playlist_item) && this.changes.length) {
-                    window.prompt(`The item is currently playing and some changes may require reloading to apply changes.`);
+                if (app.$._session._is_running && this.props.items.some(d=>d === app.$._session._current_playlist_item) && Object.keys(this.changes).length) {
+                    window.alert(`The item is currently playing and some changes may require reloading to apply changes.`);
                     // app.prompt_for_reload_of_current_item();
                 }
-                if (this.is_new) {
-                    app.playlist_add({
-                        filename: this.filename.value,
-                        props: this.interface.named_property_lookup
-                    });
+                var raw_values = this.props.raw_values.map((v,i)=>{
+                    if (v.filename == undefined) delete v.filename;
+                    return v;
+                });
+                if (is_new) {
+                    var value = raw_values[0];
+                    value.props = Object.fromEntries(Object.entries(value.props).filter(([k,v])=>v!=undefined));
+                    app.playlist_add(value);
+                } else if (reset) {
+                    let d = Object.fromEntries(this.items.map((item,i)=>[item.id, {props:{}}]));
+                    app.playlist_update(d, {replace_props:true});
                 } else {
-                    var d = this.items.map((item,i)=>[[item.id], {
-                        filename: this.filename._values[i],
-                        props: Object.fromEntries(this.interface.named_properties.map(p=>[p.name, p._values[i]]))
-                    }])
+                    let d = Object.fromEntries(this.items.map((item,i)=>[item.id, raw_values[i]]));
                     app.playlist_update(d);
                 }
             },
             "modal.title_overflow": true,
-            "modal.block_updates": true,
-            "modal.footer":true,
+            "modal.items": items,
         });
 
-        this.interface = new MediaSettingsInterface(this);
-            
-        this.filename = new ui.Property(`<input type="text">`, {
+        let props_group = this.props_group = new MediaPropertyGroup(MediaSettingsMode.custom, false);
+        
+        /** @type {FileProperty<PlaylistItem>} */
+        let filename = new FileProperty({
             "name": "filename",
-            "label": "File URI",
-            "default": (d,i)=>d.filename,
-            "nullify_defaults": false,
+            "label": "Path / URI",
+            "default": (item)=>item.filename,
             "reset": true,
-            "info": "A single wrong character will invalidate the file URI, edit with care."
         });
-        this.filename.validators.push(VALIDATORS.not_empty);
-        this.filename.validators.push(VALIDATORS.media_exists);
-        this.props.append(this.filename);
+        filename.validators.push(VALIDATORS.not_empty);
+        filename.validators.push(VALIDATORS.media_exists);
+        
+        this.props.append(filename);
         this.props.append(new ui.Separator());
+        this.props.append(props_group);
 
-        this.props.append(this.interface);
-
-        this.footer.append(
-            this.cancel_button = new ui.Button(`<button>Cancel</button>`, {
-                "click":()=>this.cancel()
-            }),
-            this.reset_button = new ui.Button(`<button>Reset</button>`, {
-                "click":()=>{
-                    this.props.reset();
-                }
-            })
-        );
-
+        var reset = false;
         this.on("before-show", ()=>{
-            this.interface.items = this.items;
+            reset = false;
         });
+        this.reset_button = new ui.Button(`<button>Reset</button>`, {
+            "click":()=>{
+                reset = true;
+                this.hide();
+                // filename.reset();
+                // this.props.reset();
+            },
+            "hidden": ()=>is_new,
+        })
+        this.footer.append(
+            this.reset_button
+        );
     }
 }
 
-export class MediaSettingsInterface extends ui.PropertyContainer {
+const MediaSettingsMode = {
+    "current": 0,
+    "selected": 1,
+    "all": 2,
+    "custom": 3,
+}
 
-    /** @param {PlaylistModifySettings|MediaSettingsPanel} parent */
-    constructor(parent) {
+/** @extends {ui.PropertyGroup<PlaylistItem$>} */
+export class MediaPropertyGroup extends ui.PropertyGroup {
+    constructor(mode, simple) {
         super({
-            "nullify_defaults": true,
+            // ALL IS FUCKED
+            "name": (mode == MediaSettingsMode.all) ? "" : "props",
             "items": ()=>{
-                if (parent instanceof PlaylistModifySettings) return parent.props.items;
-                else if (parent instanceof MediaSettingsPanel) {
-                    if (parent._mode === MediaSettingsMode.current) return [app.$._session._current_playlist_item];
-                    else return [app.$._session.player_default_override];
+                if (mode == MediaSettingsMode.current) return [app.$._session._current_playlist_item];
+                if (mode == MediaSettingsMode.selected) {
+                    let items = app.playlist.get_selected_items();
+                    if (!items.length) items = [app.$._NULL_PLAYLIST_ITEM];
+                    return items;
+                }
+                if (mode == MediaSettingsMode.all) {
+                    return [app.$._session.player_default_override];
                 }
             },
-            "data": (item, path)=>{
-                if (parent instanceof MediaSettingsPanel && parent._mode === MediaSettingsMode.all) return utils.reflect.get(item, path);
-                return utils.reflect.get(item, ["props", ...path]);
+            "disabled": ()=>{
+                return (this.items.every(i=>i === app.$._NULL_PLAYLIST_ITEM));
             }
         });
-        
-        var _is_modify = ()=>parent instanceof PlaylistModifySettings;
-        /** @return {PlaylistItem[]} */
-        var _items = ()=>_is_modify() ? parent.props.items : [app.$._session._current_playlist_item];
-        var _item = ()=>_items()[0];
+
+        var _this = this;
 
         let stream_to_text = (s,i, use_prefix=true)=>{
             if (!s) return "None";
@@ -5324,37 +5229,39 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
             return parts.join(" | ")
         }
 
-        /** @param {PlaylistItem} item @param {string} type */
+        /**  @param {string} type */
         let get_stream_options = (type)=>{
-            var item = _item();
-            var is_playing = item._is_currently_playing;
-            var streams = get_streams(item, type);
-            if (streams.length == 0) streams.push({type, title:"None"});
-            let stream_to_option = (s,i)=>{
-                return {value: s.type_id || (i+1), text: stream_to_text(s,i) };
-            };
-            let default_stream = get_default_stream(streams, type);
-            let indeterminate_option = {value:"", text:"-", hidden:true};
-            var options = [];
-            options.push(indeterminate_option);
-            var auto_text = `Auto [${stream_to_text(default_stream, streams.indexOf(default_stream), false)}]`;
-            options.push({value:"auto", text:auto_text});
-            options.push(...streams.map(stream_to_option));
-            // }
-            if (options.length == 1 && options[0] === indeterminate_option) {
-                indeterminate_option.hidden = false;
+            /** @param {PlaylistItem$} item */
+            return function(item) {
+                var item = _this.item;
+                var streams = get_streams(item, type);
+                if (streams.length == 0) streams.push({type, title:"None"});
+                let stream_to_option = (s,i)=>{
+                    return {value: s.type_id || (i+1), text: stream_to_text(s,i) };
+                };
+                let default_stream = get_default_stream(streams, type);
+                let indeterminate_option = {value:"", text:"-", hidden:true};
+                var options = [];
+                options.push(indeterminate_option);
+                var auto_text = `Auto [${stream_to_text(default_stream, streams.indexOf(default_stream), false)}]`;
+                options.push({value:"auto", text:auto_text});
+                options.push(...streams.map(stream_to_option));
+                // }
+                if (options.length == 1 && options[0] === indeterminate_option) {
+                    indeterminate_option.hidden = false;
+                }
+                return options;
             }
-            return options;
         };
-        /** @param {PlaylistItem} item @param {string} type */
+        /** @param {PlaylistItem$} item @param {string} type */
         let get_streams = (item, type)=>{
             /** @type {MediaInfoStreamEx[]} */
             var streams;
             let mi = item._media_info;
             streams = mi ? mi.streams : null;
-            if (item._is_currently_playing) {
+            /* if (item._is_currently_playing) {
                 streams = app.$._stream.mpv.ctx.streams;
-            }
+            } */
             if (!streams) streams = [];
             if (type) streams = streams.filter(s=>s.type == type);
             streams = streams.filter(s=>!s.albumart);
@@ -5364,59 +5271,57 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
         let get_default = function() {
             var value;
             var path = this.name.split("/")
-            if (_is_modify() || (parent._mode === MediaSettingsMode.current)) {
+            if (mode !== MediaSettingsMode.all) {
                 value = utils.reflect.get(app.$._session.player_default_override, path);
             }
-            if (value === undefined) {
-                value = utils.try_catch(()=>utils.reflect.get(app.$.properties.playlist.__enumerable__.props, [...path, "__default__"]));
+            if (value == undefined) {
+                value = utils.try_catch(()=>utils.reflect.get(InternalSessionProps.playlist.__enumerable__.props, [...path, "__default__"]));
             }
-            if (value === undefined) value = null;
             return value;
         }
         
         let get_options = function() {
             var options;
             var path = this.name.split("/")
-            if (_is_modify()) {
-                options = utils.try_catch(()=>utils.reflect.get(app.$.properties.playlist.__enumerable__.props, [...path, "__options__"]));
-            }
-            if (options === undefined) {
-                options = utils.try_catch(()=>utils.reflect.get(app.$.properties.player_default_override, [...path, "__options__"]));
+            if (mode === MediaSettingsMode.all) {
+                options = utils.try_catch(()=>utils.reflect.get(InternalSessionProps.player_default_override, [...path, "__options__"]));
+            } else {
+                options = utils.try_catch(()=>utils.reflect.get(InternalSessionProps.playlist.__enumerable__.props, [...path, "__options__"]));
             }
             return options || [];
         };
 
-        this.aspect_ratio = new ui.Property(`<select></select>`, {
+        this.aspect_ratio = new ui.InputProperty(`<select></select>`, {
             "name": "aspect_ratio",
             "label": "Aspect Ratio",
             "options": [[-1,"Default"],  [1.777778,"16:9"], [1.333333,"4:3"], [2.35,"2.35:1"]],
             "default": get_default,
         });
 
-        this.deinterlace = new ui.Property(`<select></select>`, {
+        this.deinterlace = new ui.InputProperty(`<select></select>`, {
             "name": "deinterlace_mode",
             "label": "Deinterlace",
             "options": [["auto","Auto"],[false, "Off"],[true, "On"]],
             "default": get_default,
         });
 
-        this.vid_override = new ui.Property(`<select></select>`, {
+        this.vid_override = new ui.InputProperty(`<select></select>`, {
             "name": "vid_override",
             "label": "Video Track",
-            "options": ()=>get_stream_options("video"),
+            "options": get_stream_options("video"),
             "default": get_default,
-            "disabled": ()=>parent._mode === MediaSettingsMode.all,
+            "disabled": ()=>mode === MediaSettingsMode.all || this.items.length > 1,
         });
 
-        this.aid_override = new ui.Property(`<select></select>`, {
+        this.aid_override = new ui.InputProperty(`<select></select>`, {
             "name": "aid_override",
             "label": "Audio Track",
-            "options": ()=>get_stream_options("audio"),
+            "options": get_stream_options("audio"),
             "default": get_default,
-            "disabled": ()=>parent._mode === MediaSettingsMode.all,
+            "disabled": ()=>mode === MediaSettingsMode.all || this.items.length > 1,
         });
        
-        this.audio_delay = new ui.Property(`<input type="number">`, {
+        this.audio_delay = new ui.InputProperty(`<input type="number">`, {
             "name": "audio_delay",
             "label": "Audio Delay",
             "suffix": "secs",
@@ -5424,22 +5329,22 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
             "default": get_default,
         });
         
-        this.audio_channels = new ui.Property(`<select></select>`, {
+        this.audio_channels = new ui.InputProperty(`<select></select>`, {
             "name": "audio_channels",
             "label": "Audio Channels",
             "default": get_default,
             "options":()=>[["left", "Left → Mono"],["right", "Right → Mono"],["mix", "L + R → Mono"],["stereo", "Stereo"]],
         });
         
-        this.sid_override = new ui.Property(`<select></select>`, {
+        this.sid_override = new ui.InputProperty(`<select></select>`, {
             "name": "sid_override",
             "label": "Subtitle Track",
-            "options": ()=>get_stream_options("subtitle"),
+            "options": get_stream_options("subtitle"),
             "default": get_default,
-            "disabled": parent instanceof MediaSettingsPanel ? ()=>parent._mode === MediaSettingsMode.all : false,
+            "disabled": ()=>mode === MediaSettingsMode.all || this.items.length > 1,
         });
 
-        this.subtitle_delay = new ui.Property(`<input type="number">`, {
+        this.subtitle_delay = new ui.InputProperty(`<input type="number">`, {
             "name": "sub_delay",
             "label": "Subtitle Delay",
             "suffix": `secs`,
@@ -5449,7 +5354,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
         });
         this.subtitle_delay.output_modifiers.push((v)=>Number(v).toFixed(2));
         
-        this.subtitle_scale = new ui.Property(`<input type="number">`, {
+        this.subtitle_scale = new ui.InputProperty(`<input type="number">`, {
             "name": "sub_scale",
             "label": "Subtitle Scale",
             "precision":2,
@@ -5462,7 +5367,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
         this.subtitle_scale.input_modifiers.push((v)=>+v/100);
         this.subtitle_scale.output_modifiers.push((v)=>Math.round(+v*100));
 
-        this.subtitle_pos = new ui.Property(`<input type="number">`, {
+        this.subtitle_pos = new ui.InputProperty(`<input type="number">`, {
             "name": "sub_pos",
             "label": "Subtitle Position",
             "precision":2,
@@ -5492,16 +5397,16 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
             "hidden": ()=>!app.$._stream.method != "gui"
         }); */
         
-        this.volume_normalization = new ui.Property(`<select></select>`, {
+        this.volume_normalization = new ui.InputProperty(`<select></select>`, {
             "name": "volume_normalization",
             "label": "Volume Normalization",
             "options":()=>{
-                return [[false,"Off"], ...(utils.try_catch(()=>app.$.properties.player_default_override.volume_normalization.__options__)||EMPTY_ARRAY).map(([f,_])=>[f,f])]
+                return [[false,"Off"], ...(utils.try_catch(()=>InternalSessionProps.player_default_override.volume_normalization.__options__)||EMPTY_ARRAY).map(([f,_])=>[f,f])]
             },
             "default": get_default,
         });
         
-        this.volume_multiplier = new ui.Property(`<input type="number">`, {
+        this.volume_multiplier = new ui.InputProperty(`<input type="number">`, {
             "name": "volume_multiplier",
             "label": "Volume Multiplier",
             "step":0.05,
@@ -5516,6 +5421,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
         
         var create_filter = (pre)=>{
             var name = pre ? "pre_filters" : "filters";
+            /** @type {ui.PropertyList<PlaylistItem$,FilterInput>} */
             var list = new ui.PropertyList({
                 "name": name,
                 "label": pre ? "Pre-Filters" : "Filters",
@@ -5528,47 +5434,44 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                     list_item.buttons.prepend(
                         new ui.Button(`<button title="Edit"><i class="fas fa-wrench"></i></button>`, {
                             click() {
-                                app.filter_config_menu.show(list_item);
+                                new FilterConfigurationMenu(list_item).show();
                             },
                         }),
                         new ui.Button(`<button title="Toggle"><i class="fas fa-eye"></i><i class="fas fa-eye-slash"></i></button>`, {
                             click() {
-                                var curr = list_item.value;
-                                list_item.set_value({...curr, active:!curr.active});
+                                var val = list_item.value || {};
+                                list_item.set_value({...val, active:!val.active}, {trigger:true});
                             },
                             update() {
-                                this.elem.querySelector(".fa-eye").classList.toggle("d-none", !list_item.value.active);
-                                this.elem.querySelector(".fa-eye-slash").classList.toggle("d-none", list_item.value.active);
-                                this.elem.toggleAttribute("data-toggled", !list_item.value.active);
+                                var val = list_item.value || {};
+                                this.elem.querySelector(".fa-eye").classList.toggle("d-none", !val.active);
+                                this.elem.querySelector(".fa-eye-slash").classList.toggle("d-none", val.active);
+                                this.elem.toggleAttribute("data-toggled", !val.active);
                             }
                         })
                     );
-                    list_item.content.append(new class extends ui.PropertyContainer {
-                        constructor() {
-                            super();
-                            var e = $(`<span class="filter-list-item"></span>`)[0];
-                            this.elem.append(e);
-                            this.on("update", ()=>{
-                                var str = "";
-                                /** @type {FilterInput} */
-                                var value = list_item.value;
-                                /** @type {Filter} */
-                                var f = filters[value.name];
-                                if (f) {
-                                    str = `<i class="fas ${f.type === "audio" ? "fa-music" : "fa-film"}"></i>${f.descriptive_name}`;
-                                } else {
-                                    str = `-`;
-                                }
-                                dom.toggle_class(e, "disabled", !value.active);
-                                dom.set_inner_html(e, str);
-                            })
+                    var e = new ui.UI(`<span class="filter-list-item-contents"></span>`, {
+                        "update":()=>{
+                            var str = "";
+                            var value = list_item.value || {};
+                            /** @type {Filter} */
+                            var f = filters[value.name];
+                            if (f) {
+                                str = `<i class="fas ${f.type === "audio" ? "fa-music" : "fa-film"}"></i>${f.descriptive_name}`;
+                            } else {
+                                str = `-`;
+                            }
+                            dom.toggle_class(e.elem, "disabled", !value.active);
+                            dom.set_inner_html(e.elem, str);
                         }
                     })
+                    list_item.props.append(e);
                 },
                 "default": get_default,
                 "hidden": ()=>{
-                    if (_is_modify() && pre) return true;
-                    return !!((pre && parent._mode === MediaSettingsMode.current) || (!pre && parent._mode === MediaSettingsMode.all));
+                    if (pre && mode === MediaSettingsMode.all) return false;
+                    if (!pre && mode !== MediaSettingsMode.all) return false;
+                    return true;
                 },
             });
             return list;
@@ -5576,20 +5479,20 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
         this.filters = create_filter(false);
         this.pre_filters = create_filter(true);
 
-        this.loop = new ui.Property(`<select></select>`, {
+        this.loop = new ui.InputProperty(`<select></select>`, {
             "name": "loop_file",
             "label": "Loop",
             "options": [[false, "Off"],["inf", "On"]],
             "default": get_default,
         });
 
-        if (_is_modify()) {
-            /** @param {PlaylistItem} item */
+        if (!simple) {
+            /** @param {PlaylistItem$} item */
             let get_default_duration = (item)=>{
-                return (item || _item())._userdata.media_duration;
+                return item ? item._userdata.media_duration : 0;
             };
 
-            this.playlist_mode = new ui.Property(`<select>`, {
+            this.playlist_mode = new ui.InputProperty(`<select>`, {
                 "name": "playlist_mode",
                 "label": "Playlist Mode",
                 "info": `Setting to 'Merged' or '2-Track', the media player will attempt to merge the playlist's contents as if it were a single file, with each item represented as a chapter. A merged playlist may only include local files (ie, no URIs or special items).`,
@@ -5597,29 +5500,26 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "default": get_default,
             });
 
-            this.playlist_end_on_shortest_track = new ui.Property(`<select>`, {
+            this.playlist_end_on_shortest_track = new ui.InputProperty(`<select>`, {
                 "name": "playlist_end_on_shortest_track",
                 "label": "End Playlist on Shortest Track",
                 "info": `Enabling sets the item to end when the track with the shortest duration ends. Disabling will pad the shortest track to match the duration of the longer track.`,
                 "options": ()=>{
                     return [[false, "Off"], [true, "On"]];
                 },
-                /** @param {PlaylistItem} item */
-                "hidden": (item)=>item.props.playlist_mode != PLAYLIST_MODE.DUAL_TRACK,
+                "hidden": ()=>!this.items.every(i=>i.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK),
                 "default": get_default,
             });
 
-            this.playlist_revert_to_video_track_audio = new ui.Property(`<select>`, {
+            this.playlist_revert_to_video_track_audio = new ui.InputProperty(`<select>`, {
                 "name": "playlist_revert_to_video_track_audio",
                 "label": "Revert to Video Track Audio",
                 "info": `If the audio track is shorter than the video track, revert to the audio supplied in the video track.`,
                 "options": ()=>{
                     return [[false, "Off"], [true, "On"]];
                 },
-                /** @param {PlaylistItem} item */
-                "disabled": (item)=>item.props.playlist_end_on_shortest_track,
-                /** @param {PlaylistItem} item */
-                "hidden": (item)=>item.props.playlist_mode != PLAYLIST_MODE.DUAL_TRACK,
+                "disabled": ()=>this.items.every(i=>i.props.playlist_end_on_shortest_track),
+                "hidden": ()=>!this.items.every(i=>i.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK),
                 "default": get_default,
             });
 
@@ -5628,39 +5528,31 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "label": "Clip Start",
                 "timespan.format": "h:mm:ss.SSS",
                 "min": 0,
-                "max": ()=>Math.min(get_default_duration(), this.clip_end.value),
+                "max": (item)=>this.clip_end.value||get_default_duration(item),
                 "default": 0,
-            })
-            this.clip_
+            });
 
             this.clip_end = new ui.TimeSpanProperty({
                 "name": "clip_end",
-                "label": null,
-                "label": ()=>dom.is_visible(this.clip_start.elem) ? "Clip End" : "Duration",
+                "label": "Clip End",
                 "timespan.format": "h:mm:ss.SSS",
-                "min": ()=>this.clip_start.value,
-                "max": ()=>get_default_duration(),
-                "default": ()=>get_default_duration(),
+                "min": ()=>(this.clip_start.value||0),
+                "max": get_default_duration,
+                "default": get_default_duration,
             });
 
             this.clip_length = new ui.TimeSpanProperty({
-                "name": null,
                 "label": "Clip Length",
                 "timespan.format": "h:mm:ss.SSS",
                 "reset": false,
                 "min": 0,
-                "max": ()=>get_default_duration()-this.clip_start.value,
-                // "spinner": false,
-                // "readonly": true,
-                // "disabled": true,
-                // "default":()=>(this.clip_end.value-this.clip_start.value)*this.clip_loops.value,
+                "max": (item)=>get_default_duration(item)-(this.clip_start.value||0),
             });
 
-            var get_clip_length = ()=>{
-                return this.clip_end.value - this.clip_start.value;
-            };
-            var get_total_duration = ()=>{
-                return get_clip_length() * this.clip_loops.value;
+            var get_clip_lengths = ()=>{
+                var start_values = this.clip_start.values;
+                var end_values = this.clip_end.values;
+                return end_values.map((_,i)=>end_values[i]-start_values[i]);
             };
 
             this.clip_offset = new ui.TimeSpanProperty({
@@ -5670,7 +5562,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "default": 0,
             });
 
-            this.clip_loops = new ui.Property(`<input type="number">`, {
+            this.clip_loops = new ui.InputProperty(`<input type="number">`, {
                 "name": "clip_loops",
                 "label": "Clip Loops",
                 "min": 0,
@@ -5693,39 +5585,43 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
 
             this.start_end_time_range = new RangeProperty({
                 "min": 0,
-                "max": ()=>get_default_duration(),
+                "max": get_default_duration,
                 "step": 0.001,
-                /** @param {PlaylistItem} item */
-                "default": (item)=>[0, get_default_duration(item)],
-                "hidden": ()=>!get_default_duration(),
+                "hidden": ()=>this.clip_start.is_indeterminate || this.clip_end.is_indeterminate || this.items.some(i=>get_default_duration(i) == 0),
                 "reset": false,
                 "title": `Clip Range`,
             });
             var update_clip_length = ()=>{
-                this.start_end_time_range.set_value([this.clip_start.value, this.clip_end.value]);
-                this.clip_length.set_value(get_clip_length())
+                var start_values = this.clip_start.values;
+                var end_values = this.clip_end.values;
+                var ranges = start_values.map((_,i)=>[start_values[i], end_values[i]]);
+                this.start_end_time_range.set_values(ranges);
+                this.clip_length.set_values(get_clip_lengths());
+                update_total_duration();
             };
             var update_total_duration = ()=>{
-                this.total_duration.set_value(get_total_duration());
+                var clip_loop_values = this.clip_loops.values;
+                var values = get_clip_lengths().map((v,i)=>v * clip_loop_values[i]);
+                this.total_duration.set_values(values);
             };
-            this.clip_start.on("change", ()=>{
+            this.on("post_update", ()=>{
                 update_clip_length();
-                update_total_duration();
             });
-            this.clip_end.on("change", ()=>{
+            /* this.clip_end.on("change", ()=>{
                 update_clip_length();
-                update_total_duration();
-            });
-            this.clip_length.on("change", (e)=>{
-                if (e.trigger) this.clip_end.set_value(this.clip_start.value + e.value, {trigger:true});
             });
             this.clip_loops.on("change", (e)=>{
                 update_total_duration();
+            }); */
+            this.clip_length.on("change", (e)=>{
+                if (e.trigger) this.clip_end.set_value(this.clip_start.value + e.value, {trigger:true});
             });
             this.total_duration.on("change", (e)=>{
-                if (e.trigger) this.clip_loops.set_value(e.value / get_clip_length(), {trigger:true});
+                if (e.trigger) this.clip_loops.set_value(e.value / get_clip_lengths(), {trigger:true});
             });
             this.start_end_time_range.on("change", (e)=>{
+                if (this.clip_start.is_indeterminate) return;
+                if (this.clip_end.is_indeterminate) return;
                 var trigger = e.trigger;
                 this.clip_start.set_value(e.value[0], {trigger});
                 this.clip_end.set_value(e.value[1], {trigger});
@@ -5733,7 +5629,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
 
             // -------------------------------------
 
-            this.fade_in_time = new ui.Property(`<input type="number">`, {
+            this.fade_in_time = new ui.InputProperty(`<input type="number">`, {
                 "name": "fade_in",
                 "label": "Fade In Duration",
                 "suffix": "secs",
@@ -5742,7 +5638,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "min": 0,
             })
 
-            this.fade_out_time = new ui.Property(`<input type="number">`, {
+            this.fade_out_time = new ui.InputProperty(`<input type="number">`, {
                 "name": "fade_out",
                 "label": "Fade Out Duration",
                 "suffix": "secs",
@@ -5751,13 +5647,13 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "min": 0,
             });
 
-            // var background_mode_prop = ()=>app.$.properties.playlist.__enumerable__.props.background_mode;
-            this.background_mode = new ui.Property(`<select></select>`, {
+            // var background_mode_prop = ()=>InternalSessionProps.playlist.__enumerable__.props.background_mode;
+            this.background_mode = new ui.InputProperty(`<select></select>`, {
                 "name": "background_mode",
                 "info": background_mode_info,
                 "label": "Background Mode",
-                /** @this {ui.Property} */
-                /** @param {PlaylistItem} item */
+                /** @this {ui.InputProperty} */
+                /** @param {PlaylistItem$} item */
                 "options": function(item) {
                     var options = utils.json_copy(get_options.apply(this));
                     if (item._is_special) {
@@ -5766,7 +5662,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                     // } else {
                     // utils.sort(options, o=>o[0]==background_mode_prop().__default__ ? 0 : 1);
                     var default_opt = options.find(o=>o[0]=="default") || options.find(o=>o[0]==null);
-                    var background_mode_option = app.$.properties.background_mode.__options__.find(o=>o[0]==app.$._session.background_mode);
+                    var background_mode_option = InternalSessionProps.background_mode.__options__.find(o=>o[0]==app.$._session.background_mode);
                     if (default_opt && background_mode_option) {
                         default_opt[1] = `Default Background (${background_mode_option[1]})`;
                     }
@@ -5780,19 +5676,22 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "default": get_default,
             });
         
-            this.background_color = new ui.Property(`<input type="color">`, {
+            this.background_color = new ui.InputProperty(`<input type="color">`, {
                 "name": `background_color`,
                 "label": "Background Color",
+                "default": get_default,
             });
             [this.video_file, this.video_file_start, this.video_file_end] = create_video_file_start_end_properties({
                 "name": "video_file",
                 "label": "Video File",
+                "default": get_default,
             });
 
             this.audio_file = new FileProperty({
                 "name": "audio_file",
                 "label": "Audio File",
                 "file.options": { files: true, filter: ["audio", "video"] },
+                "default": get_default,
             });
             this.audio_file.validators.push(VALIDATORS.media_audio);
 
@@ -5800,23 +5699,24 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "name": "subtitle_file",
                 "label": "Subtitle File",
                 "file.options": { files: true, filter: ["text"] },
+                "default": get_default,
             })
             this.subtitle_file.validators.push(VALIDATORS.media_subtitle);
             
-            this.crop = new ui.MultiProperty({
+            this.crop = new ui.MultiInputProperty({
                 "name": "crop",
-                "label": "Crop (Left/Top/Right/Bottom)",
-                "spinner": false,
+                "label": "Crop",
                 "default": get_default,
                 "props": ["left","up","right","down"].map((dir,i)=>{
-                    var p = new ui.Property(`<input type="number">`, {
+                    var p = new ui.InputProperty(`<input type="text">`, {
                         "name": i,
                         "reset": false,
+                        "default": 0,
                         "step": 0.01,
                         "min": 0,
                         "max": 1,
                         "precision":4,
-                        // "prefix": `<i class="fa-solid fa-arrow-${dir}"></i>`,
+                        "prefix": `<i class="fa-solid fa-arrow-${dir}"></i>`,
                         "suffix": `%`,
                     });
                     p.input_modifiers.push((v)=>v/100);
@@ -5824,7 +5724,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                     return p;
                 })
             });
-            this.crop.on("change", ()=>{
+            this.crop.on("change", (e)=>{
                 this.detected_crops_images.update();
             });
 
@@ -5840,14 +5740,14 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                     this.auto_crop_button.update()
                     last_detected_crop = await app.request({
                         call: ["session", "detect_crop"],
-                        arguments: [_item().id]
+                        arguments: [_this.item.id]
                     }, {
                         show_spinner: false,
                         timeout: 0
                     }).catch(utils.noop);
 
                     var r = new utils.Rectangle(last_detected_crop.combined);
-                    this.crop.set_value(r.left, r.top, 1-r.right, 1-r.bottom, {trigger:true});
+                    this.crop.set_value([r.left, r.top, 1-r.right, 1-r.bottom], {trigger:true});
                     auto_cropping = false;
                     this.auto_crop_button.update();
                     this.detected_crops_images.update();
@@ -5858,17 +5758,17 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
             var crop_el = $(`<div class="crop-image-container"></div>`)[0];
             this.detected_crops_images = new ui.UI(crop_el, {
                 "hidden": ()=>{
-                    return _items().length != 1 || !(last_detected_crop || _item()._detected_crops);
+                    return _this.items.length != 1 || !(last_detected_crop || _this.item._detected_crops);
                 },
-                /** @this {ui.Property} */
+                /** @this {ui.InputProperty} */
                 "update": ()=>{
-                    var data = last_detected_crop || _item()._detected_crops;
-                    var hash = JSON.stringify([data, this.crop.value, _item().id]);
+                    var data = last_detected_crop || _this.item._detected_crops;
+                    var hash = JSON.stringify([data, this.crop.value, _this.item.id]);
                     if (hash === old_hash) return;
                     old_hash = hash;
 
                     dom.remove_children(crop_el);
-                    if (data && _items().length == 1) {
+                    if (data && _this.items.length == 1) {
                         data.crops.forEach((d,i)=>{
                             var v = this.crop.value
                             var r = new utils.Rectangle({left:v[0], top:v[1], right:1-v[2], bottom:1-v[3]});
@@ -5889,11 +5789,11 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "label": "Duration",
                 "min":0,
                 "timespan.zero_infinity": ()=>{
-                    return !_items().some(i=>i._root_merged_playlist);
+                    return !this.items.some(i=>i._root_merged_playlist);
                 },
                 "timespan.format": "h:mm:ss.SSS",
                 "default": function() {
-                    if (_items().some(i=>i._root_merged_playlist)) return 60;
+                    if (_this.items.some(i=>i._root_merged_playlist)) return 60;
                     return get_default.apply(this);
                 },
             });
@@ -5903,7 +5803,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
             this.title_text = new ui.TextAreaProperty({
                 "name": "title_text",
                 "label": "Text",
-                "default":get_default,
+                "default": get_default,
                 "placeholder":"Insert Text Here",
                 "reset": false,
                 "textarea.rows": 3,
@@ -5913,7 +5813,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
 
             //Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 
-            this.title_font = new ui.Property(`<select>`, {
+            this.title_font = new ui.InputProperty(`<select>`, {
                 "name": "title_font",
                 "label": "Font",
                 "default": get_default,
@@ -5926,38 +5826,38 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 }
             })) */
 
-            this.title_size = new ui.Property(`<input type="number">`, {
+            this.title_size = new ui.InputProperty(`<input type="number">`, {
                 "name": "title_size",
                 "label": "Size",
                 "default": get_default,
                 "min": 10,
                 "max": 100,
             });
-            this.title_color = new ui.Property(`<input type="color">`, {
+            this.title_color = new ui.InputProperty(`<input type="color">`, {
                 "name": "title_color",
                 "label": "Color",
                 "default": get_default,
             });
-            this.title_style = new ui.Property(`<select>`, {
+            this.title_style = new ui.InputProperty(`<select>`, {
                 "name": "title_style",
                 "label": "Style",
                 "default": get_default,
                 "options": get_options,
             });
-            this.title_alignment = new ui.Property(`<select>`, {
+            this.title_alignment = new ui.InputProperty(`<select>`, {
                 "name": "title_alignment",
                 "label": "Alignment",
                 "default": get_default,
                 "options": get_options,
             });
-            this.title_spacing = new ui.Property(`<input type="number">`, {
+            this.title_spacing = new ui.InputProperty(`<input type="number">`, {
                 "name": "title_spacing",
                 "label": "Letter Spacing",
                 "default": get_default,
                 "min": -50,
                 "min": 50,
             });
-            this.title_outline_thickness = new ui.Property(`<input type="number"></div>`, {
+            this.title_outline_thickness = new ui.InputProperty(`<input type="number"></div>`, {
                 "name": "title_outline_thickness",
                 "label": "Outline Thickness",
                 "precision":1,
@@ -5966,12 +5866,12 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "max": 50,
                 "default": get_default
             });
-            this.title_outline_color = new ui.Property(`<input type="color">`, {
+            this.title_outline_color = new ui.InputProperty(`<input type="color">`, {
                 "name": "title_outline_color",
                 "label": "Outline Color",
                 "default": get_default
             });
-            this.title_shadow_depth = new ui.Property(`<input type="number">`, {
+            this.title_shadow_depth = new ui.InputProperty(`<input type="number">`, {
                 "name": "title_shadow_depth",
                 "label": "Shadow Depth",
                 "precision":1,
@@ -5980,30 +5880,31 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 "max": 50,
                 "default": get_default,
             });
-            this.title_shadow_color = new ui.Property(`<input type="color">`, {
+            this.title_shadow_color = new ui.InputProperty(`<input type="color">`, {
                 "name": "title_shadow_color",
                 "label": "Shadow Color",
                 "default": get_default,
             });
-            this.title_underline = new ui.Property(`<select>`, {
+            this.title_underline = new ui.InputProperty(`<select>`, {
                 "name": "title_underline",
                 "label": "Underline",
                 "default": get_default,
                 "options": YES_OR_NO,
             });
-            this.title_rotation = new ui.MultiProperty({
+            this.title_rotation = new ui.MultiInputProperty({
                 "name": "title_rotation",
                 "label": "3D Rotation (degrees)",
                 "default": get_default,
-                props: ["x","y","z"].map((d,i)=>{
-                    return new ui.Property(`<input type="number">`, {
+                props: ["x","y","z"].map((n,i)=>{
+                    return new ui.InputProperty(`<input type="number">`, {
                         "name": i,
                         "reset": false,
-                        suffix: d,
+                        "default": 0,
+                        "suffix": n,
                     })
                 })
             });
-            this.title_margin = new ui.Property(`<input type="number">`, {
+            this.title_margin = new ui.InputProperty(`<input type="number">`, {
                 "name": "title_margin",
                 "label": "Margin",
                 "default": get_default,
@@ -6016,7 +5917,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
             (()=>{
                 var _title_hash, _anim_hash;
                 var title_preview_content_el = $(`<div class="title-preview"></div>`)[0];
-                this.title_preview = new ui.Property(title_preview_content_el, {
+                this.title_preview = new ui.InputProperty(title_preview_content_el, {
                     "label": "Preview",
                     "reset": false,
                     "update": ()=>{
@@ -6123,7 +6024,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                     var duration = this.duration.value || Number.MAX_SAFE_INTEGER;
                     if (!title_preview_style) {
                         title_preview_style = $(`<style></style>`)[0];
-                        app.body_elem.append(title_preview_style);
+                        document.body.append(title_preview_style);
                     }
                     let style_text = `
                     @keyframes title-preview-timeline {
@@ -6217,7 +6118,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
 
             // -------------------------------------
 
-            this.macro_function = new ui.Property(`<select>`, {
+            this.macro_function = new ui.InputProperty(`<select>`, {
                 "name": "function",
                 "label": "Function",
                 "options":get_options,
@@ -6225,11 +6126,11 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
             });
             // this.macro_function.validators.push(VALIDATORS.not_empty);
 
-            this.macro_handover_session = new ui.Property(`<select>`, {
+            this.macro_handover_session = new ui.InputProperty(`<select>`, {
                 "name": "function_handover_session",
                 "label": "Handover Session",
                 "options":()=>app.get_handover_sessions_options(),
-                "default":get_default,
+                "default": get_default,
                 "reset":true,
                 "hidden":()=>this.macro_function.value != "handover"
             });
@@ -6237,16 +6138,17 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
 
             // -------------------------------------
 
-            this.label = new ui.Property(`<input type="text">`, {
+            this.label = new ui.InputProperty(`<input type="text">`, {
                 "name": "label",
                 "label": "Label",
-                /** @param {PlaylistItem} item */
-                "default": (item)=>{
-                    return (item??NULL_PLAYLIST_ITEM)._get_pretty_name({label:false}) || "";
-                },
+                /** @param {PlaylistItem$} item */
+                "default": (item)=>item._get_pretty_name({label:false})||"",
+                // "placeholder": ()=>this.item._get_pretty_name({label:false})||"",
             });
+            // this.label.output_modifiers.push((v)=>v?v:this.item._get_pretty_name({label:false}));
 
-            this.color = new ui.Property(`<select></select>`, {
+
+            this.color = new ui.InputProperty(`<select></select>`, {
                 "name": "color",
                 "label": "Item Color",
                 "options": Object.keys(item_colors).map(k=>{
@@ -6262,7 +6164,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
         this.on("update", ()=>{
             var layout = [];
 
-            var items = _items();
+            var items = _this.items;
 
             var add_video_layout = [
                 [this.video_file, this.video_file_start, this.video_file_end]
@@ -6273,7 +6175,7 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 [this.clip_offset, this.clip_loops, this.total_duration],
             ];
             var types = {};
-            /** @param {PlaylistItem} item */
+            /** @param {PlaylistItem$} item */
             var get_type = (item)=>{
                 if (item._is_playlist) return "playlist";
                 if (item.filename === "livestreamer://empty") return "empty";
@@ -6325,11 +6227,11 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 crop_layout.push(this.detected_crops_images);
             }
             
-            if (parent instanceof MediaSettingsPanel) {
+            if (simple) {
                 layout.push(...get_default_layout());
             } else {
-                if (is_normal || is_empty) {
-                    if (is_empty || is_image) {
+                if (is_normal || is_empty || is_rtmp) {
+                    if (is_empty || is_image || is_rtmp) {
                         layout.push([this.duration]);
                         layout.push("---");
                     } else {
@@ -6381,58 +6283,78 @@ export class MediaSettingsInterface extends ui.PropertyContainer {
                 if (layout.length) layout.push("---");
                 layout.push([this.label, this.color]);
             }
-            this.update_layout(layout)
+            this.layout = layout;
         });
     }
 }
 
-export class FileProperty extends ui.Property {
+/**
+ * @template ItemType
+ * @template {string} ValueType
+ * @template {FileProperty<ItemType,ValueType>} ThisType
+ * @typedef {ui.InputPropertySettings<ItemType,ValueType,ThisType> & {
+ *  "file.options": ui.UISetting<ThisType,FileManagerOptions>,
+ * }} FilePropertySettings
+ */
+
+/** 
+ * @template ItemType 
+ * @template {string} ValueType
+ * @template {FilePropertySettings<ItemType,ValueType,FileProperty>} Settings
+ * @template {ui.InputPropertyEvents} Events
+ * @extends {ui.InputProperty<ItemType,ValueType,Settings,Events>} 
+ */
+export class FileProperty extends ui.InputProperty {
+    /** @param {Settings} settings */
     constructor(settings = {}) {
-        var input = $(`<input type="text" class="file">`)[0];
-        super(input, Object.assign({
-            "setup": ()=>{
-                input.addEventListener("click", async (e)=>{
-                    var file_options = Object.assign({},this.get_setting("file.options"));
-                    if (!file_options.start && this.value) file_options.start = this.value;
-                    file_options.id = name;
-                    var paths = await open_file_manager(file_options);
-                    if (!paths) return;
-                    this.set_values(paths[0], {trigger:true});
-                });
-                return input;
-            },
-            "readonly": true,
-            "placeholder": ()=>`Choose a ${this.get_setting("file.options").folders ? "directory" : "file"}...`
-        }, settings));
-        this.output_modifiers.push((v)=>v?pretty_uri_basename(v):"");
+        settings = {
+            "file.options": {folders:false, files:false, multiple:false},
+            "placeholder": ()=>`Choose a ${this.get_setting("file.options").folders ? "directory" : "file"}...`,
+            ...settings
+        }
+        var input = $(`<input type="text">`)[0];
+        super(input, settings);
+        var browse_button = new ui.Button(`<button><i class="fas fa-folder-open"></i></button>`, {
+            click: async (e)=>{
+                /** @type {FileManagerOptions} */
+                var file_options = {id: this.name_id, start: this.value, ...this.get_setting("file.options")};
+                var paths = await open_file_manager(file_options);
+                if (!paths) return;
+                this.set_values(paths[0], {trigger:true});
+            }
+        });
+        this.validators.push(VALIDATORS.media_exists);
+        this.buttons_el.prepend(browse_button);
+        this.on("render", ()=>{
+            var value = this.value;
+            var has_focus = dom.has_focus(this.input);
+            if (has_focus) {
+                this.input.value = value;
+            } else {
+                this.input.value = value ? pretty_uri_basename(value) : "";
+            }
+            if (has_focus) {
+                this.input.scrollLeft = Number.MAX_SAFE_INTEGER;
+            }
+        });
     }
 }
 
-/** @extends {Modal<ui.PropertyListItem>} */
-export class FilterConfigurationMenu extends Modal {
-    /** @returns {FilterInput} */
-    get filter_data (){ return utils.json_copy(this.item.value); }
-    
-    constructor() {
+export class FilterConfigurationMenu extends EditModal {
+    /** @param {ui.PropertyListItem} list_item */
+    constructor(list_item) {
         super({
             "modal.title": "Configure Filter",
-            "modal.footer": true,
-            "modal.props": new ui.PropertyContainer({
-                "data": (_,path)=>utils.reflect.get(this.filter_data, path),
-            }),
             "modal.apply": ()=>{
-                this.item.set_value({
-                    ...this.props.named_property_lookup,
-                    props: {
-                        ...filter_props_container.named_property_lookup
-                    }
-                }, {trigger:true});
+                list_item.set_value(this.props.value, {trigger:true});
             },
-            "modal.block_updates": true,
+            "modal.data": (_, path)=>{
+                return utils.reflect.get(list_item.value, path)
+            },
         });
         
         var row = new ui.FlexRow();
-        var filter_name = new ui.Property(`<select>`, {
+        var filter_name = new ui.InputProperty(`<select>`, {
             name: "name",
             label: "Filter",
             options: [
@@ -6441,19 +6363,18 @@ export class FilterConfigurationMenu extends Modal {
             ],
             reset: false,
         });
-        filter_name.on("change", (e)=>rebuild());
-        var filter_active = new ui.Property(`<select>`, {
+        var filter_active = new ui.InputProperty(`<select>`, {
             name: "active",
             label: "Active",
             options: YES_OR_NO,
             reset: false,
         });
-        var filter_type = new ui.Property(`<input>`, {
+        var filter_type = new ui.InputProperty(`<input>`, {
             readonly: true,
             label: "Type",
             reset: false,
         });
-        var filter_description = new ui.Property(`<input>`, {
+        var filter_description = new ui.InputProperty(`<input>`, {
             readonly: true,
             label: "Description",
             reset: false,
@@ -6461,36 +6382,45 @@ export class FilterConfigurationMenu extends Modal {
         row.append(filter_name, filter_active, filter_type);
         this.props.append(row);
         this.props.append(filter_description);
-        this.props.append(new ui.Separator());
         
-        var filter_props_container = new ui.PropertyContainer({
-            "nullify_defaults": true,
-            "items": ()=>[this.filter_data.props],
+        var filter_props_container = new ui.PropertyGroup({
+            "name": "props",
         });
-
         this.props.append(filter_props_container);
 
-        var rebuild = ()=>{
-            filter_props_container.empty();
+        var get_preset_key = (props)=>{
+            return JSON.stringify(Object.entries(props).sort((([k0,v0],[k1,v1])=>k0==k1?0:k0<k1?-1:1)))
+        }
 
-            /** @type {ui.Property} */
+        var old_hash;
+        filter_name.on("change", ()=>{
+            filter_props_container.update();
+        });
+
+        filter_props_container.on("update", ()=>{
+            var hash = JSON.stringify(filter_name.value);
+            if (hash === old_hash) return;
+            old_hash = hash;
+
+            /** @type {ui.InputProperty} */
             var presets;
+            /** @type {Filter} */
             var filter_def = filters[filter_name.value];
             if (!filter_def) return;
-            var preset_map = Object.fromEntries(Object.keys(filter_def.presets).map(k=>[JSON.stringify(filter_def.presets[k]),k]));
+            var preset_map = Object.fromEntries(Object.keys(filter_def.presets).map(k=>[get_preset_key(filter_def.presets[k]),k]));
 
             filter_type.set_value(utils.capitalize(filter_def.type));
             filter_description.set_value(filter_def.description);
+            
+            if (utils.is_empty(filter_def.props)) return;
 
-            presets = new ui.Property(`<select>`, {
+            presets = new ui.InputProperty(`<select>`, {
                 label: "Preset",
                 default: "default",
                 options: [{value:"", text:"-", hidden:true, default:true}, ...Object.keys(filter_def.presets).map(k=>[k,k])],
                 reset: false,
             });
 
-            filter_props_container.append(presets);
-            filter_props_container.append(new ui.Separator());
             presets.on("change", (e)=>{
                 if (e.trigger) {
                     var props = filter_props_container.named_property_map;
@@ -6501,175 +6431,163 @@ export class FilterConfigurationMenu extends Modal {
                 }
             });
 
-            for (let k in filter_def.props) {
-                let p = filter_def.props[k];
+            var layout = ["-----", presets, "-----"];
+
+            for (let name in filter_def.props) {
+                let p = filter_def.props[name];
+                /** @type {ui.InputProperty} */
                 let prop;
                 let default_prop_def = {
+                    name,
                     label: p.__name__,
-                    name: k,
                     default: p.__default__,
                     info: p.__description__,
+                    data: (_,path)=>{
+                        if (filter_name.value == list_item.value.name) return utils.reflect.get(list_item.value, path)
+                    }
                 };
                 if (p.__options__) {
-                    prop = new ui.Property(`<select>`, {
+                    prop = new ui.InputProperty(`<select>`, {
                         ...default_prop_def,
                         options: p.__options__,
                     });
                 } else if (p.__type__ === "boolean") {
-                    prop = new ui.Property(`<select>`, {
+                    prop = new ui.InputProperty(`<select>`, {
                         ...default_prop_def,
                         options: YES_OR_NO
                     });
                 } else if (p.__type__ === "color") {
-                    prop = new ui.Property(`<input type="color">`, {
+                    prop = new ui.InputProperty(`<input type="color">`, {
                         ...default_prop_def,
                     });
                 } else if (p.__type__ === "number") {
-                    prop = new ui.Property(`<input type="number">`, {
+                    prop = new ui.InputProperty(`<input type="number">`, {
                         ...default_prop_def,
                         min: p.__min__,
                         max: p.__max__,
                         step: p.__step__||1,
                     });
                 } else {
-                    prop = new ui.Property(`<input type="text">`, {
+                    prop = new ui.InputProperty(`<input type="text">`, {
                         ...default_prop_def,
                     });
                 }
-                filter_props_container.append(prop);
+                layout.push(prop);
             }
             
             var update_preset = utils.debounce(()=>{
-                var k = preset_map[JSON.stringify(Object.fromEntries(filter_props_container.named_properties.map(p=>[p.name, p.value])))];
+                var pk = get_preset_key(filter_props_container.value);
+                var k = preset_map[pk];
                 presets.set_value(k||"");
             });
             filter_props_container.on("change", (e)=>{
                 update_preset();
             });
-        };
-
-        this.footer.append(new ui.Button(`<button>Cancel</button>`, {
-            "click": ()=>this.cancel()
-        }));
-
-        this.on("show", ()=>{
-            rebuild()
+            filter_props_container.layout = layout;
         });
     }
 }
 
-export class EditAccessControlMemberMenu extends Modal {
-    /** @param {AccessControlProperty} prop */
-    constructor(prop) {
-        var is_new = ()=>utils.is_empty(this.props.item);
+export class EditAccessControlMemberMenu extends EditModal {
+    /** @param {AccessControlProperty} prop @param {AccessControlUser} data */
+    constructor(prop, data) {
+        var is_new = utils.is_empty(data);
         super({
             "modal.title": "Edit Access Control",
-            "modal.footer": ()=>this.props.item.username != "*",
-            "modal.props": new ui.PropertyContainer(),
+            "modal.auto_apply": !is_new,
+            "modal.apply": ()=>{
+                var value = prop.value;
+                value[this.username.value] = this.props.value;
+                prop.set_value(value);
+            },
         });
 
         var row = this.props.append(new ui.FlexRow());
-        this.username = new ui.Property(`<input type="text">`, {
+        this.username = new ui.InputProperty(`<input type="text">`, {
             "name": "username",
             "label": "Username",
             "default": "",
-            "disabled": ()=>!is_new(),
+            "disabled": ()=>!is_new,
             "reset": false,
         });
         this.username.validators.push(VALIDATORS.not_empty);
-        this.username.validators.push((v)=>(is_new() && prop._access_control[v]) ? "Username already registered" : true);
-        this.access = new ui.Property(`<select>`, {
+        this.username.validators.push((v)=>(is_new && prop.value[v]) ? "Username already registered" : true);
+        this.access = new ui.InputProperty(`<select>`, {
             "name": "access",
             "label": "Access",
             "default": "allow",
             "options": ()=>{
-                return [["owner",{disabled:this.props.item.username == "*"}],"allow","deny"]
+                return [["owner",{disabled:data.username == "*"}],"allow","deny"]
             },
         });
-        this.password = new ui.Property(`<input type="text">`, {
+        this.password = new ui.InputProperty(`<input type="text">`, {
             "name": "password",
             "label": "Password",
             "default": "",
-            "hidden": ()=>this.access.value!=="allow" || this.props.item.username != "*",
+            "hidden": ()=>this.access.value!=="allow" || data.username != "*",
         });
-        this.suspended = new ui.Property(`<select>`, {
+        this.suspended = new ui.InputProperty(`<select>`, {
             "name": "suspended",
             "label": "Suspended",
             "default": false,
             "options": YES_OR_NO,
-            "disabled": ()=>this.props.item.username != "*" && this.access.value === "owner" && this.props.item.username === app.$._client.username,
-            "hidden": ()=>this.props.item.username == "*",
+            "disabled": ()=>data.username != "*" && this.access.value === "owner" && data.username === app.$._client.username,
+            "hidden": ()=>data.username == "*",
         });
         
         row.append(this.username, this.access);
         
         if (prop.get_setting("access.allow_passwords")) row.append(this.password);
         row.append(this.suspended);
-        
-        this.save_button = new ui.Button(`<button>Save</button>`, {
-            "disabled":()=>!this.props.valid,
-            "hidden": ()=>!is_new(),
-            "click": ()=>{
-                if (!this.props.valid) return; // insurance
-                prop._edit(this.username.value, {access:this.access.value, password:this.password.value, suspended:this.suspended.value});
-                this.hide();
-            },
-        });
-        var delete_button = new ui.Button(`<button>Delete</button>`, {
-            "hidden": ()=>is_new() || this.props.item.username == "*",
-            "disabled": ()=>this.props.item.username == "*",
-            "click": ()=>{
-                if (prop._edit(this.props.item.username, null)) {
-                    this.hide();
-                }
-            },
-        });
-        this.footer.append(this.save_button, delete_button)
-
-        this.props.on("change", (e)=>{
-            if (is_new() || !e.name || !e.trigger) return;
-            if (e.name == "username") return;
-            prop._edit(this.props.item.username, {[e.name]:e.value});
-        });
     }
 }
 
-export class AccessControlProperty extends ui.Property {
-    constructor(settings = {}) {
+/** 
+ * @template ItemType 
+ * @template {AccessControl} ValueType 
+ * @template {ui.InputPropertySettings<ItemType,ValueType,AccessControlProperty>} Settings
+ * @extends {ui.InputProperty<ItemType,ValueType,Settings>} 
+ */
+export class AccessControlProperty extends ui.InputProperty {
+    get values() {
+        return super.values.map(v=>new AccessControl(v));
+    }
+    /** @param {Settings} settings */
+    constructor(settings) {
         var elem = $(`<div class="access-control"></div>`)[0];
         super(elem, {
-            "default": AccessControl.DEFAULT_ACCESS_FOR_SELF,
             "reset": false,
-            "hidden": ()=>!this._access_control._self_can_edit,
+            "hidden": ()=>!this.value._self_can_edit,
             "access.allow_passwords": true,
             ...settings
         });
-        
-        this._access_control = new AccessControl();
 
         var columns = {
             "Username": (data)=>$(`<span>${data.username}</span>`)[0],
             "Access": (data)=>(data.access === "allow" && data.password) ? "allow [password protected]" : data.access,
             // "Password": (data)=>data.password ? ("*".repeat(data.password ? data.password.length : 0)) : "-",
             "Controls": (data)=>{
+                var ac = this.value;
                 var edit_button, delete_button, suspend_button;
-                if (this._access_control._owners.length == 0) return;
-                if (this._access_control._self_is_owner_or_admin) {
+                if (ac._owners.length == 0) return;
+                if (ac._self_is_owner_or_admin) {
                     edit_button = $(`<button title="Edit"><i class="fas fa-wrench"></i></button>`)[0];
                     edit_button.onclick = ()=>{
-                        new EditAccessControlMemberMenu(this).show(data);
+                        new EditAccessControlMemberMenu(this, data).show();
                     };
-                    edit_button.disabled = data.access == "owner" && this._access_control._owners.length < 2;
+                    edit_button.disabled = data.access == "owner" && ac._owners.length < 2;
                     if (data.username !== "*" && data.access !== "owner") {
                         suspend_button = $(`<button title="${data.suspended ? "Unsuspend" : "Suspend"}"><i style="opacity:${data.suspended?0.5:1.0};"class="far fa-pause-circle"></i></button>`)[0];
                         suspend_button.onclick = ()=>{
-                            this._edit(data.username, {suspended: !data.suspended});
+                            ac._edit(data.username, {suspended: !data.suspended});
+                            this.set_value(ac, {trigger:true});
                         };
                     }
                     if (data.username !== "*") {
                         delete_button = $(`<button title="Delete"><i class="fas fa-trash-alt"></i></button>`)[0];
                         delete_button.onclick = ()=>{
-                            this._edit(data.username, null);
+                            ac._delete(data.username);
+                            this.set_value(ac, {trigger:true});
                         };
                     }
                 }
@@ -6682,7 +6600,7 @@ export class AccessControlProperty extends ui.Property {
         var thead_elem = $(`<thead></thead>`)[0];
         var tbody_elem = $(`<tbody></tbody>`)[0];
         var tfoot_elem = $(`<tfoot><tr><td></td></tr></tfoot>`)[0];
-        var add_button = $(`<button style="width:100%"></button>`)[0];
+        var add_button = $(`<button style="width:100%; border:0"></button>`)[0];
         table_elem.append(thead_elem);
         table_elem.append(tbody_elem);
         table_elem.append(tfoot_elem);
@@ -6692,23 +6610,25 @@ export class AccessControlProperty extends ui.Property {
         footer_cell.style.padding = 0;
         footer_cell.append(add_button);
         add_button.addEventListener("click", async ()=>{
-            if (this._access_control._owners.length == 0) {
-                this._claim();
+            var ac = this.value;
+            if (ac._owners.length == 0) {
+                ac._claim();
             } else {
-                new EditAccessControlMemberMenu(this).show({});
+                new EditAccessControlMemberMenu(this, {}).show();
             }
         });
         thead_elem.append($(`<tr>${Object.keys(columns).map(c=>`<th>${c}</th>`)}</tr>`)[0]);
         var old_hash;
         this.on("render", ()=>{
-            var hash = JSON.stringify(this._access_control)
+            var ac = this.value;
+            var hash = JSON.stringify(ac);
             if (hash === old_hash) return;
             old_hash = hash;
 
             dom.remove_children(tbody_elem);
-            add_button.innerText = add_button.title = this._access_control._owners.length == 0 ? "Claim Ownership" : "Add User";
-            dom.toggle_attribute(add_button, "disabled", !this._access_control._self_can_edit);
-            for (let user of this._access_control._users) {
+            add_button.innerText = add_button.title = ac._owners.length == 0 ? "Claim Ownership" : "Add User";
+            dom.toggle_attribute(add_button, "disabled", !ac._self_can_edit);
+            for (let user of ac._users) {
                 var tr = $(`<tr></tr>`)[0];
                 if (user.suspended) tr.style.color = "rgba(0,0,0,0.4)";
                 tbody_elem.append(tr);
@@ -6719,84 +6639,89 @@ export class AccessControlProperty extends ui.Property {
                 });
             }
         });
-        this.on("change", (e)=>{
-            utils.clear(this._access_control);
-            Object.assign(this._access_control, utils.json_copy(e._value));
-        });
     }
 
     _claim() {
-        this._access_control._claim();
-        this.update_value();
-    }
-
-    _edit(username, data) {
-        var res = this._access_control._edit(username, data);
-        this.update_value();
-        return res;
-    }
-
-    update_value() {
-        var d = utils.json_copy(this._access_control);
-        this.set_values(d, {trigger:true});
+        var ac = this.value;
+        ac._claim();
+        this.set_value(ac, {trigger:true});
     }
 }
 
-export class RangeProperty extends ui.Property {
-    constructor(settings = {}) {
+/** 
+ * @template ItemType 
+ * @template {[number,number]} ValueType
+ * @template {ui.InputPropertySettings<ItemType,ValueType,RangeProperty>} Settings
+ * @template {ui.PropertyEvents} Events
+ * @extends {ui.InputProperty<ItemType, ValueType, Settings, Events>} 
+ */
+export class RangeProperty extends ui.InputProperty {
+    get is_disabled() { return super.is_disabled || this.is_indeterminate; }
+
+    /** @param {Settings} settings */
+    constructor(settings) {
         var input = $(`<div class="ui-slider-range"></div>`)[0];
         input.style.width = "100%";
         input.style.padding = "0 10px";
-        var value;
         /** @type {noUiSliderAPI} */
         var slider;
-
-        super(input, Object.assign({
+        
+        slider = noUiSlider.create(input, {
+            start: [0, 1],
+            connect: true,
+            behaviour: 'drag',
+            range: {'min': 0, 'max': 1},
+            step: 0,
+            animate: false,
+            format: {
+                to: function (value) {
+                    return value.toFixed(3)
+                },
+                from: function (value) {
+                    return +value;
+                }
+            }
+        });
+        slider.on("slide", (_values)=>{
+            var value = _values.map(v=>+v);
+            // this.emit("slide", { value });
+            this.set_value(value);
+        });
+        slider.on("end", (_values)=>{
+            var value = _values.map(v=>+v);
+            this.set_value(value, {trigger:true});
+        });
+        settings = {
             "min": 0,
-            "max": 100,
+            "max": 1,
             "step": 1,
-            "default": [0, 100],
             "spinner": false,
-            "setup": ()=>{
-                slider = noUiSlider.create(input, {
-                    start: [0, 1],
-                    connect: true,
-                    behaviour: 'drag',
-                    range: {'min': 0, 'max': 1},
-                    step: 0,
-                    animate: false,
-                    format: {
-                        to: function (value) {
-                            return value.toFixed(3)
-                        },
-                        from: function (value) {
-                            return +value;
-                        }
-                    }
-                });
-                slider.on("slide", (_values)=>{
-                    value = _values.map(v=>+v);
-                    // this.emit("slide", { value });
-                    this.set_value(value);
-                });
-                slider.on("end", (_values)=>{
-                    value = _values.map(v=>+v);
-                    this.set_value(value, {trigger:true});
-                });
-                return input;
-            },
-        }, settings));
+            "setup": false,
+            ...settings
+        }
+        settings.default = settings.default ?? ((item)=>[this.get_setting("min", item), this.get_setting("max", item)]);
+        super(input, settings);
 
         var last_hash;
         this.on("render", (e)=>{
-            var disabled = this.get_setting("disabled");
-            var range =  disabled ? {'min':0, 'max':1} : {'min':this.get_setting("min"), 'max':this.get_setting("max")};
-            var step = this.get_setting("step");
-            var value = this.value;
-            var hash = JSON.stringify([value, step, range]);
+            var is_indeterminate = this.is_indeterminate;
+            var min, max, step, value;
+            if (is_indeterminate) {
+                min = 0;
+                max = 1;
+                step = 0;
+                value = [0, 1];
+            } else {
+                let item = this.item;
+                min = this.get_setting("min", item) || 0; 
+                max = this.get_setting("max", item) || 1;
+                step = this.get_setting("step", item);
+                value = this.value;
+            }
+            var hash = JSON.stringify([value, step, min, max]);
             if (last_hash !== hash) {
                 last_hash = hash;
-                slider.updateOptions({ step, range });
+                slider.updateOptions({ step, range: {min, max} });
                 slider.set(value, false, false);
             }
         })
@@ -6871,13 +6796,14 @@ export class Panel extends ui.UI {
             if (!this.elem.dataset.collapsible) return;
             if (e.target != header_container_elem) return;
             var setting_id = `drawer:${this.panel_id}`;
-            if (app.settings.get(setting_id) === undefined) app.settings.set(setting_id, false);
-            else app.settings.toggle(setting_id);
+            if (app.local_settings.get(setting_id) === undefined) app.local_settings.set(setting_id, false);
+            else app.local_settings.toggle(setting_id);
         });
     }
 
-    /** @param {ui.PropertyContainer} props */
-    add_reset_button(props, opts) {
+    /** @param {ui.PropertyGroup} props */
+    set_reset_button(props, opts) {
+        if (this.reset_button) this.reset_button.remove();
         var opts = {
             "disabled": utils.noop,
             ...opts,
@@ -6887,10 +6813,11 @@ export class Panel extends ui.UI {
             "disabled": ()=>props.is_default || !!opts.disabled(),
             "click": ()=>props.reset(),
         })
-        props.on("change", (e)=>{
+        props.on("post_update", (e)=>{
             reset_button.update();
         });
         g.append(reset_button)
+        this.reset_button = g;
         this.header_elem.append(g);
     }
 
@@ -6902,20 +6829,17 @@ export class Panel extends ui.UI {
 export class StreamSettings extends Panel {
     constructor() {
         super("Stream Settings");
-        this.props = new ui.PropertyContainer({
-            "nullify_defaults": true,
+        this.props = new ui.PropertyGroup({
             "items": ()=>[app.$._session.stream_settings],
             // "disabled": ()=>app.$.session.is_running,
         });
         this.body.append(this.props);
         var left = new ui.Row({ "flex":1 });
         var right = new ui.Row({ "flex":0, "gap":0 });
-        var inner = new ui.UI();
-        inner.append(left, right);
-        dom.add_class(inner.elem, "stream-settings");
-        this.props.append(inner);
+        dom.add_class(this.props.elem, "stream-settings");
+        this.props.append(left, right);
 
-        this.add_reset_button(this.props, { "disabled":()=>app.$._session._is_running });
+        this.set_reset_button(this.props, { "disabled":()=>app.$._session._is_running });
         
         this.properties_ui = new ui.Row({
             "class":"stream-properties",
@@ -6934,7 +6858,7 @@ export class StreamSettings extends Panel {
 
         var restart_elem = $(`<div>Restarting... [<span class="restart-time"></span>] <a class="restart-cancel" href="javascript:void(0)">Cancel</a></div>`)[0];
         this.on("update", ()=>{
-            var restart_time = app.$._session.stream.restart;
+            var restart_time = app.$._session._stream.restart;
             dom.toggle_class(restart_elem, "d-none", restart_time == 0);
             dom.set_text(restart_elem.querySelector(".restart-time"), `${restart_time}s`);
         });
@@ -6948,10 +6872,10 @@ export class StreamSettings extends Panel {
             "id": "toggle-streaming",
             "title": "Start/Stop Streaming",
             "hover": ()=>{
-                return !app.$._session._is_running && !this.props.valid;
+                return !app.$._session._is_running && !this.props.is_valid;
             },
             "disabled": ()=>{
-                return !app.$._session._is_running && !this.props.valid;
+                return !app.$._session._is_running && !this.props.is_valid;
             },
             // "update":()=>{
             //     this.toggle_streaming_button.update_settings({"disabled": !app.$._session._is_running && !this.props.valid_visible})
@@ -6973,7 +6897,7 @@ export class StreamSettings extends Panel {
                 }
             },
             "update": ()=>{
-                var state = app.$._session.stream.state;
+                var state = app.$._session._stream.state;
                 if (state === constants.State.STOPPED) state = `START`;
                 else if (state === constants.State.STARTED) state = `STOP`;
                 else if (state === constants.State.STOPPING) state = `Stopping...`;
@@ -6987,7 +6911,7 @@ export class StreamSettings extends Panel {
         this.schedule_stream_button = new ui.Button(`<button>Schedule</button>`, {
             "id": "schedule-stream",
             "click": (e)=>{
-                app.schedule_stream_menu.show();
+                new ScheduleStreamMenu().show();
             },
             "disabled":()=>app.$._session._is_running,
             "hidden":()=>app.$._session._is_running
@@ -6995,8 +6919,7 @@ export class StreamSettings extends Panel {
         this.handover_button = new ui.Button(`<button>Handover</button>`, {
             "id": "handover-button",
             "click": async (e)=>{
-                var modal = new HandoverSessionMenu();
-                modal.show();
+                new HandoverSessionMenu().show();
             },
             "hidden":()=>!app.$._session._is_running || app.$._session.type != SessionTypes.INTERNAL || app.$._stream.test
         });
@@ -7004,8 +6927,7 @@ export class StreamSettings extends Panel {
             "id": "config-button",
             "title": "Stream Configuration",
             "click": async (e)=>{
-                var modal = new StreamConfigurationMenu();
-                modal.show();
+                new StreamConfigurationMenu().show();
             },
             "hidden":()=>!app.$._session._is_running || app.$._stream.test
         });
@@ -7014,9 +6936,12 @@ export class StreamSettings extends Panel {
         row.append(this.schedule_stream_button, this.handover_button, this.config_button);
         this.button_group_ui.append(restart_elem, this.toggle_streaming_button, row);
 
-        function get_default() { return utils.try_catch(()=>app.$.properties.stream_settings[this.name].__default__); }
+        function get_default() {
+            return InternalSessionProps.stream_settings[this.name].__default__;
+        }
         function get_options() {
-            return utils.try_catch(()=>app.$.properties.stream_settings[this.name].__options__) ?? (utils.try_catch(()=>typeof app.$.properties.stream_settings[this.name].__default__) === "boolean" ? YES_OR_NO : []);
+            var p = InternalSessionProps.stream_settings[this.name];
+            return p.__options__ ?? (typeof p[this.name].__default__ === "boolean" ? YES_OR_NO : []);
         }
 
         this.targets = new TargetsProperty({
@@ -7024,12 +6949,13 @@ export class StreamSettings extends Panel {
             "label": "Target(s)",
             "reset": true,
             "allow_empty": false,
-            // "default": get_default,
+            "default": get_default,
+            "opts_name": "target_opts",
         });
 
-        this.properties_ui.append(this.targets);
+        this.properties_ui.append(this.targets, this.targets.opts);
 
-        this.title = new ui.Property(`<input type="text">`, {
+        this.title = new ui.InputProperty(`<input type="text">`, {
             "name": "title",
             "label": "Title",
             "default": get_default,
@@ -7038,7 +6964,7 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.title)
 
-        this.h264_preset = new ui.Property(`<select></select>`, {
+        this.h264_preset = new ui.InputProperty(`<select></select>`, {
             "name": "h264_preset",
             "label": "h264 Preset",
             "options": get_options,
@@ -7046,7 +6972,7 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.h264_preset)
 
-        this.video_bitrate = new ui.Property(`<input type="number">`, {
+        this.video_bitrate = new ui.InputProperty(`<input type="number">`, {
             "name": "video_bitrate",
             "label": "Video Bitrate",
             "suffix": `kbps`,
@@ -7058,7 +6984,7 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.video_bitrate)
 
-        this.audio_bitrate = new ui.Property(`<input type="number">`, {
+        this.audio_bitrate = new ui.InputProperty(`<input type="number">`, {
             "name": "audio_bitrate",
             "label": "Audio Bitrate",
             "step": 1,
@@ -7070,7 +6996,7 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.audio_bitrate)
 
-        this.stream_resolution = new ui.Property(`<select></select>`, {
+        this.stream_resolution = new ui.InputProperty(`<select></select>`, {
             "name": "resolution",
             "label": "Resolution",
             "options": get_options,
@@ -7078,7 +7004,7 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.stream_resolution)
 
-        this.frame_rate = new ui.Property(`<select></select>`, {
+        this.frame_rate = new ui.InputProperty(`<select></select>`, {
             "name": "frame_rate",
             "label": "Frame Rate",
             "options": get_options,
@@ -7086,7 +7012,7 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.frame_rate)
 
-        this.experimental_mode = new ui.Property(`<select></select>`, {
+        this.experimental_mode = new ui.InputProperty(`<select></select>`, {
             "name": "experimental_mode",
             "label": "Experimental Mode",
             "info": "Uses an alternative method to stream. Recommended to be left off.",
@@ -7095,7 +7021,7 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.experimental_mode)
 
-        this.use_hardware = new ui.Property(`<select></select>`, {
+        this.use_hardware = new ui.InputProperty(`<select></select>`, {
             "name": "use_hardware",
             "label": "Hardware Transcoding",
             "options": get_options,
@@ -7118,17 +7044,18 @@ export class StreamSettings extends Panel {
 
         this.props.on("change", (e)=>{
             if (!e.name || !e.trigger) return;
-            app.$._push([`sessions/${app.$._session.id}/stream_settings/${e.name}`, e._value]);
+            if (e.raw_value == null) delete app.$._session.stream_settings[e.name];
+            else app.$._session.stream_settings[e.name] = e.raw_value;
             app.request({
                 call: ["session", "update_values"],
-                arguments: [[`stream_settings/${e.name}`, e._value]]
+                arguments: [{stream_settings:{[e.name]:e.raw_value}}]
             });
         });
 
         var last_stream_info_hash;
         this.on("post_update", ()=>{
             var session = app.$._session || EMPTY_OBJECT;
-            var stream = session.stream;
+            var stream = session._stream;
 
             dom.toggle_class(this.properties_ui.elem, "d-none", session._is_running);
             dom.toggle_class(this.info_ui.elem, "d-none", !session._is_running);
@@ -7190,8 +7117,8 @@ export class StreamSettings extends Panel {
                 // url.search = new URLSearchParams(internal_session.publishArgs);
                 stream_info["Internal URL"] = `<a href="${url.toString()}" target="_blank">${url}</a>`;
             }
-            stream_info["Bit Rate"] = utils.format_bytes_short(session.stream.bitrate, "k")+"ps";
-            stream_info["Run Time"] = session._is_running ? utils.ms_to_timespan_str(session.stream._run_time) : 0;
+            stream_info["Bit Rate"] = utils.format_bytes_short(session._stream.bitrate, "k")+"ps";
+            stream_info["Run Time"] = session._is_running ? utils.ms_to_timespan_str(session._stream._run_time) : 0;
 
             var hash = JSON.stringify(stream_info);
             if (hash !== last_stream_info_hash) {
@@ -7221,7 +7148,7 @@ export class MediaPlayerPanel extends Panel {
 
     constructor() {
         super("Media Player");
-        this.props = new ui.PropertyContainer({
+        this.props = new ui.PropertyGroup({
             "items": ()=>[app.$._session],
         });
         this.body_elem.append(this.props);
@@ -7230,7 +7157,7 @@ export class MediaPlayerPanel extends Panel {
 
         var bg = $(`<div class="buttons border-group">
             <button class="show_live_feed mini icon" data-setting__show_live_feed title="Show/Hide Live Feed"><i class="fas fa-tv"></i></button>
-            <button class="time_display_ms mini icon" data-setting__time_display_ms title="Show/Hide Milliseconds">MS</button>
+            <button class="time_display_ms mini" data-setting__time_display_ms title="Show/Hide Milliseconds">MS</button>
             <button class="show_chapters mini icon" data-setting__show_chapters title="Show/Hide Chapters"><i class="fas fa-bookmark"></i></button>
         </div>`)[0];
         this.header_elem.append(bg);
@@ -7269,7 +7196,7 @@ export class MediaPlayerPanel extends Panel {
             if (w && !w.closed) {
                 w.focus();
             } else {
-                var [width,height] = app.$._session.stream["resolution"].split("x").map(i=>parseInt(i));
+                var [width,height] = app.$._session._stream["resolution"].split("x").map(i=>parseInt(i));
                 var ratio = width / height;
                 height = Math.min(720, height);
                 width = height * ratio;
@@ -7278,7 +7205,7 @@ export class MediaPlayerPanel extends Panel {
                 w = windows["test-"+id] = window.open(test_url, id, `width=${width},height=${height},scrollbars=1,resizable=1`);
                 w.onload=()=>{
                     w.document.head.append($(`<title>Test Stream ${id}</title>`)[0]);
-                    /* await */ dom.clone_document_head(app.root_elem, w.document.head);
+                    /* await */ dom.clone_document_head(document.head, w.document.head);
                     var style = w.document.createElement("style");
                     style.textContent =
 `body {
@@ -7351,7 +7278,7 @@ video {
                 "content": ()=>app.$._stream.mpv.ctx.props.pause ? `<i class="fas fa-play"></i>` : `<i class="fas fa-pause"></i>`,
                 "click": (e)=>{
                     var new_pause = !app.$._stream.mpv.ctx.props.pause;
-                    app.$._push([`sessions/${app.$._session.id}/stream/mpv/props/pause`, new_pause]);
+                    app.$._stream.mpv.ctx.props.pause = new_pause;
                     app.request({
                         call: ["session", "mpv", "set_property"],
                         arguments: ["pause", new_pause]
@@ -7393,7 +7320,7 @@ video {
                     app.seek_chapter(-1,true)
                 },
                 "disabled": ()=>app.media.chapters.length == 0 || app.media.time_pos <= app.media.chapters[0].start,
-                "hidden": ()=>!app.settings.get("show_chapters") || app.media.chapters.length == 0
+                "hidden": ()=>!app.local_settings.get("show_chapters") || app.media.chapters.length == 0
             }),
             this.next_chapter_button = new ui.Button(`<button><i class="fas fa-fast-forward"></i></button>`, {
                 "title":"Next Chapter",
@@ -7402,7 +7329,7 @@ video {
                     app.seek_chapter(1,true)
                 },
                 "disabled": ()=>app.media.chapters.length == 0 || app.media.time_pos >= app.media.chapters[app.media.chapters.length-1].start,
-                "hidden": ()=>!app.settings.get("show_chapters") || app.media.chapters.length == 0
+                "hidden": ()=>!app.local_settings.get("show_chapters") || app.media.chapters.length == 0
             }),
             this.reload_button = new ui.Button(`<button><i class="fas fa-sync"></i></button>`, {
                 "title":"Reload",
@@ -7421,7 +7348,7 @@ video {
                 "title":"Precise Seek",
                 "class":"player-button",
                 "click": (e)=>{
-                    app.set_time_pos_menu.show();
+                    new SetTimePosMenu().show();
                 },
                 "disabled":()=>!app.media.seekable,
             })
@@ -7430,7 +7357,7 @@ video {
         this.volume_wrapper = new ui.UI(`<div class="player-volume-wrapper"></div>`);
         this.player_inline_elem.append(this.volume_wrapper);
 
-        this.volume = new ui.Property(`<div><input id="volume" type="range" value="100" title="Volume" style="width:100px"></div>`, {
+        this.volume = new ui.InputProperty(`<div><input id="volume" type="range" value="100" title="Volume" style="width:100px"></div>`, {
             "name": "volume_target",
             "default": 100,
             "step": 1,
@@ -7438,24 +7365,22 @@ video {
             "max": 200,
             "reset": false,
             "dblclick": ()=>this.volume.reset(),
-            "nullify_defaults": true,
         });
-        this.vol_speed = new ui.Property(`<select>`, {
+        this.vol_speed = new ui.InputProperty(`<select>`, {
             "name": "volume_speed",
             "title": "Volume Transition Speed",
             "default": 4,
             "reset": false,
             "options": [[0.5, "Very Slow"], [1.0, "Slow"], [2.0, "Medium"], [4.0, "Fast"], [8.0, "Very Fast"], [0, "Immediate"]],
             "hidden": true,
-            "nullify_defaults": true,
         });
         /** @param {ui.PropertyChangeEvent} e */
         var on_volume_prop_change = (e)=>{
             if (e.trigger) {
-                app.$._push([`sessions/${app.$._session.id}/${e.name}`, e._value]);
+                app.$._session[e.name] = e.value;
                 app.request({
                     call:["session", "update_values"],
-                    arguments: [[e.name, e._value]]
+                    arguments: [{[e.name]: e.value}]
                 });
             }
             this.set_volume_button.update();
@@ -7530,14 +7455,14 @@ video {
         this.on("update", ()=>{
             var started = app.$._session._is_running;
             dom.set_inner_html(this.status_prefix_elem, `${app.media.status}: `);
-            app.build_playlist_breadcrumbs(this.status_path_elem, app.$._session._current_playlist_item, true, true);
+            build_playlist_breadcrumbs(this.status_path_elem, app.$._session._current_playlist_item, true, true);
             
             var stats_html = Object.entries(app.media.stats).map(([k,v])=>`<span>${k}: ${v}</span>`).join(" | ");
             dom.set_inner_html(this.stats_elem, stats_html);
             dom.toggle_class(this.stats_elem, "d-none", !started);
             // toggle_class(this.status_elem, "d-none", app.$._session._current_playing_item.id == -1);
 
-            dom.toggle_class(this.test_stream_info_elem, "d-none", !app.settings.get("show_player_info"));
+            dom.toggle_class(this.test_stream_info_elem, "d-none", !app.local_settings.get("show_player_info"));
             dom.toggle_class(this.elem, "chapters-available", app.media.chapters.length > 0);
             
             if (app.media.chapters.length) {
@@ -7553,11 +7478,9 @@ video {
     }
 
     async refresh_player(force) {
-        
-        var test_video_url = new URL(`/internal/${app.$._session.id}.flv`, dom.get_url(null, "media-server", true));
         var show = !!(app.$._session._is_running && !app.$._stream._is_only_gui);
         dom.toggle_class(this.elem, "live-feed-available", show);
-        if (!app.settings.get("show_live_feed")) show = false;
+        if (!app.local_settings.get("show_live_feed")) show = false;
         var is_popped_out = !!windows["test-"+app.$._session.id];
         var is_playable = !!(show && app.$._session._get_connected_nms_session_with_appname("internal"));
 
@@ -7595,7 +7518,7 @@ video {
             this.test_stream_video_wrapper.append(this.video_el);
             this.flv_player = flvjs.createPlayer({
                 type: "flv",
-                url: test_video_url.toString(),
+                url: location.protocol === "https:" ? app.$._stream.wss_output_url : app.$._stream.ws_output_url,
                 hasAudio: true,
                 hasVideo: true,
                 isLive: true,
@@ -7625,8 +7548,27 @@ video {
 }
 
 export class MediaSettingsPanel extends Panel {
-    toggle_mode(v) {
-        this._mode = v;
+    
+    mode = MediaSettingsMode.current;
+
+    set_mode(k) {
+        this.mode = k;
+        dom.remove_children(this.group_wrapper_elem);
+        this.group = new MediaPropertyGroup(k, true);
+        this.group.on("change", (e)=>{
+            if (!e.name || !e.trigger) return;
+            if (this.mode === MediaSettingsMode.all) {
+                app.$._session.player_default_override[e.name] = e.value;
+                app.request({
+                    call: ["session", "set_player_default_override"],
+                    arguments: [e.name, e.value]
+                });
+            } else {
+                app.playlist_update(Object.fromEntries(this.group.items.map(i=>[i.id, { props: { [e.name]: e.value } }])), {register_history:false});
+            }
+        });
+        this.group_wrapper_elem.append(this.group);
+        this.set_reset_button(this.group);
         this.update();
     }
 
@@ -7635,72 +7577,80 @@ export class MediaSettingsPanel extends Panel {
             "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL,
         });
 
-        var item = ()=>app.$._session._current_playlist_item;
-        /* var header = new ui.Header(`<p><span>Modifying:</span> <span class="current-item"></span> <a class="modify" href="javascript:void(0);" title="Modify..."><i class="fas fa-wrench"></i></a></p>`, {
-            "render":()=>{
-                app.build_playlist_breadcrumbs(header_item_el, item(), true, true);
+        var mode_info = {
+            [MediaSettingsMode.current]: {
+                "title": "Current",
             },
-            "hidden": ()=>this._mode === MediaSettingsMode.all || item().id == -1,
-        });
-        var header_item_el = header.elem.querySelector(".current-item");
-        var modify_el = header.elem.querySelector(".modify");
-        modify_el.onclick = ()=>{
-            app.playlist_modify_menu.show(item());
+            [MediaSettingsMode.selected]: {
+                "title": "Selected",
+            },
+            [MediaSettingsMode.all]: {
+                "title": "All",
+            }
         }
-        this.body.append(header); */
 
-        this.header_elem.append($(`<div class="buttons border-group">
-            <button class="player-settings-toggle-current mini" title="Current File Media Settings">current</button>
-            <button class="player-settings-toggle-default mini" title="Default Media Settings">all</button>
-        </div>`)[0]);
+        var _this = this;
+        var toggle_buttons = $(`<div class="buttons border-group"></div>`)[0];
+        var buttons = Object.keys(mode_info).map(k=>{
+            k = +k;
+            return new ui.Button(`<button class="mini">${mode_info[k].title}</button>`, {
+                title: mode_info[k].title,
+                click() {
+                    _this.set_mode(k);
+                },
+                update() {
+                    if (_this.mode == k) delete this.elem.dataset.toggled;
+                    else this.elem.dataset.toggled = 1;
+                }
+            })
+        })
+        toggle_buttons.append(...buttons);
+        this.header_elem.append(toggle_buttons);
         
-        this.toggle_current_button = this.elem.querySelector("button.player-settings-toggle-current");
-        this.toggle_all_button = this.elem.querySelector("button.player-settings-toggle-default");
-        this.toggle_current_button.addEventListener("click", (e)=>{
-            this.toggle_mode(MediaSettingsMode.current);
-        });
-        this.toggle_all_button.addEventListener("click", (e)=>{
-            this.toggle_mode(MediaSettingsMode.all);
-        });
-        
-        this.on("update", ()=>{
-            var p = this.toggle_all_button.parentElement;
-            var toggle = (this._mode === MediaSettingsMode.current) ? "0" : "1";
-            if (p.dataset.toggle != toggle) p.dataset.toggle = toggle;
+        app.playlist.on("selection_change", ()=>{
+            if (this.mode === MediaSettingsMode.selected) {
+                this.set_mode(this.mode);
+            }
         });
 
-        this.interface = new MediaSettingsInterface(this);
+        // var info_elem = $(`<div class="info"></div>`)[0];
+        // this.body.append(info_elem);
+        // this.on("update", ()=>{
+        //     var txt = "";
+        //     /** @type {PlaylistItem[]} */
+        //     var items = group.items;
+        //     if (group.mode === MediaSettingsMode.all) {
+        //         txt = "Default settings for all items";
+        //     } else if (group.mode === MediaSettingsMode.selected) {
+        //         txt = `Selected item${items.length>1?"s":""} [${items.length == 1 ? items[0]._get_pretty_name() : items.length}]`;
+        //     } else if (group.mode === MediaSettingsMode.current) {
+        //         txt = `Current item [${items[0]._get_pretty_name()}]`;
+        //     }
+        //     var items = group.items;
+        //     dom.set_inner_html(info_elem, txt);
+        // });
         
-        this.interface.on("change", (e)=>{
-            if (!e.name || !e.trigger) return;
-            app.request({
-                call: ["session","set_player_property"],
-                arguments: [e.name, e.value, this._mode === MediaSettingsMode.current]
-            });
-            /* if (this._mode === MediaSettingsMode.all) {
-                app.$.push([`sessions/${app.$.session.id}/player_default_override/${e.name}`, e._value]);
-            } else {
-                app.$.push([`sessions/${app.$.session.id}/stream/mpv/props/${e.name}`, e._value]);
-            } */
-        });
-        
-        this.body.append(this.interface);
+        this.group_wrapper_elem = $(`<div class="group-wrapper"></div>`)[0];
+        this.body.append(this.group_wrapper_elem);
 
-        this.add_reset_button(this.interface);
-
-        this.toggle_mode(MediaSettingsMode.current);
+        this.set_mode(MediaSettingsMode.current);
     }
 }
 
-export class LogViewerPanel extends Panel {
-    constructor(name) {
+export class LogPanel extends Panel {
+    /** @type { Record<string,Log> } */
+    #pending_logs = {};
+    #get_logs;
+    get _logs() { return this.#get_logs(); }
+
+    constructor(name, get_logs) {
         super(name);
         dom.add_class(this.body_elem, "no-padding");
-
+        this.#get_logs = get_logs;
         this.logs_wrapper = $(`<div class="logs-wrapper"></div>`)[0];
-        this.logs_container = $(`<div class="logs"></div>`)[0];
+        this._logs_container = $(`<div class="logs thin-scrollbar"></div>`)[0];
         this.body_elem.append(this.logs_wrapper);
-        this.logs_wrapper.append(this.logs_container);
+        this.logs_wrapper.append(this._logs_container);
 
         this._levels = {
             info: {
@@ -7729,8 +7679,8 @@ export class LogViewerPanel extends Panel {
             },
         }
         
-        this._logs = {};
-        this._num_logs = 0;
+        this._registered_logs = {};
+        this._last_log_id = 0;
         this._default_logger_settings = {
             dates: false,
             times: true,
@@ -7740,7 +7690,6 @@ export class LogViewerPanel extends Panel {
         this.i = 0;
     
         this.storage_name = `log-viewer-settings:${this.panel_id}`;
-        dom.add_class(this.logs_container, "thin-scrollbar");
         $(this.logs_wrapper).resizable({handles:"s"});
 
         var button_defs = [
@@ -7773,6 +7722,7 @@ export class LogViewerPanel extends Panel {
                         if (b.click) b.click();
                         this._logger_settings[b.key] = !this._logger_settings[b.key];
                         this.save();
+                        this.update();
                     },
                     "render": ()=>{
                         if (this._logger_settings[b.key]) delete button.elem.dataset.toggled;
@@ -7787,6 +7737,76 @@ export class LogViewerPanel extends Panel {
 
         this.load();
 
+        var last_logs;
+        this.on("update", ()=>{
+            var scroll_bottom = dom.scroll_pos_from_bottom(this._logs_container) < 10;
+            var logs = this._logs;
+
+            if (logs != last_logs) {
+                last_logs = logs;
+                dom.set_inner_html(this._logs_container, "");
+                utils.clear(this._registered_logs);
+                this._last_log_elem = null;
+                this._last_log_id = 0;
+                Object.assign(this.#pending_logs, this._logs);
+            }
+
+            /* if (this.#pending_clear) {
+                this.#pending_clear = false;
+                dom.set_inner_html(this._logs_container, "");
+                utils.clear(this._logs);
+                this._last_log_elem = null;
+                this._last_log_id = 0;
+            } */
+
+            for (var id in this.#pending_logs) {
+                var log = this.#pending_logs[id];
+                var d = new Date(log.ts);
+                var log_hash = JSON.stringify([log.message, log.prefix, log.level]);
+                /** @type {HTMLElement} */
+                var log_elem;
+                if (this._last_log_elem && this._last_log_elem._log_hash === log_hash) {
+                    log_elem = this._last_log_elem;
+                } else {
+                    log_elem = $(`<p><span class="date"></span><span class="time"></span><span class="level"></span><span class="number"></span><span class="prefix"></span><span class="message"></span></p>`)[0];
+                    this.i++;
+                    if (!this._registered_logs[log.level]) this._registered_logs[log.level] = {total:0, elems:{}};
+                    this._registered_logs[log.level].total++;
+                    this._registered_logs[log.level].elems[id] = log_elem;
+                }
+                log_elem.dataset.number = +(log_elem.dataset.number || 0) + 1;
+                log_elem.dataset.level = log.level;
+                log_elem.querySelector(".date").textContent = `[${d.toLocaleDateString("en-GB")}]`;
+                log_elem.querySelector(".time").textContent = `[${d.toLocaleTimeString("en-GB")}]`;
+                log_elem.querySelector(".number").textContent = (+log_elem.dataset.number > 1) ? log_elem.dataset.number : "";
+                log_elem.querySelector(".prefix").textContent = log.prefix.map(p=>`[${p}]`).join("");
+                
+                var message = log_elem.querySelector(".message");
+                var message_html = "";
+                
+                var level = this._levels[log.level];
+                if (level.color) log_elem.style.color = level.color;
+                message_html += terminalCodesToHtml(log.message).replace(/\n/g,"<br>");
+                message.innerHTML = message_html;
+                log_elem._log_hash = log_hash
+                this._last_log_elem = log_elem;
+                var level_icon_elem = log_elem.querySelector(".level");
+                level_icon_elem.innerHTML = level.icon;
+                level_icon_elem.title = level.title;
+
+                this._logs_container.append(log_elem);
+
+                if (this._registered_logs[log.level].total > LOGS_MAX_PER_LEVEL) {
+                    var k = utils.first_key(this._registered_logs[log.level].elems);
+                    this._registered_logs[log.level].elems[k].remove();
+                    delete this._registered_logs[log.level].elems[k];
+                    this._registered_logs[log.level].total--;
+                }
+            }
+            if (scroll_bottom) dom.scroll_y_percent(this._logs_container, 1);
+            utils.clear(this.#pending_logs);
+        });
+
         this.on("render", ()=>{
             for (var k in this._logger_settings) {
                 dom.toggle_attribute(this.logs_wrapper, `data-show-${k}`, this._logger_settings[k]);
@@ -7794,81 +7814,27 @@ export class LogViewerPanel extends Panel {
         });
     }
 
-    /** @param {{level:string, message:string, ts:Number}[]} logs */
-    update_logs(logs) {
-        var scroll_bottom = dom.scroll_y_percent(this.logs_container) == 1;
-        this._new_log_elems = [];
-        for (var id in logs) {
-            var log = logs[id];
-            if (!log) continue;
-            var d = new Date(log.ts);
-            var log_hash = JSON.stringify([log.message, log.level]);
-            /** @type {HTMLElement} */
-            var log_elem;
-            if (this.last_log_elem && this.last_log_elem._log_id === log_hash) {
-                log_elem = this.last_log_elem;
-            } else {
-                log_elem = $(`<p><span class="date"></span><span class="time"></span><span class="level"></span><span class="number"></span><span class="prefix"></span><span class="message"></span></p>`)[0];
-                this.i++;
-                if (!this._logs[log.level]) this._logs[log.level] = {total:0, elems:{}};
-                this._logs[log.level].total++;
-                this._logs[log.level].elems[id] = log_elem;
+    create_proxy(){
+        var proxy = new Proxy({}, {
+            set:(target, prop, value)=>{
+                target[prop] = value;
+                this.#pending_logs[prop] = value;
+                return true;
             }
-            log_elem.dataset.number = +(log_elem.dataset.number || 0) + 1;
-            log_elem.dataset.level = log.level;
-            log_elem.querySelector(".date").textContent = `[${d.toLocaleDateString("en-GB")}]`;
-            log_elem.querySelector(".time").textContent = `[${d.toLocaleTimeString("en-GB")}]`;
-            log_elem.querySelector(".number").textContent = (+log_elem.dataset.number > 1) ? log_elem.dataset.number : "";
-            log_elem.querySelector(".prefix").textContent = log.prefix.map(p=>`[${p}]`).join("");
-            
-            var message = log_elem.querySelector(".message");
-            var message_html = "";
-            
-            var level = this._levels[log.level];
-            if (level.color) log_elem.style.color = level.color;
-            message_html += terminalCodesToHtml(log.message).replace(/\n/g,"<br>");
-            message.innerHTML = message_html;
-            log_elem._log_id = log_hash
-            this.last_log_elem = log_elem;
-            var level_icon_elem = log_elem.querySelector(".level");
-            level_icon_elem.innerHTML = level.icon;
-            level_icon_elem.title = level.title;
-
-            this.logs_container.append(log_elem);
-
-            if (this._logs[log.level].total > LOGS_MAX_PER_LEVEL) {
-                var k = utils.first_key(this._logs[log.level].elems);
-                this._logs[log.level].elems[k].remove();
-                delete this._logs[log.level].elems[k];
-                this._logs[log.level].total--;
-            }
-        }
-        if (scroll_bottom) dom.scroll_y_percent(this.logs_container, 1);
-        this.update();
+        });
+        return proxy;
     }
 
     save() {
-        app.settings.set(this.storage_name, this._logger_settings);
-        this.update();
+        app.local_settings.set(this.storage_name, this._logger_settings);
     }
 
     load() {
-        this._logger_settings = utils.json_copy({ ...this._default_logger_settings, ...app.settings.get(this.storage_name) });
-        // console.log(this.storage_name, this._logger_settings);
-        this.update();
-    }
-
-    empty() {
-        dom.set_inner_html(this.logs_container, "");
-        utils.clear(this._logs);
-        this.last_log_elem = null;
-        this._num_logs = 0;
-        this.update();
+        this._logger_settings = utils.json_copy({ ...this._default_logger_settings, ...app.local_settings.get(this.storage_name) });
     }
 }
 
 export class StreamMetricsPanel extends Panel {
-    #modes = [];
     #mode = "";
     #zooming = false;
     #panning = false;
@@ -7883,18 +7849,18 @@ export class StreamMetricsPanel extends Panel {
 
         var modes = {
             "speed": {
-                "icon": `<span>SPEED</span>`,
+                "html": `<span>SPEED</span>`,
                 "title": `Speed`
             },
             "bitrate": {
-                "icon": `<span>BITRATE</span>`,
+                "html": `<span>BITRATE</span>`,
                 "title": `Bitrate`,
             }
         };
         
         var button_group = $(`<div class="buttons border-group">`)[0];
         Object.entries(modes).forEach(([t,d])=>{
-            var button = $(`<button class="mini icon" title="${d.title}">${d.icon}</button>`)[0];
+            var button = $(`<button class="mini" title="${d.title}">${d.html}</button>`)[0];
             button.onclick = ()=>set_mode(t);
             button_group.append(button);
             d.button = button;
@@ -7925,7 +7891,7 @@ export class StreamMetricsPanel extends Panel {
         button_group.append($(`<button class="mini icon" data-setting__show_metrics_info title="Toggle Encoder Info"><i class="fas fa-info-circle"></i></button>`)[0]);
         this.header_elem.append(button_group);
 
-        this.on("update", ()=>{
+        this.on("render", ()=>{
             this.#update_chart();
             if (!this.#panning && !this.#zooming) {
                 this.#update_info();
@@ -8065,7 +8031,6 @@ export class StreamMetricsPanel extends Panel {
                 }
             }
         });
-        this.#update_chart();
     }
 
     get data_range() {
@@ -8104,12 +8069,12 @@ export class StreamMetricsPanel extends Panel {
             reset = true;
         }
 
-        let metrics = app.$._session.stream.metrics;
-        var data_hash = JSON.stringify([mode_hash, reinit_hash, this._updates]);
+        let metrics = app.$._session._stream.metrics;
+        let raw_data = Object.fromEntries(Object.entries(metrics).filter(([k,v])=>k.split(":").pop()===this.#mode));
+        var data_hash = JSON.stringify([mode_hash, reinit_hash, Object.entries(raw_data).map(([k,d])=>[k, d.min, d.max])]);
         if (this._data_hash === data_hash) return;
         this._data_hash = data_hash;
         
-        let raw_data = Object.fromEntries(Object.entries(metrics).filter(([k,v])=>k.split(":").pop()===this.#mode));
         this.chart.data.datasets = Object.entries(raw_data).map(([key,{min,max,data}], i)=>{
             let dataset = this.chart.data.datasets.find(d=>d.label==key);
             dataset = dataset ?? {
@@ -8210,7 +8175,7 @@ export class PlaylistPanel extends Panel {
     /** @type {any[]} */
     #tracks;
     #tracks_hash;
-    /** @type {PlaylistItem[]} */
+    /** @type {PlaylistItem$[]} */
     #next_selection = [];
 
     get active_sortable() { return this.sortables.find(s=>s.is_active_sortable_in_group()) || this.sortables[0]; }
@@ -8222,8 +8187,8 @@ export class PlaylistPanel extends Panel {
     get selection() { return this.active_sortable.get_selection(); }
     
     #current_id;
-    /** @return {PlaylistItem} */
-    get current() { return app.$._session.playlist[this.#current_id] || app.$._session.playlist["0"] || NULL_PLAYLIST_ITEM; }
+    /** @return {PlaylistItem$} */
+    get current() { return app.$._session.playlist[this.#current_id] || app.$._session.playlist["0"] || app.$._NULL_PLAYLIST_ITEM; }
 
     /** @type {dom.DropdownMenu} */
     context_menu;
@@ -8231,7 +8196,7 @@ export class PlaylistPanel extends Panel {
     /** @param {Element} elem */
     constructor() {
         super("Playlist", {
-            "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL
+            "disabled": ()=>app.$._session.type === SessionTypes.EXTERNAL
         });
 
         this.collapsible = false;
@@ -8395,6 +8360,7 @@ export class PlaylistPanel extends Panel {
         this.timeline_container_elem.addEventListener("contextmenu", (e) => {
             if (e.target.contentEditable == "true") return;
             var sortable = ResponsiveSortable.closest(e.target);
+            if (this.get_selected_items().length == 0) return;
             if (sortable) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -8419,12 +8385,12 @@ export class PlaylistPanel extends Panel {
             this.scroll_to_playhead();
         });
         this.playlist_display_mode_select.addEventListener("change", (e)=>{
-            app.settings.set("playlist_display_mode", +this.playlist_display_mode_select.value);
+            app.local_settings.set("playlist_display_mode", +this.playlist_display_mode_select.value);
             this.sortables.forEach(s=>s.orientation = this.orientation);
             this.update();
             this.scroll_to_playhead();
         });
-        app.settings.on("change", (e)=>{
+        app.local_settings.on("change", (e)=>{
             if (e.name === "playlist_display_mode") {
                 if (this.playlist_display_mode_select.value != e.new_value) {
                     this.playlist_display_mode_select.value = e.new_value;
@@ -8447,12 +8413,8 @@ export class PlaylistPanel extends Panel {
         });
 
         this.pl_add_url_button.addEventListener("click", async (e)=>{
-            var urls_str = await new Promise((resolve)=>{
-                app.playlist_add_url_menu.show(resolve);
-            });
-
-            if (urls_str) {
-                var urls = urls_str.split(/\n+/).map(s=>s.trim()).filter(s=>s);
+            var urls = await new PlaylistAddURLMenu().show();
+            if (urls.length) {
                 app.playlist_add(urls);
             }
         });
@@ -8472,7 +8434,7 @@ export class PlaylistPanel extends Panel {
                 "icon": `<i class="fas fa-info-circle"></i>`,
                 "visible": (items)=>items.length>0,
                 "click": (items)=>{
-                    app.playlist_info_menu.show(items);
+                    new PlaylistInfoMenu(items).show();
                 },
                 "shortcut": "I",
             }),
@@ -8482,7 +8444,7 @@ export class PlaylistPanel extends Panel {
                 "visible": (items)=>items.length>0,
                 "click": (items)=>{
                     if (items.length == 0 || !items.every(i=>i._is_modifiable)) return;
-                    app.playlist_modify_menu.show(items);
+                    new PlaylistItemModifyMenu(items).show();
                 },
                 "shortcut": "M",
             }),
@@ -8574,7 +8536,9 @@ export class PlaylistPanel extends Panel {
             breakdown_playlist: new PlaylistCommand({
                 "label": "Breakdown Playlist",
                 "icon": `<i class="far fa-object-ungroup"></i>`,
-                "visible": (items)=>items.some(i=>i._is_playlist),
+                "visible": (items)=>{
+                    return items.every(i=>i._is_playlist)
+                },
                 // "disabled": (items)=>!items.every(i=>i.is_playlist),
                 "click": (items)=>{
                     app.playlist_breakdown(items);
@@ -8587,7 +8551,7 @@ export class PlaylistPanel extends Panel {
                 "visible": (items)=>items.some(i=>i._is_splittable),
                 "disabled": (items)=>!items.every(i=>i._is_splittable),
                 "click": (items)=>{
-                    app.split_menu.show(items);
+                    new SplitMenu(items).show();
                 }
             }),
             slice_at_timeline_cursor: new PlaylistCommand({
@@ -8738,19 +8702,6 @@ export class PlaylistPanel extends Panel {
                 "shortcut": "Backspace | Escape",
             }),
             // ------------------------------
-            add_empty: new PlaylistCommand({
-                "label": ()=>"Add Empty",
-                "icon": `<i class="fas fa-plus"></i>`,
-                "click": ()=>{
-                    app.playlist_add({
-                        filename: "livestreamer://empty",
-                        props: {
-                            background_mode: "default",
-                            duration: 60,
-                        }
-                    });
-                }
-            }),
             add_playlist: new PlaylistCommand({
                 "label": ()=>"Add Empty Playlist",
                 "icon": `<i class="fas fa-plus"></i>`,
@@ -8770,11 +8721,35 @@ export class PlaylistPanel extends Panel {
                 },
                 "disabled": ()=>!!this.current._is_merged
             }),
+            add_playlist_exit: new PlaylistCommand({
+                "label": ()=>"Add Playlist Exit",
+                "icon": `<i class="fas fa-plus"></i>`,
+                "click": async ()=>{
+                    await app.playlist_add({
+                        filename: "livestreamer://exit",
+                    });
+                },
+                "visible": ()=>!!this.current._parent
+            }),
+            add_empty: new PlaylistCommand({
+                "label": ()=>"Add Empty",
+                "icon": `<i class="fas fa-plus"></i>`,
+                "click": ()=>{
+                    var item = new PlaylistItem$({
+                        filename: "livestreamer://empty",
+                        props: {
+                            // background_mode: "default",
+                            duration: 60,
+                        }
+                    });
+                    new PlaylistItemModifyMenu([item]).show();
+                }
+            }),
             add_intertitle: new PlaylistCommand({
                 "label": ()=>"Add Intertitle",
                 "icon": `<i class="fas fa-plus"></i>`,
                 "click": async()=>{
-                    app.playlist_modify_menu.show({
+                    var item = new PlaylistItem$({
                         filename: "livestreamer://intertitle",
                         props: {
                             duration: 5,
@@ -8782,51 +8757,26 @@ export class PlaylistPanel extends Panel {
                             fade_out: 1,
                         }
                     });
-                    // this.playlist_modify_settings.show(ids);
+                    new PlaylistItemModifyMenu([item]).show();
                 },
                 "disabled": ()=>!!this.current._is_merged
             }),
-            add_stop_streaming_macro: new PlaylistCommand({
-                "label": ()=>"Add Macro: Stop",
+            add_macro: new PlaylistCommand({
+                "label": ()=>"Add Macro",
                 "icon": `<i class="fas fa-plus"></i>`,
                 "click": async ()=>{
-                    var ids = await app.playlist_add({
+                    var item = new PlaylistItem$({
                         filename: "livestreamer://macro",
-                        props: {
-                            function: "stop"
-                        }
                     });
+                    new PlaylistItemModifyMenu([item]).show();
                 },
                 "disabled": ()=>!!this.current._is_merged
-            }),
-            add_handover_macro: new PlaylistCommand({
-                "label": ()=>"Add Macro: Handover",
-                "icon": `<i class="fas fa-plus"></i>`,
-                "click": async ()=>{
-                    var ids = await app.playlist_add({
-                        filename: "livestreamer://macro",
-                        props: {
-                            function: "handover"
-                        }
-                    });
-                },
-                "disabled": ()=>!!this.current._is_merged
-            }),
-            add_playlist_exit: new PlaylistCommand({
-                "label": ()=>"Add Playlist Exit",
-                "icon": `<i class="fas fa-plus"></i>`,
-                "click": async ()=>{
-                    var ids = await app.playlist_add({
-                        filename: "livestreamer://exit",
-                    });
-                },
-                "visible": ()=>!!this.current._parent
             }),
             unload_current: new PlaylistCommand({
                 "label": ()=>"Unload Current File",
                 "icon": `<i class="fas fa-minus-circle"></i>`,
-                "disabled": ()=>app.$._session._current_playlist_item === NULL_PLAYLIST_ITEM,
-                "click": ()=>app.playlist_play(NULL_PLAYLIST_ITEM),
+                "disabled": ()=>app.$._session._current_playlist_item === app.$._NULL_PLAYLIST_ITEM,
+                "click": ()=>app.playlist_play(app.$._NULL_PLAYLIST_ITEM),
             }),
             rescan_all: new PlaylistCommand({
                 "label": ()=> "Rescan All",
@@ -8837,17 +8787,18 @@ export class PlaylistPanel extends Panel {
             save_playlist: new PlaylistCommand({
                 "label": ()=>"Save Playlist...",
                 "icon": `<i class="fas fa-save"></i>`,
-                "click": ()=>app.save_playlist_menu.show(),
+                "click": ()=>new SavePlaylistMenu().show(),
             }),
             generate_schedule: new PlaylistCommand({
                 "label": ()=>"Generate Schedule...",
                 "icon": `<i class="fas fa-calendar-alt"></i>`,
-                "click": ()=>app.schedule_generator_menu.show()
+                "click": ()=>new ScheduleGeneratorMenu().show()
             })
         }
 
         var menu = new dom.DropdownMenu({
             target: this.pl_add_other_button,
+            parent: this.elem,
             items:()=>{
                 var c = this.commands;
                 return [
@@ -8855,8 +8806,7 @@ export class PlaylistPanel extends Panel {
                     c.add_playlist,
                     c.add_rtmp,
                     c.add_intertitle,
-                    c.add_handover_macro,
-                    c.add_stop_streaming_macro,
+                    c.add_macro,
                     c.add_playlist_exit,
                     "-----",
                     c.unload_current,
@@ -8874,7 +8824,7 @@ export class PlaylistPanel extends Panel {
                 "click": (items)=>{
                     var v = color_key === "none" ? null : color_key;
                     items.map(i=>i.props.color = v);
-                    var changes = items.map(i=>[`${i.id}/props/color`, v]);
+                    var changes = items.map(i=>({[i.id]:{props:{color:v}}}));
                     app.playlist_update(changes)
                 },
                 "render":(items, elem)=>{
@@ -8972,7 +8922,11 @@ export class PlaylistPanel extends Panel {
                     this.set_timeline_view([this.clipping.start, this.clipping.end], this.time);
                 }
             }
+            this.#rebuild_items();
+            last_current = this.current;
+        });
 
+        this.on("render", ()=>{
             var current = this.current;
             var current_ud = current._userdata;
             var duration = current_ud.duration;
@@ -8998,23 +8952,11 @@ export class PlaylistPanel extends Panel {
     
             this.playlist_time_left_elem.style.display = current === app.$._session.playlist["0"] ? "" : "none"
             
-            app.build_playlist_breadcrumbs(this.playlist_path_text, current, true);
+            build_playlist_breadcrumbs(this.playlist_path_text, current);
             
             this.#update_position();
             this.#update_view();
-
-            var wait;
-            if (this.sortables.some(s=>s.dragging)) {
-                wait = Promise.all(this.sortables.map(s=>s.last_drag))
-                    .then(()=>utils.timeout(500));
-            } else {
-                wait = Promise.resolve();
-            }
-            wait.then(()=>{
-                this.#rebuild_items();
-                this.#update_info();
-            });
-            last_current = this.current;
+            this.#update_info();
         });
 
         this.on("destroy", ()=>{
@@ -9075,14 +9017,17 @@ export class PlaylistPanel extends Panel {
                 avoidImplicitDeselect: true, // true - if you don't want to deselect items on outside click
             });
             sortable.orientation = this.orientation;
+            var debounced_selection_change = utils.debounce(()=>this.emit("selection_change"), 0);
             sortable.el.addEventListener("select", (evt)=>{
                 this.update();
+                debounced_selection_change();
             });
             sortable.el.addEventListener("unchoose", (e)=>{
                 this.scroll_into_view(e.item)
             });
             sortable.el.addEventListener("deselect", (evt)=>{
                 this.update();
+                debounced_selection_change();
             });
             sortable.el.addEventListener("active-change", (e)=>{
                 dom.toggle_class(playlist_header, "active", e.active);
@@ -9091,6 +9036,10 @@ export class PlaylistPanel extends Panel {
             sortable.el.addEventListener("end", (evt)=>{
                 this.sync_positions();
             });
+            sortable.el.addEventListener("start", (evt)=>{
+                app.blocking_updates.add(sortable.dragging_promise);
+            });
+
             return sortable;
         });
         if (this.sortables[0]) this.sortables[0].set_active_sortable_in_group();
@@ -9140,289 +9089,28 @@ export class PlaylistPanel extends Panel {
 
     #rebuild_items() {
         // console.log("rebuild", Date.now());
-        let is_running = app.$._session._is_running;
         var current_playlist = this.current;
+        current_playlist._private.children = null;
+
         var current_playlist_tracks = current_playlist._tracks;
-        /** @type {PlaylistItem} */
-        var current_item = app.$._session._current_playlist_item;
-        var current_item_parents = new Set(current_item._parents);
 
         this.set_tracks(current_playlist_tracks.length, current_playlist && current_playlist.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK);
 
-        var new_items = [];
-        var changed = false;
+
         this.sortables.forEach((sortable,i)=>{
-            /** @type {PlaylistItem[]} */
+            /** @type {PlaylistItem$[]} */
             var items = current_playlist_tracks[i] || EMPTY_ARRAY;
             dom.rebuild(sortable.el, items, {
                 add: (item, elem, index)=>{
-                    if (!elem) {
-                        new_items.push(item);
-                        elem = $(`<li class="item"><div><div class="clips"></div><div class="front"><span class="play-icons"></span><span class="icons"></span><span class="filename"></span><span class="extra"></span><span class="badges"></span><div class="duration"></div></div></div></li>`)[0];
-                    }
-                    var ud = item._userdata;
-                    var is_current_item = item.id == current_item.id;
-                    var is_current_ancestor = current_item_parents.has(item);
-                    var is_cutting = !!(this.clipboard && this.clipboard.cutting && this.clipboard.items_set.has(item));
-                    var is_buffering = app.media.buffering;
-                    let media_info = item._media_info || EMPTY_OBJECT;
-                    
-                    var _hash = JSON.stringify([index, item, item._hash, is_current_item, is_current_ancestor, is_cutting, is_running, is_buffering, media_info]);
-                    if (_hash === elem._hash) return;
-
-                    elem._hash = _hash;
-                    elem._item = item;
-                    
-                    let children = item._children;
-                    // let num_descendents = item._descendents.length;
-                    let root_merged_playlist = item._root_merged_playlist;
-                    var is_playlist = item._is_playlist;
-                    var problems = [];
-                    let name = item._get_pretty_name();
-                    let filename_parts = [`<span>${name}</span>`];
-                    let title_parts = [name];
-                    let main_icon;
-                    var icons = [];
-                    var play_icons = [];
-                    let background_color, outline_color;
-                    let badges = {};
-    
-                    dom.toggle_class(elem, "cutting", is_cutting);
-                    var is_uploading = !!item.upload_id;
-                    
-                    var play_icons_elem = elem.querySelector(".play-icons");
-                    var icons_elem = elem.querySelector(".icons");
-                    var filename_elem = elem.querySelector(".filename");
-                    var duration_elem = elem.querySelector(".duration");
-                    var extra_elem = elem.querySelector(".extra");
-                    var badges_elem = elem.querySelector(".badges");
-                    var clips_elem = elem.querySelector(".clips");
-                    
-                    let blocks = [];
-
-                    if (ud.clipping) {
-                        if (ud.clipping.loops < 128) {
-                            let segments = get_clip_segments(ud.clipping);
-                            if (ud.clipping.loops > 1) {
-                                let t = 0, d = ud.duration;
-                                if (d) {
-                                    for (let s of segments) {
-                                        blocks.push({x:t/d, width:s.duration/d})
-                                        t += s.duration
-                                    }
-                                }
-                            } else {
-                                let d = ud.media_duration;
-                                if (d) {
-                                    for (let s of segments) {
-                                        blocks.push({x:s.start/d, width:s.duration/d});
-                                    }
-                                }
-                            }
-                        }
-                        blocks = blocks.filter(b=>b.width>0.0001);
-                        if (blocks.length == 1 && blocks[0].width == 1) blocks = [];
-                    }
-                    let clips_html = blocks.map(b=>`<div style="left:${b.x.toFixed(5)*100}%;width:${b.width.toFixed(5)*100}%;"></div>`).join("");
-                    dom.set_inner_html(clips_elem, clips_html);
-                    dom.toggle_class(clips_elem, "repeats", !!(ud.clipping && ud.clipping.loops > 1))
-                    
-                    if (ud.is_processing) {
-                        play_icons.push(`<i class="fas fa-sync fa-spin"></i>`);
-                    } else if (is_current_ancestor) {
-                        play_icons.push(`<i class="fas fa-arrow-right"></i>`);
-                    } else if (is_current_item) {
-                        if (is_running) {
-                            if (is_buffering) play_icons.push(`<i class="fas fa-circle-notch fa-spin"></i>`);
-                            else play_icons.push(`<i class="fas fa-play"></i>`);
-                        } else {
-                            play_icons.push(`<i class="fas fa-forward-step"></i>`);
-                        }
-                    } else {
-                        play_icons.push(`<span class="numbering">${String(index+1).padStart(2,"0")}</span>`);
-                    }
-                    
-                    if (!is_uploading) {
-                        if (!item._is_special && media_info.exists === false) {
-                            problems.push({level:3, text:"Media does not exist."});
-                        } else if (!item._is_special && !utils.is_empty(media_info) && !media_info.streams && media_info.protocol !== "livestreamer:" && !item._is_playlist && !ud.is_processing) {
-                            problems.push({level:1, text:"Possibly invalid media."});
-                        } else if (root_merged_playlist && !item._is_mergable) {
-                            problems.push({level:2, text:"Merged items must be local files or empties."});
-                        }
-                    }
-                    
-                    if (item.props.color) {
-                        background_color = item_colors[item.props.color];
-                        outline_color = Color(item_colors[item.props.color]).mix(Color("#000"),0.3).hex();
-                    }
-                    if (is_playlist) {
-                        main_icon = `<i class="fas fa-folder-open" title="Playlist"></i>`;
-                        let b = "playlist";
-                        if (item.props.playlist_mode == PLAYLIST_MODE.MERGED) b = "merged-playlist";
-                        if (item.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK) b = "2-track-playlist";
-                        badges["playlist"] = b;
-                        filename_parts.push(`<span class="playlist-count">${children.length}</span>`)
-                        title_parts.push(`(${children.length})`);
-                    }
-                    // userdata.number = String(i+1).padStart(2,"0")
-                    
-                    if (item._is_special) {
-                        var type = item.filename.replace("livestreamer://", "");
-                        if (!(type in badges)) badges[type] = type;
-                        if (type == "macro") {
-                            main_icon = `<i class="fas fa-scroll"></i>`
-                        } else if (type == "intertitle") {
-                            main_icon = `<i class="fas fa-paragraph"></i>`
-                        } else if (type == "macro") {
-                            main_icon = `<i class="fas fa-scroll"></i>`
-                        } else if (type == "empty") {
-                            main_icon = `<i class="fas fa-ghost"></i>`
-                        } else if (type == "exit") {
-                            main_icon = `<i class="fas fa-arrow-left-long"></i>`
-                        } else if (type == "rtmp") {
-                            title_parts.push(item._is_rtmp_live ? "[Connected]" : "[Disconnected]");
-                            if (item._is_rtmp_live) {
-                                main_icon = `<i class="fas fa-link" style="color:#00cc00;" title="Connected"></i>`;
-                            } else {
-                                main_icon = `<i class="fas fa-unlink" title="Disconnected"></i>`;
-                            }
-                            // main_icon = `<i class="fas fa-tower-broadcast"></i>`
-                        } 
-                    }
-                    
-                    if (item.filename.match(/^https?:/)) {
-                        let icon = $(`<i class="fas fa-globe"></i>`)[0]; //  style="color:cornflowerblue"
-                        icon.title = item.filename;
-                        main_icon = icon.outerHTML;
-                        badges["web"] = new URL(item.filename).hostname.replace(/^www\./, "");
-                    }
-                    
-                    if (!ud.download) {
-                        if (media_info.streams) {
-                            var default_video = utils.sort(media_info.streams.filter(s=>s.type === "video"),
-                                (s)=>s.albumart,
-                                (s)=>[s.default | s.forced * 2, "DESCENDING"]
-                            )[0];
-                            var default_audio = utils.sort(media_info.streams.filter(s=>s.type === "audio"),
-                                (s)=>[s.default | s.forced * 2, "DESCENDING"]
-                            )[0];
-                            let has_video = default_video && default_video.codec && !default_video.albumart;
-                            let has_audio = default_audio && default_audio.codec;
-
-                            if (has_video) {
-                                var codec = default_video.codec.replace(/video$/, "").split(".")[0];
-                                var size = get_video_size(default_video.width, default_video.height, media_info.interlaced);
-                        
-                                if (!media_info.duration || media_info.duration <= IMAGE_DURATION) {
-                                    icons.push(`<i class="fas fa-image"></i>`);
-                                    badges["image"] = `${codec} ${default_video.width}x${default_video.height}`;
-                                } else {
-                                    icons.push(`<i class="fas fa-film"></i>`);
-                                    badges["video"] = `${codec} ${size.text}`;
-                                }
-                            }
-                            if (has_audio) {
-                                if (!has_video) icons.push(`<i class="fas fa-music"></i>`);
-                                badges["audio"] = default_audio.codec.replace(/^pcm_.+$/, "pcm").split(".")[0];
-                            }
-                            if (root_merged_playlist && default_video && default_video.codec == "vc1") {
-                                problems.push({level:2, text: "VC-1 video codec can lead to playback issues within a merged playlist."});
-                            }
-                        }
-                    }
-                    {
-                        let upload = item._upload;
-                        let download = item._download;
-                        let d = null, t = null;
-                        if (download) {
-                            d = download
-                            t = "download";
-                        } else if (upload) {
-                            d = upload || { bytes:0, total:0, speed:0 };
-                            t = "upload";
-                        }
-                        
-                        if (d) {
-                            let bar_el = extra_elem.querySelector(`.progress`) || $(`<div class="progress"><span class="percent"></span><span class="speed"></span></div>`)[0];
-                            let percent_el = bar_el.querySelector(".percent");
-                            let speed_el = bar_el.querySelector(".speed");
-                            let canceled = d.status == UPLOAD_STATUS.CANCELED;
-                            let p = d.total ? ( d.bytes / d.total) : 0;
-                            bar_el.title = canceled ? "Canceled" : `${utils.capitalize(t)}ing [${utils.format_bytes(d.bytes || 0)} / ${utils.format_bytes(d.total || 0)}]`;
-                            dom.set_style_property(bar_el, "--progress",`${p*100}%`);
-                            let percent_text = [];
-                            if (d.stages) percent_text.push(`${d.stage+1}/${d.stages}`);
-                            percent_text.push(`${(p * 100).toFixed(2)}%`);
-                            dom.set_inner_html(percent_el, canceled ? "Canceled" : percent_text.join(" | "));
-                            dom.set_inner_html(speed_el, canceled ? "Canceled" : `${utils.format_bytes(d.speed || 0)}ps`);
-                            icons.push(`<i class="fas fa-${t}"></i>`);
-                            dom.set_children(extra_elem, [bar_el]);
-                        } else {
-                            dom.set_children(extra_elem, []);
-                        }
-                    }
-
-                    dom.set_inner_html(badges_elem, Object.entries(badges).map(([k,v])=>{
-                        var parts = v.split(" ");
-                        parts[0] = parts[0].toUpperCase();
-                        return `<i class="badge" data-badge-type="${k}">${parts.join(" ")}</i>`;
-                    }).join(""));
-
-                    // !is_special && 
-                    if (ud.modified) {
-                        icons.push(`<i class="fas fa-wrench"></i>`);
-                    }
-                    
-                    let d = ud.duration || ud.children_duration;
-                    let duration_str = d ? utils.seconds_to_timespan_str(d, "h?:mm:ss") : " - ";
-
-                    dom.set_inner_html(duration_elem, duration_str);
-                    
-                    if (problems.length) {
-                        var problem_groups = utils.group_by(problems, p=>p.level);
-                        var err_icon_html;
-                        if (problem_groups.has(3)) err_icon_html = `<i class="fas fa-times" style="color:red;"></i>`;
-                        else if (problem_groups.has(2)) err_icon_html = `<i class="fas fa-exclamation-triangle" style="color:orange;"></i>`;
-                        else if (problem_groups.has(1)) err_icon_html = `<i class="fas fa-question-circle" style="color:#6495ED;"></i>`;
-                        if (err_icon_html) {
-                            let icon = $(err_icon_html)[0];
-                            icon.title = problems.map(p=>" - "+p.text).join("\n");
-                            icons.push(icon.outerHTML);
-                        }
-                    }
-    
-                    dom.set_inner_html(play_icons_elem, play_icons.join(""));
-
-                    // if (!main_icon) main_icon = `<i class="fas fa-file"></i>`;
-                    dom.set_inner_html(icons_elem, [main_icon, ...icons].join(""));
-    
-                    dom.set_inner_html(filename_elem, filename_parts.join(" "));
-    
-                    dom.set_style_property(elem, "--duration", ud.timeline_duration);
-                    dom.set_style_property(elem, "--start", ud.timeline_start);
-                    dom.set_style_property(elem, "--end", ud.timeline_end);
-                    dom.set_style_property(elem, "--background-color", background_color || "");
-                    dom.set_style_property(elem, "--outline-color", outline_color || "");
-                    elem.title = title_parts.join(" ");
-                    dom.toggle_class(elem, "current", is_current_item);
-                    
-                    changed = true;
-    
-                    return elem;
+                    return elem || new PlaylistItem(item).elem;
                 },
                 remove:(elem)=>{
                     var sortable = ResponsiveSortable.closest(elem);
                     if (sortable) sortable.deselect(elem);
                     elem.remove();
-                    changed = true;
                 }
             });
         });
-        if (changed) {
-            this.emit("change");
-        }
-        this.emit("rebuild");
     }
 
 
@@ -9435,7 +9123,7 @@ export class PlaylistPanel extends Panel {
         var current = this.current;
         var parent = current._parent;
         if (!parent) return;
-        if (app.$._session._is_running && current == app.$._session._current_playlist_item && current._calculate_contents_hash() != current.__private.hash_on_open) {
+        if (app.$._session._is_running && current == app.$._session._current_playlist_item && current._calculate_contents_hash() != current._private.hash_on_open) {
             app.prompt_for_reload_of_current_item();
         }
         this.open(parent, [current]);
@@ -9485,7 +9173,7 @@ export class PlaylistPanel extends Panel {
                 var keys_lower = new Set([...keys, ...keys.map(k=>k.toLowerCase())]);
                 if (keys_lower.has("ctrl") == e.ctrlKey && keys_lower.has("alt") == e.altKey && keys_lower.has("shift") == e.shiftKey && keys_lower.has(e.key.toLowerCase())) {
                     if (this.context_menu) this.context_menu.hide();
-                    c.click(this.get_selection_datas());
+                    c.click(this.get_selected_items());
                     e.preventDefault();
                     e.stopPropagation();
                     return;
@@ -9507,8 +9195,9 @@ export class PlaylistPanel extends Panel {
     
     open_context_menu(e) {
         this.context_menu = new dom.DropdownMenu({
+            parent: this.elem,
             items: ()=>{
-                var items = this.get_selection_datas();
+                var items = this.get_selected_items();
                 var c = this.commands;
                 var menu_groups = [
                     [c.play, c.info, c.modify, c.rescan, c.reveal, c.split, c.rename, c.delete_item],
@@ -9531,8 +9220,7 @@ export class PlaylistPanel extends Panel {
                 }
                 return menu_items;
             },
-            params: ()=>this.get_selection_datas(),
-            parent: document.body,
+            params: ()=>this.get_selected_items(),
             x: e.clientX,
             y: e.clientY,
         });
@@ -9542,15 +9230,21 @@ export class PlaylistPanel extends Panel {
     sync_positions() {
         var playlist_changes = {};
         this.sortables.forEach((s,t)=>{
-            s.get_items().forEach((e,i)=>{
-                playlist_changes[e.dataset.id] = {index: i, track_index: t};
+            s.get_items().forEach((elem,i)=>{
+                var id = elem.dataset.id;
+                var item = app.$._session.playlist[id];
+                var c = {};
+                if (item.index != i) c.index = i;
+                if (item.track_index != t) c.track_index = t;
+                if (utils.is_empty(c)) return;
+                playlist_changes[id] = c;
             });
         });
         app.playlist_update(playlist_changes)
     }
 
     selection_to_clipboard(cutting=false) {
-        var items = this.get_selection_datas();
+        var items = this.get_selected_items();
         if (!items.length) return;
         var all_items = items.map(i=>[i, ...i._descendents]).flat().map(i=>i._copy());
         var items_set = new Set(items);
@@ -9560,9 +9254,8 @@ export class PlaylistPanel extends Panel {
 
     async clipboard_paste() {
         if (!this.clipboard) return;
-        var clipboard = this.clipboard;
-        var items = clipboard.items.filter(i=>!i._is_deleted);
-        if (clipboard.cutting) {
+        var items = this.clipboard.items.filter(i=>!i._is_deleted);
+        if (this.clipboard.cutting) {
             this.clipboard = null;
             app.playlist_move(items);
         } else {
@@ -9575,7 +9268,7 @@ export class PlaylistPanel extends Panel {
         this.update();
     }
 
-    /** @param {PlaylistItem} item */
+    /** @param {PlaylistItem$} item */
     rename(item) {
         var el = this.get_element(item);
 
@@ -9611,7 +9304,7 @@ export class PlaylistPanel extends Panel {
             dom.set_inner_html(filename, `<span>${new_name || default_name}</span>`);
 
             if (old_name != new_name) {
-                app.playlist_update([[`${item.id}/props/label`, new_name]]);
+                app.playlist_update({[item.id]:{props:{label:new_name}}});
             }
             this.timeline_container_elem.focus({preventScroll: true});
         });
@@ -9622,8 +9315,8 @@ export class PlaylistPanel extends Panel {
         var start, end;
         if (ud.clipping) [start,end] = [ud.clipping.start, ud.clipping.end];
         else {
-            var items = this.get_selection_datas();
-            if (!items || !items.length) items = this.get_datas();
+            var items = this.get_selected_items();
+            if (!items || !items.length) items = this.get_all_items();
             start = Math.min(...items.map(item=>item._userdata.timeline_start));
             end = Math.max(...items.map(item=>item._userdata.timeline_end));
         }
@@ -9634,7 +9327,7 @@ export class PlaylistPanel extends Panel {
         this.set_timeline_view(null, this.time || 0);
     }
 
-    /** @param {PlaylistItem[]} items */
+    /** @param {PlaylistItem$[]} items */
     set_selection(items, focus=true) {
         if (!Array.isArray(items)) items = [items];
         this.sortables.forEach(s=>s.deselect_all());
@@ -9645,7 +9338,7 @@ export class PlaylistPanel extends Panel {
         if (focus) this.focus();
     }
 
-    /** @param {PlaylistItem} item */
+    /** @param {PlaylistItem$} item */
     get_element(item) {
         var id;
         if (item instanceof Element) id = item.dataset.id;
@@ -9662,35 +9355,34 @@ export class PlaylistPanel extends Panel {
     get_first_selected() {
         return this.get_selection()[0];
     }
-    get_datas() {
+
+    get_all_items() {
         return this.get_elements().map(e=>app.$._session.playlist[e.dataset.id]).filter(i=>i);
     }
-    get_selection_datas() {
+    get_selected_items() {
         return this.get_selection().map(e=>app.$._session.playlist[e.dataset.id]).filter(i=>i);
     }
     get_selection_indices() {
         return this.get_selection().map(e=>dom.get_index(e));
     }
-    get_first_selected_data() {
-        return this.get_selection_datas()[0];
+    get_selected_item() {
+        return this.get_selected_items()[0];
     }
 
-    /** @param {PlaylistItem} item */
+    /** @param {PlaylistItem$} item */
     async open(item, selection = []) {
         if (!item) item = app.$._session.playlist["0"];
         if (!item._is_playlist) return;
         this.sortables.forEach(s=>s.forget_last_active());
         this.#current_id = item.id;
         this.cursor_position = null;
-        item.__private.hash_on_open = item._calculate_contents_hash();
-        this.once("rebuild", ()=>{
-            this.set_selection(selection);
-        });
+        item._private.hash_on_open = item._calculate_contents_hash();
         this.update();
+        this.set_selection(selection);
     }
     
     #update_info() {
-        var selected_items = this.get_selection_datas();
+        var selected_items = this.get_selected_items();
         var len = this.get_elements().length;
         var info = {};
         info["Selection"] = `<i class="far fa-square-check"></i> [${selected_items.length}/${len}]`;
@@ -9717,7 +9409,7 @@ export class PlaylistPanel extends Panel {
             this.base_min_height = parseFloat(c.getPropertyValue("--min-height"));
         }
         var get_style = ()=>{
-            if (!app.settings.get("playlist_sticky")) return;
+            if (!app.local_settings.get("playlist_sticky")) return;
             if (this.elem.parentElement.childElementCount > 1) return;
             var r = this.elem.parentElement.getBoundingClientRect();
             var min_height = 400;
@@ -9831,32 +9523,329 @@ export class PlaylistPanel extends Panel {
     }
 }
 
-//------------------------------------------------------
+/** @param {HTMLElement} parent_elem @param {PlaylistItem$} item */
+function build_playlist_breadcrumbs(parent_elem, item, show_modify=false, exclude_root=true) {
+    var path = [item, ...item._parents].reverse().filter(p=>p);
+    var path_hash = JSON.stringify(path.map(i=>[i._hash]));
 
-export class Loader {
-    constructor() {
-        var html = `<div class="loader">
-            <div class="icon"><i></i><i></i><i></i></div>
-            <div class="msg">Loading...</div>
-        </div>`
-        this.el = $(html)[0];
-        this.el.style.zIndex = 999999999;
-    }
-    update(opts) {
-        var msg = this.el.querySelector(".msg");
-        if ("text" in opts) {
-            dom.set_inner_html(msg, opts.text);
+    if (parent_elem._path_hash === path_hash) return;
+    parent_elem._path_hash = path_hash;
+    dom.remove_children(parent_elem);
+    dom.add_class(parent_elem, "breadcrumbs");
+    path.forEach((item,i)=>{
+        var elem = $(`<a></a>`)[0];
+        var name = item._get_pretty_name() || "[Untitled]";
+        if (item._is_root) {
+            if (exclude_root) return;
+            elem.style.overflow = "visible";
+            dom.set_inner_html(elem, `<i class="fas fa-house"></i>`);
+        } else {
+            dom.set_inner_html(elem, name);
         }
-        if ("visible" in opts) {
-            if (opts.visible && this.el.parentElement != document.body) document.body.append(this.el);
-            else if (!opts.visible && this.el.parentElement) this.el.remove();
+        elem.href = "javascript:void(0)";
+        parent_elem.append(elem);
+        elem.onclick = ()=>item._reveal();
+        elem.title = name;
+        if (i != path.length-1) {
+            parent_elem.append($(`<span class="separator"></span>`)[0]);
         }
-    }
-    destroy() {
-        this.el.remove();
+    });
+    
+    if (show_modify && item._is_modifiable) {
+        var a = $(`<a class="modify" href="javascript:void(0);" title="Modify..."><i class="fas fa-wrench"></i></a>`)[0];
+        parent_elem.append(a);
+        a.onclick = ()=>{
+            new PlaylistItemModifyMenu([app.$._session.playlist[item.id]]).show();
+        }
     }
 }
 
+class PlaylistItem extends ui.UI {
+    /** @type {ProgressBar} */
+    progress;
+
+    /** @param {PlaylistItem$} item */
+    constructor(item) {
+        super(`<li class="item"><div class="clips"></div><div class="front"><span class="play-icons"></span><span class="icons"></span><span class="filename"></span><span class="extra"></span><span class="badges"></span><div class="duration"></div></div></li>`);
+        
+        var play_icons_elem = this.elem.querySelector(".play-icons");
+        var icons_elem = this.elem.querySelector(".icons");
+        var filename_elem = this.elem.querySelector(".filename");
+        var duration_elem = this.elem.querySelector(".duration");
+        var extra_elem = this.elem.querySelector(".extra");
+        var badges_elem = this.elem.querySelector(".badges");
+        var clips_elem = this.elem.querySelector(".clips");
+        
+        var last_hash;
+        this.on("update", ()=>{
+            var index = this.index;
+            var is_current = item._is_current;
+            var is_currently_playing = item._is_currently_playing;
+            var is_descendent_of_current = item._is_descendent_of_current;
+            var is_cutting = !!(app.playlist.clipboard && app.playlist.clipboard.cutting && app.playlist.clipboard.items_set.has(item));
+            var is_buffering = app.media.buffering;
+            let media_info = item._media_info || EMPTY_OBJECT;
+            let media_info_hash = media_info ? media_info.ts : 0;
+            let is_rtmp_live = item._is_rtmp_live;
+            var upload = item._upload;
+            var download = item._download;
+            
+            var _hash = JSON.stringify([item, index, item._hash, is_current, is_currently_playing, is_descendent_of_current, is_cutting, is_buffering, is_rtmp_live, media_info_hash, upload, download]);
+
+            if (last_hash === _hash) return;
+
+            last_hash = _hash;
+            item._clear_userdata();
+            
+            var userdata = item._userdata;
+            let children = item._children;
+            // let num_descendents = item._descendents.length;
+            let root_merged_playlist = item._root_merged_playlist;
+            var is_playlist = item._is_playlist;
+            var problems = [];
+            let name = userdata.name;
+            let filename_parts = [`<span>${name}</span>`];
+            let title_parts = [name];
+            let main_icon;
+            var icons = [];
+            var play_icons = [];
+            let background_color, outline_color;
+            let badges = {};
+
+            dom.toggle_class(this.elem, "cutting", is_cutting);
+            
+            let blocks = [];
+
+            if (userdata.clipping) {
+                if (userdata.clipping.loops < 128) {
+                    let segments = get_clip_segments(userdata.clipping);
+                    if (userdata.clipping.loops > 1) {
+                        let t = 0, d = userdata.duration;
+                        if (d) {
+                            for (let s of segments) {
+                                blocks.push({x:t/d, width:s.duration/d})
+                                t += s.duration
+                            }
+                        }
+                    } else {
+                        let d = userdata.media_duration;
+                        if (d) {
+                            for (let s of segments) {
+                                blocks.push({x:s.start/d, width:s.duration/d});
+                            }
+                        }
+                    }
+                }
+                blocks = blocks.filter(b=>b.width>0.0001);
+                if (blocks.length == 1 && blocks[0].width == 1) blocks = [];
+            }
+            let clips_html = blocks.map(b=>`<div style="left:${b.x.toFixed(5)*100}%;width:${b.width.toFixed(5)*100}%;"></div>`).join("");
+            dom.set_inner_html(clips_elem, clips_html);
+            dom.toggle_class(clips_elem, "repeats", !!(userdata.clipping && userdata.clipping.loops > 1))
+            
+            if (userdata.is_processing) {
+                play_icons.push(`<i class="fas fa-sync fa-spin"></i>`);
+            } else if (is_descendent_of_current) {
+                play_icons.push(`<i class="fas fa-arrow-right"></i>`);
+            } else if (is_currently_playing) {
+                if (is_buffering) play_icons.push(`<i class="fas fa-circle-notch fa-spin"></i>`);
+                else play_icons.push(`<i class="fas fa-play"></i>`);
+            } else if (is_current) {
+                play_icons.push(`<i class="fas fa-forward-step"></i>`);
+            } else {
+                play_icons.push(`<span class="numbering">${String(index+1).padStart(2,"0")}</span>`);
+            }
+            
+            if (!upload) {
+                if (!item._is_special && media_info.exists === false) {
+                    problems.push({level:3, text:"Media does not exist."});
+                } else if (!item._is_special && !utils.is_empty(media_info) && !media_info.streams && media_info.protocol !== "livestreamer:" && !item._is_playlist && !userdata.is_processing) {
+                    problems.push({level:1, text:"Possibly invalid media."});
+                } else if (root_merged_playlist && !item._is_mergable) {
+                    problems.push({level:2, text:"Merged items must be local files or empties."});
+                }
+            }
+            
+            if (item.props.color && item.props.color !== "none") {
+                background_color = item_colors[item.props.color];
+                outline_color = Color(item_colors[item.props.color]||"#fff").mix(Color("#000"),0.3).hex();
+            }
+            
+            if (is_playlist) {
+                main_icon = `<i class="fas fa-folder-open" title="Playlist"></i>`;
+                let b = "playlist";
+                if (item.props.playlist_mode == PLAYLIST_MODE.MERGED) b = "merged-playlist";
+                if (item.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK) b = "2-track-playlist";
+                badges["playlist"] = b;
+                filename_parts.push(`<span class="playlist-count">${children.length}</span>`)
+                title_parts.push(`(${children.length})`);
+            }
+            // userdata.number = String(i+1).padStart(2,"0")
+            
+            if (item._is_special) {
+                var type = item.filename.replace("livestreamer://", "");
+                if (!(type in badges)) badges[type] = type;
+                if (type == "macro") {
+                    main_icon = `<i class="fas fa-scroll"></i>`
+                } else if (type == "intertitle") {
+                    main_icon = `<i class="fas fa-paragraph"></i>`
+                } else if (type == "macro") {
+                    main_icon = `<i class="fas fa-scroll"></i>`
+                } else if (type == "empty") {
+                    main_icon = `<i class="fas fa-ghost"></i>`
+                } else if (type == "exit") {
+                    main_icon = `<i class="fas fa-arrow-left-long"></i>`
+                } else if (type == "rtmp") {
+                    title_parts.push(is_rtmp_live ? "[Connected]" : "[Disconnected]");
+                    if (is_rtmp_live) {
+                        main_icon = `<i class="fas fa-link" style="color:#00cc00;" title="Connected"></i>`;
+                    } else {
+                        main_icon = `<i class="fas fa-unlink" title="Disconnected"></i>`;
+                    }
+                    // main_icon = `<i class="fas fa-tower-broadcast"></i>`
+                } 
+            }
+            
+            if (item.filename.match(/^https?:/)) {
+                let icon = $(`<i class="fas fa-globe"></i>`)[0]; //  style="color:cornflowerblue"
+                icon.title = item.filename;
+                main_icon = icon.outerHTML;
+                badges["web"] = new URL(item.filename).hostname.replace(/^www\./, "");
+            }
+            
+            if (!download) {
+                if (media_info.streams) {
+                    var default_video = utils.sort(media_info.streams.filter(s=>s.type === "video"),
+                        (s)=>s.albumart,
+                        (s)=>[s.default | s.forced * 2, "DESCENDING"]
+                    )[0];
+                    var default_audio = utils.sort(media_info.streams.filter(s=>s.type === "audio"),
+                        (s)=>[s.default | s.forced * 2, "DESCENDING"]
+                    )[0];
+                    let has_video = default_video && default_video.codec && !default_video.albumart;
+                    let has_audio = default_audio && default_audio.codec;
+
+                    if (has_video) {
+                        var codec = default_video.codec.replace(/video$/, "").split(".")[0];
+                        var size = get_video_size(default_video.width, default_video.height, media_info.interlaced);
+                
+                        if (!media_info.duration || media_info.duration <= IMAGE_DURATION) {
+                            icons.push(`<i class="fas fa-image"></i>`);
+                            badges["image"] = `${codec} ${default_video.width}x${default_video.height}`;
+                        } else {
+                            icons.push(`<i class="fas fa-film"></i>`);
+                            badges["video"] = `${codec} ${size.text}`;
+                        }
+                    }
+                    if (has_audio) {
+                        if (!has_video) icons.push(`<i class="fas fa-music"></i>`);
+                        badges["audio"] = default_audio.codec.replace(/^pcm_.+$/, "pcm").split(".")[0];
+                    }
+                    if (root_merged_playlist && default_video && default_video.codec == "vc1") {
+                        problems.push({level:2, text: "VC-1 video codec can lead to playback issues within a merged playlist."});
+                    }
+                }
+            }
+
+            if (upload || download) {
+                this.progress = this.progress || new ProgressBar(upload || download);
+                dom.set_children(extra_elem, [this.progress.elem]);
+            } else {
+                if (this.progress) {
+                    this.progress.destroy();
+                    this.progress = null;
+                }
+            }
+
+            dom.set_inner_html(badges_elem, Object.entries(badges).map(([k,v])=>{
+                var parts = v.split(" ");
+                parts[0] = parts[0].toUpperCase();
+                return `<i class="badge" data-badge-type="${k}">${parts.join(" ")}</i>`;
+            }).join(""));
+
+            if (userdata.is_modified) {
+                icons.push(`<i class="fas fa-wrench"></i>`);
+            }
+            
+            let d = userdata.duration || userdata.children_duration;
+            let duration_str = d ? utils.seconds_to_timespan_str(d, "h?:mm:ss") : " - ";
+
+            dom.set_inner_html(duration_elem, duration_str);
+            
+            if (problems.length) {
+                var problem_groups = utils.group_by(problems, p=>p.level);
+                var err_icon_html;
+                if (problem_groups.has(3)) err_icon_html = `<i class="fas fa-times" style="color:red;"></i>`;
+                else if (problem_groups.has(2)) err_icon_html = `<i class="fas fa-exclamation-triangle" style="color:orange;"></i>`;
+                else if (problem_groups.has(1)) err_icon_html = `<i class="fas fa-question-circle" style="color:#6495ED;"></i>`;
+                if (err_icon_html) {
+                    let icon = $(err_icon_html)[0];
+                    icon.title = problems.map(p=>" - "+p.text).join("\n");
+                    icons.push(icon.outerHTML);
+                }
+            }
+
+            dom.set_inner_html(play_icons_elem, play_icons.join(""));
+
+            // if (!main_icon) main_icon = `<i class="fas fa-file"></i>`;
+            dom.set_inner_html(icons_elem, [main_icon, ...icons].join(""));
+
+            dom.set_inner_html(filename_elem, filename_parts.join(" "));
+
+            dom.set_style_property(this.elem, "--duration", userdata.timeline_duration);
+            dom.set_style_property(this.elem, "--start", userdata.timeline_start);
+            dom.set_style_property(this.elem, "--end", userdata.timeline_end);
+            dom.set_style_property(this.elem, "--background-color", background_color || "");
+            dom.set_style_property(this.elem, "--outline-color", outline_color || "");
+            dom.toggle_class(this.elem, "current", is_current);
+            this.elem.title = title_parts.join(" ");
+        });
+
+    }
+}
+
+class ProgressBar extends ui.UI {
+    /** @param {Progress$} d */
+    constructor(d) {
+        super(`<div class="progress-bar"><span class="percent"></span><span class="speed"></span></div>`);
+
+        let percent_el = this.elem.querySelector(".percent");
+        let speed_el = this.elem.querySelector(".speed");
+        let is_cancelled = d.status == UPLOAD_STATUS.CANCELLED;
+        let p = d.total ? ( d.bytes / d.total) : 0;
+        this.elem.title = is_cancelled ? "Cancelled" : `${utils.capitalize(t)}ing [${utils.format_bytes(d.bytes || 0)} / ${utils.format_bytes(d.total || 0)}]`;
+        dom.set_style_property(this.elem, "--progress",`${p*100}%`);
+        let percent_text = [];
+        if (d.stages) percent_text.push(`${d.stage+1}/${d.stages}`);
+        percent_text.push(`${(p * 100).toFixed(2)}%`);
+        dom.set_inner_html(percent_el, is_cancelled ? "Cancelled" : percent_text.join(" | "));
+        dom.set_inner_html(speed_el, is_cancelled ? "Cancelled" : `${utils.format_bytes(d.speed || 0)}ps`);
+        icons.push(`<i class="fas fa-${t}"></i>`);
+    }
+}
+
+//------------------------------------------------------
+
+
+/** @template {ui.UISettings<Loader>} Settings */
+/** @template {ui.UIEvents} Events */
+/** @extends {ui.UI<Settings,Events>} */
+export class Loader extends ui.UI {
+    /** @param {Settings} settings */
+    constructor(settings) {
+        var el = $(`<div class="loader">
+            <div class="icon"><i></i><i></i><i></i></div>
+            <div class="msg">Loading...</div>
+        </div>`)[0];
+        el.style.zIndex = 999999999;
+        super(el, settings);
+        this.message_el = this.elem.querySelector(".msg");
+    }
+}
+
+/** @template {ui.UISettings<Area>} Settings */
+/** @template {ui.UIEvents} Events */
+/** @extends {ui.Column<Settings,Events>} */
 export class Area extends ui.Column {
     constructor(elem, settings) {
         super(elem, settings);
@@ -9866,23 +9855,70 @@ export class Area extends ui.Column {
     }
 }
 
+class PromiseSet {
+    /** @type {Promise<any>[]} */
+    #promises = new Set();
+    /** @param {Promise<any>} promise */
+    get size() { return this.#promises.size; }
+    add(promise) {
+        var report = ()=>console.log(`Blocking promises (${this.#promises.size})`);
+        this.#promises.add(promise);
+        report();
+        promise.finally(()=>{
+            this.#promises.delete(promise);
+            report();
+        });
+    }
+    get ready() {
+        return Promise.all(this.#promises);
+    }
+}
+
+export class SessionPasswordInput extends ui.InputProperty {
+    constructor() {
+        var elem = $(`<input type="text">`, {
+            "label": "Password",
+            "default": "",
+            "reset": false,
+            "placeholder": "Enter password",
+        })[0];
+        super(elem);
+        this.input.addEventListener("keydown", (e)=>{
+            if (e.key === "Enter") button.click();
+        });
+
+        let button = $(`<button title="Sign in"><i class="fas fa-key"></i></button>`)[0];
+        button.addEventListener("click", ()=>{
+            app.passwords.set(app.$._session.id, password.value);
+            if (!app.$._session.access_control._self_has_access(password.value)) {
+                window.alert("Incorrect Password")
+            }
+        });
+
+        this.buttons_el.append(button);
+    }
+}
+
 export class MainWebApp extends utils.EventEmitter {
     /** @type {MainWebApp} */
     static instance;
 
-    get playlist_item_props_class() { return utils.try_catch(()=>this.$.properties.playlist.__enumerable__.props); }
-    get focused_element() { return this.root_elem.activeElement; }
+    #last_session_id;
+    #updating = false;
+    blocking_updates = new PromiseSet();
+
+    get focused_element() { return this.elem.activeElement; }
     get dev_mode() { return this.$.conf["debug"] || new URLSearchParams(window.location.search.slice(1)).has("dev"); }
     get is_os_gui() { return this.$.sysinfo.platform.match(/^win/i); }
-    
-    $ = new Remote();
 
     constructor() {
+        
         super();
 
-        app = MainWebApp.instance = this;
+        /** @type {HTMLElement} */
+        this.elem = document.querySelector("#livestreamer");
 
-        this.root = new ui.UI(document.body);
+        app = MainWebApp.instance = this;
 
         Chart.register(zoomPlugin);
         // Chart.register(annotationPlugin);
@@ -9896,9 +9932,7 @@ export class MainWebApp extends utils.EventEmitter {
 
         if (IS_ELECTRON) {
             window.prompt = async (message, default_value)=>{
-                var result = await fancybox_prompt(message, default_value);
-                if (result) return result;
-                else return null;
+                return new PromptModal(message, default_value).show();
             };
         }
 
@@ -10019,7 +10053,7 @@ export class MainWebApp extends utils.EventEmitter {
         var settings_defaults = Object.fromEntries(Object.entries(this.settings_prop_defs).map(([k,v])=>[k, v.__default__]));
         // console.log(settings_defaults);
         
-        this.settings = new dom.LocalStorageBucket("livestreamer-1.0", {
+        this.local_settings = new dom.LocalStorageBucket("livestreamer-1.0", {
             ...settings_defaults,
             "layout": null,
             "session_order": null,
@@ -10027,14 +10061,22 @@ export class MainWebApp extends utils.EventEmitter {
         });
         this.passwords = new dom.LocalStorageBucket("livestreamer-passwords");
 
-        this.loader = new Loader();
-        this.loader.update({visible:true, text:"Initializing..."});
-
+        this.root = new ui.UI(this.elem);
         this.media = new Media();
 
-        this.elem = document.querySelector("#livestreamer");
-        this.body_elem = this.elem.parentElement;
-        this.root_elem = this.elem.getRootNode();
+        this.loader = new Loader({
+            "hidden": ()=>this.ws.ready_state == WebSocket.OPEN,
+            "update":()=>{
+                var text = {
+                    [WebSocket.CONNECTING]: "Connecting...",
+                    [WebSocket.OPEN]: "Connected",
+                    [WebSocket.CLOSING]: "Disconnecting...",
+                    [WebSocket.CLOSED]: "Disconnected",
+                }[this.ws.ready_state];
+                dom.set_inner_html(this.loader.message_el, text);
+            }
+        });
+        this.root.append(this.loader);
 
         // this.conf = await fetch("conf").then(r=>r.json()); // crazy...;
         /** @type {Area[]} */
@@ -10044,39 +10086,42 @@ export class MainWebApp extends utils.EventEmitter {
         this.num_requests = 0;
         this.upload_queue = new UploadQueue();
         this.clipboard = null;
-        /** @type {Record<PropertyKey,TargetConfigMenu>} */
-        this.target_config_menus = {};
+        /** @type {Record<PropertyKey,typeof TargetConfigMenu>} */
+        this.target_config_menus = {
+            "local": LocalMediaServerTargetConfigMenu,
+            "file": FileTargetConfigMenu,
+            "gui": GUITargetConfigMenu,
+        };
         this.advanced_functions = [];
 
         this.main_elem = this.elem.querySelector(".main");
-        this.show_help_button = this.root_elem.querySelector("#show-help");
-        this.show_config_button = this.root_elem.querySelector("#show-config");
-        this.show_admin_button = this.root_elem.querySelector("#show-admin");
+        this.show_help_button = this.elem.querySelector("#show-help");
+        this.show_config_button = this.elem.querySelector("#show-config");
+        this.show_admin_button = this.elem.querySelector("#show-admin");
         dom.toggle_class(this.show_admin_button, "d-none", true); // !app.user.is_admin
-        this.session_elem = this.root_elem.querySelector("#session");
-        this.session_controls_wrapper_elem = this.root_elem.querySelector(".session-controls-wrapper");
-        this.session_controls_elem = this.root_elem.querySelector("#session-controls");
-        this.session_load_save_elem = this.root_elem.querySelector("#session-load-save");
+        this.session_elem = this.elem.querySelector("#session");
+        this.session_controls_wrapper_elem = this.elem.querySelector(".session-controls-wrapper");
+        this.session_controls_elem = this.elem.querySelector("#session-controls");
+        this.session_load_save_elem = this.elem.querySelector("#session-load-save");
         new ui.UI(this.session_load_save_elem, {
-            "hidden": this.$._session.type === SessionTypes.EXTERNAL
+            "hidden": ()=>this.$._session.type === SessionTypes.EXTERNAL
         })
-        this.session_inner_elem = this.root_elem.querySelector("#session-inner");
-        this.session_ui_elem = this.root_elem.querySelector("#session-ui");
-        this.no_sessions_elem = this.root_elem.querySelector("#no-sessions");
-        this.session_password_elem = this.root_elem.querySelector("#session-password");
-        this.new_session_button = this.root_elem.querySelectorAll(".new-session");
-        this.destroy_session_button = this.root_elem.querySelector("#destroy-session");
-        this.minimize_session_button = this.root_elem.querySelector("#minimize-session");
+        this.session_inner_elem = this.elem.querySelector("#session-inner");
+        this.session_ui_elem = this.elem.querySelector("#session-ui");
+        this.no_sessions_elem = this.elem.querySelector("#no-sessions");
+        this.new_session_button = this.elem.querySelectorAll(".new-session");
+        this.destroy_session_button = this.elem.querySelector("#destroy-session");
+        this.minimize_session_button = this.elem.querySelector("#minimize-session");
         // if (!this.dev_mode) add_class(this.minimize_session_button, "d-none");
-        this.sign_out_session_button = this.root_elem.querySelector("#sign-out-session");
-        this.config_session_button = this.root_elem.querySelector("#config-session");
-        this.load_session_button = this.root_elem.querySelector("#load-session");
-        this.save_session_button = this.root_elem.querySelector("#save-session");
-        this.history_session_button = this.root_elem.querySelector("#history-session");
-        this.session_tabs_elem = this.root_elem.querySelector("#session-tabs");
-        this.session_select = this.root_elem.querySelector("#session-select");
-        this.users_elem = this.root_elem.querySelector("#users");
-        this.request_loading_elem = this.root_elem.querySelector("#request-loading");
+        this.sign_out_session_button = this.elem.querySelector("#sign-out-session");
+        this.config_session_button = this.elem.querySelector("#config-session");
+        this.load_session_button = this.elem.querySelector("#load-session");
+        this.save_session_button = this.elem.querySelector("#save-session");
+        this.history_session_button = this.elem.querySelector("#history-session");
+        this.session_tabs_elem = this.elem.querySelector("#session-tabs");
+        this.session_select = this.elem.querySelector("#session-select");
+        this.users_elem = this.elem.querySelector("#users");
+        this.request_loading_elem = this.elem.querySelector("#request-loading");
         
         var session_ui = new ui.Column();
         var row1 = new ui.Row();
@@ -10098,38 +10143,14 @@ export class MainWebApp extends utils.EventEmitter {
         this.media_player = new MediaPlayerPanel();
         this.media_settings = new MediaSettingsPanel();
         this.metrics = new StreamMetricsPanel();
-        this.session_logger = new LogViewerPanel("Session Log", {ffmpeg: false});
+        this.session_logger = new LogPanel("Session Log", ()=>this.$._session.logs);
 
         this.areas[2].append(this.media_player,this.media_settings,this.metrics,this.session_logger);
         this.default_layout = this.get_layout();
         
-        this.app_log_section = this.elem.querySelector(".app-logs-section");
-        this.app_logger = new LogViewerPanel("Application Log");
-        this.app_log_section.append(this.app_logger);
-
-        this.playlist_modify_menu = new PlaylistModifySettings();
-        this.playlist_add_url_menu = new PlaylistAddURLMenu();
-        this.file_system_info_menu = new FileSystemInfoMenu();
-        this.session_config_menu = new SessionConfigurationSettings();
-        this.schedule_stream_menu = new ScheduleStreamSettings();
-        this.save_playlist_menu = new SavePlaylistSettings();
-        this.history_menu = new HistorySettings();
-        this.schedule_generator_menu = new ScheduleGenerator();
-        this.keyboard_shortcuts_menu = new KeyboardShortcuts();
-        // this.advanced_functions_menu = new AdvancedFunctionsMenu();
-        this.system_manager = new SystemManagerMenu();
-        this.file_manager_menu = new FileManagerMenu();
-        this.configure_external_session_menu = new ExternalSessionConfigurationMenu();
-        this.user_config_menu = new UserConfigurationSettings();
-        this.admin_menu = new AdminSettings();
-        this.set_time_pos_menu = new SetTimePosSettings();
-        this.playlist_info_menu = new InfoSettings();
-        this.change_log_menu = new ChangeLog();
-        this.split_menu = new SplitSettings();
-        this.uploads_downloads_menu = new UploadsDownloadsMenu();
-        this.filter_config_menu = new FilterConfigurationMenu();
-        this.targets_menu = new TargetsMenu();
-        this.edit_target_menu = new EditTargetMenu();
+        this.log_section = this.elem.querySelector(".app-logs-section");
+        this.logger = new LogPanel("Application Log", ()=>this.$.logs);
+        this.log_section.append(this.logger);
         
         // this.fonts_menu = new FontSettings();
 
@@ -10137,31 +10158,9 @@ export class MainWebApp extends utils.EventEmitter {
         new FileTargetConfigMenu();
         new GUITargetConfigMenu();
 
-        this.session_password = new (class extends ui.UI {
-            constructor(...a) {
-                super(...a);
-                let row = new ui.FlexRow();
-                this.password = new ui.Property(`<input type="text">`, {
-                    "label": "Password",
-                    "default": "",
-                    "reset": false,
-                    "placeholder": "Enter password",
-                });
-                this.password.input.addEventListener("keydown", (e)=>{
-                    if (e.key === "Enter") button.click();
-                });
-                let button = $(`<button title="Sign in"><i class="fas fa-key"></i></button>`)[0];
-                button.addEventListener("click", ()=>{
-                    app.passwords.set(app.$._session.id, this.password.value);
-                    if (!app.$._session.access_control._self_has_access(this.password.value)) {
-                        window.alert("Incorrect Password")
-                    }
-                });
-                this.password.outer_el.append(button);
-                row.append(this.password);
-                this.elem.append(row);
-            }
-        })(this.session_password_elem);
+        var session_password_elem = this.elem.querySelector("#session-password");
+        this.session_password = new SessionPasswordInput();
+        session_password_elem.append(this.session_password);
 
         this.sign_out_session_button.addEventListener("click", (e)=>{
             this.passwords.unset(this.$._session.id);
@@ -10190,7 +10189,7 @@ export class MainWebApp extends utils.EventEmitter {
             handle: ".handle",
             onEnd: (evt)=>{
                 if (this.$.conf["session_order_client"]) {
-                    this.settings.set("session_order", [...this.session_tabs_elem.children].map(e=>e.dataset.id));
+                    this.local_settings.set("session_order", [...this.session_tabs_elem.children].map(e=>e.dataset.id));
                 } else {
                     this.request({
                         call: ["rearrange_sessions"],
@@ -10213,10 +10212,8 @@ export class MainWebApp extends utils.EventEmitter {
             if (!IS_ELECTRON) {
                 row.append(
                     new ui.Button(`<button><i class="fas fa-folder-tree"></i></button>`, {
-                        "click": ()=>{
-                            app.file_system_info_menu.show();
-                        },
-                        "title": ()=>app.file_system_info_menu.modal_title
+                        "click": ()=>new FileSystemInfoMenu().show(),
+                        "title": "System Manager"
                     })
                 )
                 row.append(
@@ -10239,25 +10236,25 @@ export class MainWebApp extends utils.EventEmitter {
         ) */
         this.footer_buttons.append(
             new ui.Button(`<button>Configure Targets</button>`, {
-                "click": ()=>this.targets_menu.show(null)
+                "click": ()=>new TargetsMenu().show()
             }),
             new ui.Button(`<button>System Manager</button>`, {
-                "click": ()=>this.system_manager.show()
+                "click": ()=>new SystemManagerMenu().show()
             }),
             /* new ui.Button(`<button>Advanced Functions</button>`, {
                 "click": ()=>this.advanced_functions_menu.show()
             }), */
             new ui.Button(`<button>Uploads & Downloads</button>`, {
-                "click": ()=>this.uploads_downloads_menu.show()
+                "click": ()=>new UploadsDownloadsMenu().show()
             }),
             new ui.Button(`<button>Controls</button>`, {
-                "click": ()=>this.keyboard_shortcuts_menu.show()
+                "click": ()=>new KeyboardShortcutsMenu().show()
             }),
             new ui.Button(`<button>Change Log</button>`, {
-                "click": ()=>this.change_log_menu.show(),
+                "click": ()=>new ChangeLogMenu().show(),
                 /** @this {UI} */
                 "update": function() {
-                    var diff = (app.settings.get("last_change_log") != app.$.change_log.mtime);
+                    var diff = (app.local_settings.get("last_change_log") != app.$.change_log.mtime);
                     if (this.__last_diff != diff) {
                         if (diff) {
                             this.elem.animate([
@@ -10283,16 +10280,13 @@ export class MainWebApp extends utils.EventEmitter {
                 }
             }),
             new ui.Button(`<button>Setup External Session</button>`, {
-                "click": ()=>this.configure_external_session_menu.show()
+                "click": ()=>new ExternalSessionConfigurationMenu().show()
             }),
         );
-    
-        this.loader.update({text:"Connecting..."});
 
-        this.settings.on("change", (e)=>{
+        this.local_settings.on("change", (e)=>{
             var k = e.name;
             var v = e.new_value;
-            console.log(k,v);
             if (k.includes(":")) {
                 if (k.startsWith("drawer:")) {
                     var panel = this.panels[k.slice(7)];
@@ -10317,14 +10311,14 @@ export class MainWebApp extends utils.EventEmitter {
                     }
                 }
             }
-            this.update();
+            this.update_next_frame();
         });
 
         this.passwords.on("change", (e)=>{
-            this.update();
+            this.update_next_frame();
         });
 
-        this.root.elem.addEventListener("click", (e)=>{
+        this.elem.addEventListener("click", (e)=>{
             /** @type {HTMLElement} */
             var elem = e.target;
             var data_setting_prefix = "data-setting__";
@@ -10339,7 +10333,7 @@ export class MainWebApp extends utils.EventEmitter {
             }
             dom.closest(elem, (e)=>e.matches("button") && get_data_setting_attribute(e));
             if (data_setting_key) {
-                this.settings.toggle(data_setting_key);
+                this.local_settings.toggle(data_setting_key);
             }
             // if (elem.matches("a")) {
             //     var url = dom.get_anchor_url(e.target);
@@ -10361,9 +10355,10 @@ export class MainWebApp extends utils.EventEmitter {
             window.location.hash = `#${this.session_select.value}`;
         })
         
-        Object.assign(Fancybox.defaults, {parentEl: this.body_elem});
+        Object.assign(Fancybox.defaults, {parentEl: this.elem});
         
         window.addEventListener("keydown", this.on_keydown = (e)=>{
+            if (Modal.showing.length) return;
             if (!isNaN(e.key) && e.ctrlKey) {
                 var sessions = this.sessions_ordered;
                 var i = +e.key-1;
@@ -10392,13 +10387,12 @@ export class MainWebApp extends utils.EventEmitter {
         });
 
         this.config_session_button.addEventListener("click", ()=>{
-            this.session_config_menu.show(this.$._session);
+            new SessionConfigurationMenu().show();
         });
 
         this.destroy_session_button.addEventListener("click", (e)=>{
             if (confirm(`Are you sure you want to delete Session '${this.$._session.name}'?`)) {
-                this.$._push([`clients/${this.$.client_id}/session_id`, null]);
-                // this.last_destroyed_session_id = this.$._session.id;
+                this.$._client.session_id = null;
                 this.request({
                     call: ["session", "destroy"],
                     arguments: [true],
@@ -10410,7 +10404,7 @@ export class MainWebApp extends utils.EventEmitter {
             this.try_attach_to(null);
         });
 
-        /** @type {Session} */
+        /** @type {Session$} */
         var curr;
         this.session_tabs_elem.addEventListener("contextmenu", (e) => {
             var elem = this.session_sortable.get_item(e.target);
@@ -10418,6 +10412,7 @@ export class MainWebApp extends utils.EventEmitter {
             e.preventDefault();
             curr = this.$.sessions[elem.dataset.id];
             var menu = new dom.DropdownMenu({
+                parent: this.elem,
                 x: e.clientX,
                 y: e.clientY,
                 items: [
@@ -10437,7 +10432,7 @@ export class MainWebApp extends utils.EventEmitter {
             this.save_session();
         });
         this.history_session_button.addEventListener("click", async (e)=>{
-            this.history_menu.show();
+            new HistoryMenu().show();
         });
 
         this.show_help_button.addEventListener("click", async (e)=>{
@@ -10445,9 +10440,9 @@ export class MainWebApp extends utils.EventEmitter {
             this.toggle_help();
         });
 
-        this.show_config_button.addEventListener("click", ()=>this.user_config_menu.show());
+        this.show_config_button.addEventListener("click", ()=>new UserConfigurationSettings().show());
 
-        this.show_admin_button.addEventListener("click", ()=>this.admin_menu.show());
+        this.show_admin_button.addEventListener("click", ()=>new AdminMenu().show());
 
         window.addEventListener("hashchange", ()=>{
             this.try_attach_to(window.location.hash.slice(1));
@@ -10462,7 +10457,7 @@ export class MainWebApp extends utils.EventEmitter {
         fd.on("drop", /** @param {FileSystemEntry[]} entries */ async (entries)=>{
             if (!entries.length) return;
             var items = [];
-            /** @param {PlaylistItem} parent */ 
+            /** @param {PlaylistItem$} parent */ 
             var traverse = async (entry, parent) => {
                 if (!entry) return;
                 if (entry.isFile) {
@@ -10501,70 +10496,73 @@ export class MainWebApp extends utils.EventEmitter {
                 await traverse(e, this.playlist.current);
             }
             this.playlist_add(items);
-        })
-        
-        this.passwords.load();
-        this.settings.load();
+        });
         
         var key = new URL(window.location.href).searchParams.get("ls_key");
         var ws_url = dom.get_url(null, "main", true);
-        var session_id = window.location.hash.slice(1) || this.settings.get("last_session_id");
+        var session_id = window.location.hash.slice(1) || this.local_settings.get("last_session_id");
         if (session_id) ws_url.searchParams.set("session_id", session_id);
         if (key) ws_url.searchParams.set("ls_key", key);
 
         this.ws = new dom.ReconnectingWebSocket();
         this.ws.on("open", ()=>{
-            this.$ = new Remote();
-            this.$.on("update", (changes)=>this.#update(changes));
+            // this.observer = new Remote$();
+            // this.$ = this.observer.$;
         });
         this.ws.on("data", (data)=>{
-            if (data.$) this.$._push(data.$);
+            if (data.init) {
+                this.$ = utils.deep_merge(new Remote$(), data.init);
+                this.passwords.load();
+                this.local_settings.load();
+                this.update_next_frame();
+            }
+            if (data.changes) {
+                for (var [type, path, value] of data.changes) {
+                    if (type == "delete") {
+                        utils.reflect.deleteProperty(this.$, path);
+                    } else {
+                        utils.reflect.set(this.$, path, value);
+                    }
+                }
+                this.update_next_frame();
+            }
         });
         this.ws.on("close", ()=>{
             for (var m of Modal.showing) m.hide();
-            this.#update();
-            this.loader.update({visible:true, text:"Lost connection..."});
+            this.update_next_frame();
         });
         
         this.tick_interval = setInterval(()=>this.tick(), 1000/10);
+        this.tick();
         
         this.update_layout();
 
-        this.root.update();
-
-        for (let p of plugins) {
-            p.then((d)=>new (d.default)());
-        }
         this.ws.connect(ws_url.toString());
     }
 
-    update = utils.debounce(this.#update, 0);
+    async update() {
+        if (!this.$) return;
+        if (this.#updating) return;
+        this.#updating = true;
+        await this.blocking_updates.ready;
+        this.#update();
+        this.#updating = false;
+    }
 
-    async #update(changes = {}) {
+    update_next_frame = dom.debounce_next_frame(this.update.bind(this));
+
+    async #update() {
         
-        await Promise.all([...Modal.showing].filter(m=>m.block_updates).map(m=>m.showing_promise));
-
-        this.loader.update({visible:false});
         this.elem.style.display = "";
 
-        var last_session_id = window.location.hash.slice(1);
-        var client_id = this.$.client_id;
-        var client_changes = changes.clients && changes.clients[client_id];
-        var is_new_session = !!(client_changes && client_changes.session_id);
-        var session_changes = is_new_session ? this.$._session : changes.sessions && changes.sessions[this.$._session.id];
-        var is_null_session = this.$._session === NULL_SESSION;
+        var is_null_session = this.$._session._is_null;
         var access_control = this.$._session.access_control
         var has_ownership = access_control._self_is_owner_or_admin || access_control._owners.length == 0;
-        var has_access = is_null_session || access_control._self_has_access(app.passwords.get(this.$._session.id)) || this.$._client.is_admin;
+        var has_access = is_null_session || access_control._self_has_access(app.passwords.get(this.$._session.id))
         var requires_password = access_control._self_requires_password;
+        var is_new_session = this.$._session.id != this.#last_session_id;
 
-        // if (this.$._last_session && !this.$.sessions[this.$._last_session.id]) {
-        //     alert(`'${this.$._last_session.name}' was terminated internally or by another user.`);
-        // }
-        if (client_changes && "session_id" in client_changes && client_changes.session_id != last_session_id) {
-            window.location.hash = client_changes.session_id || "";
-        }
-
+        dom.toggle_class(this.session_elem, "is-rtmp-connected", this.$._session._get_connected_nms_session_with_appname("internal", "private"));
         dom.set_dataset_value(this.session_elem, "session-type", this.$._session.type);
         dom.toggle_class(this.session_elem, "d-none", is_null_session);
         dom.toggle_class(this.session_inner_elem, "d-none", !has_access);
@@ -10574,7 +10572,9 @@ export class MainWebApp extends utils.EventEmitter {
         dom.toggle_class(this.no_sessions_elem.querySelector(".no-access"), "d-none", has_access);
         dom.toggle_class(this.no_sessions_elem.querySelector(".owner"), "d-none", has_access);
         dom.set_inner_html(this.no_sessions_elem.querySelector(".owner"), `This session is owned by ${access_control._owners.map(u=>`[${u.username}]`).join(" | ")}`);
-        this.session_password.is_hidden = (has_access || !requires_password);
+
+        this.session_password.settings["hidden"] = (has_access || !requires_password);
+        if (is_new_session) this.session_password.reset();
 
         dom.toggle_attribute(this.load_session_button, "disabled", !has_access || !has_ownership);
         dom.toggle_attribute(this.save_session_button, "disabled", !has_access || !has_ownership);
@@ -10584,42 +10584,19 @@ export class MainWebApp extends utils.EventEmitter {
         dom.toggle_attribute(this.config_session_button, "disabled", !has_access || !has_ownership);
         dom.toggle_attribute(this.destroy_session_button, "disabled", !has_ownership);
 
-        dom.toggle_class(this.app_log_section, "d-none", !this.$._client.is_admin);
-
-        if (is_new_session) {
-            this.session_logger.empty();
-            this.session_password.password.reset();
-        }
+        dom.toggle_class(this.log_section, "d-none", !this.$._client.is_admin);
 
         this.#rebuild_sessions();
         this.#rebuild_clients();
 
-        if (session_changes) {
-            if (session_changes.logs) {
-                this.session_logger.update_logs(Object.fromEntries(Object.keys(session_changes.logs).map(k=>[k,this.$._session.logs[k]])));
-            }
-            if (session_changes.stream){
-                if (session_changes.stream.metrics) {
-                    this.metrics._updates++;
-                }
-            }
-        }
-        
-        if (changes.logs !== undefined) {
-            if (this.app_logger) {
-                this.app_logger.update_logs(Object.fromEntries(Object.keys(changes.logs).map(k=>[k,this.$.logs[k]])));
-            }
-        }
-        if (changes.uploads) {
-            for (var id in changes.uploads) {
-                var ul = this.$.uploads[id];
-                if (!ul || ul.status === UploadStatus.CANCELED) {
-                    this.upload_queue.cancel(id);
-                }
+        for (var ul of Object.values(this.$.uploads)) {
+            if (!ul || ul.status === UploadStatus.CANCELLED) {
+                this.upload_queue.cancel(ul.id);
             }
         }
 
-        {
+        // THIS NEEDS SORTING
+        /* {
             let ids = [];
             if (changes.downloads) {
                 ids.push(...Object.keys(changes.downloads));
@@ -10643,17 +10620,14 @@ export class MainWebApp extends utils.EventEmitter {
             }
             for (var id of new Set(ids)) {
                 var item = this.$._session.playlist[id];
-                if (item) item.__private.clear_userdata();
+                if (item) item._private.clear_userdata();
             }
-        }
-        
-        if (!utils.is_empty(changes)) {
-            this.emit("change", changes);
-        }
+        } */
 
         this.media.update();
         this.root.update();
-        this.tick();
+
+        this.#last_session_id = this.$._session.id;
     }
 
     get_media_server_base_url() {
@@ -10672,36 +10646,21 @@ export class MainWebApp extends utils.EventEmitter {
         }
         return this.font_cache[id];
     }
-    
-    /* get_property(...path) {
-        path = path.map(p=>p.split("/")).flat().filter(p=>p);
-        var curr = this.$.properties;
-        for (var i = 0; i<path.length; i++) {
-            curr = curr[path[i]];
-            if (i != path.length-1) {
-                if (path[i+1] == "*") {
-                    curr = curr.__enumerable__
-                    i++;
-                }
-            }
-        }
-        return curr;
-    } */
 
     get_layout() {
         return this.areas.map(area=>[...area.elem.children].map(c=>c.dataset.id))
     }
     save_layout() {
-        this.settings.set("layout", this.get_layout())
+        this.local_settings.set("layout", this.get_layout())
     }
     update_layout() {
-        (this.settings.get("layout")||this.default_layout).forEach((blocks, i)=>{
+        (this.local_settings.get("layout")||this.default_layout).forEach((blocks, i)=>{
             this.areas[i].append(...blocks.map(id=>this.panels[id]).filter(b=>b));
         });
-        this.update();
+        this.update_next_frame();
     }
 
-    /** @param {PlaylistItem[]} items */
+    /** @param {PlaylistItem$[]} items */
     playlist_rescan(items) {
         if (!Array.isArray(items)) items = [items];
         if (!items.length) return;
@@ -10719,7 +10678,7 @@ export class MainWebApp extends utils.EventEmitter {
         });
     } */
 
-    /** @param {PlaylistItem[]} items */
+    /** @param {PlaylistItem$[]} items */
     playlist_split(items, splits, local_times=false) {
         if (!Array.isArray(items)) items = [items];
         if (!items.length) return;
@@ -10764,7 +10723,7 @@ export class MainWebApp extends utils.EventEmitter {
         // await Promise.all(promises);
     }
 
-    /** @param {PlaylistItem[]} items */
+    /** @param {PlaylistItem$[]} items */
     playlist_group(items) {
         if (!Array.isArray(items)) items = [items];
         if (!items.length) return;
@@ -10781,10 +10740,10 @@ export class MainWebApp extends utils.EventEmitter {
             props
         }, {
             insert_pos: index,
-            track_index: track_index
+            track_index: track_index,
         })[0];
         var changes = Object.fromEntries(items.map((item,i)=>[item.id, {parent_id: new_item.id, index: i, track_index: 0}]));
-        this.playlist_update(changes);
+        this.playlist_update(changes, {register_history:false});
 
         /* await app.request({
             call: ["session", "create_playlist"],
@@ -10795,7 +10754,7 @@ export class MainWebApp extends utils.EventEmitter {
         // this.$.push([`sessions/${this.$.session.id}/playlist/${new_item.id}`, null]);
     }
 
-    /** @param {PlaylistItem[]} items */
+    /** @param {PlaylistItem$[]} items */
     async playlist_breakdown(items) {
         if (!Array.isArray(items)) items = [items];
         items = items.filter(item=>item._is_playlist);
@@ -10803,12 +10762,12 @@ export class MainWebApp extends utils.EventEmitter {
 
         // var affected_ids = [];
         var changes = {}
-        items.forEach((item)=>{
+        for (var item of items) {
             var children = item._children;
-            children.forEach((c)=>{
+            for (var c of children) {
                 // affected_ids.push(c.id);
                 changes[c.id] = {parent_id: item.parent_id, track_index: item.track_index};
-            });
+            }
             var parent_items = item._parent._get_track(item.track_index);
             var i = parent_items.indexOf(item);
             parent_items.splice(i, 1, ...children);
@@ -10816,13 +10775,13 @@ export class MainWebApp extends utils.EventEmitter {
                 if (!changes[p.id]) changes[p.id] = {};
                 changes[p.id].index = i;
             });
-        });
-        items.forEach((item)=>changes[item.id] = null);
-        this.playlist_update(changes);
+        }
+        this.playlist_remove(items);
+        this.playlist_update(changes, {register_history:false});
     }
 
-    /** @typedef {{insert_pos:number, track_index:number, parent:PlaylistItem}} PlaylistInsertOptions */
-    /** @param {PlaylistItem[]} items @param {PlaylistInsertOptions} opts */
+    /** @typedef {{insert_pos:number, track_index:number, parent:PlaylistItem$}} PlaylistInsertOptions */
+    /** @param {PlaylistItem$[]} items @param {PlaylistInsertOptions} opts */
     async playlist_move(items, opts) {
         if (!Array.isArray(items)) items = [items];
         if (!items.length) return;
@@ -10857,9 +10816,9 @@ export class MainWebApp extends utils.EventEmitter {
     playlist_add(items, opts) {
         if (!Array.isArray(items)) items = [items];
         if (!items.length) return;
-        let {track_index, insert_pos, parent} = this.get_playlist_insert_options(opts);
+        let {track_index, insert_pos, parent, register_history} = this.get_playlist_insert_options(opts);
 
-        /** @type {PlaylistItem[]} */
+        /** @type {PlaylistItem$[]} */
         var new_items = [];
         var add_file = async (data, index, parent_id, track_index)=>{
             let id = dom.uuid4();
@@ -10885,10 +10844,10 @@ export class MainWebApp extends utils.EventEmitter {
                         });
                     }
                 }
-                if (data instanceof PlaylistItem) children = data._children;
+                if (data instanceof PlaylistItem$) children = data._children;
                 else if (data.children) children = data.children;
             }
-            var item = new PlaylistItem({filename, id, index, track_index, parent_id, props}, this.$._session);
+            var item = new PlaylistItem$({filename, id, index, track_index, parent_id, props});
             new_items.push(item);
             if (children) {
                 children.forEach((c,i)=>add_file(c, i, item.id, c.track_index||0));
@@ -10900,37 +10859,26 @@ export class MainWebApp extends utils.EventEmitter {
             add_file(c, insert_pos+i, parent.id, track_index)
         });
 
-        /* 
-        #fix_2_track_playlist(id) {
-            for (var item of this.get_playlist_items(id)) {
-                var ext = path.extname(item.filename);
-                item.track_index = ext.match(/^\.(aa|aac|aax|act|aiff|alac|amr|ape|au|awb|dss|dvf|flac|gsm|iklax|ivs|m4a|m4b|m4p|mmf|movpkg|mp3|mpc|msv|nmf|ogg|oga|mogg|opus|ra|rm|raw|rf64|sln|tta|voc|vox|wav|wma|wv|8svx|cda)$/i) ? 1 : 0;
-            }
-            this.#playlist_update_indices();
-        } */
-
-        var new_playlist = Object.fromEntries(new_items.map(f=>[f.id,f]));
         parent._get_track(track_index).slice(insert_pos).forEach((item,i)=>{
-            new_playlist[item.id] = {index: insert_pos+items.length+i};
+            item.index = insert_pos+items.length+i;
         });
-
-        this.$._push([`sessions/${this.$._session.id}/playlist`, new_playlist]);
+        for (var item of new_items) {
+            this.$._session.playlist[item.id] = item;
+        }
         this.request({
             call: ["session","playlist_add"],
-            arguments: [new_items, {insert_pos, parent_id:parent.id, track_index}]
-        }).then(()=>{
-            this.playlist.once("rebuild", ()=>{
-                this.playlist.set_selection(new_items);
-            });
+            arguments: [new_items, {insert_pos, parent_id:parent.id, track_index, register_history}]
         })
+        this.playlist.set_selection(new_items);
         
         return new_items;
     }
 
-    /** @param {PlaylistItem[]} items */
-    async playlist_remove(items) {
+    /** @param {PlaylistItem$[]} items */
+    async playlist_remove(items, opts) {
         if (!Array.isArray(items)) items = [items];
         if (items.length == 0) return;
+        let {register_history} = opts ?? {};
 
         for (var item of items) {
             var ul = item._upload;
@@ -10938,10 +10886,12 @@ export class MainWebApp extends utils.EventEmitter {
         }
         for (var [session_id, group] of utils.group_by(items, i=>i._session.id)) {
             var all_deleted_items = new Set(group.map(i=>[i, ...i._descendents]).flat());
-            this.$._push(...[...all_deleted_items].map(item=>[`sessions/${session_id}/playlist/${item.id}`, null]));
+            for (var item of all_deleted_items) {
+                delete this.$.sessions[session_id].playlist[item.id];
+            }
             this.request({
                 call: ["sessions", session_id, "playlist_remove"],
-                arguments: [group.map(i=>i.id)]
+                arguments: [group.map(i=>i.id), {register_history}]
             });
             var next_item, current_item;
             next_item = current_item = this.$._session._current_playlist_item;
@@ -10951,7 +10901,7 @@ export class MainWebApp extends utils.EventEmitter {
                         next_item = next_item._next;
                     }
                 } else {
-                    next_item = NULL_PLAYLIST_ITEM;
+                    next_item = app.$._NULL_PLAYLIST_ITEM;
                 }
             }
             if (next_item !== current_item) {
@@ -10961,29 +10911,35 @@ export class MainWebApp extends utils.EventEmitter {
     }
 
     /** @param {object} changes */
-    async playlist_update(changes) {
+    async playlist_update(changes, opts) {
         var session_id = app.$._session.id;
-        changes = utils.tree_from_pathed_entries(changes);
-        for (var id of Object.keys(changes)) {
-            if (!this.$._session.playlist[id]) delete changes[id];
+        let {register_history, replace_props} = opts ?? {};
+        // changes = utils.tree_from_pathed_entries(changes);
+        // var playlist = this.$.sessions[session_id].playlist;
+        // if (cull) cull_equal_props(changes, playlist);
+        if (utils.is_empty(changes)) return;
+        for (var id in changes) {
+            var item = app.$._session.playlist[id];
+            if (!item) continue;
+            var change = {...changes[id]};
+            var {props} = change;
+            delete change.props;
+            utils.merge(item, change, {delete_nulls:true});
+            utils.merge(item.props, props, {delete_nulls:true});
+            // utils.deep_merge(item, props, {deep:!replace_props, delete_null:true});
         }
-        // recursviely remove any changes where identical to the original values.
-        changes = cull_equal_props(changes, this.$.sessions[session_id].playlist);
-
-        if (changes) {
-            this.$._push([`sessions/${session_id}/playlist`, changes]);
-            this.request({
-                call: ["sessions", session_id, "playlist_update"],
-                arguments: [changes]
-            });
-        }
+        // Observer.apply_changes(playlist, changes);
+        // this.update();
+        this.request({
+            call: ["sessions", session_id, "playlist_update"],
+            arguments: [changes, {register_history, replace_props}]
+        });
     }
 
     async playlist_undo() {
         var h = this.$._session.playlist_history;
         if (h.position <= h.start) return;
         var session_id = app.$._session.id;
-        // this.$._push([`sessions/${session_id}/playlist_history/pos`, h.position - 1]);
         this.request({
             call: ["sessions", session_id, "playlist_undo"],
         });
@@ -10993,13 +10949,12 @@ export class MainWebApp extends utils.EventEmitter {
         var h = this.$._session.playlist_history;
         if (h.position >= h.end) return;
         var session_id = app.$._session.id;
-        // this.$._push([`sessions/${session_id}/playlist_history/pos`, h.position + 1]);
         this.request({
             call: ["sessions", session_id, "playlist_redo"],
         });
     }
     
-    /** @param {PlaylistItem[]} items */
+    /** @param {PlaylistItem$[]} items */
     playlist_download(items) {
         if (!Array.isArray(items)) items = [items];
         if (items.length == 0) return;
@@ -11011,7 +10966,7 @@ export class MainWebApp extends utils.EventEmitter {
         });
     }
     
-    /** @param {PlaylistItem[]} items */
+    /** @param {PlaylistItem$[]} items */
     playlist_cancel_download(items){
         if (!Array.isArray(items)) items = [items];
         if (items.length == 0) return;
@@ -11023,7 +10978,7 @@ export class MainWebApp extends utils.EventEmitter {
         });
     }
     
-    /** @param {PlaylistItem[]} items */
+    /** @param {PlaylistItem$[]} items */
     playlist_cancel_upload(items) {
         if (!Array.isArray(items)) items = [items];
         items.forEach(i=>app.upload_queue.cancel(i.id));
@@ -11037,9 +10992,9 @@ export class MainWebApp extends utils.EventEmitter {
         });
     }
 
-    /** @param {PlaylistItem} item */
+    /** @param {PlaylistItem$} item */
     playlist_play(item, start=0) {
-        item = item ?? NULL_PLAYLIST_ITEM
+        item = item ?? this.$._NULL_PLAYLIST_ITEM;
         var options = {pause:false};
         var root_merged = item._root_merged_playlist;
         if (root_merged) {
@@ -11051,11 +11006,9 @@ export class MainWebApp extends utils.EventEmitter {
         
         // this.media_player.seek.seek(options.start);
 
-        this.$._push(
-            [`sessions/${this.$._session.id}/playlist_id`, item.id],
-            [`sessions/${this.$._session.id}/time`, start],
-            [`sessions/${app.$._session.id}/stream/mpv/time`, start]
-        );
+        this.$._session.playlist_id = item.id;
+        this.$._session.time = start;
+        this.$._session._stream.mpv.time = start; // necessary?
         
         return this.request({
             call: ["session","playlist_play"],
@@ -11083,10 +11036,7 @@ export class MainWebApp extends utils.EventEmitter {
     seek(t, relative=false) {
         if (relative) t += this.$._session.time_pos;
         if (t < 0) t = 0;
-        app.$._push(
-            [`sessions/${app.$._session.id}/time_pos`, t],
-            [`streams/${app.$._stream.id}/mpv/seeking`, true],
-        );
+        this.$._session.time_pos = t;
         return this.request({
             call: ["session", "seek"],
             arguments: [t]
@@ -11122,46 +11072,10 @@ export class MainWebApp extends utils.EventEmitter {
         }
         insert_pos = utils.clamp(insert_pos, 0, num_items);
         track_index = utils.clamp(track_index, 0, 1);
-        return {parent, track_index, insert_pos};
+        return {...opts, parent, track_index, insert_pos};
     }
 
     // ---------------
-    
-    /** @param {Element} parent_elem @param {PlaylistItem} item */
-    build_playlist_breadcrumbs(parent_elem, item, exclude_root=false, single=false) {
-        var path = [item, ...item._parents].reverse().filter(p=>p);
-        var path_hash = JSON.stringify([this.playlist.current.id, path.map(i=>[i.id, i._hash])]);
-        if (parent_elem._path_hash === path_hash) return;
-        parent_elem._path_hash = path_hash;
-        dom.remove_children(parent_elem);
-        dom.add_class(parent_elem, "breadcrumbs");
-        path.forEach((item,i)=>{
-            var elem = $(`<a></a>`)[0];
-            var name = item._get_pretty_name() || "[Untitled]";
-            if (item._is_root) {
-                if (exclude_root) return;
-                elem.style.overflow = "visible";
-                dom.set_inner_html(elem, `<i class="fas fa-house"></i>`);
-            } else {
-                dom.set_inner_html(elem, name);
-            }
-            elem.href = "javascript:void(0)";
-            parent_elem.append(elem);
-            elem.onclick = ()=>item._reveal();
-            elem.title = name;
-            if (i != path.length-1) {
-                parent_elem.append($(`<span class="separator"></span>`)[0]);
-            }
-        });
-        
-        if (item._is_modifiable) {
-            var a = $(`<a class="modify" href="javascript:void(0);" title="Modify..."><i class="fas fa-wrench"></i></a>`)[0];
-            parent_elem.append(a);
-            a.onclick = ()=>{
-                app.playlist_modify_menu.show(item);
-            }
-        }
-    }
 
     get_handover_sessions_options(include_none=true) {
         var sessions = this.sessions_ordered.filter(s=>s.type===SessionTypes.INTERNAL && !s._is_running);
@@ -11179,6 +11093,7 @@ export class MainWebApp extends utils.EventEmitter {
     }
 
     request(data, opts) {
+        this.update();
         opts = {
             show_spinner: true,
             block: false,
@@ -11241,13 +11156,12 @@ export class MainWebApp extends utils.EventEmitter {
         if (!this.$.client_id) return;
         session_id = session_id || "";
         var new_hash = `#${session_id}`;
-        this.settings.set("last_session_id", session_id);
+        this.local_settings.set("last_session_id", session_id);
         this.$._last_session = this.$.sessions[session_id];
         if (window.location.hash !== new_hash) {
             window.history.replaceState({}, "", new_hash);
         }
         if (this.$._client.session_id != session_id) {
-            this.$._push([`clients/${this.$.client_id}/session_id`, session_id]);
             this.request({
                 call: ["attach_to"],
                 arguments: [session_id]
@@ -11257,19 +11171,19 @@ export class MainWebApp extends utils.EventEmitter {
     }
 
     tick() {
-        dom.toggle_class(this.body_elem, "is-touch", dom.has_touch_screen());
+        dom.toggle_class(this.elem, "is-touch", dom.has_touch_screen());
     }
 
     #rebuild_clients() {
         var session_id = this.$._client.session_id;
         var clients = Object.values(this.$.clients).filter(c=>c.session_id == session_id);
-        /** @type {Record<PropertyKey,Client[]>} */
+        /** @type {Record<PropertyKey,Client$[]>} */
         var clients_stacked = {};
         for (var c of clients) {
             if (clients_stacked[c.username] === undefined) clients_stacked[c.username] = [];
             clients_stacked[c.username].push(c);
         }
-        var owners = new AccessControl(this.$._session.access_control)._owners.map(u=>u.username);
+        var owners = this.$._session.access_control._owners.map(u=>u.username);
         var items = [
             ...owners.map(o=>({username:o, type:"owner"})),
             ...utils.sort(Object.values(clients_stacked), a=>a[0].username).map(c=>({username:c[0].username, type:"client", number:c.length}))
@@ -11298,7 +11212,7 @@ export class MainWebApp extends utils.EventEmitter {
 
     get sessions_ordered() {
         if (this.$.conf["session_order_client"]) {
-            var order = this.settings.get("session_order") || EMPTY_ARRAY;
+            var order = this.local_settings.get("session_order") || EMPTY_ARRAY;
             return utils.sort(Object.values(this.$.sessions), (s)=>{
                 var i = order.indexOf(s.id);
                 if (i == -1) return Number.MAX_SAFE_INTEGER;
@@ -11310,7 +11224,6 @@ export class MainWebApp extends utils.EventEmitter {
     }
 
     async #rebuild_sessions() {
-        await this.session_sortable.last_drag;
         var items = this.sessions_ordered;
         var session_id = this.$._client.session_id;
         dom.rebuild(this.session_tabs_elem, items, {
@@ -11321,10 +11234,9 @@ export class MainWebApp extends utils.EventEmitter {
                 var requires_password = access_control._self_requires_password;
                 var is_active = item.id == session_id;
                 var is_owner = access_control._self_is_owner;
-                var state = item.stream.state;
+                var state = item._stream.state;
                 var hash = JSON.stringify([item.id, item.name, item.schedule_start_time, state, is_owner, is_active, has_access, requires_password]);
                 if (elem._hash == hash) return;
-                console.log(has_access, session_id);
                 elem._hash = hash;
 
                 var handle = elem.querySelector(".handle");
@@ -11376,7 +11288,7 @@ export class MainWebApp extends utils.EventEmitter {
         return null;
     }
 
-    get user_time_format() { return this.settings.get("time_display_ms") ? "h:mm:ss.SSS" : "h:mm:ss"; }
+    get user_time_format() { return this.local_settings.get("time_display_ms") ? "h:mm:ss.SSS" : "h:mm:ss"; }
 
     async load_session() {
         var files = await open_file_dialog(".json,.csv,.txt");
@@ -11422,7 +11334,7 @@ export class MainWebApp extends utils.EventEmitter {
             var close_button = this.help_container.querySelector("button.close");
             close_button.onclick = ()=>this.toggle_help();
         }
-        dom.toggle_class(this.body_elem, "show-side-panel");
+        dom.toggle_class(this.elem, "show-side-panel");
     }
     chapter_to_string(c, show_time=false) {
         var item = this.$._session.playlist[c.id];
@@ -11467,4 +11379,5 @@ export class MainWebApp extends utils.EventEmitter {
         // this.playlist.destroy();
     }
 };
+
 export default MainWebApp;

@@ -20,21 +20,25 @@ export class Log {
 		if (args.length == 1 && typeof args[0] === "object") {
 			/** @type {Log} */
 			let log = args.pop();
-			this.level = log.level;
-			this.message = log.message;
-			this.prefix = [...log.prefix];
-			this.ts = log.ts;
+			if (log instanceof Error) {
+				this.message = log.stack;
+				this.level = Logger.ERROR;
+			} else {
+				this.level = log.level;
+				this.message = log.message;
+				this.prefix = typeof log.prefix === "string" ? [log.prefix] : [...log.prefix];
+				this.ts = log.ts;
+			}
 		} else {
 			this.level = args[0];
 			this.message = args.slice(1).map(m=>{
-				if (m instanceof Error) {
-					m = m.stack;
-				}
+				if (m instanceof Error) m = m.stack;
 				if (typeof m === "object") {
 					try { m = JSON.stringify(m) } catch {};
 				}
 				if (typeof m !== "string") m = String(m);
-				if (m.length > globals.app.conf["core.logs_max_msg_length"]) m = m.substr(0, globals.app.conf["core.logs_max_msg_length"]);
+				var max_msg_length = globals.app.conf["core.logs_max_msg_length"] || 0;
+				if (max_msg_length && m.length > max_msg_length) m = m.substr(0, max_msg_length);
 				return m;
 			}).join(" ");
 		}
@@ -164,23 +168,32 @@ export class Logger extends events.EventEmitter {
 		this.emit("destroy");
 		this.removeAllListeners();
 	}
+}
 
-	/** @param {function(Log):Log} cb */
-	register_changes($, cb) {
-		/** @type {Observer<Log>} */
-		let logs = {};
-		let _id = 0;
-		this.on("log", (log)=>{
-			if (log.level === Logger.TRACE) return;
-			log = (cb ? cb(log) : log) || log
-			let id = ++_id;
-			$[id] = log;
-			if (!logs[log.level]) logs[log.level] = [];
-			logs[log.level].push(id);
-			if (logs[log.level].length > globals.app.conf["core.logs_max_length"]) {
-				delete $[logs[log.level].shift()];
-			}
-		});
+export class LogCollector {
+	/** @type {Observer<Log>} */
+	#logs = {};
+	#id = 0;
+	#$;
+	#filter;
+	/** @param {Observer<Log>} $ @param {function(Log):Log} filter */
+	constructor($, filter) {
+		this.#$ = $;
+		this.#filter = filter;
+	}
+	/** @param {Log} log */
+	register(log) {
+		if (log.level === Logger.TRACE) return;
+		log = (this.#filter ? this.#filter(log) : null) || log
+		let id = ++this.#id;
+		this.#$[id] = log;
+		if (!this.#logs[log.level]) this.#logs[log.level] = [];
+		this.#logs[log.level].push(id);
+		var max_logs = globals.app.conf["core.logs_max_length"] || 0;
+		if (max_logs && this.#logs[log.level].length > max_logs) {
+			let id = this.#logs[log.level].shift();
+			delete this.#$[id];
+		}
 	}
 }
 

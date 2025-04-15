@@ -1,7 +1,6 @@
 import path from "node:path";
 export default {
 	"core.hostname": "livestreamer.localhost",
-	"core.appdata_dir": undefined,
 	"core.logs_max_length": 64,
 	"core.logs_max_msg_length": 128 * 1024, // 128 kb
 	"core.ssl_key": "",
@@ -9,6 +8,7 @@ export default {
 	"core.compress_logs_schedule": "* 4 * * *", // Every day @ 4:00 am
 	"core.http_port": 8120,
 	"core.https_port": 8121,
+	"core.redirect_http_to_https": true,
 	"core.auth": null,
 	"core.mpv_path": "mpv",
 	"core.mpv_hwdec": null,
@@ -41,6 +41,7 @@ export default {
 	"media-server.title": "Local Media Server",
 	"media-server.description": "Handles network delivery of media streams and serves them publicly.",
 	"media-server.rtmp_port": 1935,
+	"media-server.rtmps_port": 1936,
 	"media-server.media_expire_time": 2 * 24 * 60 * 60,
 	"media-server.hls_list_size": 10,
 	"media-server.hls_max_duration": 2 * 60 * 60, // 2 hrs

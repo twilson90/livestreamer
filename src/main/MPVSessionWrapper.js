@@ -488,7 +488,8 @@ export class MPVContext extends DataNode {
         item = this.item = await this.#parse_item({...item, props: {...((opts.reload_props) ? (item && item.props) : utils.json_copy(this.#last_ctx.props))}});
         this.$.item = utils.json_copy(item);
 
-        if (original_item && original_item.props) {
+        // this is stupid, when mpv ends it continues listening.
+        /* if (original_item && original_item.props) {
             let changed_props = new Set();
             let debounced_update_props = utils.debounce(()=>{
                 for (var k of changed_props) {
@@ -503,7 +504,7 @@ export class MPVContext extends DataNode {
                     debounced_update_props();
                 }
             });
-        }
+        } */
         
         start += item.start_offset;
 
@@ -598,9 +599,6 @@ export class MPVContext extends DataNode {
         return this.#mpv.mpv.loadfile(item.filename)
             .catch((e)=>{
                 this.logger.error(e);
-                /* if (!this.expired) {
-                    return this.#mpv.load_next();
-                } */
             });
     }
     
@@ -622,7 +620,7 @@ export class MPVContext extends DataNode {
         }
         
         let props = utils.json_copy({
-            ...Object.fromEntries(Object.entries(InternalSessionProps.playlist.__enumerable__.props).map(([k,v])=>[k,v.__default__])),
+            ...utils.get_defaults(InternalSessionProps.playlist.__enumerable__.props),
             ...this.session.$.player_default_override,
             ...item.props,
         });
@@ -1037,7 +1035,6 @@ export class MPVContext extends DataNode {
         let sid = this.props.sid_override == "auto" ? sid_auto : this.props.sid_override;
         let v_stream = this.item.map.video.streams[vid-1];
         if (!v_stream || v_stream.albumart) {
-            debugger;
             let reason = v_stream.albumart ? "albumart" : "no stream";
             this.logger.error(`bad video stream selected [${reason}]...`);
             let safe_v_stream = this.item.map.video.streams.find(s=>s.type == "video" && !s.albumart);

@@ -62,7 +62,7 @@ local on_load_opts = nil
 
 -- attempts to overcome significant audio discontinuity (which results in playback being reset) by seeking to the last known discontinuity pts and resuming playback
 observe_property("audio-pts", function(_,v)
-    msg.info("audio-pts: "..tostring(v).." discontinuity_pts: "..tostring(discontinuity_pts))
+    -- msg.info("audio-pts: "..tostring(v).." discontinuity_pts: "..tostring(discontinuity_pts))
     if v == nil and discontinuity_pts then
         msg.info("audio discontinuity detected, attempting seek to new PTS: "..tostring(discontinuity_pts).."...")
         mp.commandv("seek", discontinuity_pts, "absolute")

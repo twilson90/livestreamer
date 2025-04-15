@@ -1,3 +1,10 @@
+const TIME_DIVIDERS = {
+	d: 24 * 60 * 60 * 1000,
+	h: 60 * 60 * 1000,
+	m: 60 * 1000,
+	s: 1000,
+};
+
 /** @param {number} num @param {number} show_ms */
 export function ms_to_shorthand_str(num, show_ms = 0) {
 	var negative = num < 0;

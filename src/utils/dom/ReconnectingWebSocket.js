@@ -37,7 +37,7 @@ export class ReconnectingWebSocket extends EventEmitter {
                 else resolve(response.result);
             };
             this.send(Object.assign({
-                __id__: rid,
+                id: rid,
             }, data));
             if (timeout) {
                 setTimeout(() => reject(`WebSocket2 request ${rid} timed out`), timeout);
@@ -50,7 +50,7 @@ export class ReconnectingWebSocket extends EventEmitter {
         if (data instanceof ArrayBuffer || data instanceof Blob) {
             this.ws.send(data);
         } else {
-            this.ws.send(JSON.stringify(data));
+            this.ws.send(JSON.stringify(data, (k,v)=>(v===undefined)?null:v));
         }
     }
 
@@ -58,7 +58,7 @@ export class ReconnectingWebSocket extends EventEmitter {
         this._request_ids = {};
         this._requests = 0;
 
-        var heartbeat_interval_id, last_ping_ts;
+        var heartbeat_interval_id;
         var url = this.url;
         var protocols = this.protocols;
         if (typeof url === "function") url = url();
@@ -68,18 +68,14 @@ export class ReconnectingWebSocket extends EventEmitter {
         this.ws.addEventListener("open", (e) => {
             clearTimeout(this._reconnect_timeout);
             this.emit("open", e);
-            heartbeat_interval_id = setInterval(send_ping, 30 * 1000);
-            send_ping();
+            heartbeat_interval_id = setInterval(()=>this.ping(), 30 * 1000);
+            this.ping();
         });
-        var send_ping = () => {
-            last_ping_ts = Date.now();
-            this.ws.send("ping");
-        };
 
         this.ws.addEventListener("message", (e) => {
             this.emit("message", e);
             if (e.data === "pong") {
-                this.last_ping = Date.now() - last_ping_ts;
+                this.emit("pong");
                 return;
             }
             var data;
@@ -90,9 +86,9 @@ export class ReconnectingWebSocket extends EventEmitter {
                 return;
             }
             if (data) {
-                if (data.__id__ !== undefined) {
-                    var cb = this._request_ids[data.__id__];
-                    delete this._request_ids[data.__id__];
+                if (data.id !== undefined) {
+                    var cb = this._request_ids[data.id];
+                    delete this._request_ids[data.id];
                     cb(data);
                 }
             }
@@ -121,10 +117,10 @@ export class ReconnectingWebSocket extends EventEmitter {
     }
 
     async ping() {
-        var ts = Date.now();
-        if (await this.request({ call: "ping" }, 5000)) {
-            this.last_ping = Date.now() - ts;
-        }
+        var last_ping_ts = Date.now();
+        this.ws.send("ping");
+        await new Promise(resolve=>this.once("pong", resolve));
+        this.last_ping = Date.now() - last_ping_ts;
         return this.last_ping;
     }
 }

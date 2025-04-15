@@ -11,9 +11,9 @@ import pidusage from "pidusage";
 import checkDiskSpace from "check-disk-space";
 import readline from "node:readline";
 import child_process from "node:child_process";
-import {globals, Stream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, WebServer, ClientUpdater, ClientServer, Cache, utils, Core, Core$} from "./exports.js";
+import {globals, Stream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, WebServer, ClientUpdater, ClientServer, Cache, utils, CoreFork, LogCollector} from "./exports.js";
 
-/** @import {StreamTarget, Session, Session$, MainClient$, Log$, Target$, Upload$, Download$} from "./exports.js" */
+/** @import {StreamTarget, Session, Session$, MainClient$, Log$, Target$, Upload$, Download$, Stream$} from "./exports.js" */
 
 /** @typedef {"video"|"audio"|"subtitle"} MediaInfoStreamType */
 /** @typedef {{index:number, start:number, end:number, title:string}} MediaInfoChapter */
@@ -61,11 +61,13 @@ var format_ext_map = Object.fromEntries(utils.reverse_map(ext_format_map));
 /** @typedef {string} Domain */
 /** @typedef {Record<PropertyKey,{access:string, password:string, suspended:boolean}>} AccessControl */
 
-export class MainApp$ extends Core$ {
+export class MainApp$ {
     /** @type {Record<PropertyKey,Session$>} */
     sessions = {};
     /** @type {Record<PropertyKey,MainClient$>} */
     clients = {};
+    /** @type {Record<PropertyKey,Stream$>} */
+    streams = {};
     /** @type {Record<PropertyKey,Log$>} */
     logs = {};
     /** @type {Record<PropertyKey,Target$>} */
@@ -78,14 +80,14 @@ export class MainApp$ extends Core$ {
     processes = {};
     process_info = {};
     detected_crops = {};
-    properties = utils.json_copy(InternalSessionProps);
+    // properties = utils.json_copy(InternalSessionProps);
     sysinfo = {
         platform: process.platform
     };
 }
 
-/** @extends {Core<MainApp$>} */
-export class MainApp extends Core {
+/** @extends {CoreFork<MainApp$>} */
+export class MainApp extends CoreFork {
     /** @type {Record<PropertyKey,Download>} */
     downloads = {};
     /** @type {Record<PropertyKey,Session>} */
@@ -94,6 +96,8 @@ export class MainApp extends Core {
     targets = {};
     /** @type {Record<PropertyKey,Upload>} */
     uploads = {};
+    /** @type {Record<PropertyKey,Stream>} */
+    streams = {};
     /** @type {Cache} */
     #media_info_cache;
     #media_refs = {};
@@ -118,9 +122,6 @@ export class MainApp extends Core {
         ["access_control"],
     ];
 
-    /** @type {Stream[]} */
-    get streams() { return Object.values(this.sessions).map(s=>s.stream).filter(s=>s).flat(); }
-
     get sessions_ordered() { return utils.sort(Object.values(this.sessions), s=>s.index); }
     
     /** @type {Record<PropertyKey,MainClient>} */
@@ -128,12 +129,25 @@ export class MainApp extends Core {
 
     constructor() {
         super("main", new MainApp$());
+
+        this.$_sessions = {};
+        this.sessions_observer = new utils.Observer(this.$_sessions);
+        
+        this.$_streams = {};
+        this.streams_observer = new utils.Observer(this.$_streams);
+
         globals.app = this;
     }
 
     async init() {
         
-        this.logger.register_changes(this.$.logs);
+        var log_collector = new LogCollector(this.$.logs);
+        // this.logger.on("log", (log)=>{
+        //     log_collector.register(log);
+        // });
+        this.ipc.on("internal:log", (log)=>{
+            log_collector.register(log);
+        });
 
         this.curr_saves_dir = path.resolve(this.saves_dir, "curr");
         this.old_saves_dir = path.resolve(this.saves_dir, "old");
@@ -155,14 +169,14 @@ export class MainApp extends Core {
         this.#media_info_promise_pool = new utils.PromisePool(MAX_CONCURRENT_MEDIA_INFO_PROMISES);
         
         var update_processes = ()=>{
-            for (var m in this.modules) {
-                var p = this.ipc.get_process(m);
-                p = p ? {...p, status: "online"} : {status:"stopped"}
+            for (var name in this.modules) {
+                var p = this.ipc.get_process(name);
+                p = {name:name, status: p?"online":"stopped"}
                 Object.assign(p, {
-                    title: this.conf[`${m}.title`],
-                    description: this.conf[`${m}.description`],
+                    title: this.conf[`${name}.title`],
+                    description: this.conf[`${name}.description`],
                 });
-                this.$.processes[m] = p;
+                this.$.processes[name] = p;
             }
             this.check_volumes();
         };
@@ -170,21 +184,24 @@ export class MainApp extends Core {
 
         this.ipc.on("internal:processes", ()=>update_processes());
         this.ipc.respond("stream_targets", ()=>{
-            return this.streams.map(s=>Object.values(s.stream_targets)).flat().map(t=>t.$);
+            return Object.values(this.streams).map(s=>Object.values(s.stream_targets)).flat().map(t=>t.$);
         });
         this.ipc.on("main.save-sessions", (data)=>{
             this.save_sessions();
         });
         this.ipc.on("media-server.post-publish", async (id)=>{
             var session = await this.ipc.get("media-server", ["sessions", id]);
+            if (!session) return;
             this.$.nms_sessions[id] = session;
             if (session.rejected) return;
-            if (session.appname === "livestream") {
+            if (session.appname.match(/^(external|livestream)$/)) {
                 new ExternalSession(session);
             }
         });
         this.ipc.on("media-server.metadata-publish", async (id)=>{
-            this.$.nms_sessions[id] = await this.ipc.get("media-server", ["sessions", id]);
+            var session = await this.ipc.get("media-server", ["sessions", id]);
+            if (!session) return;
+            Object.assign(this.$.nms_sessions[id], session);
         });
         this.ipc.on("media-server.done-publish", (id)=>{
             var sessions = Object.values(this.sessions).filter(s=>s instanceof ExternalSession && s.nms_session && s.nms_session.id == id);
@@ -199,6 +216,16 @@ export class MainApp extends Core {
             this.logger.info("Config file updated.");
             update_conf();
         });
+
+        this.$.conf = {
+            // ["auth"]: this.auth,
+            ["debug"]: this.debug,
+            ["test_stream_low_settings"]: this.conf["main.test_stream_low_settings"],
+            ["rtmp_port"]: this.conf["media-server.rtmp_port"],
+            ["session_order_client"]: this.conf["main.session_order_client"],
+        };
+        this.$.hostname = this.hostname;
+
         
         var exp = express();
         this.web = new WebServer(exp, {
@@ -363,18 +390,17 @@ export class MainApp extends Core {
             };
         }
 
-        this.client_updater = new ClientUpdater(this.observer, (c)=>{
+        this.client_updater = new ClientUpdater(this.client_server, this.observer);
+        this.client_server.on("connected", (client)=>this.client_updater.add_client(client));
+        this.client_server.on("disconnected", (client)=>this.client_updater.remove_client(client));
+         /* (c)=>{
             if (c.path[0] === "sessions") {
                 var path = c.path.slice(2);
                 if (!path.length || this.SESSION_PUBLIC_PROPS.some(p=>utils.array_starts_with(path, p))) return true;
                 return false;
             }
             return true;
-        });
-        this.client_updater.on("update", ($)=>{
-            var payload = {$};
-            for (var c of Object.values(this.client_server.clients)) c.send(payload);
-        });
+        } */);
 
         update_change_log();
         var change_log_watcher = chokidar.watch(this.change_log_path, {awaitWriteFinish:true});
@@ -436,7 +462,7 @@ export class MainApp extends Core {
                 },
                 "config": (data, st)=>{
                     let format = data.opts.format;
-                    let filename = st.stream.session.evaluate_and_sanitize_filename(path.resolve(globals.app.files_dir, data.opts.filename));
+                    let filename = st.stream.session.evaluate_and_sanitize_filename(path.resolve(this.files_dir, data.opts.filename));
                     let ext = path.extname(filename);
                     if (!ext) {
                         ext = format_ext_map[format] || ".flv";
@@ -833,10 +859,11 @@ export class MainApp extends Core {
                         }
                     }
                 }
+                let t1 = Date.now();
                 if (!opts.silent) {
-                    let t1 = Date.now();
                     this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
                 }
+                mi.ts = t1;
                 if (mi.exists && opts.cache) this.#media_info_cache.set(cache_key, mi);
             }
             return mi;
@@ -919,26 +946,12 @@ export class MainApp extends Core {
         }
     }
 
-    parse_targets(targets) {
-        if (typeof targets === "string") {
-            var t = utils.try_catch(()=>JSON.parse(targets));
-            if (!t) t = targets.split(/,\s*/).map(s=>s.trim()).filter(t=>t);
-            targets = t;
-        }
-        if (Array.isArray(targets)) {
-            targets = Object.fromEntries([...targets].map(id=>[id, {}]));
-        }
-        for (var id in targets) {
-            targets[id].enabled = targets[id].enabled ?? true;
-        }
-        return targets;
-    }
-
     async destroy() {
+        this.client_updater.destroy();
         this.logger.info("Saving all sessions before exit...");
         await this.save_sessions();
         this.web.destroy();
-        this.client_updater.destroy();
+        super.destroy();
     }
 }
 

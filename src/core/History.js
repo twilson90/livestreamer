@@ -1,5 +1,5 @@
 import {DataNode, DataNode$, utils} from "./exports.js";
-/** @import {ObserverChangeEvent} from "./exports.js" */
+/** @import {utils} from "./exports.js" */
 
 const STACK_LIMIT = 256;
 
@@ -18,16 +18,36 @@ export class History$ extends DataNode$ {
 
 /** @extends {DataNode<HistoryEntry$>} */
 export class HistoryEntry extends DataNode {
-    /** @param {History} parent @param {ObserverChangeEvent[]} changes */
+    /** @param {History} parent @param {utils.ObserverChangeEvent[]} changes */
     constructor(name, changes) {
         super(new HistoryEntry$())
         var ts = Date.now();
         this.name = name;
         this.num_changes = changes.length;
-        this.changes = changes
-        this.forward_changes = utils.Observer.flatten_changes(changes)
-        this.backward_changes = utils.Observer.flatten_changes(changes, true);
+        this.changes = changes;
+        // this.forward_changes = utils.Observer.flatten_changes(changes)
+        // this.backward_changes = utils.Observer.flatten_changes(changes, true);
         this.ts = ts;
+    }
+    undo($) {
+        for (var i = this.changes.length-1; i >= 0; i--) {
+            var c = this.changes[i];
+            if (c.type == "set") {
+                utils.reflect.deleteProperty($, c.path);
+            } else {
+                utils.reflect.set($, c.path, c.old_value);
+            }
+        }
+    }
+    redo($) {
+        for (var i = 0; i < this.changes.length; i++) {
+            var c = this.changes[i];
+            if (c.type == "delete") {
+                utils.reflect.deleteProperty($, c.path);
+            } else {
+                utils.reflect.set($, c.path, c.new_value);
+            }
+        }
     }
 }
 
@@ -43,14 +63,16 @@ export class History extends DataNode {
     get position() { return this.$.position; }
     get size() { return this.end-this.start; }
 
-    /** @param {utils.Observer} target @param {function(ObserverChangeEvent):boolean} filter */
+    /** @param {utils.Observer} target @param {function(utils.ObserverChangeEvent):boolean} filter */
     constructor(target, filter) {
         super(new History$());
         this.clear();
         this.target = target;
         target.on("change", (c)=>{
             if (this.#applying) return;
+            if (c.subtree) return;
             if (filter && !filter(c)) return;
+            c = utils.json_copy(c);
             this.#curr_changes.push(c);
         });
     }
@@ -83,7 +105,7 @@ export class History extends DataNode {
             this.$.position++;
         }
         this.$.end = this.$.position;
-        var entry = new HistoryEntry(name, [...this.#curr_changes]);
+        var entry = new HistoryEntry(name, this.#curr_changes);
         this.#stack[this.$.position-1] = entry;
         this.$.stack[this.$.position-1] = entry.$;
         this.#curr_changes = [];
@@ -102,11 +124,13 @@ export class History extends DataNode {
         var reverse = new_pos<this.$.position;
         if (reverse) {
             for (var i = this.$.position-1; i >= new_pos; i--) {
-                utils.Observer.apply_changes(this.target.$, this.#stack[i].backward_changes)
+                this.#stack[i].undo(this.target.$);
+                // utils.Observer.apply_changes(this.target.$, this.#stack[i].backward_changes)
             }
         } else {
             for (var i = this.$.position; i < new_pos; i++) {
-                utils.Observer.apply_changes(this.target.$, this.#stack[i].forward_changes);
+                this.#stack[i].redo(this.target.$);
+                // utils.Observer.apply_changes(this.target.$, this.#stack[i].forward_changes);
             }
         }
         this.$.position = new_pos;

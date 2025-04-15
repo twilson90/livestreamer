@@ -1,10 +1,10 @@
 import { array_equals } from "./array_equals.js";
-import * as consts from "./constants.js";
+import { path_separator_regex } from "./path_separator_regex.js";
 
 /** @param {string} source @param {string} target */
 export function relative_path(source, target) {
-	var target_parts = String(target).split(consts.path_separator_regex);
-	var source_parts = String(source).split(consts.path_separator_regex);
+	var target_parts = String(target).split(path_separator_regex);
+	var source_parts = String(source).split(path_separator_regex);
 	if (array_equals(target_parts, source_parts)) {
 		return ".";
 	}

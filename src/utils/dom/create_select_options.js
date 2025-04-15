@@ -3,13 +3,14 @@ import { $ } from './render_html.js';
 /** @param {(OptionSettings|OptionGroupSettings)[]} options */
 export function create_select_options(options) {
     return options.map(o => {
-        /** @type {HTMLOptionElement} */
         if (o.group) {
-            var e = $(`<optgroup label="${o.group}"></optgroup>`)[0];
+            /** @type {HTMLOptGroupElement} */
+            let e = $(`<optgroup label="${o.group}"></optgroup>`)[0];
             e.append(...create_select_options(o.options));
             return e;
         }
-        var e = $(`<option></option>`)[0];
+        /** @type {HTMLOptionElement} */
+        let e = $(`<option></option>`)[0];
         e.innerHTML = o.text;
         if (o.disabled) e.disabled = true;
         if (o.selected) e.selected = true;

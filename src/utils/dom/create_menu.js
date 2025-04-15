@@ -15,7 +15,7 @@ export function create_menu(items, opts = {}) {
         let elem;
         var is_separator = (typeof item === "string" && item.slice(0, 3) === "---");
         if (is_separator) {
-            elem = $(`<div class="separator"><hr></div>`)[0];
+            elem = $(`<div class="separator"></div>`)[0];
         } else if (Array.isArray(item)) {
             elem = $(`<div class="list-menu"></div>`)[0];
             item.forEach(i => process_item(i, elem));

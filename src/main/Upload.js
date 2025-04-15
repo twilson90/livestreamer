@@ -39,7 +39,7 @@ export class Upload extends DataNodeID {
     static Status = {
         STARTED:1,
         FINISHED:2,
-        CANCELED:3,
+        CANCELLED:3,
         ERROR:4,
     }
 
@@ -113,7 +113,6 @@ export class Upload extends DataNodeID {
             p += chunk.length;
         });
         /* stream.on("error", err => {
-            debugger;
         }); */
         return new Promise((resolve,reject)=>{
             stream
@@ -158,8 +157,8 @@ export class Upload extends DataNodeID {
         return this.segment_tree.includes(0,mb) && this.segment_tree.includes(filesize - mb, filesize);
     } */
     async cancel() {
-        if (this.$.status === Upload.Status.CANCELED) return;
-        this.$.status = Upload.Status.CANCELED;
+        if (this.$.status === Upload.Status.CANCELLED) return;
+        this.$.status = Upload.Status.CANCELLED;
         for (var s of this.streams) {
             s.close();
         }

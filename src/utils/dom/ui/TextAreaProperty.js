@@ -1,26 +1,34 @@
 import { AutoSizeController } from "../AutoSizeController.js";
 import { $ } from "../render_html.js";
-import { Property } from "./Property.js";
-/** @import {PropertySettings} from "./Property.js" */
+import { InputProperty } from "./InputProperty.js";
+/** @import {InputPropertySettings} from "./exports.js" */
 
 /**
- * @typedef {PropertySettings & {
- *   'textarea.rows': UISetting<number>,
- *   'textarea.grow': UISetting<boolean>,
- *   'textarea.return_blur': UISetting<boolean>,
- *   'textarea.break_all': UISetting<boolean>,
- *   'textarea.max_length': UISetting<number>,
- *   'textarea.show_count': UISetting<boolean>
+ * @template ItemType
+ * @template ValueType
+ * @template {Property} ThisType
+ * @typedef {InputPropertySettings<ItemType,ValueType,ThisType> & {
+ *   'textarea.rows': UISetting<ThisType,number>,
+ *   'textarea.grow': UISetting<ThisType,boolean>,
+ *   'textarea.return_blur': UISetting<ThisType,boolean>,
+ *   'textarea.break_all': UISetting<ThisType,boolean>,
+ *   'textarea.max_length': UISetting<ThisType,number>,
+ *   'textarea.show_count': UISetting<ThisType,boolean>
  * }} TextAreaPropertySettings
  */
-/** @extends {Property<TextAreaPropertySettings>} */
 
-export class TextAreaProperty extends Property {
+/** 
+ * @template ItemType
+ * @template {string} ValueType
+ * @template {TextAreaPropertySettings<ItemType,ValueType,TextAreaProperty>} Settings
+ * @template {PropertyEvents} Events
+ * @extends {InputProperty<ItemType,ValueType,Settings,Events>} 
+ */
+export class TextAreaProperty extends InputProperty {
     /** @param {Settings} settings */
     constructor(settings) {
         var input_el = $(`<textarea style="resize:none"></textarea>`)[0];
         super(input_el, {
-            "default": "",
             "textarea.rows": 4,
             "textarea.grow": false,
             "textarea.return_blur": false,

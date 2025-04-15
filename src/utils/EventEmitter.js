@@ -1,6 +1,6 @@
 /** @template Events */
 export class EventEmitter {
-    /** @type {Record<PropertyKey, Set<(arg: Events[K]) => void>} @template {keyof Events} K */
+    /** @template {keyof Events} K @type {Record<PropertyKey, Set<(arg: Events[K]) => void>} */
     #events = {};
     
     addEventListener = this.on;
@@ -8,7 +8,7 @@ export class EventEmitter {
     removeEventListener = this.off;
     removeListener = this.off;
     
-    /** @param {keyof Events} event @param {(arg: Events[K]) => void} listener @template {keyof Events} K */
+    /** @template {keyof Events} K  @param {K} event @param {(this: this, arg: Events[K]) => void} listener */
     on(event, listener) {
         if (!this.#events[event]) this.#events[event] = new Set();
         this.#events[event].add(listener);

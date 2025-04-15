@@ -63,8 +63,8 @@ export class MPVWrapper extends events.EventEmitter {
         args = [
             ...args,
             "--idle",
-            "--msg-level=all=status",
             // "--msg-level=all=trace", // IMPORTANT: when this is set, the stdout pipe will produce multiple logs before the video data starts!
+            // "--msg-level=all=debug", // also some weirdness here...
             // "--msg-level=all=status,ipc=v"
             // "--msg-level=all=trace,ipc=v"
         ];
@@ -102,8 +102,8 @@ export class MPVWrapper extends events.EventEmitter {
 
         var std_info = is_piped ? this.#process.stderr : this.#process.stdout;
         std_info.on("data", (data)=>{
-            data;
-            // this.logger.debug(data.toString());
+            // data;
+            this.logger.debug(data.toString());
         });
 
         globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);

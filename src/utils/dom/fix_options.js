@@ -1,6 +1,24 @@
-/** @param {any[]} options */
+/**
+ * @template T
+ * @typedef {{
+ *   value:T,
+ *   text:string,
+ *   style:object,
+ *   hidden:boolean,
+ *   disabled:boolean
+ * }} OptionSettings
+ */
+
+/**
+ * @typedef {{
+ *   group:string
+ *   options:OptionSettings[]
+ * }} OptionGroupSettings
+ */
+
+/** @template T @returns {OptionSettings<T>[]} */
 export function fix_options(options) {
-    return options.map(o => {
+    return options.map((o)=>{
         if (Array.isArray(o)) {
             var i = 0, new_o = {};
             for (var i = 0; i < o.length; i++) {
@@ -14,7 +32,7 @@ export function fix_options(options) {
                 o.text = o.name;
                 delete o.name;
             }
-            return o;
+            return {...o};
         } else return { value: o, text: String(o) };
     });
 }

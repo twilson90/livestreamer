@@ -59,8 +59,9 @@ export class Cache extends utils.EventEmitter {
     }
 
     #delete(key) {
+        var d = this.#cache[key];
         delete this.#cache[key];
-        this.emit("delete", {key, data});
+        this.emit("delete", {key, data:d.data});
     }
 
     /** @param {string} key @param {CacheData} d */

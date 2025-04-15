@@ -21,9 +21,9 @@ export class StopStartStateMachine extends DataNodeID {
         super(id, $);
     }
 
-    async _handle_end() {
+    async _handle_end(source) {
         if (this.state === constants.State.STOPPING || this.state === constants.State.STOPPED) return;
-        this.logger.warn(`Ended unexpectedly, attempting restart soon...`);
+        this.logger.warn(`${source} ended unexpectedly, attempting restart soon...`);
         await this.stop("restart");
         this.$.restart = globals.app.conf["main.stream_restart_delay"];
         this.#restart_interval = setInterval(()=>{
@@ -35,6 +35,7 @@ export class StopStartStateMachine extends DataNodeID {
     }
 
     async start(...args) {
+        if (this.state === constants.State.STARTING) return;
         if (this.state === constants.State.STARTED) return;
         clearInterval(this.#restart_interval);
         this.$.start_time = Date.now();
@@ -48,6 +49,8 @@ export class StopStartStateMachine extends DataNodeID {
 
     async stop(reason) {
         clearInterval(this.#restart_interval);
+        this.$.restart = 0;
+        if (this.state === constants.State.STOPPING) return;
         if (this.state === constants.State.STOPPED) return;
         this.$.state = constants.State.STOPPING;
         this.$.stop_reason = reason || "unknown";

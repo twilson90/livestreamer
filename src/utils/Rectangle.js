@@ -136,12 +136,20 @@ export class Rectangle {
 		return {x:this.x, y:this.y, width:this.width, height:this.height};
 	} */
 
+	/** @param {Rectangle[]} rects */
 	static union(...rects) {
-		var x = Math.min(...rects.map(r=>r.x));
-		var y = Math.min(...rects.map(r=>r.y));
-		var right = Math.max(...rects.map(r=>r.x+r.width));
-		var bottom = Math.max(...rects.map(r=>r.y+r.height));
-		return new Rectangle(x, y, right - x, bottom - y);
+		var left = Number.POSITIVE_INFINITY;
+		var top = Number.POSITIVE_INFINITY;
+		var right = Number.NEGATIVE_INFINITY;
+		var bottom = Number.NEGATIVE_INFINITY;
+		for (var r of rects) {
+			if (r.is_empty) continue;
+			left = Math.min(left, r.left);
+			top = Math.min(top, r.top);
+			right = Math.max(right, r.right);
+			bottom = Math.max(bottom, r.bottom);
+		}
+		return new Rectangle({left, top, right, bottom});
 	}
 	
 	static intersection(...rects) {

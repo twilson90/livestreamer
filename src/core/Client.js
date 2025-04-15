@@ -90,7 +90,7 @@ export class Client extends DataNodeID {
             this.logger.warn("Bad request.");
             return;
         }
-        var request_id = request.__id__;
+        var request_id = request.id;
         var result, error;
         // var fn_path = Array.isArray(request.path) ? request.path : String(request.path).split(/[\.\/]+/);
         var run = ()=>{
@@ -110,7 +110,7 @@ export class Client extends DataNodeID {
             if (globals.app.debug) throw e;
         });
         result = {
-            __id__: request_id,
+            id: request_id,
             result,
         };
         if (error) {
@@ -120,7 +120,7 @@ export class Client extends DataNodeID {
         this.send(result);
     }
 
-    _onerror(error){
+    _onerror(error) {
         this.logger.error(error);
     }
 

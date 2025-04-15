@@ -31,7 +31,8 @@
 		margin: 0;
 		border: none;
 		background: none;
-		width: 100%;
+		flex:1;
+		// width: 100%;
 		text-align: left;
 		white-space: nowrap;
 		align-items: center;
@@ -82,13 +83,15 @@
 				.color {
 					height: 18px;
 					width: 18px;
-					border: 1px solid var(--ui-border);
 				}
 			}
 		}
 		&.separator {
 			padding:0;
 			margin: 4px 0;
+			border-top: var(--ui-border);
+			width:100%;
+			opacity: 0.5;
 		}
 		&.list-menu {
 			display: flex;

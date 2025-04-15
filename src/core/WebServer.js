@@ -33,7 +33,6 @@ export class WebServer {
                     threshold: 1024 // Size (in bytes) below which messages should not be compressed.
                 } */
             },
-            ...opts,
         }
 
         /** @type {https.ServerOptions<typeof http.IncomingMessage, typeof http.ServerResponse>} */
@@ -69,7 +68,9 @@ export class WebServer {
             var allow_origin = opts.allow_origin;
             // var allow_origin = [...new Set([`${url.protocol}//${url.hostname}:*`, `${url.protocol}//${core.hostname}:*`])].join(" ");
             // res.setHeader('Access-Control-Allow-Origin', allow_origin);
-            res.setHeader('Access-Control-Allow-Origin', globals.app.get_urls().domain);
+            var urls = globals.app.get_urls();
+            // res.setHeader('Access-Control-Allow-Origin', "*");
+            res.setHeader('Access-Control-Allow-Origin', [urls.http, urls.https].join(" "));
             res.setHeader('Access-Control-Allow-Credentials', true);
             res.setHeader('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', 'Origin, Accept, X-Requested-With, Content-Type, Authorization, Access-Control-Allow-Headers, Access-Control-Request-Method, Access-Control-Request-Headers');

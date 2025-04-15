@@ -4,8 +4,8 @@ import fs from "fs-extra";
 import {globals, Logger, utils} from "./exports.js";
 /** @import { Client } from './exports.js' */
 
-/** @template { Client } T  */
-export class ClientServer {
+/** @template { Client } T @extends {utils.EventEmitter<{connected:T,disconnected:T}>} */
+export class ClientServer extends utils.EventEmitter {
     /** @type {Record<PropertyKey,T>} */
     clients = {};
     #ready;
@@ -13,6 +13,7 @@ export class ClientServer {
 
     /** @param {WebSocket.Server} wss  @param {new () => T} ClientClass */
     constructor(id, wss, ClientClass, auth) {
+        super();
         this.id = id;
         this.clients_dir = path.join(globals.app.clients_dir, id);
         this.auth = auth;
@@ -47,6 +48,8 @@ export class ClientServer {
                 }
                 alive = false;
             }, (60 * 1000));
+            
+            this.emit("connected", client);
 
             ws.on('message',(data, isBinary)=>{
                 if (isBinary) return;
@@ -68,6 +71,7 @@ export class ClientServer {
             ws.on("close", (code)=>{
                 client._onclose(code);
                 clearInterval(heartbeat_interval);
+                this.emit("disconnected", client);
                 client.destroy();
             });
         });

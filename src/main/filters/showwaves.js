@@ -54,7 +54,7 @@ export default new Filter({
 		let wf1 = ctx.id("wf");
 		ctx.stack.push(
 			`[${ctx.aid}]asplit[${a1}][${a2}]`,
-			`[${a1}]aformat=channel_layouts=mono,dynaudnorm,showwaves=mode=${$.mode}:size=${w}x${h*h_scale}:colors=${$.color}@${$.alpha}:rate=${ctx.fps}:draw=full,scale=${ctx.width}:${ctx.height}:force_original_aspect_ratio=decrease[${wf1}]`,
+			`[${a1}]aformat=channel_layouts=mono,dynaudnorm,showwaves=mode=${$.mode}:size=${w}x${h}:colors=${$.color}@${$.alpha}:rate=${ctx.fps}:draw=full,scale=${ctx.width}:${ctx.height}:force_original_aspect_ratio=decrease[${wf1}]`,
 		);
 		// if ($.overlay) {
 		ctx.vid = ctx.overlay(ctx.vid, wf1);

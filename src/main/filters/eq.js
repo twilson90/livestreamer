@@ -1,7 +1,7 @@
 import { Filter } from "../Filter.js";
 export default new Filter({
 	name: "eq",
-	descriptive_name: "Equalizer",
+	descriptive_name: "Contrast / Brightness / Saturation / Gamma",
 	type: "video",
 	description: `Set brightness, contrast, saturation and approximate gamma adjustment.`,
 	props: {
@@ -9,8 +9,8 @@ export default new Filter({
 			__name__: "Contrast",
 			__description__: "Set the contrast expression. The value must be a float value in range -1000.0 to 1000.0.",
 			__default__: 1,
-			__min__: -1000,
-			__max__: 1000
+			__min__: -10,
+			__max__: 10
 		},
 		brightness: {
 			__name__: "Brightness",

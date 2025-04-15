@@ -1,8 +1,7 @@
 import { create_select_options } from './create_select_options.js';
 import { remove_children } from "./remove_children.js";
+/** @import {OptionSettings, OptionGroupSettings} from './fix_options.js' */
 
-/** @typedef {{value:string, text:string, style:Record<string,string>, class:string[], disabled:boolean, selected:boolean, hidden:boolean}} OptionSettings */
-/** @typedef {{group:string, options:OptionSettings[]}} OptionGroupSettings */
 /** @param {HTMLSelectElement} select @param {(OptionSettings|OptionGroupSettings)[]} options */
 export function set_select_options(select, options) {
     // if (!Array.isArray(settings)) Object.entries(settings);

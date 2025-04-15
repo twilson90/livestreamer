@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "fs-extra";
-import {globals, utils, constants, DataNodeID, DataNodeID$, Logger, ClientUpdater, Stream, AccessControl} from "./exports.js";
-/** @import {Log} from "./exports.js" */
+import {globals, utils, constants, DataNodeID, DataNodeID$, Logger, ClientUpdater, Stream, AccessControl, LogCollector} from "./exports.js";
+/** @import {Log, Stream$} from "./exports.js" */
 
 export class Session$ extends DataNodeID$ {
     name = "";
@@ -11,12 +11,17 @@ export class Session$ extends DataNodeID$ {
     /** @type {Record<PropertyKey,Log>} */
     logs = {};
     version = "1.0";
-    stream_settings = new StreamSettings$();
     access_control = new AccessControl();
+    stream_id;
+}
+
+export class SessionPrivate$ {
+    stream_settings = new StreamSettings$();
 }
 
 export class StreamSettings$ {
-    targets = {};
+    targets = [];
+    target_opts = {};
     title = "";
     frame_rate = 30;
     use_hardware = 0;
@@ -25,9 +30,10 @@ export class StreamSettings$ {
     h264_preset = "veryfast";
     video_bitrate = 5000;
     audio_bitrate = 160;
+    test = false;
 }
 
-/** @template {Session$} T @extends {DataNodeID<T>} */
+/** @template {Session$} T1 @template {SessionPrivate$} T2 @extends {DataNodeID<T1>} */
 export class Session extends DataNodeID {
     /** @type {Logger} */
     logger;
@@ -38,16 +44,24 @@ export class Session extends DataNodeID {
     get clients() { return Object.values(globals.app.clients).filter(c=>c.session === this); }
 
     /** @type {Stream} */
-    stream;
+    get stream() { return globals.app.streams[this.$.stream_id]; }
 
     reset() {
         Object.assign(this.$, this.defaults);
         this.emit("reset");
     }
 
-    /** @param {string} type @param {T} $ @param {any} defaults @param {string} id @param {string} name */
-    constructor(type, $, defaults, id, name) {
+    /** @param {string} id @param {string} name @param {string} type @param {T1} $ @param {any} props @param {T2} $_priv @param {any} props_priv */
+    constructor(id, name, type, $, props, $_priv, props_priv) {
         super(id, $);
+
+        this.props = props;
+        this.defaults = utils.get_defaults(props);
+
+        this.$_priv = $_priv;
+        this.props_priv = props_priv;
+        this.defaults_priv = utils.get_defaults(props_priv);
+        this.observer_priv = new utils.Observer($_priv);
 
         this.defaults = {
             ...utils.json_copy(defaults),
@@ -75,16 +89,19 @@ export class Session extends DataNodeID {
             globals.app.logger.log(log);
         });
 
-        this.logger.register_changes(this.$.logs, (log)=>{
-            return {...log, prefix: log.prefix.slice(2)};
+        
+        var log_collector = new LogCollector(this.$.logs);
+        this.logger.on("log", (log)=>{
+            log_collector.register({...log, prefix: log.prefix.slice(2)})
         });
 
         this.reset();
-        this.client_updater = new ClientUpdater(this.observer);
+        this.client_updater = new ClientUpdater(this.client_server, this.observer);
+        /* this.client_updater = new ClientUpdater(this.observer);
         this.client_updater.on("update", ($)=>{
             var payload = {$:{sessions:{[this.id]:$}}};
             for (var c of this.clients) c.send(payload);
-        });
+        }); */
 
         globals.app.sessions[this.id] = this;
         globals.app.$.sessions[this.id] = this.$;
@@ -120,8 +137,13 @@ export class Session extends DataNodeID {
 
     async start_stream(settings) {
         if (this.stream && this.stream.state !== constants.State.STOPPED) return;
-        var stream = new Stream(this);
-        settings = utils.merge_non_null(utils.json_copy(this.defaults.stream_settings), this.$.stream_settings, settings);
+        var stream = new Stream();
+        stream.attach(this);
+        settings = utils.json_copy({
+            ...utils.json_copy(this.defaults.stream_settings),
+            ...utils.remove_nulls(this.$.stream_settings),
+            ...utils.remove_nulls(settings || {}),
+        });
         if (await stream.start(settings)) {
             globals.app.ipc.emit("main.session.stream-started", this.id);
         }
@@ -136,7 +158,7 @@ export class Session extends DataNodeID {
     }
 
     async destroy() {
-        this.client_updater.destroy();
+        // this.client_updater.destroy();
         
         await this.stop_stream();
 
@@ -160,21 +182,6 @@ export class Session extends DataNodeID {
     }
 
     tick() { }
-
-    static get_defaults(def) {
-        var _process = (def)=>{
-            if (def.__default__ !== undefined) {
-                return utils.json_copy(def.__default__);
-            }
-            var defaults = {};
-            for (var k in def) {
-                if (k.startsWith("__")) continue;
-                defaults[k] = _process(def[k]);
-            }
-            if (Object.keys(defaults).length) return defaults;
-        }
-        return _process(def);
-    }
 }
 
 export default Session;

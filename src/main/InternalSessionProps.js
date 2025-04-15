@@ -1,4 +1,6 @@
-import {SessionProps} from "./exports.js";
+import {SessionProps} from "./SessionProps.js";
+
+export {SessionProps};
 
 class FiltersProperty {
     __default__ = [];
@@ -15,7 +17,7 @@ class FiltersProperty {
     }
 }
 
-export const PerFileProps = {
+export const MediaProps = {
     // __default__: {},
     aspect_ratio: {
         __default__: -1,
@@ -95,10 +97,10 @@ export const PlaylistItemProps = {
         __default__: "0",
     },
     upload: {
-        __default__: undefined,
+        __default__: null,
     },
     props: {
-        ...PerFileProps,
+        ...MediaProps,
         clip_start: {
             __default__: null,
         },
@@ -125,15 +127,15 @@ export const PlaylistItemProps = {
             __options__: [["auto", "Auto"], ["none", "None"], ["default", "Default"], ...background_mode_options],
         },
         background_color: {
-            __default__: "#000000",
-        },
-        background_file: {
             __default__: null,
         },
-        background_file_start: {
+        video_file: {
             __default__: null,
         },
-        background_file_end: {
+        video_file_start: {
+            __default__: null,
+        },
+        video_file_end: {
             __default__: null,
         },
         subtitle_file: {
@@ -194,8 +196,8 @@ export const PlaylistItemProps = {
             __default__: 10,
         },
         function: {
-            __default__: null,
-            __options__:[[null, "Do Nothing"], ["stop", "Stop Streaming"], ["handover", "Handover"]],
+            __default__: "",
+            __options__:[["", "Do Nothing"], ["stop", "Stop Streaming"], ["handover", "Handover"]],
         },
         function_handover_session: {
             __default__: null,
@@ -265,7 +267,7 @@ export const InternalSessionProps = {
         __default__: 0,
     },
     player_default_override: {
-        ...PerFileProps
+        ...MediaProps
     },
     playlist: {
         __default__: {},

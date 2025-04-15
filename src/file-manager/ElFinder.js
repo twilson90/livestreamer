@@ -302,14 +302,17 @@ export class ElFinder {
 	 * @param {*} opts.method Required 
 	 * @param {*} opts.args
 	 */
-	editor(opts) {
+	async editor(opts) {
 		if (!opts.name) throw new errors.ErrCmdParams();
 		if (!opts.method) throw new errors.ErrCmdParams();
         var names = opts.name;
 		if (!Array.isArray(names)) names = [names];
 		var res = {};
 		for (var c of names) {
-			var clazz = utils.try_catch(path.resolve(dirname, "editors"), c)
+			var clazz;
+			try {
+				clazz = (await import(`./editors/${c}.js`)).default;
+			} catch (e) {}
 			if (clazz) {
 				var editor = new clazz(this, opts.args);
 				res[c] = editor.enabled();

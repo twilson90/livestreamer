@@ -10,6 +10,7 @@ export function remove_nulls(obj) {
 			if (obj[k] == null) delete obj[k];
 		}
 	}
+	return obj;
 }
 
 export default remove_nulls;

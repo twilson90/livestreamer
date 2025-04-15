@@ -17,23 +17,6 @@ export class MainClient extends Client {
         globals.app.$.clients[this.id] = this.$;
         var session_id = this.url.searchParams.get("session_id");
         if (session_id) this.attach_to(session_id);
-        var $ = utils.json_copy(globals.app.$, (k, v)=>{
-            if (v === globals.app.$.sessions) {
-                return Object.fromEntries(Object.entries(v).map(([k,s])=>{
-                    return [k, utils.deep_filter(s, globals.app.SESSION_PUBLIC_PROPS)];
-                }));
-            }
-            return v;
-        });
-        $.conf = {
-            // ["auth"]: globals.app.auth,
-            ["debug"]: globals.app.debug,
-            ["test_stream_low_settings"]: globals.app.conf["main.test_stream_low_settings"],
-            ["rtmp_port"]: globals.app.conf["media-server.rtmp_port"],
-            ["session_order_client"]: globals.app.conf["main.session_order_client"],
-        };
-        $.hostname = globals.app.hostname;
-        this.send({ $ });
     }
 
     new_session() {
@@ -50,14 +33,14 @@ export class MainClient extends Client {
 
     attach_to(session_id) {
         if (this.$.session_id == session_id) return;
-        // if (this.session) this.session.emit("detach", this);
         if (!globals.app.sessions[session_id]) session_id = null;
         this.$.session_id = session_id;
-        var session = this.session;
+        // if (this.session) this.session.emit("detach", this);
+        /* var session = this.session;
         if (session) {
             var $ = {sessions:{[session_id]:session.$}, session_id};
             this.send({$});
-        }
+        } */
         // if (this.session) this.session.emit("attach", this);
     }
 

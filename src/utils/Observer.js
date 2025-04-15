@@ -218,41 +218,37 @@ export class Observer extends EventEmitter {
 
     // root must be object, not array.
     static apply_changes(target, changes) {
-        var apply = (target, changes) =>{
-            for (var k in changes)  {
-                if (k === Observer.RESET_KEY) continue;
-                if (typeof changes[k] === 'object' && changes[k] !== null) {
-                    if (Observer.RESET_KEY in changes[k]) {
-                        
-                        var old_constructor = target[k] ? target[k].constructor.name : undefined;
-                        var new_constructor = "Object";
-                        try { new_constructor = changes[k][Observer.RESET_KEY]; } catch { }
-                        
-                        if (target[k] && !globalThis[old_constructor]) {
-                            Object.assign(clear(target[k]), new (target[k].constructor)());
-                        } else if (target[k] && old_constructor === "Object" && old_constructor === new_constructor) {
-                            clear(target[k]);
-                        } else {
-                            target[k] = new (globalThis[new_constructor])(); // so weird
-                        }
-                    }
-                    if (typeof target[k] !== "object" || target[k] === null) {
-                        target[k] = (Array.isArray(changes[k])) ? [] : {};
-                    }
-                    apply(target[k], changes[k]);
-                    if (Array.isArray(changes[k])) target[k].length = changes[k].length;
-                    
-                } else if (changes[k] == null) {
-                    delete target[k];
-                } else {
-                    target[k] = changes[k];
-                }
-            }
-        };
         if (is_iterable(changes)) {
             changes = Observer.flatten_changes(changes);
         }
-        apply(target, changes);
+        apply_changes(target, changes);
     }
 }
+
+function apply_changes(target, changes) {
+    for (var k in changes)  {
+        if (k === Observer.RESET_KEY) continue;
+        if (typeof changes[k] === 'object' && changes[k] !== null) {
+            let t = target[k];
+            if (Observer.RESET_KEY in changes[k]) {
+                var old_constructor = t ? t.constructor : undefined;
+                if (old_constructor) {
+                    t = new (old_constructor)();
+                } else {
+                    var new_constructor_name = changes[k][Observer.RESET_KEY] || "Object"
+                    t = new (globalThis[new_constructor_name])();
+                }
+            } else if (typeof t !== "object" || t === null) {
+                t = (Array.isArray(changes[k])) ? [] : {};
+            }
+            apply_changes(t, changes[k]);
+            if (Array.isArray(changes[k])) t.length = changes[k].length;
+            if (t !== target[k]) target[k] = t;
+        } else if (changes[k] == null) {
+            delete target[k];
+        } else {
+            target[k] = changes[k];
+        }
+    }
+};
 export default Observer;

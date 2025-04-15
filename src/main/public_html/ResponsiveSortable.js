@@ -158,16 +158,16 @@ export class ResponsiveSortable extends Sortable {
         this.el.addEventListener("click", this._on_click = (e)=>{
             this.set_active_sortable_in_group();
         });
+        this._dragging_resolve = ()=>{};
         this.el.addEventListener("start", this._on_start = ()=>{
             this.dragging = true;
-            this.last_drag = new Promise((resolve)=>{
-                this.last_drag_resolve = resolve;
-            });
+            this.dragging_promise = new Promise((resolve)=>this._dragging_resolve = resolve);
         })
-        this.el.addEventListener("end", this._end = ()=> {
+        this.el.addEventListener("end", this._on_end = ()=> {
             this.dragging = false;
-            if (this.last_drag_resolve) this.last_drag_resolve();
+            this._dragging_resolve();
         });
+
         this.el.addEventListener("unchoose", this._on_unchoose = (e)=>{
             if (!this.options.multiDrag) return;
             if (!e.item.parentElement) return;
@@ -176,6 +176,7 @@ export class ResponsiveSortable extends Sortable {
             for (var s of this.get_sortables_in_group()) {
                 if (s !== this) s.deselect_all();
             }
+            /** @type {ResponsiveSortable} */
             var dest = Sortable.get(e.to);
             dest.set_active_sortable_in_group();
             if (dest != this) {
@@ -340,7 +341,8 @@ export class ResponsiveSortable extends Sortable {
         this.el.removeEventListener("end", this._on_end);
         this.el.removeEventListener("unchoose", this._on_unchoose);
         this.el.removeEventListener("contextmenu", this._on_contextmenu);
-        this.el.removeEventListener("pointerdown", this._on_pointer_down)
+        this.el.removeEventListener("pointerdown", this._on_pointer_down);
+        this._dragging_resolve();
         super.destroy();
     }
 }

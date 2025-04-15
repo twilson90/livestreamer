@@ -1,21 +1,21 @@
 import fs from "fs-extra";
 import path from "node:path";
 import {globals, utils, constants, FFMPEGWrapper, Logger, SessionTypes, StreamTarget, MPVSessionWrapper, StopStartStateMachine, StopStartStateMachine$} from "./exports.js";
-/** @import { Session, InternalSession, ExternalSession } from './exports.js' */
+/** @import { Session, InternalSession, ExternalSession, Session$ } from './exports.js' */
 
 const WARNING_MPV_LOG_SIZE = 1 * 1024 * 1024 * 1024;
 const MAX_MPV_LOG_SIZE = 8 * 1024 * 1024 * 1024;
 
 export class Stream$ extends StopStartStateMachine$ {
     mpv = {};
-    targets = {};
+    targets = [];
+    target_opts = {};
     metrics = {};
     stream_targets = {};
     bitrate = 0;
     scheduled = false;
     is_encode = false;
     internal_path = "";
-    output_url = "";
     /** @type {string | undefined} */
     title;
 }
@@ -23,17 +23,24 @@ export class Stream$ extends StopStartStateMachine$ {
 /** @extends {StopStartStateMachine<Stream$>} */
 export class Stream extends StopStartStateMachine {
     /** @return {any[]} */
-    get is_gui() { return !!this.$.targets["gui"]; }
-    get is_single_target() { return Object.keys(this.$.targets).length == 1; }
+    get is_gui() { return !!this.$.targets.includes("gui"); }
+    get is_single_target() { return this.$.targets.length == 1; }
     get is_only_gui() { return this.is_single_target && this.is_gui; }
     get is_encode() { return !this.is_only_gui; }
-    get is_realtime() { return !(this.is_single_target && this.$.targets["file"] && !this.$.targets["file"]["re"]); }
+    get is_realtime() { return !(this.is_single_target && this.$.targets.includes("file") && !this.get_target_opts("file")["re"]) || this.is_test; }
     get is_test() { return !!this.$.test; }
     get title() { return this.$.title; }
     get is_running() { return this.$.state === constants.State.STARTED; }
     get fps() { return isNaN(+this.$.frame_rate) ? 30 : +this.$.frame_rate; }
 
-    /** @type {Session} */
+    get_target_opts(target_id) {
+        return {
+            ...(globals.app.targets[target_id]||{}).opts,
+            ...this.$.target_opts[target_id]
+        }
+    }
+
+    /** @type {Session<Session$>} */
     session;
     /** @type {MPVSessionWrapper} */
     mpv;
@@ -48,20 +55,15 @@ export class Stream extends StopStartStateMachine {
     /** @param {Session} session */
     constructor(session) {
         super(null, new Stream$());
+        globals.app.streams[this.id] = this;
+        globals.app.$.streams[this.id] = this.$;
         this.logger = new Logger("stream");
         this.logger.on("log", (log)=>(this.session||session).logger.log(log))
-        this.attach(session);
     }
 
     async _start(settings) {
         this.#ticks = 0;
         if (settings) {
-            settings = utils.json_copy(settings);
-            settings.targets = Object.fromEntries(Object.entries(settings.targets).filter(([id,opts])=>opts.enabled).map(([id,opts])=>{
-                var target = globals.app.targets[id];
-                var defaults = target ? target.$.opts : {};
-                return [id, { ...defaults, ...opts }];
-            }));
             Object.assign(this.$, settings);
         }
 
@@ -76,7 +78,7 @@ export class Stream extends StopStartStateMachine {
                 this.$.h264_preset = "veryfast";
                 this.$.resolution = "854x480";
             }
-            this.$.targets = {};
+            this.$.targets = [];
         }
 
         this.$.title = this.$.title || this.session.name; // this.session.$.default_stream_title || 
@@ -193,15 +195,25 @@ export class Stream extends StopStartStateMachine {
         if (this.is_encode) {
             let internal_path = `/internal/${this.session.id}`;
             this.$.internal_path = internal_path;
-            let output_url = new URL(`rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${internal_path}`);
-            if (this.$.test) output_url.searchParams.append("test", 1);
-            this.output_url = output_url.toString();
-
+            this.$.output_url = `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${internal_path}`;
+            let ffmpeg_output_url = this.$.output_url;
+            if (this.is_test) {
+                let url = new URL(ffmpeg_output_url);
+                url.searchParams.append("test", 1);
+                ffmpeg_output_url = url.toString();
+            }
+            this.$.rtmp_output_url = `rtmp://${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}${internal_path}`;
+            this.$.ws_output_url = `ws://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${internal_path}.flv`;
+            this.$.wss_output_url = `wss://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${internal_path}.flv`;
+            this.$.http_output_url = `http://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${internal_path}.flv`;
+            this.$.https_output_url = `https://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${internal_path}.flv`;
+            
             ffmpeg_args.push(
                 "-f", "flv",
                 "-map", "0:v",
                 "-map", "0:a",
-                this.output_url
+                `-y`,
+                ffmpeg_output_url
             );
 
             var key = this.session.type === SessionTypes.EXTERNAL ? `upstream` : `trans`;
@@ -217,7 +229,7 @@ export class Stream extends StopStartStateMachine {
                 this.register_metric(`${key}:bitrate`, this.time_running, info.bitrate);
             })
             this.ffmpeg.on("end", ()=>{
-                this._handle_end();
+                this._handle_end("ffmpeg");
             });
             this.ffmpeg.start(ffmpeg_args);
         }
@@ -398,7 +410,7 @@ export class Stream extends StopStartStateMachine {
             }
 
             if (this.is_only_gui) {
-                let opts = this.$.targets["gui"];
+                let opts = this.get_target_opts("gui");
                 mpv_args.push(
                     `--osc=${opts.osc?"yes":"no"}`,
                     // `--script-opts-append=livestreamer-capture-mode=1`,
@@ -443,12 +455,12 @@ export class Stream extends StopStartStateMachine {
                     this.register_metric(`mpv:speed`, this.time_running, speed);
                 });
             }
-        }
 
-        this.mpv.mpv.on("quit", async ()=>{
-            if (this.is_only_gui) await this.stop("quit");
-            else this._handle_end();
-        });
+            this.mpv.mpv.on("quit", async ()=>{
+                if (this.is_only_gui) await this.stop("quit");
+                else this._handle_end("mpv");
+            });
+        }
         
         this.#tick_interval = setInterval(()=>this.tick(), 1000);
 
@@ -480,7 +492,7 @@ export class Stream extends StopStartStateMachine {
         let old_targets = Object.values(this.stream_targets);
         let curr_targets = new Set();
 
-        for (let target_id in this.$.targets) {
+        for (let target_id of this.$.targets) {
             let target = globals.app.targets[target_id];
             if (!target) continue;
             if (!this.stream_targets[target_id]) {
@@ -533,7 +545,7 @@ export class Stream extends StopStartStateMachine {
         d.data[d.max++] = [x, y];
     }
     
-    /** @param {Session} session */
+    /** @param {Session<Session$>} session */
     attach(session) {
         session = (typeof session === "string") ? globals.app.sessions[session] : session;
         let last_session = this.session;
@@ -548,15 +560,14 @@ export class Stream extends StopStartStateMachine {
 
         if (last_session) {
             // do not set this.session to null, need somewhere to write logs to. It should eventually get garbaged.
-            last_session.$.stream = utils.json_copy(this.$);
-            last_session.stream = null;
+            // last_session.$.stream = utils.json_copy(this.$);
+            last_session.$.stream_id = null;
         }
 
         if (session) {
             this.$.session_id = session.id;
             this.session = session;
-            session.stream = this;
-            session.$.stream = this.$;
+            session.$.stream_id = this.id;
         }
 
         process.nextTick(()=>{
@@ -581,6 +592,12 @@ export class Stream extends StopStartStateMachine {
         if (!ids || !ids.length) ids = Object.keys(this.stream_targets);
         var stream_targets = ids.map(id=>this.stream_targets[id]).filter(st=>st);
         return Promise.all(stream_targets.map(st=>st.restart()));
+    }
+
+    destroy() {
+        delete globals.app.streams[this.id];
+        delete globals.app.$.streams[this.id];
+        return super.destroy();
     }
 }
 

@@ -30,6 +30,7 @@ export class FilterContext {
 	/** @param {FilterInput[]} inputs */
 	apply(inputs) {
 		for (var i of inputs) {
+            if (!i) continue;
             if (!i.active) continue;
             if (!i.name) continue;
             /** @type {Filter} */

@@ -93,11 +93,20 @@
 [x] numeric textbox focused still jittering with server feedback when holding down up or down
 [x] intertitles scaling with video size, should be fixed.
 [ ] detected_crops_cache is bollocks, screenshots not being loaded on start.
-[ ] seekbar flickers on seek again...
-[ ] rejigger playlist modify menu prompt, most changes are now applied immediately.
-[ ] playlist modify menu should really ho th
+[x] seekbar flickers on seek again...
+[x] rejigger playlist modify menu prompt, most changes are now applied immediately.
 [ ] random error when editing filter to do with playlist history
-[ ] if any configuration modals open FREEZE ALL SESSION UPDATES, get around filter edit menu rubbish, go back to changing list instead of updating playlist direct.
+[x] if any configuration modals open FREEZE ALL SESSION UPDATES, get around filter edit menu rubbish, go back to changing list instead of updating playlist direct.
+[x] property container should inherit property, filter config menu should not have to state the filter props individually (line 6515)
 
-[ ] property container should inherit property, filter config menu should not have to state the filter props individually (line 6515)
+[ ] I noticed permessage deflate on nms video websockets... check it out
+[~] wss not working delivery of flv video.
+[~] gaussian blur fuck up
+[ ] yt-dlp make tmp files go to appdata tmp folder
+[ ] figure out cleanup of playlist items removing redudant properties.
 [ ] deep_merge reset can work if split into 2 operations, delete with set null and then deep merge with new value
+[x] fix observers so it creates an additional entry for clears, instead of the weird ass 'RESET_f123sd1' shit
+[ ] streams should be subscribable like sessions. maybe. figure out better method for subscribing.
+[ ] playlist undo weirdness when removed filters while playing. applies old filters without changing playlist item props. huh? Maybe some references are surviving?
+[ ] rtmp streams wait for buffer and then time-pos updates to 4 seconds in, gets to end and then fixes. weird. mpv issue!
+[ ] pop out player no buttons.

@@ -40,9 +40,9 @@ export class StreamTarget extends StopStartStateMachine {
         stream.$.stream_targets[target.id] = this.$;
         
         var data = utils.json_copy({
-            opts: { ...stream.$.targets[target.id] },
             stream_id: stream.id,
             target_id: target.id,
+            opts: stream.get_target_opts(target.id),
         });
 
         Object.assign(data, target.config(data, this));
@@ -75,7 +75,7 @@ export class StreamTarget extends StopStartStateMachine {
 
     async _start() {
         if (!this.stream.is_only_gui) {
-            let input = this.stream.output_url;
+            let input = this.stream.$.output_url;
             let {opts, output_url, output_format} = this.$;
 
             if (this.target.id === "gui") {
@@ -93,7 +93,7 @@ export class StreamTarget extends StopStartStateMachine {
                 ];
                 this.#mpv = child_process.spawn(globals.app.mpv_path, mpv_args);
                 this.#mpv.on("close",()=>{
-                    this._handle_end();
+                    this._handle_end("mpv");
                 });
             } else {
                 let is_file_output = utils.try_catch(()=>new URL(output_url)).protocol === "file:";
@@ -135,7 +135,7 @@ export class StreamTarget extends StopStartStateMachine {
                     this.logger.log(log);
                 }); */
                 this.#ffmpeg.on("end",(e)=>{
-                    this._handle_end();
+                    this._handle_end("ffmpeg");
                 });
                 this.#ffmpeg.start(ffmpeg_args);
             }

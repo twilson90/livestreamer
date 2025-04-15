@@ -1,0 +1,1 @@
+export const path_separator_regex = /[\\\/]+/g;
