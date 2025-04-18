@@ -73,7 +73,7 @@ export class StreamTarget extends StopStartStateMachine {
         this.$.title = this.stream.$.title;
     }
 
-    async _start() {
+    async onstart() {
         if (!this.stream.is_only_gui) {
             let input = this.stream.$.output_url;
             let {opts, output_url, output_format} = this.$;
@@ -141,18 +141,21 @@ export class StreamTarget extends StopStartStateMachine {
             }
         }
         globals.app.ipc.emit("main.stream-target.started", this.id);
-        return true;
+        
+        return super.onstart();
     }
 
-    async _stop(reason) {
+    async onstop() {
         if (this.#mpv) await utils.tree_kill(this.#mpv.pid);
         if (this.#ffmpeg) await this.#ffmpeg.stop();
-        globals.app.ipc.emit("main.stream-target.stopped", {id:this.id, reason});
-        return true;
+        globals.app.ipc.emit("main.stream-target.stopped", {id:this.id, reason:this.$.stop_reason});
+        
+        return super.onstop();
     }
 
-    _destroy() {
+    async ondestroy() {
         delete this.stream.stream_targets[this.target.id];
+        return super.ondestroy();
     }
 }
 

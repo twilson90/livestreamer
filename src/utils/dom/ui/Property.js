@@ -15,7 +15,7 @@ import * as reflect from "../../reflect.js";
 /**
  * @template ItemType
  * @template ValueType
- * @template {Property<ItemType,ValueType>} ThisType
+ * @template {Property<ItemType,ValueType>} [ThisType=Property<ItemType,ValueType>]
  * @typedef {UISettings<ThisType> & {
 *   "name": UISetting<ThisType,string>,
 *   "items": UISetting<ThisType,ItemType[]>,
@@ -25,15 +25,15 @@ import * as reflect from "../../reflect.js";
 * }} PropertySettings
 */
 
-/** @typedef {UIEvents & {change:PropertyChangeEvent}} PropertyEvents */
+/** @typedef {UIEvents & {change:[PropertyChangeEvent]}} PropertyEvents */
 
 var undefined_value = Object.freeze([undefined]);
 
 /** 
  * @template ItemType 
  * @template ValueType 
- * @template {PropertySettings<ItemType,ValueType,Property>} Settings
- * @template {PropertyEvents} Events
+ * @template {PropertySettings<ItemType,ValueType,Property>} [Settings=PropertySettings<ItemType,ValueType,Property>]
+ * @template {PropertyEvents} [Events=PropertyEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class Property extends UI {
@@ -45,6 +45,9 @@ export class Property extends UI {
     #modifiers = [];
     #last_datas_hash;
     #raw_values = [undefined];
+    /** @type {((value:any)=>boolean|string)[]} */
+    #validators = [];
+    #last_values_hash;
 
     /** @returns {ValueType[]} */
     get raw_values() { return this.#raw_values; }
@@ -71,7 +74,7 @@ export class Property extends UI {
     get name_split() { return this.#name_split; }
     get is_indeterminate() { return !all_equal(this.values.map(v=>JSON.stringify(v))); }
     get has_defaults() { return this.defaults.some(d=>d != undefined); }
-    get has_datas() { return !!(this.name || ("data" in this.settings)); }
+    get has_datas() { return "data" in this.settings || !!(this.name && !this.__context.datas_error); }
     get is_default() { return JSON.stringify(this.values) === JSON.stringify(this.defaults); }
     get is_changed() {
         var datas = this.datas;
@@ -80,6 +83,11 @@ export class Property extends UI {
             return JSON.stringify(v??null) !== JSON.stringify(datas[i]??defaults[i]??null)
         });
     }
+    
+    /** @type {boolean|string} */
+    get valid() { return this.__context.valid; }
+    get is_valid() { return this.is_disabled || this.is_indeterminate || this.valid === true; }
+    get validators() { return this.#validators; }
 
     set value(v) { this.set_value(v); }
     get value() { return this.values[0]; }
@@ -101,13 +109,14 @@ export class Property extends UI {
         super(null, {
             ...settings
         });
+        
         var name = this.get_setting("name");
         if (typeof name === "number") name = String(name);
         this.#name = name || "";
         this.#name_id = `${this.#name||"undefined"}-${this.id}`;
         this.#name_split = this.#name ? this.#name.split("/") : [];
-        this.on("update", this.__data_update);
         this.on("update", ()=>{
+            this.__data_update();
             if ("value" in this.settings) this.set_value(this.get_setting("value"));
         });
 
@@ -141,7 +150,7 @@ export class Property extends UI {
         var changed = this.#set_values(values);
         var trigger = (options.trigger === "change") ? changed : !!options.trigger;
 
-        if (changed || trigger) {
+        if (changed || trigger) { // || trigger is it necessary?
             var ev = new PropertyChangeEvent(this, trigger);
             this.emit("change", ev, {bubbles:true});
         }
@@ -173,21 +182,16 @@ export class Property extends UI {
         var new_values_hash = JSON.stringify(new_raw_values);
         this.#raw_values = new_raw_values;
 
-        if (this._last_values_hash === new_values_hash) return false;
-        this._last_values_hash = new_values_hash;
+        if (this.#last_values_hash === new_values_hash) return false;
+        this.#last_values_hash = new_values_hash;
 
         return true;
     }
 
     __data_update() {
         if (!this.has_datas) return;
-
-        var datas = this.datas;
         
-        // var raw_values = this.raw_values;
-        // if (datas.every(d=>d == undefined)) return;
-        // if (datas.length === raw_values.length && datas.every((d,i)=>d === raw_values[i])) return;
-
+        var datas = this.datas;
         let datas_hash = JSON.stringify(datas);
         let new_values;
         if (this.#last_datas_hash !== datas_hash)  {
@@ -212,12 +216,33 @@ export class Property extends UI {
 
         var items = this.__context.items = this.get_setting("items") || (pp && pp.items) || [undefined];
 
+        this.__context.datas_error = false;
         var datas = this.__context.datas =
             ("data" in this.settings && items.map(item=>this.get_setting("data", item, path))) ||
-            (pp && pp.datas.map(data=>try_catch(()=>reflect.get(data, this.name_split)))) ||
-            items.map(item=>try_catch(()=>reflect.get(item, path)));
+            // (pp && pp.datas.map(data=>try_catch(()=>reflect.get(data, this.name_split)))) ||
+            items.map(item=>{
+                try {
+                    var data = reflect.get(item, path);
+                    return data;
+                } catch {
+                    this.__context.datas_error = true;
+                    return undefined;
+                }
+            });
         
         var defaults = this.__context.defaults = ("default" in this.settings && items.map((item,i)=>this.get_setting("default", item))) || items.map(item=>undefined);
+        
+        var values = this.values;
+        this.__context.valid = true;
+        for (var value of values) {
+            for (var validator of this.validators) {
+                var valid = validator.apply(this, [value]);
+                if (valid !== true) {
+                    this.__context.valid = valid;
+                    break;
+                }
+            }
+        }
         
         super.__update_context();
     }

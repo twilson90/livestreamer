@@ -9,8 +9,8 @@ import { walk } from "../../walk.js";
 /** 
  * @template ItemType 
  * @template ValueType
- * @template {PropertySettings<ItemType,ValueType,PropertyGroup>} Settings
- * @template {PropertyEvents} Events
+ * @template {PropertySettings<ItemType,ValueType,PropertyGroup>} [Settings=PropertySettings<ItemType,ValueType,PropertyGroup>]
+ * @template {PropertyEvents} [Events=PropertyEvents]
  * @extends {Property<ItemType,ValueType,Settings,Events>} 
  */
 export class PropertyGroup extends Property {

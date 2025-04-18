@@ -82,9 +82,8 @@ export class Target extends DataNodeID {
         var data = {...this.$};
         await fs.writeFile(path.resolve(globals.app.targets_dir, this.id), JSON.stringify(data, null, 4));
     }
-    
-    async destroy() {
-        super.destroy();
+
+    async ondestroy() {
         for (var st of this.stream_targets) {
             await st.destroy();
         }
@@ -93,6 +92,7 @@ export class Target extends DataNodeID {
         if (!this.locked) {
             await fs.unlink(path.resolve(globals.app.targets_dir, this.id)).catch(utils.noop);
         }
+        return super.ondestroy();
     }
 }
 

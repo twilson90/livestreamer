@@ -35,7 +35,7 @@ const editable_input_types = {
 /**
  * @template ItemType
  * @template ValueType
- * @template {InputProperty<ItemType,ValueType>} ThisType
+ * @template {InputProperty<ItemType,ValueType>} [ThisType=InputProperty<ItemType,ValueType>]
  * @typedef {PropertySettings<ItemType,ValueType,ThisType> & {
  *  "setup": ()=>InputElement[],
  *  "placeholder": UISetting<ThisType,string>,
@@ -53,13 +53,13 @@ const editable_input_types = {
  * }} InputPropertySettings
  */
 
-/** @typedef {PropertyEvents & {focus:InputElement,blur:InputElement}} InputPropertyEvents */
+/** @typedef {PropertyEvents & {focus:[InputElement],blur:[InputElement]}} InputPropertyEvents */
 
 /** 
  * @template ItemType 
  * @template ValueType
- * @template {InputPropertySettings<ItemType,ValueType,InputProperty>} Settings
- * @template {InputPropertyEvents} Events
+ * @template {InputPropertySettings<ItemType,ValueType,InputProperty>} [Settings=InputPropertySettings<ItemType,ValueType,InputProperty>]
+ * @template {InputPropertyEvents} [Events=InputPropertyEvents]
  * @extends {Property<ItemType,ValueType,Settings,Events>} 
  */
 export class InputProperty extends Property {
@@ -69,16 +69,15 @@ export class InputProperty extends Property {
     #input_modifiers = [];
     /** @type {((value:any, input:InputElement)=>any)[]} */
     #output_modifiers = [];
-    /** @type {((value:any, input:InputElement)=>any)[]} */
-    #validators = [];
+    /** @type {Tooltip} */
+    #validation_tooltip = null;
     #force_update_inputs = false;
+    #last_valid;
 
     get inputs() { return this.#inputs; }
     get input() { return this.#inputs[0]; }
     get input_modifiers() { return this.#input_modifiers; }
     get output_modifiers() { return this.#output_modifiers; }
-    get validators() { return this.#validators; }
-    get is_valid() { return this.#inputs.every(i=>i._last_valid === true || i._last_valid === undefined) }
     
     /** @param {HTMLElement} contents @param {InputPropertySettings} settings */
     constructor(contents, settings) {
@@ -377,7 +376,7 @@ export class InputProperty extends Property {
                 if (input.matches(".fake-input")) {
                     set_inner_html(input, value);
                 } else if (typeof input.value !== "undefined") {
-                    set_value(input, value, {trigger:false});
+                    set_value(input, value);
                 }
             }
             
@@ -416,30 +415,20 @@ export class InputProperty extends Property {
             if (is_indeterminate) title = "Multiple values";
             if (title) set_attribute(input, "title", title);
             else remove_attribute(input, "title");
-            
-            var valid = is_disabled || is_indeterminate || (()=>{
-                for (var validator of this.validators) {
-                    valid = validator.apply(this, [this.value, input]);
-                    if (valid !== true) return valid;
-                }
-                return true;
-            })();
-            
-            var invalid_class = this.get_setting("invalid_class");
-            if (invalid_class) toggle_class(input, invalid_class, valid !== true);
-
-            if (valid === false) valid = "Invalid input";
-            if (input._last_valid !== valid) {
-                if (typeof valid === "string") {
-                    if (!input._validation_tooltip) input._validation_tooltip = new Tooltip(input);
-                    input._validation_tooltip.set_content(valid);
-                } else {
-                    if (input._validation_tooltip) {
-                        input._validation_tooltip.destroy();
-                        input._validation_tooltip = null;
-                    }
-                }
-                input._last_valid = valid;
+        }
+        
+        var valid = this.valid;
+        var invalid_class = this.get_setting("invalid_class");
+        if (invalid_class) toggle_class(this.elem, invalid_class, valid !== true);
+        if (this.#last_valid !== valid) {
+            this.#last_valid = valid;
+            valid = valid || "Invalid input";
+            if (typeof valid === "string") {
+                if (!this.#validation_tooltip) this.#validation_tooltip = new Tooltip(this.input_wrapper_el);
+                this.#validation_tooltip.set_content(valid);
+            } else {
+                if (this.#validation_tooltip) this.#validation_tooltip.destroy();
+                this.#validation_tooltip = null;
             }
         }
         this.#force_update_inputs = false;

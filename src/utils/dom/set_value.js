@@ -1,9 +1,9 @@
-/** @param {Element} elem @param {string} new_value @param {Object} opts */
+/** @param {Element} elem @param {string} new_value @param {{trigger:boolean|"change"}} opts */
 export function set_value(elem, new_value, opts) {
     if (typeof elem.value === "undefined") throw new Error();
 
     opts = {
-        trigger: "change",
+        trigger: false,
         ...opts
     };
     var changed = false;

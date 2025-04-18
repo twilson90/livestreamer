@@ -14,13 +14,6 @@ export const SessionProps = {
     version: {
         __default__: "1.0",
     },
-    access_control: {
-        __custom__:true,
-        __default__: { "*": { "access":"allow" } },
-    },
-}
-export const SessionPrivateProps = {
-    
     stream_settings: {
         targets: {
             __custom__: true,
@@ -56,6 +49,10 @@ export const SessionPrivateProps = {
         audio_bitrate: {
             __default__: 160
         },
+    },
+    access_control: {
+        __custom__:true,
+        __default__: { "*": { "access":"allow" } },
     },
 }
 export default SessionProps;

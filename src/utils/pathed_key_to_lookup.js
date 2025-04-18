@@ -2,13 +2,14 @@
 export function pathed_key_to_lookup(key, value) {
 	let target = {};
 	let path = typeof key === "string" ? key.split("/") : [...key];
+	if (path.length == 0) return value;
+	let prop = path.pop();
 	let curr = target;
-	for (var i = 0; i < path.length - 1; i++) {
-		var p = path[i];
+	for (var p of path) {
 		if (typeof curr[p] !== "object" || curr[p] === null) curr[p] = {};
 		curr = curr[p];
 	}
-	curr[path[path.length - 1]] = value;
+	curr[prop] = value;
 	return target;
 }
 

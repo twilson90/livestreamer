@@ -30,7 +30,7 @@ export class ObserverChangeEvent {
     }
 }
 
-/** @typedef {{change:ObserverChangeEvent}} EventMap */ // delayed_change:ObserverChangeEvent
+/** @typedef {{change:[ObserverChangeEvent]}} EventMap */ // delayed_change:ObserverChangeEvent
 /** @template T @extends {EventEmitter<EventMap>} */
 export class Observer extends EventEmitter {
     /** @type {Map<string, [Observer,string]>} */

@@ -24,7 +24,7 @@
     "start-live-stream": "tests\\start-live-stream.bat"
   },
   "dependencies": {
-    "@fancyapps/ui": "^4.0.26",
+    "@fancyapps/ui": "^4.0.31",
     "archiver": "^7.0.1",
     "axios": "^1.7.7",
     "basic-ftp": "^5.0.5",

@@ -6,8 +6,8 @@ import { InputProperty } from "./InputProperty.js";
 
 /**
  * @template ItemType
- * @template ValueType
- * @template {TimeSpanProperty} ThisType
+ * @template [ValueType=any]
+ * @template {TimeSpanProperty} [ThisType=TimeSpanProperty]    
  * @typedef {InputPropertySettings<ItemType,ValueType,ThisType> & {
  *   'timespan.zero_infinity': UISetting<ThisType,boolean>,
  *   'timespan.format': UISetting<ThisType,string>
@@ -17,8 +17,8 @@ import { InputProperty } from "./InputProperty.js";
 /** 
  * @template ItemType
  * @template {number} ValueType
- * @template {TimeSpanPropertySettings<ItemType,ValueType,TimeSpanProperty>} Settings
- * @template {PropertyEvents} Events
+ * @template {TimeSpanPropertySettings<ItemType,ValueType,TimeSpanProperty>} [Settings=TimeSpanPropertySettings<ItemType,ValueType,TimeSpanProperty>]
+ * @template {PropertyEvents} [Events=PropertyEvents]
  * @extends {InputProperty<ItemType, ValueType, Settings, Events>} 
  */
 export class TimeSpanProperty extends InputProperty {

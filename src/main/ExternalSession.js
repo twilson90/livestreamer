@@ -1,11 +1,7 @@
-import {globals, utils, SessionTypes, Session, SessionProps, SessionPrivateProps, Session$, SessionPrivate$} from "./exports.js";
+import {globals, utils, SessionTypes, Session, SessionProps, Session$} from "./exports.js";
 
 class ExternalSession$ extends Session$ {
     client_ip = "";
-}
-
-class ExternalSessionPrivate$ extends SessionPrivate$ {
-    //..
 }
 
 /** @extends {Session<ExternalSession$>} */
@@ -20,14 +16,14 @@ export class ExternalSession extends Session {
         var id = nms_session.publishStreamPath.split("/").pop();
         var name = nms_session.publishArgs["name"] || `[${ip}]`;
 
-        super(id, name, SessionTypes.EXTERNAL, new ExternalSession$(), SessionProps, new ExternalSessionPrivate$(), SessionPrivateProps);
+        super(SessionTypes.EXTERNAL, new ExternalSession$(), utils.get_defaults(SessionProps), id, name);
 
         this.nms_session = nms_session;
         
         this.$.client_ip = ip;
-        this.$_priv.stream_settings.test = ("test" in nms_session.publishArgs);
-        this.$_priv.stream_settings.targets = (nms_session.publishArgs["targets"]||"").split(/,\s*/).map(s=>s.trim()).filter(t=>t);
-        this.$_priv.stream_settings.target_opts = utils.try_catch(()=>JSON.parse(nms_session.publishArgs["target_opts"]));
+        this.$.stream_settings.test = ("test" in nms_session.publishArgs);
+        this.$.stream_settings.targets = (nms_session.publishArgs["targets"]||"").split(/,\s*/).map(s=>s.trim()).filter(t=>t);
+        this.$.stream_settings.target_opts = utils.try_catch(()=>JSON.parse(nms_session.publishArgs["target_opts"]));
         
         this.start_stream();
 

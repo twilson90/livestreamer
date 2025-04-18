@@ -11,7 +11,7 @@ import { array_move_element } from "../../array_move_element.js";
 /**
  * @template ItemType
  * @template ValueType
- * @template {PropertyList} ThisType
+ * @template {PropertyList} [ThisType=PropertyList]
  * @typedef {InputPropertySettings<ItemType,ValueType,ThisType> & {
 *   'item_size': UISetting<ThisType,string>,
 *   'allow_empty': UISetting<ThisType,boolean>,
@@ -23,8 +23,8 @@ import { array_move_element } from "../../array_move_element.js";
 /**
  * @template ItemType
  * @template ValueType
- * @template {PropertyListSettings<ItemType,ValueType,PropertyList>} Settings
- * @template {PropertyEvents} Events
+ * @template {PropertyListSettings<ItemType,ValueType,PropertyList>} [Settings=PropertyListSettings<ItemType,ValueType,PropertyList>]
+ * @template {PropertyEvents} [Events=PropertyEvents]
  * @extends {InputProperty<ItemType, ValueType[], Settings, Events>} */
 export class PropertyList extends InputProperty {
     get values() { return super.values.map(v=>v||[]); }
@@ -48,9 +48,11 @@ export class PropertyList extends InputProperty {
 
         var add_button = new Button(`<button><i class="fas fa-plus"></i></button>`, {
             title: "Add Item",
-            "click": () => {
+            "click": async() => {
                 var value = this.value;
-                value.push(this.get_setting("new"));
+                var new_value = await this.get_setting("new");
+                if (!new_value) return;
+                value.push(new_value);
                 this.set_value(value, { trigger: true });
                 this.once("render", ()=>{
                     list.elem.scrollLeft = 999999999;
@@ -69,7 +71,7 @@ export class PropertyList extends InputProperty {
         this.elem.style.setProperty("--ui-property-list-item-size", item_size);
 
         /** @type {List<PropertyListItem>} */
-        var list = this.list = new List();
+        var list = this.list = new List({ class: "property-list" });
         wrapper.append(list);
         this.buttons_el.prepend(add_button.elem);
 

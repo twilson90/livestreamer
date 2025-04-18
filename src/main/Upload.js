@@ -165,11 +165,12 @@ export class Upload extends DataNodeID {
         globals.app.logger.info(`Upload cancelled by user: ${this.unique_dest_path}`);
         this.destroy();
     }
-    destroy() {
-        super.destroy();
+
+    async ondestroy() {
         delete globals.app.uploads[this.id];
         delete globals.app.$.uploads[this.id];
         clearInterval(this.#speed_check_interval_id);
+        return super.ondestroy();
     }
 }
 

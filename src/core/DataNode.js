@@ -1,10 +1,11 @@
 import events from "node:events";
 import {utils} from "./exports.js";
-import { deep_merge } from "./utils.js";
 
 export class DataNode$ {}
 
-/** @template {DataNode$} T */
+/** @typedef {{destroy:[]}} DefaultEvents */
+
+/** @template {DataNode$} T @template Events @extends {events.EventEmitter<DefaultEvents & Events>} */
 export class DataNode extends events.EventEmitter {
     get $() { return this.observer.$; }
     #destroyed = false;
@@ -17,14 +18,19 @@ export class DataNode extends events.EventEmitter {
     }
     
     update_values(datas) {
-        deep_merge(this.$, datas, {delete_nulls:true});
+        utils.deep_merge(this.$, datas, {delete_nulls:true});
     }
     
-    destroy() {
-        // safe to call multiple times.
+    async destroy() {
+        if (this.#destroyed) return;
         this.#destroyed = true;
+        await this.ondestroy();
+        this.emit("destroy");
         this.observer.removeAllListeners();
+        this.removeAllListeners();
     }
+
+    ondestroy(){}
 }
 
 export default DataNode;

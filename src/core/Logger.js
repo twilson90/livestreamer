@@ -65,7 +65,7 @@ export class Log {
 	}
 }
 
-/** @extends {utils.EventEmitter<{log:Log}>} */
+/** @extends {events.EventEmitter<{log:[Log]}>} */
 export class Logger extends events.EventEmitter {
 	static ERROR = "error";
 	static WARN = "warn";

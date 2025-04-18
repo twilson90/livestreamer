@@ -1,10 +1,12 @@
 import path from "node:path";
 import fs from "fs-extra";
+import events from "events";
 import {globals, utils} from "./exports.js";
 
 /** @typedef {{data:any, expires:number}} CacheData */
 
-export class Cache extends utils.EventEmitter {
+/** @extends {events.EventEmitter<{delete:[CacheData],set:[CacheData]}>} */
+export class Cache extends events.EventEmitter {
     /** @type {Record<string, CacheData>} */
     #cache = {};
     /** @type {Record<string, NodeJS.Timeout>} */

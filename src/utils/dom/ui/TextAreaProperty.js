@@ -6,7 +6,7 @@ import { InputProperty } from "./InputProperty.js";
 /**
  * @template ItemType
  * @template ValueType
- * @template {Property} ThisType
+ * @template {Property} [ThisType=Property]    
  * @typedef {InputPropertySettings<ItemType,ValueType,ThisType> & {
  *   'textarea.rows': UISetting<ThisType,number>,
  *   'textarea.grow': UISetting<ThisType,boolean>,
@@ -19,9 +19,9 @@ import { InputProperty } from "./InputProperty.js";
 
 /** 
  * @template ItemType
- * @template {string} ValueType
- * @template {TextAreaPropertySettings<ItemType,ValueType,TextAreaProperty>} Settings
- * @template {PropertyEvents} Events
+ * @template {string} [ValueType=string]
+ * @template {TextAreaPropertySettings<ItemType,ValueType,TextAreaProperty>} [Settings=TextAreaPropertySettings<ItemType,ValueType,TextAreaProperty>]
+ * @template {PropertyEvents} [Events=PropertyEvents]
  * @extends {InputProperty<ItemType,ValueType,Settings,Events>} 
  */
 export class TextAreaProperty extends InputProperty {

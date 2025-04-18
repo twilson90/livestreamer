@@ -126,6 +126,10 @@ export class InternalSession extends Session {
         this.#all_files_iterator = utils.infinite_iterator(()=>utils.iterate_keys(this.#media_refs));
     }
 
+    async move_autosave_dir() {
+        await fs.rename(this.saves_dir, path.join(globals.app.old_saves_dir, this.id)).catch(utils.noop);
+    }
+
     /** @param {string[]} filenames */
     register_media_refs(filenames) {
         for (var filename of filenames) {
@@ -224,14 +228,6 @@ export class InternalSession extends Session {
             return globals.app.prepare(next.filename);
         }
     } */
-
-    async destroy(move_autosave_dir=false) {
-        await this.stop_stream();
-        if (move_autosave_dir) {
-            await fs.rename(this.saves_dir, path.join(globals.app.old_saves_dir, this.id)).catch(utils.noop);
-        }
-        return super.destroy();
-    }
 
     async download_and_replace(ids) {
         if (!Array.isArray(ids)) ids = [ids];
@@ -443,7 +439,7 @@ export class InternalSession extends Session {
     }
     
     #playlist_add(item) {
-        item = fix_item(item, this.$.playlist);
+        item = fix_playlist_item(item, this.$.playlist);
         this.$.playlist[item.id] = item;
         return item;
     }
@@ -555,7 +551,7 @@ export class InternalSession extends Session {
         else Object.assign(d.props, changes.props);
         delete changes.props;
         Object.assign(d, changes);
-        fix_item(d, this.$.playlist);
+        fix_playlist_item(d, this.$.playlist);
     }
 
     playlist_update(data, opts) {
@@ -840,9 +836,9 @@ function fix_session($, warn) {
     $.access_control = new AccessControl($.access_control);
     var items = Object.values($.playlist);
     $.playlist = {};
-    for (var item of items) {
-        item = fix_item(item, $.playlist);
-        $.playlist[item.id] = item;
+    for (var item of items) $.playlist[item.id] = fix_playlist_item(item, $.playlist);
+    for (var item of Object.values($.playlist)) {
+        if (!(item.parent_id in $.playlist)) item.parent_id = "0";
     }
     if (!$.stream_settings) $.stream_settings = {};
     utils.cleanup_prop($, InternalSessionProps, true, warn);
@@ -852,7 +848,7 @@ function fix_session($, warn) {
 
 export default InternalSession;
 
-function fix_item(item, $) {
+function fix_playlist_item(item, $) {
     if (typeof item !== "object") item = {filename: String(item)};
     var {id, filename, props, index, parent_id, track_index} = item; // , upload_id
     id = String(id ?? utils.uuidb64());
@@ -860,7 +856,6 @@ function fix_item(item, $) {
     props = props || {};
     utils.remove_nulls(props);
     parent_id = String(parent_id || "0");
-    if (!(parent_id in $)) parent_id = "0";
     index = index || 0;
     track_index = track_index || 0;
     while ($[id]) id = utils.uuidb64();

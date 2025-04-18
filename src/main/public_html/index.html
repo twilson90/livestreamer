@@ -1,5 +1,12 @@
 <html>
 <head>
+    <style>
+        html, body {
+            height: 100%;
+            padding:0;
+            margin:0;
+        }
+    </style>
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
     <title>Live Streamer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
@@ -9,69 +16,7 @@
 </head>
 
 <body>
-    <div id="livestreamer" style="display:none">
-        <div id="request-loading" class="v-none"><i class="fas fa-sync fa-spin"></i></div>
-        <div class="main">
-            <div class="session-header">
-                <div class="session-tabs-wrapper">
-                    <div id="session-tabs" class="thin-scrollbar"></div>
-                    <button class="new-session session-tab" title="New Session"><i class="fas fa-plus"></i></button>
-                </div>
-                <div class="session-select-wrapper">
-                    <select id="session-select"></select>
-                    <button class="new-session" title="New Session"><i class="fas fa-plus"></i></button>
-                </div>
-                <div class="right">
-                    <div class="buttons">
-                        <button class="icon" title="Admin" id="show-admin"><i class="fas fa-users-cog"></i></button>
-                        <button class="icon" title="Client Configuration" id="show-config"><i class="fas fa-user-cog"></i></button>
-                    </div>
-                    <div class="buttons">
-                        <a class="button icon" title="Help" id="show-help" href="./help.html" target="_blank"><i class="far fa-question-circle"></i></a>
-                    </div>
-                </div>
-            </div>
-
-            <div class="session-header-line"></div>
-        
-            <div id="session">
-                <div class="session-controls-wrapper">
-                    <div>
-                        <div id="session-controls">
-                            <div class="buttons border-group">
-                                <button id="minimize-session" class="mini icon" title="Minimize Session"><i class="fas fa-window-minimize"></i></button>
-                                <button id="sign-out-session" class="mini icon" title="Sign out"><i class="fas fa-sign-out-alt"></i></button>
-                                <button id="config-session" class="mini icon" title="Configure Session"><i class="fas fa-cog"></i></button>
-                                <button id="destroy-session" class="mini icon" title="End Session"><i class="fas fa-trash"></i></button>
-                            </div>
-                        </div>
-                        <div id="session-load-save" class="buttons border-group">
-                            <button id="load-session" class="mini" title="Load">Load</button>
-                            <button id="save-session" class="mini" title="Save">Save</button>
-                            <button id="history-session" class="mini" title="History">History</button>
-                        </div>
-                        <div id="users"></div>
-                    </div>
-                </div>
-                <div id="session-inner">
-                    <div id="session-ui"></div>
-                </div>
-            </div>
-            
-            <div id="no-sessions" class="d-none">
-                <div class="no-session">Open or create a new session.</div>
-                <div class="owner"></div>
-                <div class="no-access">You do not have access.</div>
-            </div>
-            
-            <div id="session-password"></div>
-
-            <div class="app-logs-section">
-                <div class="session-header-line"></div>
-            </div>
-            <div class="session-header-line"></div>
-        </div>
-    </div>
+    <div id="livestreamer" style="display:none"></div>
 </body>
 
 </html>

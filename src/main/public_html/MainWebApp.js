@@ -4,7 +4,7 @@ import * as ui from "../../utils/dom/ui/exports.js";
 import { jQuery, $ } from '../../jquery-global.js';
 import 'jquery-ui/dist/jquery-ui.js';
 import 'jquery-ui/dist/themes/base/jquery-ui.css';
-import { Fancybox as _Fancybox } from "@fancyapps/ui/src/Fancybox/Fancybox.js";
+import { Fancybox } from "@fancyapps/ui/src/Fancybox/Fancybox.js";
 import "@fancyapps/ui/dist/fancybox.css";
 import noUiSlider from 'nouislider';
 import "nouislider/dist/nouislider.css";
@@ -110,13 +110,15 @@ export function moving_average(points, windowSize) {
 const VALIDATORS = (()=>{
     /** @this {ui.InputProperty} */
     let media_type = function(type) {
-        var v = this.value;
-        if (!v) return true;
-        var mi = app.$._session.media_info[v];
-        if (this.value.startsWith("livestreamer://")) return true;
+        var value = this.value;
+        if (!value) return true;
+        if (value.startsWith("livestreamer://")) return true;
+        var mi = app.$._session.media_info[value] || app.media_info[value];
         if (!mi || !mi.exists) return "Media does not exist.";
-        if (!mi.streams) return `No streams detected.`;
-        if (type && !mi.streams.find(s=>s.type === type)) return `No ${type} streams detected.`
+        if (type) {
+            if (!mi.streams) return `No streams detected.`;
+            if (!mi.streams.find(s=>s.type === type)) return `No ${type} streams detected.`;
+        }
         return true;
     };
     return {
@@ -425,14 +427,13 @@ export function get_scrollbar_width(el) {
     return [el.offsetWidth - el.clientWidth, el.offsetHeight - el.clientHeight];
 }
 
-export function pretty_uri_basename(uri) {
-    if (uri.match(/^https?:/)) {
-        return uri;
-    } else {
-        var name = utils.basename(uri);
-        try { name = decodeURI(name); } catch {}
-        return name;
+/** @param {URL|string} uri */
+export function pretty_uri_basename(orig) {
+    var uri = utils.urlify(orig);
+    if (uri.protocol == "file:") {
+        return decodeURIComponent(uri.pathname.split("/").pop());
     }
+    return orig;
 }
 export function rect_clamp_point(rect, pt) {
     return {x:utils.clamp(pt.x, rect.x, rect.x+rect.width), y:utils.clamp(pt.y, rect.y, rect.y+rect.height)};
@@ -564,6 +565,7 @@ export function create_video_file_start_end_properties(settings) {
         "name": `${settings.name}`,
         "label": `${settings.label}`,
         "file.options": { files: true, filter: ["image", "video"] },
+        "file.check_media": true,
         "hidden": settings.hidden,
         "default": settings.default,
     });
@@ -958,19 +960,16 @@ export class Media {
         var seeking = running ? !!(loaded && stream.mpv.ctx.seeking) : false;
         var buffering = (seeking || !loaded || !!stream.mpv.ctx.props["paused-for-cache"]);
         var seekable = !running || !!stream.mpv.ctx.seekable;
-        var special_seeking = !!(running && stream.mpv.special_seeking);
 
         this.buffering = buffering;
         this.seeking = seeking;
         this.running = running;
 
-        if (special_seeking) return;
-
         this.playback_speed = stream.mpv.ctx.playback_speed;
         this.time_pos = session.time_pos;
         this.paused = stream.mpv.ctx.props.pause || stream.mpv.ctx.props["paused-for-cache"];
-        this.duration = session._current_duration;
-        this.chapters = loaded ? session._current_chapters : EMPTY_CHAPTERS;
+        this.duration = session._current_playlist_item._duration;
+        this.chapters = loaded ? session._current_playlist_item._userdata.chapters : EMPTY_CHAPTERS;
         this.seekable = loaded ? this.duration != 0 && seekable && item.filename !== "livestreamer://empty" : false;
         this.loaded = loaded;
         this.status = running ? (loaded ? "Playing" : "Loading") : "Pending";
@@ -1020,15 +1019,48 @@ class Node$ {
     }
 }
 
-/** @template T @param {()=>T} handler @returns {Record<PropertyKey,T>} */
-function Collection$(handler) {
-    return new Node$((key,value)=>{
-        var n = handler();
-        return utils.deep_merge(n, value);
+
+const Collection$_null = Symbol("Collection$_null");
+
+/** @template T @param {()=>T} generator @param {Record<PropertyKey,T>} target @param {(item:T)=>void} ondelete @returns {Record<PropertyKey,T>} */
+function Collection$(generator, target, ondelete) {
+    var null_item;
+    if (!target) target = {};
+    var proxy = new Proxy(target, {
+        set(target, prop, value) {
+            var n = generator();
+            utils.deep_merge(n, value);
+            target[prop] = n;
+            return true;
+        },
+        get(target, prop) {
+            if (prop == Collection$_null) {
+                if (!null_item) null_item = generator(prop, null);
+                return null_item;
+            }
+            return  Reflect.get(target, prop, proxy);
+        },
+        has(target, prop) {
+            return Reflect.has(target, prop);
+        },
+        deleteProperty(target, prop) {
+            if (prop in target) {
+                if (ondelete) ondelete(target[prop]);
+                delete target[prop];
+                return true;
+            }
+            return false;
+        }
     });
+    return proxy;
 }
 
-class Progress$ {
+class DataNodeID$ extends Node$ {
+    id = "";
+    get _is_null() { return !this.id; }
+}
+
+class Progress$ extends DataNodeID$ {
     id = "";
     bytes = 0;
     total = 0;
@@ -1045,13 +1077,13 @@ export class Remote$ extends Node$ {
     sessions = Collection$(()=>new Session$());
     targets = Collection$(()=>new Target$());
     streams = Collection$(()=>new Stream$());
+    uploads = Collection$(()=>new Progress$());
+    downloads = Collection$(()=>new Progress$());
     volumes = {};
     change_log = {};
     logs = app.logger.create_proxy();
     nms_sessions = {};
     fonts = {};
-    uploads = Collection$(()=>new Progress$());
-    downloads = Collection$(()=>new Progress$());
     processes = {};
     sysinfo = {
         platform: ""
@@ -1065,20 +1097,13 @@ export class Remote$ extends Node$ {
 
     _changes = [];
     _pending_requests = new Set();
-    /** @type {Session$} */
-    _last_session = null;
-
-    _NULL_CLIENT = Object.freeze(new Client$());
-    _NULL_SESSION = Object.freeze(new Session$());
-    _NULL_STREAM = Object.freeze(new Stream$());
-    _NULL_PLAYLIST_ITEM = Object.freeze(new PlaylistItem$(undefined, this._NULL_SESSION));
 
     _refresh_ping() {return app.ws.ping(); }
     get _ping() { return app.ws.last_ping; }
     /** @type {Session$} */
-    get _session() { return this.sessions[this._client.session_id] || this._NULL_SESSION; }
+    get _session() { return this.sessions[this._client.session_id] || this.sessions[Collection$_null]; }
     /** @type {Client$} */
-    get _client() { return this.clients[this.client_id] || this._NULL_CLIENT; }
+    get _client() { return this.clients[this.client_id] || this.clients[Collection$_null]; }
     get _stream() { return this._session._stream; }
     get _streams() { return Object.fromEntries(Object.values(this.sessions).map(s=>s._stream).filter(s=>s).map((s)=>[s.id, s])); }
     // gets server time
@@ -1091,20 +1116,14 @@ export class Remote$ extends Node$ {
     }
 }
 
-export class Client$ extends Node$ {
-    id = "";
+export class Client$ extends DataNodeID$ {
     session_id = undefined;
     is_admin = false;
     username = null;
     email = null;
-
-    get _is_null() {
-        return !this.id;
-    }
 }
 
-export class Target$ extends Node$ {
-    id = "";
+export class Target$ extends DataNodeID$ {
     name = ""
     description = ""
     rtmp_host = ""
@@ -1132,8 +1151,7 @@ export class Chapter$ {
     }
 }
 
-export class StreamTarget$ extends Node$ {
-    id = "";
+export class StreamTarget$ extends DataNodeID$ {
     state = "stopped";
     stream_id = "";
     target_id = "";
@@ -1142,25 +1160,45 @@ export class StreamTarget$ extends Node$ {
         return this._stream._session;
     }
     get _stream() {
-        return app.$._streams[this.stream_id];
+        return app.$._streams[this.stream_id] || app.$._streams[Collection$_null];
     }
     get _target() {
-        return app.$.targets[this.target_id];
+        return app.$.targets[this.target_id] || app.$.targets[Collection$_null];
     }
 }
 
-export class Stream$ extends Node$ {
-    id = "";
+export class Stream$ extends DataNodeID$ {
     start_time = 0;
     state = "stopped";
     metrics = new Node$((prop,value)=>{
         return value;
     });
     session_id = 0;
-    mpv = {
-        special_seeking: false,
-        ctx: new MPVContext$(this),
-    };
+    mpv = new class {
+        ctx = new class {
+            id = "";
+            item = new ParsedPlaylistItem$();
+            preloaded = false;
+            loaded = false;
+            seeking = false;
+            seekable = false;
+            interpolation = false;
+            deinterlace = false;
+            duration = 0;
+            time = 0;
+            seekable_ranges = [];
+            props = {};
+            playback_speed = 1;
+
+            get _item() {
+                if (!(this.item instanceof ParsedPlaylistItem$)) {
+                    debugger;
+                    this.item = new ParsedPlaylistItem$(this.item);
+                }
+                return this.item;
+            }
+        }
+    }
     targets = [];
     target_opts = {};
     stream_targets = Collection$(()=>new StreamTarget$());
@@ -1175,7 +1213,7 @@ export class Stream$ extends Node$ {
     }
     
     get _session() {
-        return app.$.sessions[this.session_id];
+        return app.$.sessions[this.session_id] || app.$.sessions[Collection$_null];
     }
     get _is_running() {
         return this.state !== "stopped";
@@ -1191,37 +1229,8 @@ export class Stream$ extends Node$ {
     }
 }
 
-export class ParsedItem$ {
-    id = "";
-    filename = "";
-    map = {
-        video: {},
-        audio: {},
-        subtitle: {},
-        files: [],
-        streams: [],
-    };
-}
-
-export class MPVContext$ {
-    item = new ParsedItem$();
-    preloaded = false;
-    loaded = false;
-    seeking = false;
-    // is_special = false;
-    seekable = false;
-    interpolation = false;
-    deinterlace = false;
-    duration = 0;
-    time = 0;
-    seekable_ranges = [];
-    props = {};
-    playback_speed = 1;
-}
-
-export class Session$ extends Node$ {
-    id = "";
-    type;
+export class Session$ extends DataNodeID$ {
+    type = "";
     index = 0;
     playlist_id = "";
     time_pos = 0;
@@ -1240,28 +1249,12 @@ export class Session$ extends Node$ {
     volume_speed = 0;
     stream_id = "";
 
-    /** @type {Record<PropertyKey,PlaylistItem$>} */
-    playlist = new Proxy({
-        "0": new PlaylistItem$({id:"0", parent_id:null}, this),
-    }, {
-        /** @param {Record<PropertyKey,PlaylistItem$>} target */
-        set:(target, prop, value)=>{
-            target[prop] = new PlaylistItem$(value, this);
-            return true;
-        },
-        /** @param {Record<PropertyKey,PlaylistItem$>} target */
-        deleteProperty: (target, prop)=>{
-            if (prop == "0") return false;
-            if (prop in target) {
-                target[prop]._parent._private.children = null;
-                delete target[prop];
-            }
-            return true;
-        }
-    });
+    playlist = Collection$(
+        ()=>new PlaylistItem$(null, this),
+        { "0": new PlaylistItem$({id:"0", parent_id:null}, this) },
+        (item)=>item._parent._private.children = null,
+    );
 
-    /** @typedef {{filenames:string[]}} PlaylistInfo */
-    /** @type {Record<PropertyKey,PlaylistInfo>} */
     playlist_info = Collection$(()=>new PlaylistInfo$());
 
     playlist_history = {
@@ -1273,34 +1266,20 @@ export class Session$ extends Node$ {
         get _next() { return this.stack[this.position]; },
         get _prev() { return this.stack[this.position-1]; },
     };
-
-    get _root_playlist_item() {
-        return this.playlist["0"];
-    }
-    
     get _connected_nms_sessions() {
         return Object.values(app.$.nms_sessions).filter(s=>s.publishStreamPath.split("/").pop() === this.id);
     }
     /** @return {PlaylistItem$} */
     get _current_playlist_item() {
-        return this.playlist[this.playlist_id] || app.$._NULL_PLAYLIST_ITEM;
+        var stream = this._stream;
+        if (stream._is_running) {
+            var item = stream.mpv.ctx.item;
+            if (item && item.id) return item;
+        }
+        return this.playlist[this.playlist_id] || this.playlist[Collection$_null];
     }
     get _is_running() {
         return this._stream._is_running;
-    }
-    /** @return {Chapter$[]} */
-    get _current_chapters() {
-        return this._current_playlist_item._userdata.chapters;
-    }
-    get _current_duration() {
-        var d = 0;
-        if (this._stream._is_running) {
-            d = this._stream.mpv.ctx.duration || 0;
-        } else {
-            var item = this._current_playlist_item;
-            if (!item._is_playlist || item._is_merged_playlist) d = item._userdata.duration;
-        }
-        return round_ms(d || 0);
     }
     get _current_seekable_ranges() {
         if (this._stream._is_running) return this._stream.mpv.ctx.seekable_ranges;
@@ -1310,16 +1289,13 @@ export class Session$ extends Node$ {
         return this._connected_nms_sessions.find(s=>appnames.includes(s.appname));
     }
     _get_current_chapters_at_time(t) {
-        return this._current_chapters.filter(c=>t>=c.start && t<c.end);
+        return this._current_playlist_item._userdata.chapters.filter(c=>t>=c.start && t<c.end);
     }
     _get_current_chapter_at_time(t) {
         return this._get_current_chapters_at_time(t).pop();
     }
-    get _is_null() {
-        return !this.id;
-    }
     get _stream() {
-        return app.$.streams[this.stream_id]||app.$._NULL_STREAM;
+        return app.$.streams[this.stream_id] || app.$.streams[Collection$_null];
     }
 }
 
@@ -1344,8 +1320,7 @@ class PlaylistItemPrivate$ {
     }
 }
 
-export class PlaylistItem$ extends Node$ {
-    id = "";
+export class PlaylistItem$ extends DataNodeID$ {
     parent_id = "0";
     filename = "";
     index = 0;
@@ -1361,6 +1336,7 @@ export class PlaylistItem$ extends Node$ {
     constructor(data, session) {
         if (!session) session = app.$._session;
         super((prop, value)=>{
+            // if (session) {
             this._clear_userdata();
             if (prop == "parent_id") {
                 let old_parent = this._parent;
@@ -1371,20 +1347,18 @@ export class PlaylistItem$ extends Node$ {
                 let parent = this._parent;
                 if (parent) parent._private.children = null;
             }
+            // }
             return value;
         });
         Object.defineProperty(this, "__private", {
             value: new PlaylistItemPrivate$(this, session),
             enumerable: false,
         });
-        Object.assign(this[Node$_Target], data);
+        if (data) Object.assign(this[Node$_Target], data);
     }
     /** @return {Session$} */
     get _session() {
-        return this._private.session;
-    }
-    get _is_connected() {
-        return this.id in this._session.playlist;
+        return this._private.session || app.$.sessions[Collection$_null];
     }
     /** @return {PlaylistItemUserData$} */
     get _userdata() {
@@ -1403,8 +1377,12 @@ export class PlaylistItem$ extends Node$ {
     get _media_info() {
         return this._session.media_info[this.filename];
     }
+    // effectively the same as _is_connected
     get _is_deleted() {
         return !this._session.playlist[this.id];
+    }
+    get _is_connected() {
+        return this.id in this._session.playlist;
     }
     get _is_playlist() {
         return this._is_root || this.filename === "livestreamer://playlist" || this._has_children;
@@ -1414,7 +1392,13 @@ export class PlaylistItem$ extends Node$ {
     }
     get _is_descendent_of_current() {
         for (var i of this._session._current_playlist_item._get_children(null, true)) {
-            if ( i === this) return true;
+            if (i === this) return true;
+        }
+        return false;
+    }
+    get _is_ancestor_of_current() {
+        for (var i of this._session._current_playlist_item._iterate_parents()) {
+            if (i === this) return true;
         }
         return false;
     }
@@ -1424,9 +1408,6 @@ export class PlaylistItem$ extends Node$ {
     }
     get _is_root() {
         return this.id == "0";
-    }
-    get _is_null() {
-        return !this.id;
     }
     get _is_modifiable() {
         return !this._is_root && !this._is_null;
@@ -1549,6 +1530,9 @@ export class PlaylistItem$ extends Node$ {
     get _is_splittable() {
         return this._userdata.media_duration > 0 && !this._is_playlist;
     }
+    get _duration() {
+        return this._userdata.duration;
+    }
     get _is_scannable() {
         return !this.filename.startsWith("livestreamer://") || this._is_playlist;
     }
@@ -1625,7 +1609,7 @@ export class PlaylistItem$ extends Node$ {
         if (this._is_root) next = this;
         app.playlist.open(next, [this]);
     }
-    /** @param {PlaylistItem$} [until] @return {Iterable<PlaylistItem$>} */
+    /** @param {PlaylistItem$} until @return {Iterable<PlaylistItem$>} */
     *_iterate_parents(until) {
         var item = this;
         while (!item._is_root) {
@@ -1645,7 +1629,15 @@ export class PlaylistItem$ extends Node$ {
     }
 }
 
-var playlist_item_userdata_uid = 0;
+export class ParsedPlaylistItem$ extends PlaylistItem$ {
+    map = {
+        video: {},
+        audio: {},
+        subtitle: {},
+        files: [],
+        streams: [],
+    };
+}
 class PlaylistItemUserData$ {
     /** @param {PlaylistItem$} item */
     constructor(item) {
@@ -1653,7 +1645,7 @@ class PlaylistItemUserData$ {
         let children = item._children;
         var is_playlist = item._is_playlist;
         let is_processing = item._is_processing;
-        let root_merged_playlist = item._root_merged_playlist;
+        // let root_merged_playlist = item._root_merged_playlist;
         var is_merged = item._is_merged;
 
         let name = item._get_pretty_name();
@@ -1683,36 +1675,19 @@ class PlaylistItemUserData$ {
                 timeline_duration = Math.max(...track_timeline_durations);
             }
             media_duration = children_duration;
-        } else {
-            if (item.props.duration != null) {
-                media_duration = item.props.duration;
-            } else if (root_merged_playlist) {
-                media_duration = 60;
-            }
         }
-
-        let start = item.props.clip_start || 0;
-        let end = item.props.clip_end || media_duration;
-        let clip_length = Math.max(0, (end - start));
-        let clip_loops = item.props.clip_loops || 1;
-        let duration = round_ms(Math.max(0, clip_length * clip_loops));
-        timeline_duration = round_ms(Math.max(ZERO_DURATION, timeline_duration * clip_loops));
-
-        var props = new Set(Object.keys(item.props));
-        props.delete("label");
-        props.delete("color");
-
+        let duration = item.props.duration || media_duration;
         let clipping;
-
         if ("clip_start" in item.props || "clip_end" in item.props || "clip_loops" in item.props || "clip_offset" in item.props) {
             let start = item.props.clip_start || 0;
-            let end = item.props.clip_end || media_duration;
+            let end = item.props.clip_end || duration;
             let length = end-start;
             let loops = item.props.clip_loops ?? 1;
-            let duration = length * loops;
             let offset = ((item.props.clip_offset || 0) % length) || 0;
+            duration = length * loops;
             clipping = { start, end, length, duration, offset, loops };
         }
+        timeline_duration = round_ms(Math.max(ZERO_DURATION, duration));
 
         var chapters;
         if (is_playlist) {
@@ -1762,6 +1737,10 @@ class PlaylistItemUserData$ {
                 if (!c.id && !c.title) c.title = `Chapter ${i+1}`;
             });
         }
+
+        var props = new Set(Object.keys(item.props));
+        props.delete("label");
+        props.delete("color");
         
         this.name = name;
         this.is_processing = is_processing;
@@ -1772,7 +1751,6 @@ class PlaylistItemUserData$ {
         this.timeline_duration = timeline_duration || 0;
         this.clipping = clipping;
         this.chapters = chapters;
-        this.id = ++playlist_item_userdata_uid;
     }
 }
 
@@ -2067,30 +2045,34 @@ export function get_rect_pt_percent(rect, pt) {
 }
 
 // fancy box fixes...
-class Fancybox extends _Fancybox {
-    attachEvents() {
+{
+    let old_attachEvents = Fancybox.prototype.attachEvents;
+    let old_detachEvents = Fancybox.prototype.detachEvents;
+    let old_onClick = Fancybox.prototype.onClick;
+    Fancybox.prototype.attachEvents = function(...args) {
         this.original_active_element = document.activeElement;
         this.$container.focus();
-        super.attachEvents();
+        old_attachEvents.apply(this,[...args])
         this.$container.addEventListener("mousedown", this._onMousedown2 = (e)=>{
             var slide = this.getSlide();
             this._content_mousedown = !!(slide && slide.$content.contains(e.target));
         }, true);
-    }
-    detachEvents() {
-        super.detachEvents();
+    };
+    Fancybox.prototype.detachEvents = function(...args) {
+        old_detachEvents.apply(this,[...args])
         if (this.original_active_element) this.original_active_element.focus({preventScroll: true});
         this.$container.removeEventListener("mousedown", this._onMousedown2);
     }
-    onClick(e) {
+    /** @param {MouseEvent} e */
+    Fancybox.prototype.onClick = function(e) {
         if (this._content_mousedown) return;
-        if (!this.options.hideOnSlideClick && e.target.matches(".fancybox__slide")) return;
-        super.onClick(e);
+        if (!this.options.hideOnSlideClick && e.target instanceof HTMLElement && e.target.matches(".fancybox__slide")) return;
+        old_onClick.apply(this, [e]);
     }
 }
 
 Object.assign(Fancybox.defaults, {
-    closeButton:"inside",
+    closeButton:false,
     Hash: false,
     ScrollLock: false,
     dragToClose: false,
@@ -2098,6 +2080,7 @@ Object.assign(Fancybox.defaults, {
     trapFocus: false,
     keyboard: false,
     click: "close",
+    hideOnSlideClick: true,
     Carousel: {
         Panzoom: {
             touch: false
@@ -2214,7 +2197,7 @@ export class JSONContainer extends ui.UI {
 
 /**
  * @template ItemType
- * @template {Modal<ItemType>} ThisType
+ * @template {Modal<ItemType>} [ThisType=Modal<ItemType>]
  * @typedef {ui.UISettings<ThisType> & {
 *  "modal.title": ui.UISetting<ThisType, string>,
 *  "modal.title_overflow": ui.UISetting<ThisType, boolean>,
@@ -2230,15 +2213,15 @@ export class JSONContainer extends ui.UI {
 
 /** 
  * @typedef {ui.UIEvents & {
- *   show: any,
- *   hide: any
+ *   show: [],
+ *   hide: []
  * }} ModalEvents 
  */
 
 /**
 * @template ItemType
-* @template {ModalSettings<ItemType,Modal>} Settings
-* @template {ModalEvents} Events
+* @template {ModalSettings<ItemType,Modal>} [Settings=ModalSettings<ItemType,Modal>]
+* @template {ModalEvents} [Events=ModalEvents]
 * @extends {ui.UI<Settings,Events>}
 */
 export class Modal extends ui.UI {
@@ -2274,6 +2257,7 @@ export class Modal extends ui.UI {
             "modal.data": (item, path)=>utils.reflect.get(item, path),
             "modal.items": [undefined],
             "modal.return_value": (r)=>r,
+            "modal.blocking": true,
             ...settings
         };
 
@@ -2343,17 +2327,34 @@ export class Modal extends ui.UI {
             app.emit("modal-show", this);
 
             this.showing_promise = new Promise(resolve=>this.#showing_resolve = resolve);
-            app.blocking_updates.add(this.showing_promise);
+            if (this.get_setting("modal.blocking")) app.blocking_updates.add(this.showing_promise);
             Modal.showing.add(this);
-            
-            // remove close button created by fancybox
-            var close_button = this.elem.querySelector("button.carousel__button.is-close");
-            if (close_button) close_button.remove();
             
             this.emit("before-load");
 
-            await this.load();
-            await this.get_setting("modal.load");
+            if ("modal.load" in this.settings) {
+
+                var loader = new Loader({
+                    "loader.background": "transparent",
+                    "loader.color": "white",
+                });
+                loader.elem.onclick = ()=>this.hide();
+                this.fb = new Fancybox([
+                    {
+                        src: loader.elem, // Temporary content
+                        type: "html"
+                    }
+                ], {
+                    closeButton: false,
+                    mainClass: "loading-modal",
+                });
+
+                await this.get_setting("modal.load");
+                // await utils.timeout(1000000);
+
+                if (this.fb.isClosing()) return;
+                this.fb.close();
+            }
             
             this.emit("before-show");
 
@@ -2392,8 +2393,9 @@ export class Modal extends ui.UI {
 /**
  * @template ItemType
  * @typedef {ModalSettings<ItemType> & {
+*  "modal.auto_apply": ui.UISetting<EditModal, boolean>,
+*  "modal.allow_invalid": ui.UISetting<EditModal,boolean>,
 *  "modal.apply": function(),
-*  "modal.auto_apply": boolean,
 * }} EditModalSettings
 */
 
@@ -2408,6 +2410,7 @@ export class EditModal extends Modal {
             "modal.footer": true,
             "modal.hide_on_click_outside": ()=>this.get_setting("modal.auto_apply"),
             "modal.auto_apply": true,
+            "modal.allow_invalid": false,
             "modal.ok": "OK",
             "modal.cancel": "Cancel",
             ...settings,
@@ -2422,17 +2425,18 @@ export class EditModal extends Modal {
             }
         });
         
-        var save_button = new ui.Button(`<button>Save</button>`, {
+        var ok_button = new ui.Button(`<button>Save</button>`, {
             "content":()=>this.get_setting("modal.ok") || "OK",
-            "click":()=>this.apply(),
             "hidden": ()=>!this.get_setting("modal.ok"),
+            "disabled":()=>!this.get_setting("modal.allow_invalid") && !this.props.is_valid,
+            "click":()=>this.apply(),
         })
         var cancel_button = new ui.Button(`<button>Cancel</button>`, {
             "content":()=>this.get_setting("modal.cancel") || "Cancel",
             "hidden": ()=>!this.get_setting("modal.cancel"),
             "click":()=>this.cancel()
         })
-        this.footer.append(save_button, cancel_button);
+        this.footer.append(ok_button, cancel_button);
     }
     apply() {
         if (this.#applied) return;
@@ -2445,6 +2449,10 @@ export class EditModal extends Modal {
         if (this.#cancelled) return;
         this.#cancelled = true;
         this.hide();
+    }
+    hide() {
+        if (!this.get_setting("modal.allow_invalid") && !this.props.is_valid && !this.#cancelled) return;
+        super.hide();
     }
 
     escape() {
@@ -2480,10 +2488,7 @@ export class TargetConfigMenu extends EditModal {
                 value[target_id] = {...this.props.raw_value};
                 prop.targets_prop.opts.set_value(value, {trigger:true});
             },
-            "modal.items": [prop],
-            "modal.data": (_,path)=>{
-                return utils.reflect.get(prop.targets_prop.opts.value, [target_id, ...path]);
-            },
+            "modal.items": [prop.targets_prop.opts.value[target_id]],
         });
         this._target_id = target_id;
 
@@ -3148,7 +3153,7 @@ export class FileManagerMenu extends Modal {
 }
 
 
-export class ScheduleGeneratorMenu extends Modal {
+export class ScheduleGeneratorMenu extends EditModal {
     constructor() {
         super({
             "modal.title": "Schedule Generator",
@@ -3259,7 +3264,7 @@ export class ScheduleGeneratorMenu extends Modal {
     if (d < 60*60) return `m:ss.SSS`;
     return `h:mm:ss.SSS`;
 } */
-export class FontSettings extends Modal {
+export class FontSettings extends EditModal {
     constructor() {
         super({
             "modal.title": `Font Manager`,
@@ -3514,7 +3519,7 @@ export class CropEditMenu extends EditModal {
         var cp;
         container.append(crop_container);
         
-        var row = $(`<div class="buttons border-group"></div>`)[0];
+        var row = $(`<div class="button-group"></div>`)[0];
         var left = new ui.Button(`<button><i class="fas fa-arrow-left"></i></button>`, {
             "title": "Previous",
             "flex": "none",
@@ -3614,15 +3619,15 @@ export class SessionConfigurationMenu extends EditModal {
         this.creation_time = new ui.InputProperty(`<input type="text">`, {
             "label": "Creation Date",
             "readonly": true,
-            "value": ()=>new Date(this.item.creation_time).toLocaleString()
+            "value": ()=>new Date(this.item.creation_time).toLocaleString(),
         });
 
         this.stream_host = new ui.InputProperty(`<input type="text">`, {
             "label": "Stream Host",
             "readonly": true,
-            "value": ()=>app.get_media_server_base_url(),
             "copy": true,
             "info": "Connect and stream to dynamic RTMP playlist items. Use this RTMP host and key in OBS or your streaming software of preference",
+            "value": ()=>app.get_media_server_base_url(),
         });
 
         this.stream_key = new ui.TextAreaProperty({
@@ -3631,8 +3636,8 @@ export class SessionConfigurationMenu extends EditModal {
             "textarea.grow": true,
             "textarea.break_all": true,
             "readonly": true,
-            "value": ()=>`session/${app.$._session.id}`,
             "copy": true,
+            "value": ()=>`session/${app.$._session.id}`,
         });
 
         /* var regenerate_button = new ui.Button(`<button><i class="fas fa-sync-alt"></i></button>`, {
@@ -3671,6 +3676,7 @@ export class SessionConfigurationMenu extends EditModal {
             "label": "Session Directory",
             "info": "Your preferred location for storing any uploaded / downloaded files.",
             "file.options":{ folders: true },
+            "file.check_media": true,
             "default": get_default,
         });
         this.files_dir.validators.push(VALIDATORS.media_exists);
@@ -3724,7 +3730,7 @@ export class SessionConfigurationMenu extends EditModal {
     }
 }
 
-export class AdminMenu extends Modal {
+export class AdminMenu extends EditModal {
     constructor() {
         super({
             "modal.title":"Admin",
@@ -3734,21 +3740,22 @@ export class AdminMenu extends Modal {
 
 export class ChangeLogMenu extends Modal {
     constructor() {
+        var html;
         super({
             "modal.title": "Change Log",
-            "modal.min-width": "750px"
+            "modal.min-width": "750px",
+            "modal.load": async ()=>{
+                html = await (await (fetch("./changes.md"))).text();
+            }
         });
         this.on("before-show",()=>{
+            dom.set_inner_html(this.props.elem, `<div>${html}</div>`);
             Object.assign(this.props.elem.style, {
                 // "font-family": "monospace",
-                "font-size": "1.2rem",
+                "font-size": "1.2em",
             });
             app.local_settings.set("last_change_log", app.$.change_log.mtime);
         })
-    }
-    async load() {
-        var html = await (await (fetch("./changes.md"))).text();
-        dom.set_inner_html(this.props.elem, `<div>${html}</div>`);
     }
 }
 
@@ -3850,9 +3857,9 @@ export class SetTimePosMenu extends EditModal {
         });
         var chapter_select = new ui.InputProperty(`<select>`, {
             "label": "Chapter",
-            "disabled":()=>!app.local_settings.get("show_chapters") || app.$._session._current_chapters.length < 2,
+            "disabled":()=>!app.local_settings.get("show_chapters") || app.$._session._current_playlist_item._userdata.chapters.length < 2,
             "options":()=>{
-                return app.$._session._current_chapters.map((c,i)=>[i, app.chapter_to_string(c, true)])
+                return app.$._session._current_playlist_item._userdata.chapters.map((c,i)=>[i, app.chapter_to_string(c, true)])
             },
             "reset":false,
         });
@@ -3871,7 +3878,7 @@ export class SetTimePosMenu extends EditModal {
         })
         chapter_select.on("change",(e)=>{
             if (!e.trigger) return;
-            var c = app.$._session._current_chapters[e.value];
+            var c = app.$._session._current_playlist_item._userdata.chapters[e.value];
             time_pos.set_values(c.start);
         })
     }
@@ -3881,24 +3888,28 @@ export class SetVolumeSettings extends EditModal {
     constructor() {
         super({
             "modal.title":"Precise Volume Adjustment",
+            "modal.auto_apply": false,
             "modal.apply": ()=>{
                 app.media_player.volume.set_value(volume_input.value, {trigger:true});
                 app.media_player.vol_speed.set_value(volume_speed.value, {trigger:true});
             }
         });
+
         var row = this.props.append(new ui.FlexRow());
         //<div style="padding:0 5px; border-left: 1px solid #aaa; border-bottom: 1px solid #aaa;">
         var volume_input = new ui.InputProperty(`<input type="number">`, {
-            "name": "volume_target",
             "label": "Volume (%)",
             "default": 100,
             "min": 0,
             "max": 200,
             "data": app.$._session.volume_target,
         });
+        volume_input.on("change", (e)=>{
+            if (e.trigger) volume_slider.set_value(e.value);
+        })
         row.append(volume_input);
+
         var volume_speed = new ui.InputProperty(`<select>`, {
-            "name": "volume_speed",
             "label": "Volume Transition Speed",
             "default": 4.0,
             "options": [[0.5, "Very Slow"], [1.0, "Slow"], [2.0, "Medium"], [4.0, "Fast"], [8.0, "Very Fast"], [0, "Immediate"]],
@@ -3909,16 +3920,18 @@ export class SetVolumeSettings extends EditModal {
         var row = this.props.append(new ui.FlexRow());
         var volume_slider = new ui.InputProperty(`<input type="range">`, {
             "label": "Volume (%)", //  style="margin-right:5px"
-            "default": 100,
             "step": 1,
             "min": 0,
             "max": 200,
             "reset": false,
-            "dblclick":()=>volume_slider.reset()
+            "dblclick":()=>volume_slider.reset(),
+            "data": app.$._session.volume_target,
         });
+        volume_slider.set_value(app.$._session.volume_target);
+        /* volume_slider.on("change", (e)=>{
+            volume_input.set_value(e.value, {trigger:e.trigger});
+        }) */
         row.append(volume_slider);
-
-        this.footer.append(this.ok, this.cancel);
     }
 }
 
@@ -3967,7 +3980,7 @@ export class ExternalSessionConfigurationMenu extends Modal {
             "readonly": true,
             "copy":true,
             "reset": false,
-            "disabled":()=>!input_props.every(i=>i.is_valid)
+            "disabled":()=>!input_props.every(i=>i.is_valid),
         });
         this.props.append(this.output_host);
 
@@ -4106,6 +4119,7 @@ export class EditTargetMenu extends EditModal {
             "info": "Owner: User can edit, delete or utilize the target (full access).\nAllowed: User can view and utilize the target.\nDenied: Users cannot view or utilize target.",
             "access.allow_passwords": false,
         });
+
         if (!IS_ELECTRON) {
             this.props.append(this.access_control);
         }
@@ -4282,7 +4296,7 @@ export class ExpandedTargetsProperty extends ui.Property {
                 "title": "Delete",
             });
 
-            var buttons_el = $(`<div class="buttons"></div>`)[0];
+            var buttons_el = $(`<div class="button-group"></div>`)[0];
             buttons_el.append(edit_button, config_button, delete_button, up_button, down_button, restart_button);
             elem.append(label_el, buttons_el);
 
@@ -4344,9 +4358,9 @@ export class ExpandedTargetsProperty extends ui.Property {
 
 /** 
  * @template ItemType 
- * @template {string[]} ValueType
- * @template {ui.InputPropertySettings<ItemType,ValueType,TargetsProperty>} Settings
- * @template {ui.InputPropertyEvents} Events
+ * @template {string[]} [ValueType=string[]]
+ * @template {ui.InputPropertySettings<ItemType,ValueType,TargetsProperty>} [Settings=ui.InputPropertySettings<ItemType,ValueType,TargetsProperty>]
+ * @template {ui.InputPropertyEvents} [Events=ui.InputPropertyEvents]
  * @extends {ui.InputProperty<ItemType,ValueType,Settings,Events>} 
  */
 export class TargetsProperty extends ui.InputProperty {
@@ -4896,6 +4910,7 @@ export class SavePlaylistMenu extends EditModal {
             "name": "playlist-save-dir",
             "label": "Remote Save Directory",
             "file.options": { folders: true },
+            "file.check_media": true,
             "default": "",
             "invalid_class": null,
         });
@@ -4958,11 +4973,6 @@ export class SavePlaylistMenu extends EditModal {
 export class HistoryMenu extends Modal {
     history = [];
     constructor() {
-        super({
-            "modal.title": ()=>`History [${history.length}]`,
-            "modal.min-width": "900px",
-            "modal.load": ()=>load(),
-        });
         
         var table_data = {
             "Time":(data)=>{
@@ -4979,7 +4989,7 @@ export class HistoryMenu extends Modal {
                 return data.prev.length.toLocaleString();
             },
         };
-        var body = new ui.FlexRow();
+        var wrapper_elem = $(`<div class="autosave-history"></div>`)[0];
         var table_wrapper = $(`<div class="table-wrapper thin-scrollbar"></div>`)[0];
         /** @type {HTMLTableElement} */
         var table = $(`<table><thead></thead><tbody></tbody></table>`)[0];
@@ -4990,11 +5000,11 @@ export class HistoryMenu extends Modal {
             $(thead_tr).append(`<th>${k}</th>`);
         });
         thead.append(thead_tr);
-        var table_col = body.append(new ui.Column());
+        var table_col = new ui.Column({class:"table-column"});
         table_wrapper.append(table);
         table_col.append(table_wrapper);
         
-        var info_col = body.append(new ui.Column());
+        var info_col = new ui.Column({class:"info-column"});
         var info_wrapper_elem = $(`<div class="info-wrapper"></div>`)[0];
         var info_elem = $(`<div class="info thin-scrollbar"></div>`)[0];
         info_wrapper_elem.append(info_elem);
@@ -5024,9 +5034,15 @@ export class HistoryMenu extends Modal {
             });
         };
 
-        this.props.append(body);
-        
-        dom.add_class(this.props.elem, "autosave-history");
+        super({
+            "modal.title": ()=>`History [${history.length}]`,
+            "modal.min-width": "900px",
+            "modal.load": load,
+            // "modal.blocking": false,
+        });
+
+        wrapper_elem.append(table_col, info_col);
+        this.props.append(wrapper_elem);
         
         var loading = false;
         var load_button = new ui.Button(`<button>Load</button>`, {
@@ -5051,6 +5067,7 @@ export class HistoryMenu extends Modal {
             if (data) {
                 // var diff_type_to_str = ["-", "created", "deleted", "changed"]
                 // ${diff_type_to_str[v[0]]}
+                info_elem.append(`<div><h3>Time</h3><span>${new Date(data.mtime).toLocaleString()}</span></div>`);
                 for (var k of ["curr", "prev"]) {
                     var entries = data[k];
                     var title = k == "prev" ? "Previous Changes" : "Current Changes"
@@ -5130,7 +5147,7 @@ export class PlaylistItemModifyMenu extends EditModal {
             "modal.auto_apply": !is_new,
             "modal.apply": ()=>{
                 if (app.$._session._is_running && this.props.items.some(d=>d === app.$._session._current_playlist_item) && Object.keys(this.changes).length) {
-                    window.alert(`The item is currently playing and some changes may require reloading to apply changes.`);
+                    app.alert_for_reload_of_current_item();
                     // app.prompt_for_reload_of_current_item();
                 }
                 var raw_values = this.props.raw_values.map((v,i)=>{
@@ -5149,21 +5166,23 @@ export class PlaylistItemModifyMenu extends EditModal {
                     app.playlist_update(d);
                 }
             },
+            "modal.allow_invalid": true,
             "modal.title_overflow": true,
             "modal.items": items,
+            "modal.blocking": false,
         });
-
-        let props_group = this.props_group = new MediaPropertyGroup(MediaSettingsMode.custom, false);
         
         /** @type {FileProperty<PlaylistItem>} */
         let filename = new FileProperty({
             "name": "filename",
             "label": "Path / URI",
             "default": (item)=>item.filename,
+            "file.check_media": true,
             "reset": true,
         });
         filename.validators.push(VALIDATORS.not_empty);
-        filename.validators.push(VALIDATORS.media_exists);
+
+        let props_group = this.props_group = new MediaPropertyGroup(MediaSettingsMode.custom, false, filename);
         
         this.props.append(filename);
         this.props.append(new ui.Separator());
@@ -5197,15 +5216,15 @@ const MediaSettingsMode = {
 
 /** @extends {ui.PropertyGroup<PlaylistItem$>} */
 export class MediaPropertyGroup extends ui.PropertyGroup {
-    constructor(mode, simple) {
+    /** @param {number} mode @param {boolean} simple @param {FileProperty<PlaylistItem,string>} filename */
+    constructor(mode, simple, filename) {
         super({
-            // ALL IS FUCKED
             "name": (mode == MediaSettingsMode.all) ? "" : "props",
             "items": ()=>{
                 if (mode == MediaSettingsMode.current) return [app.$._session._current_playlist_item];
                 if (mode == MediaSettingsMode.selected) {
                     let items = app.playlist.get_selected_items();
-                    if (!items.length) items = [app.$._NULL_PLAYLIST_ITEM];
+                    if (!items.length) items = [app.$._session.playlist[Collection$_null]];
                     return items;
                 }
                 if (mode == MediaSettingsMode.all) {
@@ -5213,7 +5232,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 }
             },
             "disabled": ()=>{
-                return (this.items.every(i=>i === app.$._NULL_PLAYLIST_ITEM));
+                return (this.items.every(i=>i._is_null));
             }
         });
 
@@ -5426,9 +5445,10 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 "name": name,
                 "label": pre ? "Pre-Filters" : "Filters",
                 "empty": "No filters",
+                "item_size": 25,
                 "vertical": true,
                 "new": ()=>{
-                    return {name:"", props:{}, active:true};
+                    return new FilterConfigurationMenu().show();
                 },
                 ui(list_item) {
                     list_item.buttons.prepend(
@@ -5573,7 +5593,6 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             // this.clip_loops.output_modifiers.push(v=>v.toFixed(6).replace(/0+$/, ""));
 
             this.total_duration = new ui.TimeSpanProperty({
-                "name": null,
                 "label": "Total Duration",
                 // "readonly": true,
                 // "disabled": true,
@@ -5691,6 +5710,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 "name": "audio_file",
                 "label": "Audio File",
                 "file.options": { files: true, filter: ["audio", "video"] },
+                "file.check_media": true,
                 "default": get_default,
             });
             this.audio_file.validators.push(VALIDATORS.media_audio);
@@ -5699,6 +5719,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 "name": "subtitle_file",
                 "label": "Subtitle File",
                 "file.options": { files: true, filter: ["text"] },
+                "file.check_media": true,
                 "default": get_default,
             })
             this.subtitle_file.validators.push(VALIDATORS.media_subtitle);
@@ -5734,7 +5755,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             this.auto_crop_button = new ui.Button(null, {
                 "flex": 0,
                 "disabled":()=>auto_cropping,
-                "content":()=>auto_cropping ? `Detecting <i class="fas fa-sync fa-spin"></i>` : `Crop Detect`,
+                "content":()=>auto_cropping ? `Detecting <i class="fas fa-sync fa-spin"></i>` : `Detect`,
                 "click":async ()=>{
                     auto_cropping = true;
                     this.auto_crop_button.update()
@@ -5751,8 +5772,13 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                     auto_cropping = false;
                     this.auto_crop_button.update();
                     this.detected_crops_images.update();
+                },
+                "hidden": ()=>{
+                    var info = get_info();
+                    return !info.is_normal || info.is_remote;
                 }
             });
+            this.crop.buttons_el.append(this.auto_crop_button);
 
             var old_hash;
             var crop_el = $(`<div class="crop-image-container"></div>`)[0];
@@ -6161,77 +6187,77 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             });
         }
 
-        this.on("update", ()=>{
-            var layout = [];
-
-            var items = _this.items;
-
-            var add_video_layout = [
-                [this.video_file, this.video_file_start, this.video_file_end]
-            ];
-            var clip_layout = [
-                [this.clip_start, this.clip_end, ...(this.clip_length ? [this.clip_length] : [])],
-                [this.start_end_time_range],
-                [this.clip_offset, this.clip_loops, this.total_duration],
-            ];
-            var types = {};
-            /** @param {PlaylistItem$} item */
-            var get_type = (item)=>{
-                if (item._is_playlist) return "playlist";
-                if (item.filename === "livestreamer://empty") return "empty";
-                if (item.filename === "livestreamer://macro") return "macro";
-                if (item.filename === "livestreamer://exit") return "exit";
-                if (item.filename === "livestreamer://intertitle") return "intertitle";
-                if (item.filename === "livestreamer://rtmp") return "rtmp";
+        var get_info = ()=>{
+            let types = filename.values.map((filename,i)=>{
+                if (filename === "livestreamer://empty") return "empty";
+                if (filename === "livestreamer://macro") return "macro";
+                if (filename === "livestreamer://exit") return "exit";
+                if (filename === "livestreamer://intertitle") return "intertitle";
+                if (filename === "livestreamer://rtmp") return "rtmp";
+                if (filename === "livestreamer://playlist" || this.items[i]._is_playlist) return "playlist";
                 return "normal";
-            }
-            var types = items.map(get_type);
+            });
             
-            var is_playlist = types.every(t=>t==="playlist");
-            var is_empty = types.every(t=>t==="empty");
-            var is_macro = types.every(t=>t==="macro");
-            var is_intertitle = types.every(t=>t==="intertitle");
-            var is_rtmp = types.every(t=>t==="rtmp");
-            var is_normal = types.every(t=>t==="normal");
+            let is_playlist = types.every(t=>t==="playlist");
+            let is_empty = types.every(t=>t==="empty");
+            let is_macro = types.every(t=>t==="macro");
+            let is_intertitle = types.every(t=>t==="intertitle");
+            let is_rtmp = types.every(t=>t==="rtmp");
+            let is_normal = types.every(t=>t==="normal");
             
             // var is_2_track_playlist = items.every(i=>i._num_tracks == 2);
-            var is_merged_playlist = items.every(i=>i._is_merged_playlist);
-            var is_parent_merged = items.every(i=>i._root_merged_playlist);
-            // var is_youtube = items.every(i=>utils.try_catch(()=>i._media_info.probe_method === "youtube-dl"));
-            var is_image = items.every(i=>utils.try_catch(()=>i._media_info.duration <= IMAGE_DURATION));
-            var is_remote = items.every(i=>i._is_remote);
-            // var exists = items.every(i=>utils.try_catch(()=>i._media_info.exists));
-            
+            let is_merged_playlist = this.playlist_mode.values.every(v=>v);
+            let is_parent_merged = this.items.every(i=>i._root_merged_playlist);
+            let is_image = filename.values.every(filename=>utils.try_catch(()=>app.$._session.media_info[filename].duration <= IMAGE_DURATION));
+            let is_remote = filename.values.every(filename=>filename.match(/^(rtmps?|https?):\/\//));
+
+            return {
+                is_playlist,
+                is_empty,
+                is_macro,
+                is_intertitle,
+                is_rtmp,
+                is_normal,
+                is_merged_playlist,
+                is_parent_merged,
+                is_image,
+                is_remote,
+            }
+        }
+
+        var update_layout = ()=>{
+            var layout = [];      
             var get_default_layout = (is_empty)=>{
-                var layout = [
-                    [this.loop, this.aspect_ratio, this.deinterlace]
-                ];
-                if (is_empty) layout.push([this.audio_delay, this.audio_channels])
-                else {
-                    layout.push([this.vid_override]);
-                    layout.push([this.aid_override, this.audio_delay, this.audio_channels]);
-                }
-                if (!is_empty) layout.push([this.sid_override, this.subtitle_delay, this.subtitle_scale, this.subtitle_pos]);
-                // if (IS_ELECTRON)
-                // rows.push([this.playback_speed, this.pitch_correction]);
+                var layout = [];
+                layout.push([this.loop, this.aspect_ratio, this.deinterlace]);
+                layout.push([this.vid_override]);
+                layout.push([this.aid_override, this.audio_delay, this.audio_channels]);
+                layout.push([this.sid_override, this.subtitle_delay, this.subtitle_scale, this.subtitle_pos]);
                 layout.push([this.volume_normalization, this.volume_multiplier]);
                 layout.push([this.pre_filters, this.filters]);
                 return layout;
-            }
-
-            var crop_layout = [
-                [this.crop]
-            ];
-            if (is_normal && !is_remote) {
-                crop_layout[0].push(this.auto_crop_button);
-                crop_layout.push(this.detected_crops_images);
             }
             
             if (simple) {
                 layout.push(...get_default_layout());
             } else {
-                if (is_normal || is_empty || is_rtmp) {
-                    if (is_empty || is_image || is_rtmp) {
+                var info = get_info();
+                var add_video_layout = [
+                    [this.video_file, this.video_file_start, this.video_file_end]
+                ];
+                var clip_layout = [
+                    [this.clip_start, this.clip_end, ...(this.clip_length ? [this.clip_length] : [])],
+                    [this.start_end_time_range],
+                    [this.clip_offset, this.clip_loops, this.total_duration],
+                ];      
+                var crop_layout = [
+                    [this.crop]
+                ];
+                if (info.is_normal && !info.is_remote) {
+                    crop_layout.push(this.detected_crops_images);
+                }
+                if (info.is_normal || info.is_empty || info.is_rtmp) {
+                    if (info.is_empty || info.is_image || info.is_rtmp) {
                         layout.push([this.duration]);
                         layout.push("---");
                     } else {
@@ -6239,18 +6265,18 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                         layout.push("---");
                     }
                     layout.push([this.fade_in_time, this.fade_out_time]);
-                    if (!is_parent_merged) {
+                    if (!info.is_parent_merged) {
                         layout.push([this.background_mode, this.background_color]);
                         layout.push(...add_video_layout);
                         layout.push([this.audio_file, this.subtitle_file]);
                         layout.push(...crop_layout);
                         layout.push("---");
-                        layout.push(...get_default_layout(is_empty))
+                        layout.push(...get_default_layout())
                     }
-                } else if (is_playlist) {
+                } else if (info.is_playlist) {
                     // layout.push([this.filename]);
                     layout.push([this.playlist_mode, this.playlist_end_on_shortest_track, this.playlist_revert_to_video_track_audio]);
-                    if (is_merged_playlist) {
+                    if (info.is_merged_playlist) {
                         layout.push("---");
                         layout.push(...clip_layout);
                         layout.push("---");
@@ -6262,7 +6288,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                         layout.push("---");
                         layout.push(...get_default_layout());
                     }
-                } else if (is_intertitle) {
+                } else if (info.is_intertitle) {
                     layout.push([this.title_text]);
                     layout.push([this.duration, this.fade_in_time, this.fade_out_time]);
                     layout.push([this.title_font, this.title_size, this.title_color]);
@@ -6274,47 +6300,62 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                     layout.push([this.title_preview]);
                     layout.push("---");
                     layout.push([this.audio_file]);
-                } else if (is_macro) {
+                } else if (info.is_macro) {
                     layout.push([this.macro_function]);
                     layout.push([this.macro_handover_session]);
-                } else if (is_rtmp) {
+                } else if (info.is_rtmp) {
 
                 }
                 if (layout.length) layout.push("---");
                 layout.push([this.label, this.color]);
             }
             this.layout = layout;
+        };
+        /* this.on("update", ()=>{
+            console.log("change", Date.now());
+            update_layout();
+        }); */
+        var debounced_update_layout = dom.debounce_next_frame(update_layout, 0);
+        this.on("post_update", ()=>{
+            debounced_update_layout();
         });
     }
 }
 
 /**
  * @template ItemType
- * @template {string} ValueType
- * @template {FileProperty<ItemType,ValueType>} ThisType
+ * @template {string} [ValueType=string]
+ * @template {FileProperty<ItemType,ValueType>} [ThisType=FileProperty<ItemType,ValueType>]
  * @typedef {ui.InputPropertySettings<ItemType,ValueType,ThisType> & {
  *  "file.options": ui.UISetting<ThisType,FileManagerOptions>,
+ *  "file.check_media": ui.UISetting<ThisType,boolean>,
  * }} FilePropertySettings
  */
 
 /** 
  * @template ItemType 
- * @template {string} ValueType
- * @template {FilePropertySettings<ItemType,ValueType,FileProperty>} Settings
- * @template {ui.InputPropertyEvents} Events
+ * @template {string} [ValueType=string]
+ * @template {FilePropertySettings<ItemType,ValueType,FileProperty>} [Settings=FilePropertySettings<ItemType,ValueType,FileProperty>]
+ * @template {ui.InputPropertyEvents} [Events=ui.InputPropertyEvents]
  * @extends {ui.InputProperty<ItemType,ValueType,Settings,Events>} 
  */
 export class FileProperty extends ui.InputProperty {
+    /** @type {MediaInfo} */
+    #media_info;
+    get media_info() { return this.#media_info; }
+
     /** @param {Settings} settings */
     constructor(settings = {}) {
         settings = {
-            "file.options": {folders:false, files:false, multiple:false},
+            "file.options": {files:true, folders:false, multiple:false},
+            "file.check_media": false,
             "placeholder": ()=>`Choose a ${this.get_setting("file.options").folders ? "directory" : "file"}...`,
             ...settings
         }
         var input = $(`<input type="text">`)[0];
         super(input, settings);
         var browse_button = new ui.Button(`<button><i class="fas fa-folder-open"></i></button>`, {
+            title: "Browse",
             click: async (e)=>{
                 /** @type {FileManagerOptions} */
                 var file_options = {id: this.name_id, start: this.value, ...this.get_setting("file.options")};
@@ -6323,19 +6364,34 @@ export class FileProperty extends ui.InputProperty {
                 this.set_values(paths[0], {trigger:true});
             }
         });
-        this.validators.push(VALIDATORS.media_exists);
+        this.validators.push(()=>{
+            if (!this.get_setting("file.check_media")) return true;
+            var valid = VALIDATORS.media_exists.apply(this, [this.value]);
+            if (valid !== true) return valid;
+            return true;
+        });
+        this.on("change", async(e)=>{
+            if (this.get_setting("file.check_media")) {
+                if (e.trigger) {
+                    await app.get_media_info(this.value);
+                    this.update();
+                }
+            }
+        });
+        var last_has_focus;
         this.buttons_el.prepend(browse_button);
         this.on("render", ()=>{
             var value = this.value;
             var has_focus = dom.has_focus(this.input);
-            if (has_focus) {
-                this.input.value = value;
-            } else {
-                this.input.value = value ? pretty_uri_basename(value) : "";
+            if (!has_focus) {
+                if (value && !value.startsWith("livestreamer://")) value = pretty_uri_basename(value);
             }
-            if (has_focus) {
+            if (this.input.value != value) this.input.value = value;
+            if (has_focus && !last_has_focus) {
                 this.input.scrollLeft = Number.MAX_SAFE_INTEGER;
+                this.input.setSelectionRange(value.length, value.length);
             }
+            last_has_focus = has_focus;
         });
     }
 }
@@ -6343,15 +6399,21 @@ export class FileProperty extends ui.InputProperty {
 export class FilterConfigurationMenu extends EditModal {
     /** @param {ui.PropertyListItem} list_item */
     constructor(list_item) {
+        var is_new = !list_item;
         super({
             "modal.title": "Configure Filter",
             "modal.apply": ()=>{
+                if (is_new) return;
                 list_item.set_value(this.props.value, {trigger:true});
             },
-            "modal.data": (_, path)=>{
-                return utils.reflect.get(list_item.value, path)
+            "modal.items": ()=>{
+                if (!is_new) return [list_item.value];
             },
+            "modal.auto_apply": !is_new,
+            "modal.return_value": ()=>this.props.value
         });
+
+        var orig_filter = is_new ? {} :list_item.value;
         
         var row = new ui.FlexRow();
         var filter_name = new ui.InputProperty(`<select>`, {
@@ -6363,9 +6425,12 @@ export class FilterConfigurationMenu extends EditModal {
             ],
             reset: false,
         });
+        filter_name.validators.push(VALIDATORS.not_empty);
         var filter_active = new ui.InputProperty(`<select>`, {
             name: "active",
             label: "Active",
+            default: true,
+            reset: false,
             options: YES_OR_NO,
             reset: false,
         });
@@ -6443,7 +6508,7 @@ export class FilterConfigurationMenu extends EditModal {
                     default: p.__default__,
                     info: p.__description__,
                     data: (_,path)=>{
-                        if (filter_name.value == list_item.value.name) return utils.reflect.get(list_item.value, path)
+                        if (filter_name.value == orig_filter.name) return utils.reflect.get(orig_filter, path)
                     }
                 };
                 if (p.__options__) {
@@ -6500,6 +6565,7 @@ export class EditAccessControlMemberMenu extends EditModal {
                 value[this.username.value] = this.props.value;
                 prop.set_value(value);
             },
+            "modal.items": [data],
         });
 
         var row = this.props.append(new ui.FlexRow());
@@ -6544,8 +6610,8 @@ export class EditAccessControlMemberMenu extends EditModal {
 
 /** 
  * @template ItemType 
- * @template {AccessControl} ValueType 
- * @template {ui.InputPropertySettings<ItemType,ValueType,AccessControlProperty>} Settings
+ * @template {AccessControl} [ValueType=AccessControl] 
+ * @template {ui.InputPropertySettings<ItemType,ValueType,AccessControlProperty>} [Settings=ui.InputPropertySettings<ItemType,ValueType,AccessControlProperty>]
  * @extends {ui.InputProperty<ItemType,ValueType,Settings>} 
  */
 export class AccessControlProperty extends ui.InputProperty {
@@ -6612,7 +6678,7 @@ export class AccessControlProperty extends ui.InputProperty {
         add_button.addEventListener("click", async ()=>{
             var ac = this.value;
             if (ac._owners.length == 0) {
-                ac._claim();
+                this._claim();
             } else {
                 new EditAccessControlMemberMenu(this, {}).show();
             }
@@ -6650,9 +6716,9 @@ export class AccessControlProperty extends ui.InputProperty {
 
 /** 
  * @template ItemType 
- * @template {[number,number]} ValueType
- * @template {ui.InputPropertySettings<ItemType,ValueType,RangeProperty>} Settings
- * @template {ui.PropertyEvents} Events
+ * @template {[number,number]} [ValueType=[number,number]]
+ * @template {ui.InputPropertySettings<ItemType,ValueType,RangeProperty>} [Settings=ui.InputPropertySettings<ItemType,ValueType,RangeProperty>]
+ * @template {ui.PropertyEvents} [Events=ui.PropertyEvents]
  * @extends {ui.InputProperty<ItemType, ValueType, Settings, Events>} 
  */
 export class RangeProperty extends ui.InputProperty {
@@ -6682,14 +6748,16 @@ export class RangeProperty extends ui.InputProperty {
                 }
             }
         });
+        var value;
+        var debounced_update_value = dom.debounce_next_frame(()=>this.set_value(value));
+        var debounced_update_value_trigger = dom.debounce_next_frame(()=>this.set_value(value, {trigger:true}));
         slider.on("slide", (_values)=>{
-            var value = _values.map(v=>+v);
-            // this.emit("slide", { value });
-            this.set_value(value);
+            value = _values.map(v=>+v);
+            debounced_update_value();
         });
         slider.on("end", (_values)=>{
-            var value = _values.map(v=>+v);
-            this.set_value(value, {trigger:true});
+            value = _values.map(v=>+v);
+            debounced_update_value_trigger();
         });
         settings = {
             "min": 0,
@@ -6808,7 +6876,7 @@ export class Panel extends ui.UI {
             "disabled": utils.noop,
             ...opts,
         }
-        var g = $(`<div class="buttons border-group"></div>`)[0];
+        var g = $(`<div class="button-group"></div>`)[0];
         var reset_button = new ui.Button(`<button class="reset mini icon" title="Reset"><i class="fas fa-undo"></i></button>`, {
             "disabled": ()=>props.is_default || !!opts.disabled(),
             "click": ()=>props.reset(),
@@ -6853,7 +6921,7 @@ export class StreamSettings extends Panel {
         });
         left.append(this.properties_ui, this.info_ui);
         
-        this.button_group_ui = new ui.FlexRow({gap:0, class:"border"});
+        this.button_group_ui = new ui.FlexRow({gap:0, class:"button-group"});
         right.append(this.button_group_ui);
 
         var restart_elem = $(`<div>Restarting... [<span class="restart-time"></span>] <a class="restart-cancel" href="javascript:void(0)">Cancel</a></div>`)[0];
@@ -7046,6 +7114,7 @@ export class StreamSettings extends Panel {
             if (!e.name || !e.trigger) return;
             if (e.raw_value == null) delete app.$._session.stream_settings[e.name];
             else app.$._session.stream_settings[e.name] = e.raw_value;
+            app.update();
             app.request({
                 call: ["session", "update_values"],
                 arguments: [{stream_settings:{[e.name]:e.raw_value}}]
@@ -7053,12 +7122,9 @@ export class StreamSettings extends Panel {
         });
 
         var last_stream_info_hash;
-        this.on("post_update", ()=>{
-            var session = app.$._session || EMPTY_OBJECT;
+        this.on("render", ()=>{
+            var session = app.$._session;
             var stream = session._stream;
-
-            dom.toggle_class(this.properties_ui.elem, "d-none", session._is_running);
-            dom.toggle_class(this.info_ui.elem, "d-none", !session._is_running);
     
             var state;
             if (stream.state === "stopped") state = `Start`;
@@ -7155,7 +7221,7 @@ export class MediaPlayerPanel extends Panel {
 
         dom.add_class(this.elem, "player-interface-wrapper");
 
-        var bg = $(`<div class="buttons border-group">
+        var bg = $(`<div class="button-group">
             <button class="show_live_feed mini icon" data-setting__show_live_feed title="Show/Hide Live Feed"><i class="fas fa-tv"></i></button>
             <button class="time_display_ms mini" data-setting__time_display_ms title="Show/Hide Milliseconds">MS</button>
             <button class="show_chapters mini icon" data-setting__show_chapters title="Show/Hide Chapters"><i class="fas fa-bookmark"></i></button>
@@ -7166,7 +7232,7 @@ export class MediaPlayerPanel extends Panel {
             <div class="test-stream">
                 <div class="video-wrapper"></div>
                 <div class="overlay">
-                    <div class="buttons">
+                    <div class="button-group">
                         <button class="mini icon reload" title="Reload"><i class="fas fa-sync"></i></button>
                         <button class="mini icon popout" title="Pop-out Player"><i class="fas fa-external-link-alt"></i></button>
                         <button class="mini icon" data-setting__show_player_info title="Toggle Player Info"><i class="fas fa-circle-info"></i></button>
@@ -7208,25 +7274,24 @@ export class MediaPlayerPanel extends Panel {
                     /* await */ dom.clone_document_head(document.head, w.document.head);
                     var style = w.document.createElement("style");
                     style.textContent =
-`body {
-    padding: 0;
-    margin: 0;
-}
-body > * {
-    width: 100% !important;
-    height: 100% !important;
-}
-video {
-    width: 100% !important;
-    height: 100% !important;
-}`;
+`body { padding: 0; margin: 0; }
+video { width: 100% !important; height: 100% !important; }`;
                     //+"\n"+dom.get_all_css(document, true);
                     w.document.head.append(style);
-                    w.document.body.append(this.test_stream_elem);
+                    let root = new Root();
+                    w.document.body.append(root.elem);
+
+                    [...window.document.body.attributes].forEach(({name,value})=>w.document.body.setAttribute(name, value));
+
+                    root.append(this.test_stream_elem);
+                    this.test_stream_elem.classList.add("popout");
                     this.refresh_player(true);
+                    app.setup_events(root.elem);
                     
                     w.addEventListener("unload", (e)=>{
                         delete windows["test-"+id];
+                        root.destroy();
+                        this.test_stream_elem.classList.remove("popout");
                         this.test_stream_container_elem.append(this.test_stream_elem);
                         this.refresh_player(true);
                     });
@@ -7279,6 +7344,7 @@ video {
                 "click": (e)=>{
                     var new_pause = !app.$._stream.mpv.ctx.props.pause;
                     app.$._stream.mpv.ctx.props.pause = new_pause;
+                    app.update();
                     app.request({
                         call: ["session", "mpv", "set_property"],
                         arguments: ["pause", new_pause]
@@ -7357,7 +7423,7 @@ video {
         this.volume_wrapper = new ui.UI(`<div class="player-volume-wrapper"></div>`);
         this.player_inline_elem.append(this.volume_wrapper);
 
-        this.volume = new ui.InputProperty(`<div><input id="volume" type="range" value="100" title="Volume" style="width:100px"></div>`, {
+        this.volume = new ui.InputProperty(`<input id="volume" type="range" value="100" title="Volume" style="width:100px">`, {
             "name": "volume_target",
             "default": 100,
             "step": 1,
@@ -7366,6 +7432,8 @@ video {
             "reset": false,
             "dblclick": ()=>this.volume.reset(),
         });
+        this.volume.elem.style.width="100px";
+        this.volume.elem.style.minWidth="auto";
         this.vol_speed = new ui.InputProperty(`<select>`, {
             "name": "volume_speed",
             "title": "Volume Transition Speed",
@@ -7378,6 +7446,7 @@ video {
         var on_volume_prop_change = (e)=>{
             if (e.trigger) {
                 app.$._session[e.name] = e.value;
+                app.update();
                 app.request({
                     call:["session", "update_values"],
                     arguments: [{[e.name]: e.value}]
@@ -7559,6 +7628,7 @@ export class MediaSettingsPanel extends Panel {
             if (!e.name || !e.trigger) return;
             if (this.mode === MediaSettingsMode.all) {
                 app.$._session.player_default_override[e.name] = e.value;
+                app.update();
                 app.request({
                     call: ["session", "set_player_default_override"],
                     arguments: [e.name, e.value]
@@ -7585,12 +7655,12 @@ export class MediaSettingsPanel extends Panel {
                 "title": "Selected",
             },
             [MediaSettingsMode.all]: {
-                "title": "All",
+                "title": "Defaults",
             }
         }
 
         var _this = this;
-        var toggle_buttons = $(`<div class="buttons border-group"></div>`)[0];
+        var toggle_buttons = $(`<div class="button-group"></div>`)[0];
         var buttons = Object.keys(mode_info).map(k=>{
             k = +k;
             return new ui.Button(`<button class="mini">${mode_info[k].title}</button>`, {
@@ -7714,7 +7784,7 @@ export class LogPanel extends Panel {
         ];
 
         this.header_elem.append(...button_defs.map(g=>{
-            var group_elem = $(`<div class="buttons border-group"></div>`)[0];
+            var group_elem = $(`<div class="button-group"></div>`)[0];
             group_elem.append(...g.map(b=>{
                 var button = new ui.Button(b.inner, {
                     "title": b.title,
@@ -7858,7 +7928,7 @@ export class StreamMetricsPanel extends Panel {
             }
         };
         
-        var button_group = $(`<div class="buttons border-group">`)[0];
+        var button_group = $(`<div class="button-group">`)[0];
         Object.entries(modes).forEach(([t,d])=>{
             var button = $(`<button class="mini" title="${d.title}">${d.html}</button>`)[0];
             button.onclick = ()=>set_mode(t);
@@ -7887,7 +7957,7 @@ export class StreamMetricsPanel extends Panel {
         inner_el.append(this.canvas)
         this.body_elem.append(inner_el, this.chart_info_elem);
 
-        var button_group = $(`<div class="buttons border-group">`)[0];
+        var button_group = $(`<div class="button-group">`)[0];
         button_group.append($(`<button class="mini icon" data-setting__show_metrics_info title="Toggle Encoder Info"><i class="fas fa-info-circle"></i></button>`)[0]);
         this.header_elem.append(button_group);
 
@@ -8188,7 +8258,7 @@ export class PlaylistPanel extends Panel {
     
     #current_id;
     /** @return {PlaylistItem$} */
-    get current() { return app.$._session.playlist[this.#current_id] || app.$._session.playlist["0"] || app.$._NULL_PLAYLIST_ITEM; }
+    get current() { return app.$._session.playlist[this.#current_id] || app.$._session.playlist["0"]; }
 
     /** @type {dom.DropdownMenu} */
     context_menu;
@@ -8217,10 +8287,8 @@ export class PlaylistPanel extends Panel {
                         <div class="info-path"></div>
                     </div>
                 </div>
-                <div class="playlist-info">
-                    <div class="info-text"></div>
-                    <button class="toggle-selection"></button>
-                </div>
+                <div class="info-text"></div>
+                <button class="toggle-selection"></button>
             </div>
             <div class="playlist-content">
                 <div class="timeline-container" tabindex="-1">
@@ -8238,11 +8306,13 @@ export class PlaylistPanel extends Panel {
                         </div>
                     </div>
                 </div>
-                <div class="playlist-buttons">
-                    <button id="pl-add-file" title="Add Files...">Add Files...</button>
-                    <button id="pl-add-url" title="Add URLs...">Add URLs...</button>
-                    <button id="pl-upload-file" title="Upload...">Upload...</button>
-                    <button id="pl-add-other" title="Other..."><i class="fas fa-ellipsis-v"></i></button>
+                <div class="playlist-buttons-wrapper">
+                    <div class="playlist-buttons">
+                        <button id="pl-add-file" title="Add Files...">Add Files...</button>
+                        <button id="pl-add-url" title="Add URLs...">Add URLs...</button>
+                        <button id="pl-upload-file" title="Upload...">Upload...</button>
+                        <button id="pl-add-other" title="Other..."><i class="fas fa-ellipsis-v"></i></button>
+                    </div>
                 </div>
             </div>`
         dom.add_class(this.body_elem, "playlist-body");
@@ -8255,22 +8325,22 @@ export class PlaylistPanel extends Panel {
         this.time = null;
         
         this.header_elem.append(...$(
-            `<div class="timeline-controls buttons border-group">
+            `<div class="timeline-controls button-group">
                 <button class="playlist-goto-playhead mini icon" title="Go to Playhead"><i class="fas fa-map-marker"></i></button>
             </div>
-            <div class="timeline-controls buttons border-group">
+            <div class="timeline-controls button-group">
                 <input class="playlist-zoom-input mini" type="text"></input>
                 <button class="playlist-zoom-into mini icon" title="Zoom Into Selection"><i class="fas fa-arrows-alt-h"></i></button>
                 <button class="playlist-zoom-out mini icon" title="Zoom Out"><i class="fas fa-search-minus"></i></button>
                 <button class="playlist-zoom-in mini icon" title="Zoom In"><i class="fas fa-search-plus"></i></button>
             </div>
-            <div class="buttons border-group">
+            <div class="button-group">
                 <select data-setting__playlist_display_mode class="playlist-display-mode mini" title="Playlist Display Mode">
                     <option default value="0">List</option>
                     <option value="1">Timeline</option>
                 </select>
             </div>
-            <div class="buttons border-group">
+            <div class="button-group">
                 <button class="mini icon" data-setting__playlist_sticky title="Toggle Sticky Mode"><i class="fas fa-thumbtack"></i></button>
                 <button class="mini icon" data-setting__wrap_playlist_items title="Toggle Line Wrap"><i class="fas fa-level-down-alt"></i></button>
                 <button class="mini icon" data-setting__show_extra_playlist_icons title="Toggle Media Info Icons"><i class="far fa-play-circle"></i></button>
@@ -8286,7 +8356,7 @@ export class PlaylistPanel extends Panel {
                 }
                 return text.join(" | ");
             }
-            let g = $(`<div class="buttons border-group"></div>`)[0]
+            let g = $(`<div class="button-group"></div>`)[0]
             var undo = new ui.Button(`<button class="mini icon"><i class="fas fa-arrow-left"></i></button>`, {
                 "disabled": ()=>!app.$._session.playlist_history._prev,
                 "click": ()=>app.playlist_undo(),
@@ -8325,12 +8395,11 @@ export class PlaylistPanel extends Panel {
         this.playlist_zoom_out_button = this.elem.querySelector(".playlist-zoom-out");
         this.playlist_zoom_into_button = this.elem.querySelector(".playlist-zoom-into");
         this.playlist_goto_playhead_button = this.elem.querySelector(".playlist-goto-playhead");
-        this.playlist_info = this.elem.querySelector(".playlist-info");
-        this.playlist_info_text = this.playlist_info.querySelector(".info-text");
+        this.playlist_info_text = this.elem.querySelector(".info-text");
         this.playlist_path = this.elem.querySelector(".playlist-path");
-        this.playlist_path_text = this.playlist_path.querySelector(".info-path");
+        this.playlist_path_text = this.elem.querySelector(".info-path");
         this.playlist_back_button = this.elem.querySelector("button.back");
-        this.toggle_selection_button = this.playlist_info.querySelector(".toggle-selection");
+        this.toggle_selection_button = this.elem.querySelector(".toggle-selection");
         this.playlist_zoom_input = this.elem.querySelector(".playlist-zoom-input");
         this.pl_show_extra_icons_button = this.elem.querySelector("button.show_extra_playlist_icons");
         this.pl_toggle_line_wrap_button = this.elem.querySelector("button.wrap_playlist_items");
@@ -8775,8 +8844,8 @@ export class PlaylistPanel extends Panel {
             unload_current: new PlaylistCommand({
                 "label": ()=>"Unload Current File",
                 "icon": `<i class="fas fa-minus-circle"></i>`,
-                "disabled": ()=>app.$._session._current_playlist_item === app.$._NULL_PLAYLIST_ITEM,
-                "click": ()=>app.playlist_play(app.$._NULL_PLAYLIST_ITEM),
+                "disabled": ()=>app.$._session._current_playlist_item._is_null,
+                "click": ()=>app.playlist_play(app.$._session.playlist[Collection$_null]),
             }),
             rescan_all: new PlaylistCommand({
                 "label": ()=> "Rescan All",
@@ -9124,7 +9193,7 @@ export class PlaylistPanel extends Panel {
         var parent = current._parent;
         if (!parent) return;
         if (app.$._session._is_running && current == app.$._session._current_playlist_item && current._calculate_contents_hash() != current._private.hash_on_open) {
-            app.prompt_for_reload_of_current_item();
+            app.alert_for_reload_of_current_item();
         }
         this.open(parent, [current]);
     }
@@ -9270,44 +9339,47 @@ export class PlaylistPanel extends Panel {
 
     /** @param {PlaylistItem$} item */
     rename(item) {
-        var el = this.get_element(item);
+        app.blocking_updates.add(new Promise((resolve)=>{
+            var el = this.get_element(item);
 
-        this.scroll_into_view(el);
-        // var new_name = window.prompt("Rename:", item.props.label || "");
+            this.scroll_into_view(el);
+            // var new_name = window.prompt("Rename:", item.props.label || "");
 
-        var filename = el.querySelector(".filename");
-        var old_name = filename.innerText;
-        var orig_html = filename.innerHTML;
-        var default_name = item._get_pretty_name({label:false});
+            var filename = el.querySelector(".filename");
+            var old_name = filename.innerText;
+            var orig_html = filename.innerHTML;
+            var default_name = item._get_pretty_name({label:false});
 
-        filename.contentEditable = true;
-        dom.set_inner_html(filename, item.props.label || default_name);
-        filename.focus();
-        window.getSelection().selectAllChildren(filename);
-        var blur_listener, keydown_listener;
-        filename.addEventListener("keydown", keydown_listener = (e)=>{
-            if (e.key === "Escape") {
-                filename.innerHTML = orig_html;
-                filename.blur();
-            } else if (e.key === "Enter") {
-                e.preventDefault();
-                e.stopPropagation();
-                filename.blur();
-            }
-        });
-        filename.addEventListener("blur", blur_listener = ()=>{
-            filename.contentEditable = false;
-            filename.removeEventListener("blur", blur_listener);
-            filename.removeEventListener("keydown", keydown_listener);
-            var new_name = filename.innerText.trim();
-            if (!new_name || new_name == default_name) new_name = null;
-            dom.set_inner_html(filename, `<span>${new_name || default_name}</span>`);
+            filename.contentEditable = true;
+            dom.set_inner_html(filename, item.props.label || default_name);
+            filename.focus();
+            window.getSelection().selectAllChildren(filename);
+            var blur_listener, keydown_listener;
+            filename.addEventListener("keydown", keydown_listener = (e)=>{
+                if (e.key === "Escape") {
+                    filename.innerHTML = orig_html;
+                    filename.blur();
+                } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    filename.blur();
+                }
+            });
+            filename.addEventListener("blur", blur_listener = ()=>{
+                resolve();
+                filename.contentEditable = false;
+                filename.removeEventListener("blur", blur_listener);
+                filename.removeEventListener("keydown", keydown_listener);
+                var new_name = filename.innerText.trim();
+                if (!new_name || new_name == default_name) new_name = null;
+                dom.set_inner_html(filename, `<span>${new_name || default_name}</span>`);
 
-            if (old_name != new_name) {
-                app.playlist_update({[item.id]:{props:{label:new_name}}});
-            }
-            this.timeline_container_elem.focus({preventScroll: true});
-        });
+                if (old_name != new_name) {
+                    app.playlist_update({[item.id]:{props:{label:new_name}}});
+                }
+                this.timeline_container_elem.focus({preventScroll: true});
+            });
+        }));
     }
 
     zoom_into_selected_playlist_items() {
@@ -9428,9 +9500,9 @@ export class PlaylistPanel extends Panel {
             if (height < this.base_min_height) return;
             return {
                 position: "relative",
-                top: `${fixed_top-r.top}px`,
+                top: `${Math.round(fixed_top-r.top)}px`,
                 // width: `${width}px`,
-                height: `${height}px`,
+                height: `${Math.round(height)}px`,
                 flex: "none",
             }
         }
@@ -9581,7 +9653,7 @@ class PlaylistItem extends ui.UI {
             var index = this.index;
             var is_current = item._is_current;
             var is_currently_playing = item._is_currently_playing;
-            var is_descendent_of_current = item._is_descendent_of_current;
+            var is_ancestor_of_current = item._is_ancestor_of_current;
             var is_cutting = !!(app.playlist.clipboard && app.playlist.clipboard.cutting && app.playlist.clipboard.items_set.has(item));
             var is_buffering = app.media.buffering;
             let media_info = item._media_info || EMPTY_OBJECT;
@@ -9590,7 +9662,7 @@ class PlaylistItem extends ui.UI {
             var upload = item._upload;
             var download = item._download;
             
-            var _hash = JSON.stringify([item, index, item._hash, is_current, is_currently_playing, is_descendent_of_current, is_cutting, is_buffering, is_rtmp_live, media_info_hash, upload, download]);
+            var _hash = JSON.stringify([item, index, item._hash, is_current, is_currently_playing, is_ancestor_of_current, is_cutting, is_buffering, is_rtmp_live, media_info_hash, upload, download]);
 
             if (last_hash === _hash) return;
 
@@ -9645,7 +9717,7 @@ class PlaylistItem extends ui.UI {
             
             if (userdata.is_processing) {
                 play_icons.push(`<i class="fas fa-sync fa-spin"></i>`);
-            } else if (is_descendent_of_current) {
+            } else if (is_ancestor_of_current) {
                 play_icons.push(`<i class="fas fa-arrow-right"></i>`);
             } else if (is_currently_playing) {
                 if (is_buffering) play_icons.push(`<i class="fas fa-circle-notch fa-spin"></i>`);
@@ -9826,25 +9898,49 @@ class ProgressBar extends ui.UI {
 
 //------------------------------------------------------
 
+export function create_loading_icon() {
+    return $(`<div class="loading-icon"><i></i><i></i><i></i></div>`)[0];
+}
 
-/** @template {ui.UISettings<Loader>} Settings */
-/** @template {ui.UIEvents} Events */
+/**
+ * @template {Loader} [ThisType=Loader]
+ * @typedef {ui.UISettings<ThisType> & {
+*  "loader.background": ui.UISetting<ThisType, string>,
+*  "loader.color": ui.UISetting<ThisType, string>,
+* }} LoaderSettings
+*/
+
+/** @template {LoaderSettings} [Settings=ui.UISettings<Loader>] */
+/** @template {ui.UIEvents} [Events=ui.UIEvents] */
 /** @extends {ui.UI<Settings,Events>} */
 export class Loader extends ui.UI {
     /** @param {Settings} settings */
     constructor(settings) {
-        var el = $(`<div class="loader">
-            <div class="icon"><i></i><i></i><i></i></div>
-            <div class="msg">Loading...</div>
-        </div>`)[0];
-        el.style.zIndex = 999999999;
-        super(el, settings);
-        this.message_el = this.elem.querySelector(".msg");
+        settings = {
+            "loader.background": "",
+            "loader.color": "",
+            "loader.message": "Loading...",
+            ...settings,
+        }
+        super(`<div class="loader"></div>`, settings);
+        this.icon_el = create_loading_icon();
+        this.message_el = $(`<div class="msg"></div>`)[0];
+        this.elem.style.zIndex = 999999999;
+        this.append(this.icon_el, this.message_el);
+        var update = ()=>{
+            this.message_el.textContent = this.get_setting("loader.message");
+            this.elem.style.backgroundColor = this.get_setting("loader.background");
+            this.elem.style.color = this.get_setting("loader.color");
+        }
+        this.on("render",()=>{
+            update();
+        })
+        update();
     }
 }
 
-/** @template {ui.UISettings<Area>} Settings */
-/** @template {ui.UIEvents} Events */
+/** @template {ui.UISettings<Area>} [Settings=ui.UISettings<Area>] */
+/** @template {ui.UIEvents} [Events=ui.UIEvents] */
 /** @extends {ui.Column<Settings,Events>} */
 export class Area extends ui.Column {
     constructor(elem, settings) {
@@ -9903,9 +9999,12 @@ export class MainWebApp extends utils.EventEmitter {
     /** @type {MainWebApp} */
     static instance;
 
-    #last_session_id;
     #updating = false;
     blocking_updates = new PromiseSet();
+    /** @type {Record<string,Promise<MediaInfo>>} */
+    media_info_promises = {};
+    /** @type {Record<string,MediaInfo>} */
+    media_info = {};
 
     get focused_element() { return this.elem.activeElement; }
     get dev_mode() { return this.$.conf["debug"] || new URLSearchParams(window.location.search.slice(1)).has("dev"); }
@@ -9917,6 +10016,69 @@ export class MainWebApp extends utils.EventEmitter {
 
         /** @type {HTMLElement} */
         this.elem = document.querySelector("#livestreamer");
+
+        var request_loading_elem = $(`<div id="request-loading" class="v-none"><i class="fas fa-sync fa-spin"></i></div>`)[0];
+        this.elem.append(request_loading_elem);
+    
+        var main_elem = $(
+        `<div class="main">
+            <div class="session-header">
+                <div class="session-tabs-wrapper">
+                    <div id="session-tabs" class="thin-scrollbar"></div>
+                    <button class="new-session session-tab" title="New Session"><i class="fas fa-plus"></i></button>
+                </div>
+                <div class="session-select-wrapper"></div>
+                <div class="right">
+                    <div class="button-group">
+                        <button class="icon" title="Admin" id="show-admin"><i class="fas fa-users-cog"></i></button>
+                        <button class="icon" title="Client Configuration" id="show-config"><i class="fas fa-user-cog"></i></button>
+                    </div>
+                    <div class="button-group">
+                        <a class="button icon" title="Help" id="show-help" href="./help.html" target="_blank"><i class="far fa-question-circle"></i></a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="session-header-line"></div>
+        
+            <div id="session">
+                <div class="session-controls-wrapper">
+                    <div>
+                        <div id="session-controls">
+                            <div class="button-group">
+                                <button id="minimize-session" class="mini icon" title="Minimize Session"><i class="fas fa-window-minimize"></i></button>
+                                <button id="sign-out-session" class="mini icon" title="Sign out"><i class="fas fa-sign-out-alt"></i></button>
+                                <button id="config-session" class="mini icon" title="Configure Session"><i class="fas fa-cog"></i></button>
+                                <button id="destroy-session" class="mini icon" title="Delete Session"><i class="fas fa-trash"></i></button>
+                            </div>
+                        </div>
+                        <div id="session-load-save" class="button-group">
+                            <button id="load-session" class="mini" title="Load">Load</button>
+                            <button id="save-session" class="mini" title="Save">Save</button>
+                            <button id="history-session" class="mini" title="History">History</button>
+                        </div>
+                        <div id="users"></div>
+                    </div>
+                </div>
+                <div id="session-inner">
+                    <div id="session-ui"></div>
+                </div>
+            </div>
+            
+            <div id="no-sessions" class="d-none">
+                <div class="no-session">Open or create a new session.</div>
+                <div class="owner"></div>
+                <div class="no-access">You do not have access.</div>
+            </div>
+            
+            <div id="session-password"></div>
+
+            <div class="app-logs-section">
+                <div class="session-header-line"></div>
+            </div>
+            <div class="session-header-line"></div>
+        </div>`)[0];
+        this.elem.append(main_elem);
 
         app = MainWebApp.instance = this;
 
@@ -10061,7 +10223,10 @@ export class MainWebApp extends utils.EventEmitter {
         });
         this.passwords = new dom.LocalStorageBucket("livestreamer-passwords");
 
-        this.root = new ui.UI(this.elem);
+        /** @type {Set<ui.UI>} */
+        this.roots = new Set();
+        this.root = new Root(this.elem);
+        this.roots.add(this.root);
         this.media = new Media();
 
         this.loader = new Loader({
@@ -10073,7 +10238,7 @@ export class MainWebApp extends utils.EventEmitter {
                     [WebSocket.CLOSING]: "Disconnecting...",
                     [WebSocket.CLOSED]: "Disconnected",
                 }[this.ws.ready_state];
-                dom.set_inner_html(this.loader.message_el, text);
+                this.loader.settings["loader.message"] = text;
             }
         });
         this.root.append(this.loader);
@@ -10109,7 +10274,7 @@ export class MainWebApp extends utils.EventEmitter {
         this.session_inner_elem = this.elem.querySelector("#session-inner");
         this.session_ui_elem = this.elem.querySelector("#session-ui");
         this.no_sessions_elem = this.elem.querySelector("#no-sessions");
-        this.new_session_button = this.elem.querySelectorAll(".new-session");
+        this.new_session_button = this.elem.querySelector(".new-session");
         this.destroy_session_button = this.elem.querySelector("#destroy-session");
         this.minimize_session_button = this.elem.querySelector("#minimize-session");
         // if (!this.dev_mode) add_class(this.minimize_session_button, "d-none");
@@ -10119,10 +10284,24 @@ export class MainWebApp extends utils.EventEmitter {
         this.save_session_button = this.elem.querySelector("#save-session");
         this.history_session_button = this.elem.querySelector("#history-session");
         this.session_tabs_elem = this.elem.querySelector("#session-tabs");
-        this.session_select = this.elem.querySelector("#session-select");
         this.users_elem = this.elem.querySelector("#users");
         this.request_loading_elem = this.elem.querySelector("#request-loading");
-        
+
+        var session_select_wrapper = this.elem.querySelector(".session-select-wrapper");
+        var session_select = new ui.InputProperty(`<select id="session-select"></select>`, {
+            "options": ()=>{
+                return [["","-",{style:{"display":"none"}}], ...[...this.session_tabs_elem.children].map(e=>e.option_data)];
+            },
+            "data": ()=>this.$._client.session_id || "",
+        });
+        session_select.on("change", (e)=>{
+            if (e.trigger) window.location.hash = `#${session_select.value}`;
+        });
+        session_select.buttons_el.append(new ui.Button(`<button title="New Session"><i class="fas fa-plus"></i></button>`, {
+            click: ()=>this.new_session()
+        }));
+        session_select_wrapper.append(session_select);
+
         var session_ui = new ui.Column();
         var row1 = new ui.Row();
         row1.append(new Area());
@@ -10151,12 +10330,6 @@ export class MainWebApp extends utils.EventEmitter {
         this.log_section = this.elem.querySelector(".app-logs-section");
         this.logger = new LogPanel("Application Log", ()=>this.$.logs);
         this.log_section.append(this.logger);
-        
-        // this.fonts_menu = new FontSettings();
-
-        new LocalMediaServerTargetConfigMenu();
-        new FileTargetConfigMenu();
-        new GUITargetConfigMenu();
 
         var session_password_elem = this.elem.querySelector("#session-password");
         this.session_password = new SessionPasswordInput();
@@ -10310,55 +10483,20 @@ export class MainWebApp extends utils.EventEmitter {
                         dom.set_attribute(body, `data-setting__${k}`, v);
                     }
                 }
+                this.update_next_frame();
             }
-            this.update_next_frame();
         });
 
         this.passwords.on("change", (e)=>{
             this.update_next_frame();
         });
 
-        this.elem.addEventListener("click", (e)=>{
-            /** @type {HTMLElement} */
-            var elem = e.target;
-            var data_setting_prefix = "data-setting__";
-            var data_setting_key;
-            var get_data_setting_attribute = (e)=>{
-                for (var attr of e.attributes) {
-                    if (attr.nodeName.startsWith(data_setting_prefix)) {
-                        data_setting_key = attr.nodeName.slice(data_setting_prefix.length);
-                        return true;
-                    }
-                }
-            }
-            dom.closest(elem, (e)=>e.matches("button") && get_data_setting_attribute(e));
-            if (data_setting_key) {
-                this.local_settings.toggle(data_setting_key);
-            }
-            // if (elem.matches("a")) {
-            //     var url = dom.get_anchor_url(e.target);
-            //     var file_manager_url = dom.get_url(null, "file-manager");
-            //     if (url.host === file_manager_url.host && url.pathname === "/index.html") {
-            //         console.log(utils.try_catch_file_uri_to_path(url).toString());
-            //         open_file_manager({start: utils.try_catch_file_uri_to_path(url).toString()})
-            //         console.log(e.target);
-            //         e.preventDefault();
-            //     }
-            //     /* if (url.host === window.location.host && url.pathname === "/index.html" && url.hash) {
-            //         this.try_attach_to(url.hash.slice(1));
-            //         e.preventDefault();
-            //     } */
-            // }
-        });
-
-        this.session_select.addEventListener("change", ()=>{
-            window.location.hash = `#${this.session_select.value}`;
-        })
+        this.setup_events(this.elem);
         
         Object.assign(Fancybox.defaults, {parentEl: this.elem});
         
         window.addEventListener("keydown", this.on_keydown = (e)=>{
-            if (Modal.showing.length) return;
+            if (Modal.showing.size) return;
             if (!isNaN(e.key) && e.ctrlKey) {
                 var sessions = this.sessions_ordered;
                 var i = +e.key-1;
@@ -10378,13 +10516,7 @@ export class MainWebApp extends utils.EventEmitter {
             e.stopPropagation();
         });
 
-        $(this.new_session_button).on("click", (e)=>{
-            this.request({
-                call: ["new_session"]
-            }, {
-                block: true,
-            });
-        });
+        this.new_session_button.onclick = ()=>this.new_session();
 
         this.config_session_button.addEventListener("click", ()=>{
             new SessionConfigurationMenu().show();
@@ -10392,16 +10524,18 @@ export class MainWebApp extends utils.EventEmitter {
 
         this.destroy_session_button.addEventListener("click", (e)=>{
             if (confirm(`Are you sure you want to delete Session '${this.$._session.name}'?`)) {
-                this.$._client.session_id = null;
+                var session_id = this.$._client.session_id;
+                window.location.hash = "";
+                app.update();
                 this.request({
-                    call: ["session", "destroy"],
-                    arguments: [true],
+                    call: ["destroy_session"],
+                    arguments: [session_id, true],
                 });
             }
         });
 
         this.minimize_session_button.addEventListener("click", (e)=>{
-            this.try_attach_to(null);
+            window.location.hash = "";
         });
 
         /** @type {Session$} */
@@ -10500,18 +10634,17 @@ export class MainWebApp extends utils.EventEmitter {
         
         var key = new URL(window.location.href).searchParams.get("ls_key");
         var ws_url = dom.get_url(null, "main", true);
-        var session_id = window.location.hash.slice(1) || this.local_settings.get("last_session_id");
-        if (session_id) ws_url.searchParams.set("session_id", session_id);
         if (key) ws_url.searchParams.set("ls_key", key);
 
         this.ws = new dom.ReconnectingWebSocket();
         this.ws.on("open", ()=>{
-            // this.observer = new Remote$();
-            // this.$ = this.observer.$;
+            this.$ = new Remote$();
         });
         this.ws.on("data", (data)=>{
             if (data.init) {
-                this.$ = utils.deep_merge(new Remote$(), data.init);
+                utils.deep_merge(this.$, data.init);
+                var session_id = window.location.hash.slice(1) || this.local_settings.get("last_session_id");
+                if (session_id) this.try_attach_to(session_id);
                 this.passwords.load();
                 this.local_settings.load();
                 this.update_next_frame();
@@ -10540,6 +10673,41 @@ export class MainWebApp extends utils.EventEmitter {
         this.ws.connect(ws_url.toString());
     }
 
+    setup_events(elem) {
+        elem.addEventListener("click", (e)=>{
+            /** @type {HTMLElement} */
+            var elem = e.target;
+            var data_setting_prefix = "data-setting__";
+            var data_setting_key;
+            var get_data_setting_attribute = (e)=>{
+                for (var attr of e.attributes) {
+                    if (attr.nodeName.startsWith(data_setting_prefix)) {
+                        data_setting_key = attr.nodeName.slice(data_setting_prefix.length);
+                        return true;
+                    }
+                }
+            }
+            dom.closest(elem, (e)=>e.matches("button") && get_data_setting_attribute(e));
+            if (data_setting_key) {
+                this.local_settings.toggle(data_setting_key);
+            }
+            // if (elem.matches("a")) {
+            //     var url = dom.get_anchor_url(e.target);
+            //     var file_manager_url = dom.get_url(null, "file-manager");
+            //     if (url.host === file_manager_url.host && url.pathname === "/index.html") {
+            //         console.log(utils.try_catch_file_uri_to_path(url).toString());
+            //         open_file_manager({start: utils.try_catch_file_uri_to_path(url).toString()})
+            //         console.log(e.target);
+            //         e.preventDefault();
+            //     }
+            //     /* if (url.host === window.location.host && url.pathname === "/index.html" && url.hash) {
+            //         this.try_attach_to(url.hash.slice(1));
+            //         e.preventDefault();
+            //     } */
+            // }
+        });
+    }
+
     async update() {
         if (!this.$) return;
         if (this.#updating) return;
@@ -10560,7 +10728,6 @@ export class MainWebApp extends utils.EventEmitter {
         var has_ownership = access_control._self_is_owner_or_admin || access_control._owners.length == 0;
         var has_access = is_null_session || access_control._self_has_access(app.passwords.get(this.$._session.id))
         var requires_password = access_control._self_requires_password;
-        var is_new_session = this.$._session.id != this.#last_session_id;
 
         dom.toggle_class(this.session_elem, "is-rtmp-connected", this.$._session._get_connected_nms_session_with_appname("internal", "private"));
         dom.set_dataset_value(this.session_elem, "session-type", this.$._session.type);
@@ -10574,7 +10741,6 @@ export class MainWebApp extends utils.EventEmitter {
         dom.set_inner_html(this.no_sessions_elem.querySelector(".owner"), `This session is owned by ${access_control._owners.map(u=>`[${u.username}]`).join(" | ")}`);
 
         this.session_password.settings["hidden"] = (has_access || !requires_password);
-        if (is_new_session) this.session_password.reset();
 
         dom.toggle_attribute(this.load_session_button, "disabled", !has_access || !has_ownership);
         dom.toggle_attribute(this.save_session_button, "disabled", !has_access || !has_ownership);
@@ -10595,39 +10761,8 @@ export class MainWebApp extends utils.EventEmitter {
             }
         }
 
-        // THIS NEEDS SORTING
-        /* {
-            let ids = [];
-            if (changes.downloads) {
-                ids.push(...Object.keys(changes.downloads));
-            }
-            if (changes.uploads) {
-                ids.push(...Object.keys(this.$._session.playlist).filter(id=>Object.keys(changes.uploads).includes(id)).map(i=>i.id));
-            }
-            if (changes.nms_sessions) {
-                ids.push(...this.playlist.current._children.filter(i=>i.filename==="livestreamer://rtmp").map(i=>i.id));
-            }
-            if (session_changes) {
-                if (session_changes.playlist) {
-                    ids.push(...Object.keys(session_changes.playlist));
-                }
-                if (session_changes.media_info) {
-                    ids.push(...Object.entries(this.$._session.playlist).filter(([id,item])=>item._filenames.some(f=>session_changes.media_info[f])).map(([id,item])=>id));
-                }
-                if (session_changes.playlist_id !== undefined) {
-                    ids.push(this.playlist.current.id, this.$._session.playlist_id);
-                }
-            }
-            for (var id of new Set(ids)) {
-                var item = this.$._session.playlist[id];
-                if (item) item._private.clear_userdata();
-            }
-        } */
-
         this.media.update();
-        this.root.update();
-
-        this.#last_session_id = this.$._session.id;
+        for (var root of this.roots) root.update();
     }
 
     get_media_server_base_url() {
@@ -10856,15 +10991,14 @@ export class MainWebApp extends utils.EventEmitter {
         }
 
         items.forEach((c,i)=>{
-            add_file(c, insert_pos+i, parent.id, track_index)
+            add_file(c, insert_pos+i, parent.id, track_index);
         });
 
         parent._get_track(track_index).slice(insert_pos).forEach((item,i)=>{
             item.index = insert_pos+items.length+i;
         });
-        for (var item of new_items) {
-            this.$._session.playlist[item.id] = item;
-        }
+        for (var item of new_items) this.$._session.playlist[item.id] = item;
+        this.update();
         this.request({
             call: ["session","playlist_add"],
             arguments: [new_items, {insert_pos, parent_id:parent.id, track_index, register_history}]
@@ -10885,7 +11019,7 @@ export class MainWebApp extends utils.EventEmitter {
             if (ul) app.upload_queue.cancel(ul.id);
         }
         for (var [session_id, group] of utils.group_by(items, i=>i._session.id)) {
-            var all_deleted_items = new Set(group.map(i=>[i, ...i._descendents]).flat());
+            var all_deleted_items = new Set(group.flatMap(i=>[i, ...i._descendents]).reverse()); // important to reverse, children must be removed first
             for (var item of all_deleted_items) {
                 delete this.$.sessions[session_id].playlist[item.id];
             }
@@ -10901,7 +11035,7 @@ export class MainWebApp extends utils.EventEmitter {
                         next_item = next_item._next;
                     }
                 } else {
-                    next_item = app.$._NULL_PLAYLIST_ITEM;
+                    next_item = app.$._session.playlist[Collection$_null];
                 }
             }
             if (next_item !== current_item) {
@@ -10994,7 +11128,7 @@ export class MainWebApp extends utils.EventEmitter {
 
     /** @param {PlaylistItem$} item */
     playlist_play(item, start=0) {
-        item = item ?? this.$._NULL_PLAYLIST_ITEM;
+        item = item ?? this.$._session.playlist[Collection$_null];
         var options = {pause:false};
         var root_merged = item._root_merged_playlist;
         if (root_merged) {
@@ -11005,10 +11139,10 @@ export class MainWebApp extends utils.EventEmitter {
         options.start = start
         
         // this.media_player.seek.seek(options.start);
-
         this.$._session.playlist_id = item.id;
-        this.$._session.time = start;
-        this.$._session._stream.mpv.time = start; // necessary?
+        this.$._session.time_pos = start;
+        // this.$._session._stream.mpv.time = start; // necessary?
+        this.update();
         
         return this.request({
             call: ["session","playlist_play"],
@@ -11037,6 +11171,7 @@ export class MainWebApp extends utils.EventEmitter {
         if (relative) t += this.$._session.time_pos;
         if (t < 0) t = 0;
         this.$._session.time_pos = t;
+        this.update();
         return this.request({
             call: ["session", "seek"],
             arguments: [t]
@@ -11044,7 +11179,7 @@ export class MainWebApp extends utils.EventEmitter {
     }
 
     seek_chapter(i, relative=false) {
-        var chapters = this.$._session._current_chapters;
+        var chapters = this.$._session._current_playlist_item._userdata.chapters;
         if (relative) {
             var t = this.$._session.time_pos;
             var c = this.$._session._get_current_chapter_at_time(t);
@@ -11093,10 +11228,8 @@ export class MainWebApp extends utils.EventEmitter {
     }
 
     request(data, opts) {
-        this.update();
         opts = {
             show_spinner: true,
-            block: false,
             timeout: 60 * 1000,
             ...opts
         };
@@ -11112,11 +11245,6 @@ export class MainWebApp extends utils.EventEmitter {
 
             if (opts.show_spinner) {
                 this.$._pending_requests.add(ws_promise);
-            }
-            var loader;
-            if (opts.block) {
-                loader = new Loader();
-                loader.update({visible:true, text:"Loading..."});
             }
             this.update_request_loading();
 
@@ -11135,7 +11263,6 @@ export class MainWebApp extends utils.EventEmitter {
                         this.$._pending_requests.delete(ws_promise);
                     }
                     this.update_request_loading();
-                    if (opts.block) loader.destroy();
                 });
         })
     }
@@ -11157,15 +11284,19 @@ export class MainWebApp extends utils.EventEmitter {
         session_id = session_id || "";
         var new_hash = `#${session_id}`;
         this.local_settings.set("last_session_id", session_id);
-        this.$._last_session = this.$.sessions[session_id];
         if (window.location.hash !== new_hash) {
             window.history.replaceState({}, "", new_hash);
         }
         if (this.$._client.session_id != session_id) {
+            if (session_id) {
+                this.$._client.session_id = session_id;
+                this.update();
+            }
             this.request({
                 call: ["attach_to"],
                 arguments: [session_id]
             });
+            this.session_password.reset();
         }
         return true;
     }
@@ -11275,8 +11406,6 @@ export class MainWebApp extends utils.EventEmitter {
                 return elem;
             },
         });
-        dom.set_select_options(this.session_select, dom.fix_options([["","-",{style:{"display":"none"}}], ...[...this.session_tabs_elem.children].map(e=>e.option_data)]));
-        dom.set_value(this.session_select, this.$._client.session_id || "");
     }
 
     get_user(id) {
@@ -11355,6 +11484,11 @@ export class MainWebApp extends utils.EventEmitter {
             return volume.id + btoa(unescape(encodeURIComponent(relpath))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'.').replace(/\.+$/,'');
         }
     }
+
+    alert_for_reload_of_current_item() {
+        window.alert(`The item is currently playing and some changes may require reloading to apply changes.`);
+    }
+
     prompt_for_reload_of_current_item() {
         if (window.confirm(`The item is currently playing and some changes may require reloading to apply changes.\nDo you want to reload?`)) {
             app.request({
@@ -11370,7 +11504,28 @@ export class MainWebApp extends utils.EventEmitter {
         });
     }
 
+    async new_session() {
+        var id = await this.request({
+            call: ["new_session"]
+        });
+        window.location.hash = id;
+    }
+
+    async get_media_info(filename) {
+        if (filename in this.$._session.media_info) return this.$._session.media_info[filename];
+        if (!(filename in this.media_info_promises)) {
+            this.media_info_promises[filename] = app.request({
+                call: ["get_media_info"],
+                arguments: [filename]
+            }).then((mi)=>{
+                this.media_info[filename] = mi;
+            })
+        }
+        return this.media_info_promises[filename];
+    }
+
     destroy() {
+        for (var root of this.roots) root.destroy();
         this.removeAllListeners();
         // ui.destroy();
         // window.removeEventListener("keydown", this.on_keydown);
@@ -11379,5 +11534,17 @@ export class MainWebApp extends utils.EventEmitter {
         // this.playlist.destroy();
     }
 };
+
+class Root extends ui.UI {
+    constructor(elem) {
+        super(elem);
+        this.elem.id = "livestreamer";
+        app.roots.add(this);
+    }
+    destroy() {
+        app.roots.delete(this);
+        super.destroy();
+    }
+}
 
 export default MainWebApp;

@@ -13,16 +13,24 @@ export class MainClient extends Client {
     get app() { return globals.app; }
     get core() { return globals.app; }
 
-    _init() {
+    oninit() {
         globals.app.$.clients[this.id] = this.$;
-        var session_id = this.url.searchParams.get("session_id");
-        if (session_id) this.attach_to(session_id);
     }
 
     new_session() {
         var s = new InternalSession();
         s.$.access_control[this.username] = {"access":"owner"};
         this.attach_to(s.id);
+        return s.id;
+    }
+    
+    async destroy_session(session_id, move_autosave_dir=true) {
+        var s = globals.app.sessions[session_id];
+        if (!s) return;
+        if (move_autosave_dir) {
+            await s.move_autosave_dir();
+        }
+        await s.destroy();
     }
 
     rearrange_sessions(old_index, new_index) {
@@ -33,15 +41,10 @@ export class MainClient extends Client {
 
     attach_to(session_id) {
         if (this.$.session_id == session_id) return;
+        if (this.session) this.session.emit("detach", this);
         if (!globals.app.sessions[session_id]) session_id = null;
         this.$.session_id = session_id;
-        // if (this.session) this.session.emit("detach", this);
-        /* var session = this.session;
-        if (session) {
-            var $ = {sessions:{[session_id]:session.$}, session_id};
-            this.send({$});
-        } */
-        // if (this.session) this.session.emit("attach", this);
+        if (this.session) this.session.emit("attach", this);
     }
 
     async save_file(file, data) {
@@ -49,9 +52,13 @@ export class MainClient extends Client {
         if (fullpath) await fs.writeFile(fullpath, data);
     }
 
-    destroy() {
-        super.destroy();
+    get_media_info(filename, opts) {
+        return globals.app.get_media_info(filename, opts);
+    }
+
+    ondestroy() {
         delete globals.app.$.clients[this.id];
+        return super.ondestroy();
     }
 }
 

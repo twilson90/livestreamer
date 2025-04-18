@@ -58,6 +58,23 @@ var ext_format_map = {
 };
 var format_ext_map = Object.fromEntries(utils.reverse_map(ext_format_map));
 
+const SESSION_PUBLIC_PROPS = [
+    ["id"],
+    ["index"],
+    ["name"],
+    ["creation_time"],
+    ["type"],
+    ["version"],
+    ["schedule_start_time"],
+    ["access_control"],
+];
+
+const STREAM_PUBLIC_PROPS = [
+    ["id"],
+    ["session_id"],
+    ["state"],
+];
+
 /** @typedef {string} Domain */
 /** @typedef {Record<PropertyKey,{access:string, password:string, suspended:boolean}>} AccessControl */
 
@@ -109,19 +126,6 @@ export class MainApp extends CoreFork {
     // #prepare_promise_pool;
     netstats = [];
 
-    SESSION_PUBLIC_PROPS = [
-        ["id"],
-        ["index"],
-        ["name"],
-        ["creation_time"],
-        ["version"],
-        ["stream", "id"],
-        ["stream", "session_id"],
-        ["stream", "state"],
-        ["schedule_start_time"],
-        ["access_control"],
-    ];
-
     get sessions_ordered() { return utils.sort(Object.values(this.sessions), s=>s.index); }
     
     /** @type {Record<PropertyKey,MainClient>} */
@@ -129,13 +133,6 @@ export class MainApp extends CoreFork {
 
     constructor() {
         super("main", new MainApp$());
-
-        this.$_sessions = {};
-        this.sessions_observer = new utils.Observer(this.$_sessions);
-        
-        this.$_streams = {};
-        this.streams_observer = new utils.Observer(this.$_streams);
-
         globals.app = this;
     }
 
@@ -390,17 +387,20 @@ export class MainApp extends CoreFork {
             };
         }
 
-        this.client_updater = new ClientUpdater(this.client_server, this.observer);
-        this.client_server.on("connected", (client)=>this.client_updater.add_client(client));
-        this.client_server.on("disconnected", (client)=>this.client_updater.remove_client(client));
-         /* (c)=>{
-            if (c.path[0] === "sessions") {
-                var path = c.path.slice(2);
-                if (!path.length || this.SESSION_PUBLIC_PROPS.some(p=>utils.array_starts_with(path, p))) return true;
-                return false;
+        var check_prop = (path, props)=>{
+            if (!path.length || props.some(p=>utils.array_starts_with(path, p))) return true;
+            return false;
+        }
+
+        this.client_updater = new ClientUpdater(this.observer, [], {
+            filter: (path)=>{
+                if (path[0] === "sessions") return check_prop(path.slice(2), SESSION_PUBLIC_PROPS);
+                if (path[0] === "streams") return check_prop(path.slice(2), STREAM_PUBLIC_PROPS);
+                return true;
             }
-            return true;
-        } */);
+        });
+        this.client_server.on("connect", (client)=>this.client_updater.add_client(client));
+        this.client_server.on("disconnect", (client)=>this.client_updater.remove_client(client));
 
         update_change_log();
         var change_log_watcher = chokidar.watch(this.change_log_path, {awaitWriteFinish:true});

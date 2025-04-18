@@ -1,7 +1,8 @@
 import path from "node:path";
 import fs from "fs-extra";
 import {globals, utils, constants, DataNodeID, DataNodeID$, Logger, ClientUpdater, Stream, AccessControl, LogCollector} from "./exports.js";
-/** @import {Log, Stream$} from "./exports.js" */
+/** @import {Log, Stream$, MainClient} from "./exports.js" */
+/** @import * as events from "events" */
 
 export class Session$ extends DataNodeID$ {
     name = "";
@@ -12,11 +13,8 @@ export class Session$ extends DataNodeID$ {
     logs = {};
     version = "1.0";
     access_control = new AccessControl();
-    stream_id;
-}
-
-export class SessionPrivate$ {
     stream_settings = new StreamSettings$();
+    stream_id;
 }
 
 export class StreamSettings$ {
@@ -33,7 +31,15 @@ export class StreamSettings$ {
     test = false;
 }
 
-/** @template {Session$} T1 @template {SessionPrivate$} T2 @extends {DataNodeID<T1>} */
+/**
+ * @typedef {{
+ * "attach": [MainClient],
+ * "detach": [MainClient],
+ * "reset": [],
+ * }} Events
+ */
+
+/** @template {Session$} T @extends {DataNodeID<T,Events>} */
 export class Session extends DataNodeID {
     /** @type {Logger} */
     logger;
@@ -51,17 +57,9 @@ export class Session extends DataNodeID {
         this.emit("reset");
     }
 
-    /** @param {string} id @param {string} name @param {string} type @param {T1} $ @param {any} props @param {T2} $_priv @param {any} props_priv */
-    constructor(id, name, type, $, props, $_priv, props_priv) {
+    /** @param {string} type @param {T} $ @param {any} defaults @param {string} id @param {string} name */
+    constructor(type, $, defaults, id, name) {
         super(id, $);
-
-        this.props = props;
-        this.defaults = utils.get_defaults(props);
-
-        this.$_priv = $_priv;
-        this.props_priv = props_priv;
-        this.defaults_priv = utils.get_defaults(props_priv);
-        this.observer_priv = new utils.Observer($_priv);
 
         this.defaults = {
             ...utils.json_copy(defaults),
@@ -96,12 +94,10 @@ export class Session extends DataNodeID {
         });
 
         this.reset();
-        this.client_updater = new ClientUpdater(this.client_server, this.observer);
-        /* this.client_updater = new ClientUpdater(this.observer);
-        this.client_updater.on("update", ($)=>{
-            var payload = {$:{sessions:{[this.id]:$}}};
-            for (var c of this.clients) c.send(payload);
-        }); */
+        
+        this.client_updater = new ClientUpdater(this.observer, ["sessions", this.id]);
+        this.on("attach", (client)=>this.client_updater.add_client(client));
+        this.on("detach", (client)=>this.client_updater.remove_client(client));
 
         globals.app.sessions[this.id] = this;
         globals.app.$.sessions[this.id] = this.$;
@@ -157,12 +153,13 @@ export class Session extends DataNodeID {
         }
     }
 
-    async destroy() {
-        // this.client_updater.destroy();
+    async ondestroy() {
         
         await this.stop_stream();
 
-        // var index = app.sessions_ordered.indexOf(this);
+        var stream = this.stream;
+        if (stream) await stream.destroy();
+
         var clients = this.clients;
         
         delete globals.app.sessions[this.id];
@@ -176,9 +173,11 @@ export class Session extends DataNodeID {
         this.logger.info(`${this.name} was destroyed.`);
 
         globals.app.ipc.emit("main.session.destroyed", this.id);
+        
+        this.client_updater.destroy();
 
         // this.logger.destroy();
-        super.destroy();
+        super.ondestroy();
     }
 
     tick() { }

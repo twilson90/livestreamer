@@ -12,6 +12,8 @@ import { toggle_class } from "../toggle_class.js";
 
 import "./ui.scss";
 
+/** @import events from "node:events" */
+
 var ID = 0;
 const PRE = "uis";
 const EXPANDO = `${PRE}-${Date.now()}`;
@@ -61,7 +63,7 @@ class UpdateContext {
 
 /** @template {UI} ThisType @template Value @typedef {(Value|(this:ThisType)=>Value)} UISetting */
 /**
- * @template {UI} ThisType
+ * @template {UI} [ThisType=UI]
  * @typedef {{
  *   hidden: UISetting<ThisType,boolean>,
  *   disabled: UISetting<ThisType,boolean>,
@@ -88,10 +90,10 @@ class UpdateContext {
 
 /** 
  * @typedef {{
- *   update: boolean,
- *   post_update: any,
- *   render: any,
- *   destroy: any
+ *   update: [boolean],
+ *   post_update: [],
+ *   render: [],
+ *   destroy: []
  * }} UIEvents 
  */
 
@@ -108,7 +110,7 @@ export class UI extends EventEmitter {
     #destroyed = false;
     __context = new UpdateContext();
 
-    get is_hidden() { return !!this.get_setting("hidden"); }
+    get is_hidden() { return ("hidden" in this.#settings) && !!this.get_setting("hidden"); }
     get parent() { return this.__context.parent; }
     get settings() { return this.#settings; }
     get index() { return this.__context.index; }
@@ -122,9 +124,10 @@ export class UI extends EventEmitter {
     }
     get destroyed() { return this.#destroyed; }
     get id() { return this.__UID__; }
+    /** @type {boolean} */
     get is_disabled() {
         var parent = this.parent;
-        return (parent && parent.is_disabled) || !!this.get_setting("disabled");
+        return (parent && parent.is_disabled) || ("disabled" in this.#settings && !!this.get_setting("disabled"));
     }
     set layout(v) { this.set_layout(v); }
     
@@ -146,7 +149,6 @@ export class UI extends EventEmitter {
 
     /** @param {HTMLElement} elem @param {Settings} settings */
     constructor(elem, settings) {
-        
         super();
         if (this.__UID__) throw new Error("UI already initialized");
         this.__UID__ = ++ID;
@@ -205,9 +207,6 @@ export class UI extends EventEmitter {
 
         this.get_setting("update");
         this.emit("update");
-
-        this.get_setting("layout");
-        this.emit("layout");
         
         var i = 0;
         for (var c of this.children) {
@@ -232,12 +231,12 @@ export class UI extends EventEmitter {
             if (typeof gap !== "string" || gap.match(/^[0-9.]+$/)) gap = `${parseFloat(gap)}px`;
             this.elem.style.setProperty("gap", gap);
         }
-        if ("title" in this.#settings) this.elem.title = this.get_setting("title");
-        if ("display" in this.#settings) this.elem.style.display = this.get_setting("display");
-        if ("align" in this.#settings) this.elem.style.alignItems = this.get_setting("align");
-        if ("justify" in this.#settings) this.elem.style.justifyContent = this.get_setting("justify");
-        if ("flex" in this.#settings) this.elem.style.flex = this.get_setting("flex");
-        if ("id" in this.#settings) this.elem.id = this.get_setting("id");
+        if ("title" in this.#settings) this.elem.title = this.get_setting("title") || "";
+        if ("display" in this.#settings) this.elem.style.display = this.get_setting("display") || "";
+        if ("align" in this.#settings) this.elem.style.alignItems = this.get_setting("align") || "";
+        if ("justify" in this.#settings) this.elem.style.justifyContent = this.get_setting("justify") || "";
+        if ("flex" in this.#settings) this.elem.style.flex = this.get_setting("flex") || "";
+        if ("id" in this.#settings) this.elem.id = this.get_setting("id") || "";
         if ("children" in this.#settings) set_children(this.elem, this.get_setting("children"));
         if ("content" in this.#settings) set_inner_html(this.elem, this.get_setting("content"));
 
@@ -316,6 +315,7 @@ export class UI extends EventEmitter {
             }
         };
         process(this, layout);
+        this.update();
     }
 
     emit(event, e, opts) {
@@ -352,15 +352,15 @@ function *handle_els(o) {
 }
 
 /** 
- * @template {Box} ThisType
+ * @template {Box} [ThisType=Box]
  * @typedef {UISettings<ThisType> & {
  *   'header': UISetting<ThisType,string>,
  * }} BoxSettings 
  */
 
 /** 
- * @template {BoxSettings<Box>} Settings
- * @template {UIEvents} Events
+ * @template {BoxSettings<Box>} [Settings=BoxSettings<Box>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class Box extends UI {
@@ -379,7 +379,7 @@ export class Box extends UI {
 }
 
 /** 
- * @template {UISettings<Button>} Settings
+ * @template {UISettings<Button>} [Settings=UISettings<Button>]
  * @template {UIEvents} Events
  * @extends {UI<Settings,Events>} 
  */
@@ -387,7 +387,7 @@ export class Button extends UI {
     /** @param {HTMLElement} elem @param {Settings} settings */
     constructor(elem, settings) {
         super(elem || `<button></button>`, {
-            title: () => {
+            title: ()=>{
                 if (!this.elem.children.length) return this.elem.innerHTML;
                 if (original_title) return original_title;
             },
@@ -399,8 +399,8 @@ export class Button extends UI {
 }
 
 /** 
- * @template {UISettings<Column>} Settings
- * @template {UIEvents} Events
+ * @template {UISettings<Column>} [Settings=UISettings<Column>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class Column extends UI {
@@ -412,8 +412,8 @@ export class Column extends UI {
 }
 
 /** 
- * @template {UISettings<Header>} Settings
- * @template {UIEvents} Events
+ * @template {UISettings<Header>} [Settings=UISettings<Header>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class Header extends UI {
@@ -426,8 +426,8 @@ export class Header extends UI {
 }
 
 /** 
- * @template {UISettings<Label>} Settings
- * @template {UIEvents} Events
+ * @template {UISettings<Label>} [Settings=UISettings<Label>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class Label extends UI {
@@ -438,8 +438,8 @@ export class Label extends UI {
 }
 
 /** 
- * @template {UISettings<Link>} Settings
- * @template {UIEvents} Events
+ * @template {UISettings<Link>} [Settings=UISettings<Link>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class Link extends UI {
@@ -454,8 +454,8 @@ export class Link extends UI {
 }
 
 /** 
- * @template {UISettings<Row>} Settings
- * @template {UIEvents} Events
+ * @template {UISettings<Row>} [Settings=UISettings<Row>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class Row extends UI {
@@ -467,8 +467,8 @@ export class Row extends UI {
 }
 
 /** 
- * @template {UISettings<Separator>} Settings
- * @template {UIEvents} Events
+ * @template {UISettings<Separator>} [Settings=UISettings<Separator>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class Separator extends UI {
@@ -479,8 +479,8 @@ export class Separator extends UI {
 }
 
 /** 
- * @template {UISettings<FlexColumn>} Settings
- * @template {UIEvents} Events
+ * @template {UISettings<FlexColumn>} [Settings=UISettings<FlexColumn>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class FlexColumn extends Column {
@@ -492,8 +492,8 @@ export class FlexColumn extends Column {
 }
 
 /** 
- * @template {UISettings<FlexRow>} Settings
- * @template {UIEvents} Events
+ * @template {UISettings<FlexRow>} [Settings=UISettings<FlexRow>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class FlexRow extends Row {
@@ -505,17 +505,17 @@ export class FlexRow extends Row {
 }
 
 /** 
- * @template {UISettings<List>} Settings
- * @template {UIEvents} Events
+ * @template {UISettings<List>} [Settings=UISettings<List>]
+ * @template {UIEvents} [Events=UIEvents]
  * @extends {UI<Settings,Events>} 
  */
 export class List extends UI {
     /** @param {Settings} settings */
     constructor(settings) {
         super({
-            class: "list",
             ...settings,
         });
+        this.elem.classList.add("list");
     }
     /** @returns {ListItemType[]} */
     get list_items() { return this.children; }

@@ -5,8 +5,8 @@ import { PropertyGroup } from "./PropertyGroup.js";
 /** 
  * @template ItemType 
  * @template ValueType
- * @template {InputPropertySettings<ItemType,ValueType,MultiInputProperty>} Settings
- * @template {PropertyEvents} Events
+ * @template {InputPropertySettings<ItemType,ValueType,MultiInputProperty>} [Settings=InputPropertySettings<ItemType,ValueType,MultiInputProperty>]
+ * @template {PropertyEvents} [Events=PropertyEvents]
  * @extends {InputProperty<ItemType,ValueType,Settings,Events>} 
  */
 export class MultiInputProperty extends InputProperty {

@@ -7,7 +7,7 @@ export class StopStartStateMachine$ extends DataNodeID$ {
     stop_reason = "";
 }
 
-/** @template {StopStartStateMachine$} T @extends {DataNodeID<T>} */
+/** @template {StopStartStateMachine$} T @template Events @extends {DataNodeID<T, Events>} */
 export class StopStartStateMachine extends DataNodeID {
     
     #restart_interval;
@@ -40,7 +40,7 @@ export class StopStartStateMachine extends DataNodeID {
         clearInterval(this.#restart_interval);
         this.$.start_time = Date.now();
         this.$.state = constants.State.STARTING;
-        if (await this._start(...args)) {
+        if (await this.onstart(...args)) {
             this.$.state = constants.State.STARTED;
         } else {
             this.$.state = constants.State.STOPPED;
@@ -54,7 +54,7 @@ export class StopStartStateMachine extends DataNodeID {
         if (this.state === constants.State.STOPPED) return;
         this.$.state = constants.State.STOPPING;
         this.$.stop_reason = reason || "unknown";
-        if (await this._stop(reason)) {
+        if (await this.onstop()) {
             this.$.state = constants.State.STOPPED;
         }
     }
@@ -64,16 +64,14 @@ export class StopStartStateMachine extends DataNodeID {
         await this.start();
     }
 
-    async destroy() {
+    onstart(){ return true; }
+
+    onstop(){ return true; }
+
+    async ondestroy() {
         await this.stop("destroy");
-        await this._destroy();
+        return super.ondestroy();
     }
-
-    _start(){}
-
-    _stop(){}
-
-    _destroy(){}
 }
 
 export default StopStartStateMachine;

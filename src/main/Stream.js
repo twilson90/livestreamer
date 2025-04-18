@@ -1,7 +1,7 @@
 import fs from "fs-extra";
 import path from "node:path";
-import {globals, utils, constants, FFMPEGWrapper, Logger, SessionTypes, StreamTarget, MPVSessionWrapper, StopStartStateMachine, StopStartStateMachine$} from "./exports.js";
-/** @import { Session, InternalSession, ExternalSession, Session$ } from './exports.js' */
+import {globals, utils, constants, FFMPEGWrapper, Logger, SessionTypes, StreamTarget, MPVSessionWrapper, StopStartStateMachine, StopStartStateMachine$, ClientUpdater} from "./exports.js";
+/** @import { Session, InternalSession, ExternalSession, Session$, MainClient } from './exports.js' */
 
 const WARNING_MPV_LOG_SIZE = 1 * 1024 * 1024 * 1024;
 const MAX_MPV_LOG_SIZE = 8 * 1024 * 1024 * 1024;
@@ -20,7 +20,14 @@ export class Stream$ extends StopStartStateMachine$ {
     title;
 }
 
-/** @extends {StopStartStateMachine<Stream$>} */
+/**
+ * @typedef {{
+ *   attach: [Session];
+ *   detach: [Session];
+ * }} Events
+ */
+
+/** @extends {StopStartStateMachine<Stream$, Events>} */
 export class Stream extends StopStartStateMachine {
     /** @return {any[]} */
     get is_gui() { return !!this.$.targets.includes("gui"); }
@@ -59,9 +66,23 @@ export class Stream extends StopStartStateMachine {
         globals.app.$.streams[this.id] = this.$;
         this.logger = new Logger("stream");
         this.logger.on("log", (log)=>(this.session||session).logger.log(log))
+        
+        this.client_updater = new ClientUpdater(this.observer, ["streams", this.id]);
+        this.on("attach", (session)=>{
+            this.client_updater.add_clients(session.clients);
+            var onattach = (client)=>this.client_updater.add_client(client);
+            var ondetach = (client)=>this.client_updater.remove_client(client);
+            session.on("attach", onattach);
+            session.on("detach", ondetach);
+            this.once("detach", (session)=>{
+                this.client_updater.remove_clients(session.clients);
+                session.off("attach", onattach);
+                session.off("detach", ondetach);
+            });
+        });
     }
 
-    async _start(settings) {
+    async onstart(settings) {
         this.#ticks = 0;
         if (settings) {
             Object.assign(this.$, settings);
@@ -104,7 +125,7 @@ export class Stream extends StopStartStateMachine {
         
         var hwenc = (use_hardware && globals.app.conf["core.ffmpeg_hwenc"]);
         var hwaccel = (use_hardware && globals.app.conf["core.ffmpeg_hwaccel"]);
-        
+
         if (this.session.type === SessionTypes.EXTERNAL) {
             /** @type {ExternalSession} */
             let session = this.session;
@@ -471,7 +492,7 @@ export class Stream extends StopStartStateMachine {
             this.tick()
         });
 
-        return true;
+        return super.onstart();
     }
     async tick() {
         this.#ticks++;
@@ -514,7 +535,7 @@ export class Stream extends StopStartStateMachine {
         }
     }
 
-    async _stop() {
+    async onstop() {
         clearInterval(this.#tick_interval);
         
         this.logger.info(`Stopping stream...`);
@@ -537,7 +558,8 @@ export class Stream extends StopStartStateMachine {
         this.emit("stopped");
         
         this.logger.info(`Stream stopped, total duration was ${utils.ms_to_timespan_str(Math.round(Date.now()-this.$.start_time))}`);
-        return true;
+        
+        return super.onstop();
     }
 
     register_metric(key, x, y) {
@@ -559,15 +581,15 @@ export class Stream extends StopStartStateMachine {
         }
 
         if (last_session) {
-            // do not set this.session to null, need somewhere to write logs to. It should eventually get garbaged.
-            // last_session.$.stream = utils.json_copy(this.$);
             last_session.$.stream_id = null;
+            this.emit("detach", last_session);
         }
 
         if (session) {
             this.$.session_id = session.id;
             this.session = session;
             session.$.stream_id = this.id;
+            this.emit("attach", session);
         }
 
         process.nextTick(()=>{
@@ -593,11 +615,11 @@ export class Stream extends StopStartStateMachine {
         var stream_targets = ids.map(id=>this.stream_targets[id]).filter(st=>st);
         return Promise.all(stream_targets.map(st=>st.restart()));
     }
-
-    destroy() {
+    async ondestroy() {
         delete globals.app.streams[this.id];
         delete globals.app.$.streams[this.id];
-        return super.destroy();
+        this.client_updater.destroy();
+        return super.ondestroy();
     }
 }
 

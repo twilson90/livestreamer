@@ -1,11 +1,24 @@
 import WebSocket from "ws";
 import path from "node:path";
 import fs from "fs-extra";
+import events from "events";;
 import {globals, Logger, utils} from "./exports.js";
 /** @import { Client } from './exports.js' */
 
-/** @template { Client } T @extends {utils.EventEmitter<{connected:T,disconnected:T}>} */
-export class ClientServer extends utils.EventEmitter {
+
+/**
+ * @template { Client } T 
+ * @typedef {{
+ *  connect:[T],
+ *  disconnect:[T]
+ * }} Events
+ */
+
+/**
+ * @template { Client } T
+ * @extends {events.EventEmitter<Events<T>>}
+ */
+export class ClientServer extends events.EventEmitter {
     /** @type {Record<PropertyKey,T>} */
     clients = {};
     #ready;
@@ -49,7 +62,7 @@ export class ClientServer extends utils.EventEmitter {
                 alive = false;
             }, (60 * 1000));
             
-            this.emit("connected", client);
+            this.emit("connect", client);
 
             ws.on('message',(data, isBinary)=>{
                 if (isBinary) return;
@@ -63,15 +76,15 @@ export class ClientServer extends utils.EventEmitter {
                     alive = true;
                     return;
                 }
-                client._onmessage(m);
+                client.onmessage(m);
             });
             ws.on('error',(e)=>{
-                client._onerror(e);
+                client.onerror(e);
             });
             ws.on("close", (code)=>{
-                client._onclose(code);
+                client.onclose(code);
                 clearInterval(heartbeat_interval);
-                this.emit("disconnected", client);
+                this.emit("disconnect", client);
                 client.destroy();
             });
         });

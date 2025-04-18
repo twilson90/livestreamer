@@ -150,9 +150,8 @@ export class Download extends DataNodeID {
         if (this.#cancel) this.#cancel();
     }
 
-    destroy() {
+    ondestroy() {
         this.cancel();
-        super.destroy();
         delete globals.app.downloads[this.id];
         delete globals.app.$.downloads[this.id];
         if (this.stdout_listener) this.stdout_listener.close();
@@ -161,7 +160,7 @@ export class Download extends DataNodeID {
         this.stderr_listener = null;
         this.#promise = null;
         this.#cancel = null;
-        this.emit("destroy");
+        return super.ondestroy();
     }
 }
 

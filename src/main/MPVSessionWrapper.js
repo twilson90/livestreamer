@@ -2,7 +2,7 @@ import fs from "fs-extra";
 import path from "node:path";
 import sharp from "sharp";
 import Color from 'color';
-import {globals, utils, MPVWrapper, InternalSessionProps, MPVEDL, MPVEDLEntry, MAX_EDL_REPEATS, DataNode, DataNode$, Logger, FilterContext} from "./exports.js";
+import {globals, utils, MPVWrapper, InternalSessionProps, MPVEDL, MPVEDLEntry, MAX_EDL_REPEATS, DataNodeID, DataNodeID$, Logger, FilterContext} from "./exports.js";
 import { get_default_stream, get_stream_by_id, get_auto_background_mode } from "./shared.js";
 
 /** @import { InternalSession, Stream, PlaylistItem$, MediaInfo, PlaylistItemProps, MediaInfoStream, MediaInfoStreamType, FilterInput, Filter } from './exports.js' */
@@ -39,12 +39,15 @@ const STREAM_VOLUME_NORMALIZATION_CONFIGS = {
     "loudnorm": `loudnorm=dual_mono=true`
 };
 
-export class MPVSessionWrapper$ extends DataNode$ {
+export class MPVSessionWrapper$ extends DataNodeID$ {
     ctx = new MPVContext$();
 }
 
-/** @extends {DataNode<MPVSessionWrapper$>} */
-export class MPVSessionWrapper extends DataNode {
+var ctx_uid = 0;
+var mpv_uid = 0;
+
+/** @extends {DataNodeID<MPVSessionWrapper$>} */
+export class MPVSessionWrapper extends DataNodeID {
     #mpv_last_speed_check = Date.now();
     #mpv_last_pts = 0;
     #tick_interval;
@@ -71,7 +74,7 @@ export class MPVSessionWrapper extends DataNode {
             ...opts
         };
         
-        super(new MPVSessionWrapper$());
+        super(++mpv_uid, new MPVSessionWrapper$());
 
         this.#stream = stream;
         this.width = opts.width;
@@ -403,7 +406,7 @@ export class MPVSessionWrapper extends DataNode {
 
 export default MPVSessionWrapper;
 
-export class MPVContext$ extends DataNode$ {
+export class MPVContext$ extends DataNodeID$ {
     item = {};
     seeking = false;
     internal_seeking = false;
@@ -421,8 +424,8 @@ export class MPVContext$ extends DataNode$ {
     props = {};
 }
 
-/** @extends {DataNode<MPVContext$>} */
-export class MPVContext extends DataNode {
+/** @extends {DataNodeID<MPVContext$>} */
+export class MPVContext extends DataNodeID {
     /** @type {MPVSessionWrapper} */
     #mpv;
     af_graph = [];
@@ -463,7 +466,7 @@ export class MPVContext extends DataNode {
 
     /** @param {MPVSessionWrapper} mpv */
     constructor(mpv) {
-        super(new MPVContext$());
+        super(++ctx_uid, new MPVContext$());
         mpv.$.ctx = this.$;
         this.#mpv = mpv;
         this.#last_ctx = mpv.ctx;
@@ -471,7 +474,7 @@ export class MPVContext extends DataNode {
 
     /** @typedef {{reload_props:boolean,pause:boolean,start:number}} LoadFileOpts */
     /** @param {PlaylistItem$} item @param {LoadFileOpts} opts */
-    async loadfile(item, opts) {
+    async loadfile(_item, opts) {
         if (this.item) {
             throw new Error("item already loaded, create new context");
         }
@@ -484,8 +487,8 @@ export class MPVContext extends DataNode {
         let start = +(opts.start||0);
         let on_load_commands = [];
 
-        let original_item = item;
-        item = this.item = await this.#parse_item({...item, props: {...((opts.reload_props) ? (item && item.props) : utils.json_copy(this.#last_ctx.props))}});
+        let original_item = _item;
+        let item = this.item = await this.#parse_item({..._item, props: {...((opts.reload_props) ? (_item && _item.props) : utils.json_copy(this.#last_ctx.props))}});
         this.$.item = utils.json_copy(item);
 
         // this is stupid, when mpv ends it continues listening.
@@ -702,7 +705,7 @@ export class MPVContext extends DataNode {
                 }], [{
                     start: 0.25 * 1000,
                     end: (Math.max(0, (duration || Number.MAX_SAFE_INTEGER) - 0.5))*1000,
-                    text: ass_fade(props.fade_in || 0, props.fade_out || 0) + (ass_rotate(...(props.title_rotation||[0,0,0]))) + ass_text(props.title_text),
+                    text: ass_fade(props.fade_in || 0, props.fade_out || 0) + (ass_rotate(...(Array.from(props.title_rotation)||[0,0,0]))) + ass_text(props.title_text),
                 }]);
                 // filename = is_root ? `memory://${ass_str}` : await get_ass_subtitle(ass_str);
                 filename = await get_ass_subtitle(ass_str);
@@ -742,7 +745,9 @@ export class MPVContext extends DataNode {
         if (needs_audio && !map.has("audio")) missing_stream_types.push("audio");
         if (needs_subtitle && !map.has("subtitle")) missing_stream_types.push("subtitle");
         
-        let is_unknown_duration = !duration && (!media_info.duration || (is_empty || is_image || is_rtmp));
+        // !! CHECK THIS WORKS::::
+        // let is_unknown_duration = !duration && (!media_info.duration || (is_empty || is_image || is_rtmp));
+        let is_unknown_duration = !duration && (is_empty || is_image || is_rtmp);
         duration = duration || media_duration;
         let fix_low_fps_duration = (is_image || is_empty) && !is_unknown_duration && media_type == "video";
         if (fix_low_fps_duration) duration++;
@@ -764,68 +769,71 @@ export class MPVContext extends DataNode {
                 let tracks = [];
                 let playlist_tracks = this.session.get_playlist_tracks(item.id);
                 let duration_override = false;
-                
-                for (var i = 0; i < playlist_tracks.length; i++) {
-                    let track = {
-                        entries: [],
-                        duration: 0,
-                        type: is_2track ? EDL_TRACK_TYPES[i]: null,
-                    };
-                    let o = offset;
-                    for (let item of playlist_tracks[i]) {
-                        if (item.filename == "livestreamer://exit") {
-                            if (duration_override === false) duration_override = track.duration;
-                            else duration_override = Math.min(duration_override, track.duration);
-                        }
-                        let tmp = await this.#parse_item(item, {offset:o, media_type: track.type, root});
 
-                        track.duration += tmp.duration;
+                /** @param {PlaylistItem[]} items @param {string} type */
+                var parse_track = async (items, type) => {
+                    let entries = [];
+                    let duration = 0;
+                    let o = offset;
+                    for (let item of items) {
+                        if (item.filename == "livestreamer://exit") {
+                            if (duration_override === false) duration_override = duration;
+                            else duration_override = Math.min(duration_override, duration);
+                        }
+                        let tmp = await this.#parse_item(item, {offset:o, media_type: type, root});
+
+                        duration += tmp.duration;
                         o += tmp.duration;
 
                         if (tmp.duration > 0) {
-                            track.entries.push(new MPVEDLEntry(tmp.edl || tmp.filename, {
+                            entries.push(new MPVEDLEntry(tmp.edl || tmp.filename, {
                                 length: tmp.duration.toFixed(3)
                             }));
                         }
                     }
-                    tracks.push(track);
+                    return { entries, duration, type }
+                };
+                
+                for (var i=0; i < playlist_tracks.length; i++) {
+                    tracks.push(await parse_track(playlist_tracks[i], is_2track ? EDL_TRACK_TYPES[i]: null));
                 }
 
                 let min_duration = Math.min(...tracks.map((t)=>t.duration));
                 let max_duration = Math.max(...tracks.map((t)=>t.duration));
                 if (duration_override) {
                     duration = duration_override;
+                } else if (props.playlist_end_on_shortest_track) {
+                    duration = min_duration;
                 } else {
-                    if (props.playlist_end_on_shortest_track) {
-                        duration = min_duration;
-                    } else {
-                        duration = max_duration;
-                    }
+                    duration = max_duration;
                 }
 
                 offset += duration;
 
                 for (let track of tracks) {
-                    let pad_duration = Math.max(0, max_duration - track.duration);
-                    if (is_2track && pad_duration > 0.04) {
-                        if (track.type == "audio" && props.playlist_revert_to_video_track_audio) {
-                            // if audio track is longer than video track, revert to video track after audio track ends
-                            let tmp = new MPVEDL(tracks[0].entries);
-                            track.entries.push(new MPVEDLEntry(tmp, {
-                                start: (tracks[1].duration).toFixed(3),
-                                length: (tracks[0].duration - tracks[1].duration).toFixed(3)
-                            }));
-                        } else {
-                            // add padding to track if necessary
-                            let tmp = await this.#parse_item(null, {duration: pad_duration, media_type: track.type, offset, root});
-                            track.entries.push(new MPVEDLEntry(tmp.edl || tmp.filename, {
-                                length: (pad_duration).toFixed(3)
-                            }));
+                    let pad_duration = Math.max(0, duration - track.duration);
+                    if (is_2track) {
+                        if (pad_duration > 0.04) {
+                            if (track.type == "audio" && props.playlist_revert_to_video_track_audio) {
+                                // if audio track is longer than video track, revert to video track after audio track ends
+                                let video_track = await parse_track(playlist_tracks[0], "audio")
+                                let tmp = new MPVEDL(video_track.entries);
+                                track.entries.push(new MPVEDLEntry(tmp, {
+                                    start: (track.duration).toFixed(3),
+                                    length: pad_duration.toFixed(3)
+                                }));
+                            } else{
+                                // add padding to track if necessary
+                                let tmp = await this.#parse_item(null, {duration: pad_duration, media_type: track.type, offset, root});
+                                track.entries.push(new MPVEDLEntry(tmp.edl || tmp.filename, {
+                                    length: (pad_duration).toFixed(3)
+                                }));
+                            }
                         }
-                        if (track.entries.length && track.type) {
-                            if (edl.length) edl.append("!new_stream");
-                            edl.append(new MPVEDLEntry("!delay_open", {media_type: track.type}));
-                        }
+                    }
+                    if (track.entries.length && track.type) {
+                        if (edl.length) edl.append("!new_stream");
+                        edl.append(new MPVEDLEntry("!delay_open", {media_type: track.type}));
                     }
                     edl.append(...track.entries);
                 }

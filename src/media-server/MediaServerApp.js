@@ -557,7 +557,7 @@ export class Live extends StopStartStateMachine {
         }
     }
     
-    async _start() {
+    async onstart() {
         this.$.start_ts = Date.now();
         this.$.is_live = true;
 
@@ -726,15 +726,18 @@ export class Live extends StopStartStateMachine {
         });
 
         globals.app.ipc.emit("media-server.live-publish", this.id);
+
+        return super.onstart();
     }
 
-    async _stop() {
+    async onstop() {
         console.info(`LIVE [${this.id}] has stopped.`);
         this.$.is_live = false;
         for (var v in this.levels) {
             await this.levels[v].destroy();
         }
         await this.ffmpeg.stop();
+        return super.onstop();
     }
     
     async create_thumbnail() {
@@ -798,10 +801,10 @@ export class Live extends StopStartStateMachine {
         }
     }
 
-    async _destroy() {
+    async ondestroy() {
         delete globals.app.lives[this.id];
         await fs.rm(this.dir, { recursive: true });
-        this.emit("destroy");
+        return super.ondestroy();
     }
 }
 

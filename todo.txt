@@ -34,10 +34,10 @@
 [x] show bitrate in stream info (for both session types)
 [x] finish up chart update with zoom and bitrate and never clearing etc.
 [~] weird, links to external site chrome is still requesting app.css.map and stuff which triggers an auth callback but no cookie present and it shows login! public html stuff really shouldnt be denied, only reason for this is to tirgger a password prompt. figure out a better way.
-[ ] [18:40:47.271][w][main][session-1][stream][mpv] [mpv] Source stream 1 (audio) unused and hidden.
+[x] [18:40:47.271][w][main][session-1][stream][mpv] [mpv] Source stream 1 (audio) unused and hidden.
     [18:40:47.272][w][main][session-1][stream][mpv] [mpv] Source stream 0 (video) unused and hidden.
     [18:40:47.272][w][main][session-1][stream][mpv] [mpv] Source stream 2 (sub) unused and hidden.
-[ ] aid sid vid mpv test thoroughly
+[x] aid sid vid mpv test thoroughly
 [ ] AUTO values for nms player label text show selected value
 [ ] fix_2_track_playlist (when creating a 2 track playlist automatically put audio in one column, video in another)
 [ ] vid generated from loop file, why isnt it cutting the beginning after seek? restarts. Must be a reason, figure  out why I did it that way or fix it.
@@ -84,29 +84,32 @@
 [ ] mediaplayer on setting clip repeats the chapter text is 1 step behind, and the seekbar isnt rebuilt.
 [ ] seeking a file video background and subtitles:
     [mpv] EDL: source file '/home/delete/web/cabtv.co.uk/livestreamer/.files/OTH/Solar System playlist.srt' has unknown duration.
-[ ] crop input filter is off.
-[ ] Apply changes prompt to modals that need require confirmation.
+[x] crop input filter is off.
+[x] Apply changes prompt to modals that need require confirmation.
 [ ] chat data-pause too frequent, on mobile fullscreen it pauses for no reason.
 [ ] mini buttons under chat too packed, no wrap.
-[ ] playlist undo messes up media infos
+[?] playlist undo messes up media infos
 [ ] fade to next item button
 [x] numeric textbox focused still jittering with server feedback when holding down up or down
 [x] intertitles scaling with video size, should be fixed.
 [ ] detected_crops_cache is bollocks, screenshots not being loaded on start.
 [x] seekbar flickers on seek again...
 [x] rejigger playlist modify menu prompt, most changes are now applied immediately.
-[ ] random error when editing filter to do with playlist history
 [x] if any configuration modals open FREEZE ALL SESSION UPDATES, get around filter edit menu rubbish, go back to changing list instead of updating playlist direct.
 [x] property container should inherit property, filter config menu should not have to state the filter props individually (line 6515)
 
 [ ] I noticed permessage deflate on nms video websockets... check it out
 [~] wss not working delivery of flv video.
 [~] gaussian blur fuck up
-[ ] yt-dlp make tmp files go to appdata tmp folder
-[ ] figure out cleanup of playlist items removing redudant properties.
-[ ] deep_merge reset can work if split into 2 operations, delete with set null and then deep merge with new value
+[x] figure out cleanup of playlist items removing redudant properties.
+[x] deep_merge reset can work if split into 2 operations, delete with set null and then deep merge with new value
 [x] fix observers so it creates an additional entry for clears, instead of the weird ass 'RESET_f123sd1' shit
-[ ] streams should be subscribable like sessions. maybe. figure out better method for subscribing.
+[x] streams should be subscribable like sessions. maybe. figure out better method for subscribing.
+[x] pop out player no buttons.
 [ ] playlist undo weirdness when removed filters while playing. applies old filters without changing playlist item props. huh? Maybe some references are surviving?
+[ ] random error when editing filter to do with playlist history
 [ ] rtmp streams wait for buffer and then time-pos updates to 4 seconds in, gets to end and then fixes. weird. mpv issue!
-[ ] pop out player no buttons.
+[ ] yt-dlp make tmp files go to appdata tmp folder
+[ ] file manager open in new window insecure and blocked, windowcommunicator times out.
+[ ] current_playing_item may have properties that have been updated but not present in the playing item (before reload), affects seekbar chapters and other seekbar things. also see get _current_duration()
+    need to handle parsedplaylistitem$ as a special case

@@ -4,7 +4,7 @@ export class DataNodeID$ extends DataNode$ {
     id = "";
 }
 
-/** @template {DataNodeID$} T @extends {DataNode<T>} */
+/** @template {DataNodeID$} T @template Events @extends {DataNode<T, Events>} */
 export class DataNodeID extends DataNode {
     /** @type {string} */
     get id() { return this.$.id; } // always a string
