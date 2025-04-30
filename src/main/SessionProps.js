@@ -49,6 +49,9 @@ export const SessionProps = {
         audio_bitrate: {
             __default__: 160
         },
+        buffer_duration: {
+            __default__: 5
+        },
     },
     access_control: {
         __custom__:true,

@@ -28,7 +28,7 @@ export * from "../utils/exports.js";
 
 export function is_windows() { return !!process.platform.match(/^win/i); }
 
-/** @template T @param {any} o @param {T} type @return {T} */
+/** @template T @param {any} o @param {T} type @returns {T} */
 export function cast(o, type) { return o; }
 
 export function strip_ext(name) {
@@ -247,7 +247,7 @@ export function cpu_average() {
 }
   
 // load average for the past 1000 milliseconds calculated every 100
-/** @return {number} */
+/** @returns {number} */
 export function get_cpu_load_avg(avgTime = 1000, delay = 100) {
     return new Promise((resolve, reject) => {
         const n = ~~(avgTime / delay);
@@ -303,7 +303,7 @@ export function build_hierarchy_from_indented_string(str) {
     return root;
 }
 
-/** @return {AsyncIterable<Path>} */
+/** @returns {AsyncIterable<Path>} */
 export async function *find_symlinks(dir, broken=false) {
     /** @type {AsyncGenerator<Path>} */
     var g = new Glob("**", {cwd:dir, absolute:true, nodir:true, stat:true, withFileTypes:true});

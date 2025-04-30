@@ -1,4 +1,4 @@
-/** @return {string[]} */
+/** @returns {string[]} */
 export function get_property_keys(obj) {
 	const proto = Object.getPrototypeOf(obj);
 	const inherited = (proto) ? get_property_keys(proto) : [];

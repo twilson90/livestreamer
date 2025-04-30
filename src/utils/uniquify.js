@@ -1,4 +1,4 @@
-/** @param {Iterable<any>} iterable @param {function(any,number,number):string} resolver @return {any[]} */
+/** @param {Iterable<any>} iterable @param {function(any,number,number):string} resolver @returns {any[]} */
 export function* uniquify(iterable, resolver) {
 	if (!resolver) resolver = (s, i, n) => n > 1 ? `${s} [${i + 1}]` : `${s}`;
 	var map = new Map();

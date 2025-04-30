@@ -1,13 +1,14 @@
 import fs from "fs-extra";
 import path from "node:path";
-import {globals, utils, constants, FFMPEGWrapper, Logger, SessionTypes, StreamTarget, MPVSessionWrapper, StopStartStateMachine, StopStartStateMachine$, ClientUpdater} from "./exports.js";
+import { PassThrough } from "node:stream";
+import * as ebml from 'ts-ebml';
+import {globals, utils, constants, FFMPEGWrapper, Logger, SessionTypes, StreamTarget, SessionPlayer, StopStartStateMachine, StopStartStateMachine$, ClientUpdater, SessionPlayer$} from "./exports.js";
 /** @import { Session, InternalSession, ExternalSession, Session$, MainClient } from './exports.js' */
 
 const WARNING_MPV_LOG_SIZE = 1 * 1024 * 1024 * 1024;
 const MAX_MPV_LOG_SIZE = 8 * 1024 * 1024 * 1024;
 
 export class Stream$ extends StopStartStateMachine$ {
-    mpv = {};
     targets = [];
     target_opts = {};
     metrics = {};
@@ -15,9 +16,11 @@ export class Stream$ extends StopStartStateMachine$ {
     bitrate = 0;
     scheduled = false;
     is_encode = false;
+    fix_discontinuities = true;
     internal_path = "";
     /** @type {string | undefined} */
     title;
+    player = new SessionPlayer$();
 }
 
 /**
@@ -29,11 +32,11 @@ export class Stream$ extends StopStartStateMachine$ {
 
 /** @extends {StopStartStateMachine<Stream$, Events>} */
 export class Stream extends StopStartStateMachine {
-    /** @return {any[]} */
+    /** @returns {any[]} */
     get is_gui() { return !!this.$.targets.includes("gui"); }
     get is_single_target() { return this.$.targets.length == 1; }
     get is_only_gui() { return this.is_single_target && this.is_gui; }
-    get is_encode() { return !this.is_only_gui; }
+    get is_encoding() { return !this.is_only_gui; }
     get is_realtime() { return !(this.is_single_target && this.$.targets.includes("file") && !this.get_target_opts("file")["re"]) || this.is_test; }
     get is_test() { return !!this.$.test; }
     get title() { return this.$.title; }
@@ -42,15 +45,15 @@ export class Stream extends StopStartStateMachine {
 
     get_target_opts(target_id) {
         return {
-            ...(globals.app.targets[target_id]||{}).opts,
+            ...(globals.app.targets[target_id]||{}).$.opts,
             ...this.$.target_opts[target_id]
         }
     }
 
     /** @type {Session<Session$>} */
     session;
-    /** @type {MPVSessionWrapper} */
-    mpv;
+    /** @type {SessionPlayer} */
+    player;
     /** @type {FFMPEGWrapper} */
     ffmpeg;
     /** @type {Record<PropertyKey,StreamTarget>} */
@@ -68,17 +71,17 @@ export class Stream extends StopStartStateMachine {
         this.logger.on("log", (log)=>(this.session||session).logger.log(log))
         
         this.client_updater = new ClientUpdater(this.observer, ["streams", this.id]);
+        var onsubscribe = (client)=>this.client_updater.subscribe(client);
+        var onunsubscribe = (client)=>this.client_updater.unsubscribe(client);
         this.on("attach", (session)=>{
-            this.client_updater.add_clients(session.clients);
-            var onattach = (client)=>this.client_updater.add_client(client);
-            var ondetach = (client)=>this.client_updater.remove_client(client);
-            session.on("attach", onattach);
-            session.on("detach", ondetach);
-            this.once("detach", (session)=>{
-                this.client_updater.remove_clients(session.clients);
-                session.off("attach", onattach);
-                session.off("detach", ondetach);
-            });
+            session.clients.forEach(c=>this.client_updater.subscribe(c));
+            session.client_updater.on("subscribe", onsubscribe);
+            session.client_updater.on("unsubscribe", onunsubscribe);
+        });
+        this.on("detach", (session)=>{
+            session.clients.forEach(c=>this.client_updater.unsubscribe(c));
+            session.client_updater.off("subscribe", onsubscribe);
+            session.client_updater.off("unsubscribe", onunsubscribe);
         });
     }
 
@@ -90,14 +93,15 @@ export class Stream extends StopStartStateMachine {
 
         this.logger.info(`Starting stream...`);
         this.$.scheduled = !!this.session.$.schedule_start_time;
-        this.$.is_encode = this.is_encode;
+        this.$.is_encode = this.is_encoding;
 
         if (this.is_test) {
             if (globals.app.conf["main.test_stream_low_settings"]) {
-                this.$.audio_bitrate = "128";
-                this.$.video_bitrate = "2000";
+                this.$.audio_bitrate = 128;
+                this.$.video_bitrate = 2000;
                 this.$.h264_preset = "veryfast";
                 this.$.resolution = "854x480";
+                // this.$.buffer_duration = 0;
             }
             this.$.targets = [];
         }
@@ -121,6 +125,7 @@ export class Stream extends StopStartStateMachine {
         let ffmpeg_args = [
             // `-re`,
             `-strict`, `experimental`,
+            `-stream_loop`, `-1`,
         ];
         
         var hwenc = (use_hardware && globals.app.conf["core.ffmpeg_hwenc"]);
@@ -142,7 +147,7 @@ export class Stream extends StopStartStateMachine {
             }
 
             if (this.is_realtime) {
-                ffmpeg_args.push("-re") // with mpv's --orealtime it usually runs at about x1.01 (not sure why), with -re it is about x1.001 (+1s ~= +1ms sync, so over an hour the viewer will fall around 3.6 secs behind the live edge)
+                // ffmpeg_args.push("-re") // with mpv's --orealtime it usually runs at about x1.01 (not sure why), with -re it is about x1.001 (+1s ~= +1ms sync, so over an hour the viewer will fall around 3.6 secs behind the live edge)
             }
             ffmpeg_args.push(
                 "-err_detect", "ignore_err",
@@ -213,7 +218,7 @@ export class Stream extends StopStartStateMachine {
             "-flvflags", "no_duration_filesize"
         );
 
-        if (this.is_encode) {
+        if (this.is_encoding) {
             let internal_path = `/internal/${this.session.id}`;
             this.$.internal_path = internal_path;
             this.$.output_url = `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${internal_path}`;
@@ -261,23 +266,25 @@ export class Stream extends StopStartStateMachine {
             width = Math.round(width/2)*2;
             height = Math.round(height/2)*2;
 
-            this.mpv = new MPVSessionWrapper(this, {
+            this.player = new SessionPlayer(this, {
                 width,
                 height,
             });
-            this.mpv.logger.on("log", (log)=>{
+            this.player.logger.on("log", (log)=>{
                 this.logger.log(log);
             });
 
-            await this.mpv.ready;
+            await this.player.ready;
 
-            var mpv_custom = "orealtime" in this.mpv.allowed_mpv_args;
+            var mpv_custom = false;
+            
             this.mpv_log_file = path.join(globals.app.logs_dir, `mpv-${this.id}-${utils.date_to_string(Date.now())}.log`);
 
             var mpv_args = [];
             
             mpv_args.push(
                 "--no-config",
+                "--cache=no",
                 "--sub-font-size=66",
                 `--sub-margin-x=50`,
                 "--sub-margin-y=30",
@@ -288,10 +295,12 @@ export class Stream extends StopStartStateMachine {
                 "--stream-buffer-size=4k",
                 "--interpolation=no",
                 "--force-window=yes",
+                // "--ytdl=no",
                 `--ytdl-format=${globals.app.conf["core.ytdl_format"]}`,
-                `--script-opts-append=ytdl_hook-try_ytdl_first=yes`, // <-- important for detecting youtube edls on load hook in livestreamer.lua
-                `--script-opts-append=ytdl_hook-ytdl_path=${globals.app.conf["core.ytdl_path"]}`,
+                // `--script-opts-append=ytdl_hook-try_ytdl_first=yes`, // <-- important for detecting youtube edls on load hook in livestreamer.lua
+                // `--script-opts-append=ytdl_hook-ytdl_path=${globals.app.conf["core.ytdl_path"]}`,
                 `--script=${path.join(globals.app.mpv_lua_dir, "livestreamer.lua")}`,
+                `--script-opts-append=livestreamer-fix_discontinuities=${this.$.fix_discontinuities?"yes":"no"}`,
                 "--quiet",
                 `--log-file=${this.mpv_log_file}`,
                 //--------------------
@@ -300,26 +309,27 @@ export class Stream extends StopStartStateMachine {
                 //--------------------
             );
             if (mpv_custom) {
-                mpv_args.push(`--end-on-eof=${this.is_encode ? "yes" : "no"}`);
+                mpv_args.push(`--end-on-eof=${this.is_encoding ? "yes" : "no"}`);
             }
             
             if (this.is_realtime) {
-                mpv_args.push(
-                    "--cache=yes",
-                    "--cache-secs=1",
-                    // `--demuxer-max-bytes=${32*1024*1024}`,
-                    // `--demuxer-readahead-secs=5`,
-                    "--demuxer-readahead-secs=1",
-                    "--demuxer-hysteresis-secs=1",
-                    // -----------------
-                );
+                // mpv_args.push(
+                //     "--cache=yes",
+                //     "--cache-secs=1",
+                //     // `--demuxer-max-bytes=${32*1024*1024}`,
+                //     // `--demuxer-readahead-secs=5`,
+                //     "--demuxer-readahead-secs=1",
+                //     "--demuxer-hysteresis-secs=1",
+                //     // -----------------
+                // );
 
                 if(mpv_custom) mpv_args.push("--orealtime");
             }
+
             if (use_hardware && globals.app.conf["core.mpv_hwdec"]) {
                 mpv_args.push(`--hwdec=${globals.app.conf["core.mpv_hwdec"]}-copy`);
             }
-            if (this.is_encode) {
+            if (this.is_encoding) {
                 mpv_args.push(
                     // "--gapless-audio=yes",
                     "--audio-format=float",
@@ -415,7 +425,7 @@ export class Stream extends StopStartStateMachine {
                         `--ovc=mpeg2video`,
                         `--ovcopts-add=b=500M`, // set to some absurdly high bitrate
                         `--oac=pcm_s16le`,
-                        `--of=nut` // nut, matroska, avi
+                        `--of=matroska` // nut, matroska, avi
                     );
                     /* if (use_hardware) mpv_args.push(`--hwdec=${core.conf["core.mpv_hwdec"]}-copy`);
                     mpv_args.push(
@@ -453,31 +463,39 @@ export class Stream extends StopStartStateMachine {
             
             // -------------------------------------------------------
 
-            this.mpv.mpv.on("before-start", ()=>{
-                if (this.ffmpeg && this.mpv) {
-                    this.mpv.mpv.process.stdout.pipe(this.ffmpeg.process.stdin);
+            this.player.mpv.on("before-start", ()=>{
+                if (this.ffmpeg && this.player) {
+                    if (this.is_realtime) {
+                        // Create a custom stream transform to enforce real-time pacing
+                        this.realtime_handler = new RealtimeHandler(this.$.buffer_duration * 1000);
+                        this.player.mpv.process.stdout.pipe(this.realtime_handler.stream).pipe(this.ffmpeg.process.stdin);
+                        this.player.mpv.on("before-quit", ()=>{
+                            this.player.mpv.process.stdout.unpipe(this.realtime_handler.stream).unpipe(this.ffmpeg.process.stdin);
+                        })
+                    } else {
+                        this.player.mpv.process.stdout.pipe(this.ffmpeg.process.stdin);
+                        this.player.mpv.on("before-quit", ()=>{
+                            this.player.mpv.process.stdout.unpipe(this.ffmpeg.process.stdin);
+                        })
+                    }
+
                     this.ffmpeg.process.stdin.on("error", (e)=>{
                         this.logger.warn(e);
                     }); // needed to swallow 'Error: write EOF' when unpiping!!!
-                    this.mpv.mpv.on("before-quit", ()=>{
-                        this.mpv.mpv.process.stdout.unpipe(this.ffmpeg.process.stdin);
-                    })
                 }
             })
 
-            let res = await this.mpv.start(mpv_args);
+            let res = await this.player.start(mpv_args);
             if (!res) {
                 return;
             }
             this.logger.info("Started MPV successfully");
 
-            if (this.mpv.allowed_mpv_props["output-pts"]) {
-                this.mpv.on("speed",(speed)=>{
-                    this.register_metric(`mpv:speed`, this.time_running, speed);
-                });
-            }
+            this.player.on("speed",(speed)=>{
+                this.register_metric(`decoder:speed`, this.time_running, speed);
+            });
 
-            this.mpv.mpv.on("quit", async ()=>{
+            this.player.mpv.on("quit", async ()=>{
                 if (this.is_only_gui) await this.stop("quit");
                 else this._handle_end("mpv");
             });
@@ -494,6 +512,7 @@ export class Stream extends StopStartStateMachine {
 
         return super.onstart();
     }
+
     async tick() {
         this.#ticks++;
         if (this.#ticks%60 == 0) {
@@ -513,9 +532,13 @@ export class Stream extends StopStartStateMachine {
         let old_targets = Object.values(this.stream_targets);
         let curr_targets = new Set();
 
-        for (let target_id of this.$.targets) {
+        var targets = this.$.targets || [];
+        for (let target_id of targets) {
             let target = globals.app.targets[target_id];
-            if (!target) continue;
+            if (!target) {
+                this.logger.warn(`Target '${target_id}' not found.`);
+                continue;
+            }
             if (!this.stream_targets[target_id]) {
                 if (target.limit && target.streams.length >= target.limit) {
                     this.logger.warn(`Target '${target}' cannot be used by more than ${target.limit} streams concurrently.`);
@@ -542,15 +565,15 @@ export class Stream extends StopStartStateMachine {
         for (var target of Object.values(this.stream_targets)) {
             target.destroy();
         }
-        if (this.mpv) {
+        if (this.player) {
             this.logger.info("Terminating MPV...");
             let t0 = Date.now();
-            await this.mpv.mpv.quit();
+            await this.player.mpv.quit();
             let t1 = Date.now();
             this.logger.info(`MPV terminated in ${(t1-t0)/1000} secs.`);
         }
         if (this.ffmpeg) {
-            this.ffmpeg.destroy();
+            this.ffmpeg.stop();
         }
 
         globals.app.ipc.emit("main.stream.stopped", this.id);
@@ -596,12 +619,20 @@ export class Stream extends StopStartStateMachine {
             this.try_start_playlist();
         });
     }
+
+    pause(pause) {
+        if (this.realtime_handler) {
+            if (pause) this.realtime_handler.pause();
+            else this.realtime_handler.resume();
+        }
+        this.player.set_property("pause", pause);
+    }
     
     async try_start_playlist() {
         if (this.session.type === SessionTypes.INTERNAL && this.state === constants.State.STARTED) {
             /** @type {InternalSession} */
             let session = this.session;
-            await session.playlist_play(session.$.playlist_id, { start: session.$.time_pos });
+            await session.playlist_play(session.$.playlist_id || session.first_item_id, { start: session.$.time_pos });
         }
     }
 
@@ -620,6 +651,107 @@ export class Stream extends StopStartStateMachine {
         delete globals.app.$.streams[this.id];
         this.client_updater.destroy();
         return super.ondestroy();
+    }
+}
+
+
+
+class RealtimeHandler {
+    #timer = new utils.StopWatch();
+    #pts = 0;
+    pts_offset = 0;
+    get pts() { return this.#pts + this.pts_offset; }
+    constructor(buffer_duration) {
+        var decoder = new ebml.Decoder();
+        var reader = new ebml.Reader();
+        this.#timer.start();
+
+        var push = (chunk, callback)=>{
+            this.stream.push(chunk);
+            const elements = decoder.decode(chunk);
+            for (var e of elements) reader.read(e);
+            const nanosec = reader.duration * reader.timestampScale;
+            this.#pts = nanosec / 1000 / 1000;
+            reader.cues.length = 0; // dump this it builds up quickly consuming memory and doesnt appear to affect pts
+            // console.log(this.#pts);
+            callback();
+        }
+
+        this.stream = new PassThrough({
+            transform: (chunk, encoding, callback)=>{
+                const time_diff = this.pts - this.#timer.elapsed;
+                if (time_diff > buffer_duration) {
+                    const delay = time_diff - buffer_duration;
+                    setTimeout(()=>push(chunk, callback), delay);
+                } else {
+                    push(chunk, callback);
+                }
+            }
+        });
+    }
+    pause() {
+        this.#timer.pause();
+    }
+    resume() {
+        this.#timer.resume();
+    }
+}
+
+class _RealtimeStream extends PassThrough {
+    constructor(target_bps, buffer_size) {
+        super();
+        this.start_time = Date.now();
+        this.buffer_size = buffer_size;
+        this.target_Bps = target_bps / 8; // Convert to bytes/second
+        this.bytes_sent = 0;
+        this.decoder = new ebml.Decoder();
+        this.decoder2 = new ebml.Reader();
+        this.pts = 0;
+    }
+    _transform(chunk, encoding, callback) {
+        const now = Date.now();
+        const elapsed = (now - this.start_time) / 1000; // in seconds
+        const target_bytes = Math.floor(this.target_Bps * elapsed);
+        
+        // Calculate how many bytes we should have sent by now
+        const bytes_to_hold = this.bytes_sent - target_bytes;
+        
+        if (bytes_to_hold >= this.buffer_size) {
+            // We're too far ahead - delay sending this chunk
+            const delay = Math.floor((bytes_to_hold - this.buffer_size) / this.target_Bps * 1000);
+            setTimeout(()=>this._push(chunk, callback), delay);
+        } else {
+            // We're within buffer limits - send immediately
+            this._push(chunk, callback);
+        }
+    }
+    _transform(chunk, encoding, callback) {
+        const now = Date.now();
+        const elapsed = (now - this.start_time) / 1000; // in seconds
+        const target_bytes = Math.floor(this.target_Bps * elapsed);
+        
+        // Calculate how many bytes we should have sent by now
+        const bytes_to_hold = this.bytes_sent - target_bytes;
+        
+        if (bytes_to_hold >= this.buffer_size) {
+            // We're too far ahead - delay sending this chunk
+            const delay = Math.floor((bytes_to_hold - this.buffer_size) / this.target_Bps * 1000);
+            setTimeout(()=>this._push(chunk, callback), delay);
+        } else {
+            // We're within buffer limits - send immediately
+            this._push(chunk, callback);
+        }
+    }
+    _push(chunk, callback) {
+        this.push(chunk);
+        const ebmlElms = this.decoder.decode(chunk);
+        for (var e of ebmlElms) {
+            this.decoder2.read(e);
+            console.log(this.decoder2.duration);
+        }
+
+        this.bytes_sent += chunk.length;
+        callback();
     }
 }
 

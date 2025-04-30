@@ -1,9 +1,11 @@
 import { $ } from "../render_html.js";
 import { set_inner_html } from "../set_inner_html.js";
+import { DropdownMenu } from "../DropdownMenu.js";
 import { UI, Button, List } from "./ui.js";
 import { PropertyGroup } from "./PropertyGroup.js";
 import { InputProperty } from "./InputProperty.js";
 import { array_move_element } from "../../array_move_element.js";
+import { json_copy } from "../../json_copy.js";
 
 /** @import {PropertyEvents,InputPropertySettings,UISetting,SetValueOptions} from "./exports.js" */
 
@@ -43,11 +45,12 @@ export class PropertyList extends InputProperty {
             "new": ()=>({}),
             "default": ()=>[],
             "vertical": true,
+            "copy_id": ()=>this.id,
             ...settings
         });
 
         var add_button = new Button(`<button><i class="fas fa-plus"></i></button>`, {
-            title: "Add Item",
+            title: "Add",
             "click": async() => {
                 var value = this.value;
                 var new_value = await this.get_setting("new");
@@ -60,7 +63,43 @@ export class PropertyList extends InputProperty {
                 });
             }
         });
-        
+
+        var copy_key = `clipboard:${this.copy_id}`;
+        var copy = ()=>{
+            localStorage.setItem(copy_key, JSON.stringify(this.value));
+        }
+
+        var paste = ()=>{
+            var value = localStorage.getItem(copy_key);
+            if (!value) return;
+            this.set_value(JSON.parse(value), {trigger: true});
+        }
+
+        var more_button = new Button(`<button class="icon button"><i class="fas fa-ellipsis-v"></i></button>`, {
+            title: "More",
+            "click": ()=>more_dropdown.toggle()
+        });
+        more_button.elem.style.flex = "none";
+
+        var more_dropdown = new DropdownMenu({
+            target: more_button.elem,
+            parent: this.elem,
+            "items": [
+                {
+                    icon: `<i class="fas fa-copy"></i>`,
+                    label: `Copy`,
+                    disabled: ()=>!this.value.length,
+                    click: ()=>copy()
+                },
+                {
+                    icon: `<i class="fas fa-clipboard"></i>`,
+                    label: `Paste`,
+                    disabled: ()=>!localStorage.getItem(copy_key),
+                    click: ()=>paste()
+                }
+            ]
+        });
+
         var count_el = $(`<span class="property-list-count"></span>`)[0];
         this.header_el.append(count_el);
         var empty_el = $(`<div class="empty"></div>`)[0];
@@ -74,6 +113,7 @@ export class PropertyList extends InputProperty {
         var list = this.list = new List({ class: "property-list" });
         wrapper.append(list);
         this.buttons_el.prepend(add_button.elem);
+        this.buttons_el.append(more_button.elem);
 
         this.on("update", () => {
             let list_items = list.list_items;

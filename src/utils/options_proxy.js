@@ -1,4 +1,4 @@
-/** @template T @param {T} opts @return {T} */
+/** @template T @param {T} opts @returns {T} */
 export function options_proxy(opts) {
 	return new Proxy(opts, {
 		get(target, prop, receiver) {

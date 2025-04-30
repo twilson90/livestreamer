@@ -13,6 +13,12 @@
 	--ui-num-items-per: 1;
 }
 
+.uis {
+	&.hidden {
+		display: none !important;
+	}
+}
+
 label.uis {
 	display: flex;
 	margin-bottom: 0;
@@ -284,7 +290,6 @@ label.uis {
 }
 .uis.column, .uis.row {
 	display: flex;
-	flex-wrap: wrap;
 	gap: var(--ui-gap);
 	margin: 0;
 	--ui-property-width: 100px;
@@ -296,6 +301,7 @@ label.uis {
 }
 .uis.row {
 	flex-direction: row;
+	flex-wrap: wrap;
 	&>* { max-width: 100%; }
 }
 .uis.column {

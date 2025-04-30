@@ -1,5 +1,5 @@
 /** @typedef {{multiple:boolean, accept:string, directories:boolean}} FileDialogOptions */
-/** @return {File[]} @param {FileDialogOptions} opts */
+/** @returns {File[]} @param {FileDialogOptions} opts */
 export function open_file_dialog(opts) {
     opts = Object.assign({}, opts);
     return new Promise((resolve) => {

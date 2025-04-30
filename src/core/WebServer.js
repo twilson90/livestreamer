@@ -3,37 +3,41 @@ import https from "node:https";
 import WebSocket, { WebSocketServer } from "ws";
 import {globals} from "./exports.js";
 
-/** @typedef {{http_port:Number, https_port:Number, username:string, password:string, ssl_key:string, ssl_cert:string, socket_path:string, ws:WebSocket.ServerOptions<typeof WebSocket, typeof http.IncomingMessage>}} Config */
+var default_opts = {
+    allow_origin: "*",
+    /** @type {boolean|(req:http.IncomingMessage, res:http.ServerResponse)=>boolean} */
+    auth: false,
+    allow_unauthorised: true,
+    auth_key: "livestreamer_auth",
+    ws: {
+        noServer: true,
+        perMessageDeflate: true,
+        /* {
+            zlibDeflateOptions: {
+                chunkSize: 1024,
+                memLevel: 7,
+                level: 3
+            },
+            zlibInflateOptions: {
+                chunkSize: 10 * 1024
+            },
+            clientNoContextTakeover: true, // Defaults to negotiated value.
+            serverNoContextTakeover: true, // Defaults to negotiated value.
+            serverMaxWindowBits: 10, // Defaults to negotiated value.
+            concurrencyLimit: 10, // Limits zlib concurrency for perf.
+            threshold: 1024 // Size (in bytes) below which messages should not be compressed.
+        } */
+    },
+}
 export class WebServer {
     /** @type {http.Server} */
     server;
     /** @type {Record<PropertyKey, import("node:net").Socket>} */
     #socks = {};
-    /** @param {http.RequestListener<typeof http.IncomingMessage, typeof http.ServerResponse>} handler @param {Config} opts */
+    /** @param {http.RequestListener<typeof http.IncomingMessage, typeof http.ServerResponse>} handler @param {typeof default_opts} opts */
     constructor(handler, opts) {
-        opts = {
-            allow_origin: "*",
-            auth: false,
-            ws: {
-                noServer: true,
-                perMessageDeflate: true,
-                /* {
-                    zlibDeflateOptions: {
-                        chunkSize: 1024,
-                        memLevel: 7,
-                        level: 3
-                    },
-                    zlibInflateOptions: {
-                        chunkSize: 10 * 1024
-                    },
-                    clientNoContextTakeover: true, // Defaults to negotiated value.
-                    serverNoContextTakeover: true, // Defaults to negotiated value.
-                    serverMaxWindowBits: 10, // Defaults to negotiated value.
-                    concurrencyLimit: 10, // Limits zlib concurrency for perf.
-                    threshold: 1024 // Size (in bytes) below which messages should not be compressed.
-                } */
-            },
-        }
+
+        opts = {...default_opts, ...opts};
 
         /** @type {https.ServerOptions<typeof http.IncomingMessage, typeof http.ServerResponse>} */
         var http_opts = {};
@@ -42,26 +46,26 @@ export class WebServer {
         globals.app.logger.info(`Starting HTTP server on socket ${this.socket_path}...`);
         globals.app.logger.info(globals.app.get_urls().http);
         // console.info(globals.app.get_urls(globals.app.name).url);
-        
+        /** @param {http.IncomingMessage} req @param {http.ServerResponse} res */
+        var check_auth = (req, res)=>{
+            if (typeof opts.auth === "function") {
+                return opts.auth(req, res)
+            }
+            return !!opts.auth;
+        }
         this.server = http.createServer(http_opts, async (req, res)=>{
+            await globals.app.ready;
             // accesslog(req, res, undefined, (l)=>core.logger.debug(l));
-            if (opts.auth) {
-                var path = new URL(req.url, `http://localhost`).pathname;
-                if (path.match(/^\/logout$/)) {
-                    await globals.app.unauthorise(req, res);
-                    res.write('Logged out');
+            if (check_auth(req, res)) {
+                let auth_res = await globals.app.authorise(req, opts.auth_key, res);
+                if (!opts.allow_unauthorised && !auth_res) {
+                    res.setHeader('WWW-Authenticate', 'Basic realm="Authorized"');
+                    res.statusCode = 401;
+                    res.write('Authorization required');
                     res.end();
                     return;
-                } else if (path.match(/^\/$/) || path.match(/^\/index.html$/)) {
-                    let auth_res = await globals.app.authorise(req, res);
-                    if (!auth_res) {
-                        res.setHeader('WWW-Authenticate', 'Basic realm="Authorized"');
-                        res.statusCode = 401;
-                        res.write('Authorization required');
-                        res.end();
-                        return;
-                    }
                 }
+                req.user = auth_res;
             }
             //if (req.headers.referrer || req.headers.referer) {
             // var url = new URL(req.headers.referrer || req.headers.referer);
@@ -89,9 +93,20 @@ export class WebServer {
         this.server.listen(this.socket_path);
         
         if (opts.ws) {
-            this.server.on('upgrade', (request, socket, head)=>{
-                this.wss.handleUpgrade(request, socket, head, (socket)=>{
-                    this.wss.emit('connection', socket, request);
+            this.server.on('upgrade', async (req, socket, head)=>{
+                await globals.app.ready;
+
+                if (check_auth(req)) {
+                    let auth_res = await globals.app.authorise(req, opts.auth_key);
+                    if (!opts.allow_unauthorised && !auth_res) {
+                        socket.write('HTTP/1.1 401 Unauthorized');
+                        socket.destroy();
+                        return;
+                    }
+                    req.user = auth_res;
+                }
+                this.wss.handleUpgrade(req, socket, head, (socket)=>{
+                    this.wss.emit('connection', socket, req);
                 });
             });
             this.wss = new WebSocketServer(opts.ws);
@@ -101,7 +116,7 @@ export class WebServer {
         }
         var sock_id = 0;
         this.server.on("connection", (sock)=>{
-            var id = sock_id++;
+            var id = ++sock_id;
             this.#socks[id] = sock;
             sock.on('close', ()=>{
                 delete this.#socks[id];
@@ -114,7 +129,6 @@ export class WebServer {
         for (var id of Object.keys(this.#socks)) {
             this.#socks[id].destroy();
         }
-        // await fs.rm(this.socket_path);
     }
 }
 export default WebServer;

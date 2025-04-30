@@ -96,9 +96,6 @@ export const PlaylistItemProps = {
     parent_id: {
         __default__: "0",
     },
-    upload: {
-        __default__: null,
-    },
     props: {
         ...MediaProps,
         clip_start: {
@@ -127,10 +124,10 @@ export const PlaylistItemProps = {
             __options__: [["auto", "Auto"], ["none", "None"], ["default", "Default"], ...background_mode_options],
         },
         background_color: {
-            __default__: null,
+            __default__: "",
         },
         video_file: {
-            __default__: null,
+            __default__: "",
         },
         video_file_start: {
             __default__: null,
@@ -139,10 +136,10 @@ export const PlaylistItemProps = {
             __default__: null,
         },
         subtitle_file: {
-            __default__: null,
+            __default__: "",
         },
         audio_file: {
-            __default__: null,
+            __default__: "",
         },
         crop: {
             __default__: [0, 0, 0, 0],
@@ -200,7 +197,7 @@ export const PlaylistItemProps = {
             __options__:[["", "Do Nothing"], ["stop", "Stop Streaming"], ["handover", "Handover"]],
         },
         function_handover_session: {
-            __default__: null,
+            __default__: "",
         },
         playlist_mode: {
             __default__: 0,
@@ -214,10 +211,10 @@ export const PlaylistItemProps = {
         },
         // --------
         label: {
-            __default__: null,
+            __default__: "",
         },
         color: {
-            __default__: null,
+            __default__: "",
         },
     },
 }
@@ -259,11 +256,15 @@ export const InternalSessionProps = {
     },
     volume_target: {
         __default__: 100,
+        __step__: 1,
+        __min__: 0,
+        __max__: 200,
     },
     volume_speed: {
-        __default__: 2.0,
+        __default__: 50,
+        __options__: [[0, "Immediate"], [12.5, "Very Slow"], [25.0, "Slow"], [50.0, "Medium"], [100.0, "Fast"], [200.0, "Very Fast"]],
     },
-    time: {
+    time_pos: {
         __default__: 0,
     },
     player_default_override: {

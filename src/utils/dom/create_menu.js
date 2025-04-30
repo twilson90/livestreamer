@@ -2,7 +2,7 @@ import { noop } from "../noop.js";
 import { $ } from "./render_html.js";
 import { add_class } from "./add_class.js";
 
-/** @return {HTMLElement} */
+/** @returns {HTMLElement} */
 export function create_menu(items, opts = {}) {
     opts = {
         click: noop,
@@ -37,7 +37,7 @@ export function create_menu(items, opts = {}) {
             var t = (href) ? "a" : "div";
             elem = $(`<${t} class="item"></${t}>`)[0];
 
-            elem.title = [label, description].filter(s => s).join(" | ");
+            elem.title = [...new Set([label, description])].filter(s => s).join(" | ");
             if (href) {
                 elem.href = href;
                 elem.target = "_blank";

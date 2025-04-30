@@ -1,4 +1,4 @@
-/** @template T @param {function():T} func @return {(function():Promise<T>) & {cancel:function():void}} */
+/** @template T @param {function():T} func @returns {(function():Promise<T>) & {cancel:function():void}} */
 export function debounce_next_frame(func) {
     var timeout_id, args, context, promise, resolve;
     var later = () => {

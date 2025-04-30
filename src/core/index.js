@@ -157,8 +157,8 @@ export class Core extends DataNode {
         return this.#auth;
     }
 
-    /** @return {Promise<{user_id:number,username:string,email:string,is_admin:boolean}>} */
-    async authorise(req, res) {
+    /** @returns {Promise<{user_id:number,username:string,email:string,is_admin:boolean}>} */
+    async authorise(req, key, res) {
         let name = os.userInfo().username || "admin";
         let data = {
             user_id: 0,
@@ -169,7 +169,7 @@ export class Core extends DataNode {
         if (this.conf["core.auth"]) {
             let auth;
             try {
-                auth = await (await this.auth).login(req, res);
+                auth = await (await this.auth).login(req, key, res);
             } catch (e) {
                 console.error("authorise error", e);
             }
@@ -179,10 +179,10 @@ export class Core extends DataNode {
         return data;
     }
 
-    async unauthorise(req, res) {
+    async unauthorise(req, key, res) {
         if (this.conf["core.auth"]) {
             try {
-                return (await this.auth).logout(req, res);
+                return (await this.auth).logout(req, key, res);
             } catch (e) {
                 console.error("unauthorise error", e);
                 return false;

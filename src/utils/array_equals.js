@@ -1,4 +1,4 @@
-/** @param {any[]} arr1 @param {any[]} arr2 @return {boolean} */
+/** @param {any[]} arr1 @param {any[]} arr2 @returns {boolean} */
 export function array_equals(arr1, arr2, strict=true) {
 	var length = arr1.length;
 	if (length !== arr2.length) return false;

@@ -145,6 +145,7 @@ export class FileManagerWebApp {
 				}
 				fm.commands.downloadtree.prototype = { forceLoad: true };
 				fm.i18.en.messages['cmddownloadtree'] = 'Download tree listing';
+
 				fm.resources.blink = function(elm, mode) {
 					var acts = {
 						slowonce : function(){elm.hide().delay(250).fadeIn(750).delay(500).fadeOut(3500);},
@@ -156,8 +157,12 @@ export class FileManagerWebApp {
 					func();
 				}
 
+				var quit_button = $(`<button title="Quit"><i class="fas fa-sign-out-alt"></i></button>`)[0];
+				quit_button.addEventListener("click", ()=>{
+					window.close();
+				});
 				/* any bind functions etc. */
-				fm.bind('init', function() {
+				fm.bind('open sync select toolbarpref', function() {
 					var elem = fm.getUI()[0];
 					elem.classList.remove("elfinder-touch");
 					elem.classList.remove("elfinder-mobile");

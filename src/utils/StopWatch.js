@@ -1,22 +1,18 @@
 import {EventEmitter} from "./EventEmitter.js";
 export class StopWatch extends EventEmitter {
-	get time() { return (this._paused ? this._pause_time : Date.now()) - this._start_time; }
-	get paused() { return this._paused; }
-
-	constructor(){
-		super();
-		this._start_time = 0;
-		this._pause_time = 0;
-		this._paused = true;
+	get elapsed() {
+		var now = Date.now();
+		return (this.#pause_ts || now) - (this.#start_ts || now);
 	}
+	get paused() { return !!this.#pause_ts || !this.#start_ts; }
+	#start_ts = 0;
+	#pause_ts = 0;
 	
 	start() {
 		var now = Date.now();
-		if (!this._start_time) this._start_time = now;
-		if (this._paused) {
-			this._paused = false;
-			this._start_time += now - this._pause_time;
-			this._pause_time = 0;
+		if (this.paused) {
+			this.#start_ts += now - this.#pause_ts;
+			this.#pause_ts = 0;
 			this.emit("start");
 		}
 	}
@@ -26,15 +22,14 @@ export class StopWatch extends EventEmitter {
 	}
 	
 	pause() {
-		if (this._paused) return;
-		this._paused = true;
-		this._pause_time = Date.now();
+		if (this.paused) return;
+		this.#pause_ts = Date.now();
 		this.emit("pause");
 	}
 
 	reset() {
-		this._start_time = Date.now();
-		if (this._paused) this._pause_time = this._start_time;
+		this.#start_ts = Date.now();
+		if (this.paused) this.#pause_ts = this.#start_ts;
 		this.emit("reset");
 	}
 

@@ -1,6 +1,6 @@
 import { array_starts_with } from "./array_starts_with.js";
 
-/** @param {any|any[]} obj @param {(path:string[],value:any)=>boolean|string[][]} filter_callback @returns {T} */
+/** @param {T} obj @param {(path:string[],value:any)=>boolean|string[][]} filter_callback @returns {T} */
 export function deep_filter(obj, filter_callback) {
 	if (Array.isArray(filter_callback)) {
 		var paths = filter_callback;

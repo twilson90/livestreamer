@@ -1,5 +1,5 @@
 /** @param {any} o1 @param {any} o2 */
-export function deep_equals(o1, o2) {
+export function _deep_equals(o1, o2) {
 	var t1 = typeof o1;
 	var t2 = typeof o2;
 	if (t1 === "object" && t2 === "object" && o1 !== null && o2 !== null) {
@@ -15,6 +15,14 @@ export function deep_equals(o1, o2) {
 		if (o1 === o2) return true;
 		return false;
 	}
+}
+
+/** @param {any} o1 @param {any} o2 */
+export function deep_equals(...objects) {
+	for (var i = 1; i < objects.length; i++) {
+		if (!_deep_equals(objects[0], objects[i])) return false;
+	}
+	return true;
 }
 
 export default deep_equals;

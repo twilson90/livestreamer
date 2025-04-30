@@ -17,7 +17,7 @@ import { UI, Button } from "./ui.js";
 import { Tooltip } from "./Tooltip.js";
 import { Property } from "./Property.js";
 
-/** @import {PropertySettings, PropertyEvents} from './exports.js' */
+/** @import {PropertySettings, PropertyEvents, UISetting} from './exports.js' */
 /** @import {OptionSettings} from '../exports.js' */
 
 /** @typedef {HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement} InputElement */
@@ -30,6 +30,7 @@ const editable_input_types = {
     "search":1,
     "tel":1,
     "url":1,
+    "color":1,
 }
 
 /**
@@ -65,14 +66,15 @@ const editable_input_types = {
 export class InputProperty extends Property {
     /** @type {InputElement[]} */
     #inputs = [];
-    /** @type {((value:any)=>string)[]} */
+    /** @type {((value:ValueType)=>string)[]} */
     #input_modifiers = [];
-    /** @type {((value:any, input:InputElement)=>any)[]} */
+    /** @type {((value:ValueType, input:InputElement)=>any)[]} */
     #output_modifiers = [];
     /** @type {Tooltip} */
     #validation_tooltip = null;
     #force_update_inputs = false;
     #last_valid;
+    #is_focussed = false;
 
     get inputs() { return this.#inputs; }
     get input() { return this.#inputs[0]; }
@@ -158,6 +160,7 @@ export class InputProperty extends Property {
             }
             set_attribute(input, "id", this.name_id);
             var update_value = (trigger)=>{
+                if (input.type === "color" && !trigger) return;
                 var value = get_value(input);
                 value = this.apply_input_modifiers(value);
                 if (this.is_numeric) {
@@ -168,14 +171,17 @@ export class InputProperty extends Property {
             input.addEventListener("change", (e)=>update_value(true));
             input.addEventListener("input", (e)=>update_value(false));
             input.addEventListener("focus", (e)=>{
-                this.focused = new Promise(resolve=>{
+                this.focus_promise = new Promise(resolve=>{
+                    this.#is_focussed = true;
                     var on_blur = (e)=>{
-                        this.focused = null;
+                        if (document.activeElement === input) return;
+                        this.#is_focussed = false;
+                        this.focus_promise = null;
                         input.removeEventListener("blur", on_blur);
-                        resolve();
                         this.get_setting("blur", [input]);
                         this.emit("blur", input);
                         this.update_next_frame();
+                        resolve();
                     }
                     input.addEventListener("blur", on_blur);
                 });
@@ -296,6 +302,7 @@ export class InputProperty extends Property {
     }
 
     #render() {
+
         var item = this.item;
         var is_default = this.is_default;
         var is_changed = this.is_changed;
@@ -355,12 +362,12 @@ export class InputProperty extends Property {
         
         for (var input of this.inputs) {
             var value = values[0];
-            var is_focused = has_focus(input, false, true);
+            var is_focussed = this.#is_focussed;
             var is_editable = (input.isContentEditable || (input.nodeName === "INPUT" && input.type in editable_input_types) || input.nodeName === "TEXTAREA") && !input.readOnly;
 
             // var is_text_field = !input.readOnly && (input.isContentEditable || input.type in editable_input_types || input.nodeName === "TEXTAREA");
             // !is_text_field || 
-            if (!is_focused || !is_editable || this.#force_update_inputs) {
+            if (!is_focussed || !is_editable || this.#force_update_inputs) {
                 if (typeof value === "number" && this.settings["precision"] !== undefined) {
                     value = value.toFixed(this.get_setting("precision", item));
                     if (value.includes(".")) value = value.replace(/\.?0+$/,"");
@@ -370,8 +377,9 @@ export class InputProperty extends Property {
                 } else {
                     value = this.apply_output_modifiers(value, input);
                 }
-                if (input.type == "color" && (is_default || is_indeterminate)) {
-                    value = "#ffffff";
+                if (input.type == "color") {
+                    if (is_indeterminate) value = "#ffffff";
+                    else if (!value) value = "#000000";
                 }
                 if (input.matches(".fake-input")) {
                     set_inner_html(input, value);
@@ -435,7 +443,7 @@ export class InputProperty extends Property {
     }
 
     async __data_update() {
-        if (this.focused) await this.focused;
+        if (this.focus_promise) await this.focus_promise;
         super.__data_update();
     }
 

@@ -129,6 +129,9 @@
 	.tippy-arrow{
 		color: white;
 	}
+	.tippy-content {
+		padding: 6px;
+	}
 
 	&:not([data-theme]) {
 		.tippy-content {

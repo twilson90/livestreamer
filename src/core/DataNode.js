@@ -7,18 +7,24 @@ export class DataNode$ {}
 
 /** @template {DataNode$} T @template Events @extends {events.EventEmitter<DefaultEvents & Events>} */
 export class DataNode extends events.EventEmitter {
-    get $() { return this.observer.$; }
     #destroyed = false;
+    /** @type {utils.Observer<T>} */
+    #observer;
     get destroyed() { return this.#destroyed; }
+    get observer() { return this.#observer; }
+    get $() { return this.observer.$; }
 
     /** @param {T} $ */
     constructor($) {
         super();
-        this.observer = new utils.Observer($);
+        this.#observer = new utils.Observer($);
     }
     
-    update_values(datas) {
-        utils.deep_merge(this.$, datas, {delete_nulls:true});
+    update_values(data) {
+        for (var k in data) {
+            if (data[k] == null) delete this.$[k];
+            else this.$[k] = data[k];
+        }
     }
     
     async destroy() {
@@ -26,7 +32,7 @@ export class DataNode extends events.EventEmitter {
         this.#destroyed = true;
         await this.ondestroy();
         this.emit("destroy");
-        this.observer.removeAllListeners();
+        this.#observer.removeAllListeners();
         this.removeAllListeners();
     }
 

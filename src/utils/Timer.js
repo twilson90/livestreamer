@@ -3,7 +3,7 @@ import { StopWatch } from "./StopWatch.js";
 export class Timer extends EventEmitter {
 	static TICK_INTERVAL = 1000/60;
 
-	get time_left() { return Math.max(0, this._total_time - this._stopwatch.time); }
+	get time_left() { return Math.max(0, this._total_time - this._stopwatch.elapsed); }
 	get seconds_left() { return Math.ceil(this.time_left/1000); }
 	get finished() { return this.time_left <= 0; }
 	get paused() { return this._stopwatch.paused; }

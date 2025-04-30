@@ -1,6 +1,6 @@
 import { $ } from "./render_html.js";
 
-/** @return {HTMLTableElement} */
+/** @returns {HTMLTableElement} */
 export function build_table(datas, opts) {
     opts = Object.assign({
         header: true,

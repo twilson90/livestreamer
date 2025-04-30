@@ -108,8 +108,19 @@
 [x] pop out player no buttons.
 [ ] playlist undo weirdness when removed filters while playing. applies old filters without changing playlist item props. huh? Maybe some references are surviving?
 [ ] random error when editing filter to do with playlist history
-[ ] rtmp streams wait for buffer and then time-pos updates to 4 seconds in, gets to end and then fixes. weird. mpv issue!
+[ ] rtmp streams wait for buffer and then time-pos updates to 4 seconds in, gets to end of detected duration and then fixes. weird. mpv issue!
 [ ] yt-dlp make tmp files go to appdata tmp folder
 [ ] file manager open in new window insecure and blocked, windowcommunicator times out.
-[ ] current_playing_item may have properties that have been updated but not present in the playing item (before reload), affects seekbar chapters and other seekbar things. also see get _current_duration()
+[x] current_playing_item may have properties that have been updated but not present in the playing item (before reload), affects seekbar chapters and other seekbar things. also see get _current_duration()
     need to handle parsedplaylistitem$ as a special case
+[x] changes to current item no alert?
+[x] Stream Configuration null targets (default)caused crash
+[x] playlist_history broken
+[x] loader not centered justify
+[x] hangs indefinitely on rtmp that is not live
+[x] realtime handler does not handle breaks or skips in stream.
+[ ] prepare next playlist item does not take into consideration children. also sessionplayer should not be referencing session.playlist stuff, evaluate_playlist_item should include tracks and recursive children and is_item_playlist.
+[ ] lavfi-complex and loads of other props are set as file-local-options, but then if any props are changed dynamically, they are stored as non file-local-options. this is a problem for lavfi-complex especially with stream selection + potential polluting.
+[ ] dont think the livestream is realtime, avg indicates seems to be up and down an awful lot.
+    Or the speed graph is not reliable in the way it picks data points to display.
+    decoder looks ok but transcode does not.

@@ -53,8 +53,8 @@ export class FFMPEGWrapper extends events.EventEmitter {
                 if (this.#closed) return;
                 this.#closed = true;
                 clearInterval(this.#info_interval);
-                if (this.#stopped) this.emit("end");
-                else if (code) handle_error(new Error(`Error code ${code}: ${last_line}`));
+                if (!this.#stopped && code) handle_error(new Error(`Error code ${code}: ${last_line}`));
+                this.emit("end");
                 resolve();
             });
 
@@ -165,21 +165,12 @@ export class FFMPEGWrapper extends events.EventEmitter {
     async stop() {
         if (this.#stopped) return;
         this.#stopped = true;
-        return new Promise(resolve=>{
+        return new Promise(async (resolve)=>{
+            this.#process.on("close", resolve);
             this.#process.kill("SIGINT");
-            var timeout = setTimeout(()=>{
-                this.#process.kill("SIGKILL");
-            }, 2000);
-            this.#process.on("close", ()=>{
-                clearTimeout(timeout);
-                resolve();
-            });
+            await utils.timeout(2000);
+            this.#process.kill("SIGKILL");
         })
-    }
-
-    async destroy() {
-        await this.stop();
-        // this.#logger.destroy();
     }
 }
 

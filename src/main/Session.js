@@ -28,6 +28,7 @@ export class StreamSettings$ {
     h264_preset = "veryfast";
     video_bitrate = 5000;
     audio_bitrate = 160;
+    buffer_duration = 5;
     test = false;
 }
 
@@ -47,14 +48,14 @@ export class Session extends DataNodeID {
     get name() { return this.$.name; }
     get index() { return this.$.index; }
     get type() { return this.$.type; }
-    get clients() { return Object.values(globals.app.clients).filter(c=>c.session === this); }
+    get clients() { return this.client_updater.clients; }
+    // get clients() { return Object.values(globals.app.clients).filter(c=>c.session === this); }
 
     /** @type {Stream} */
     get stream() { return globals.app.streams[this.$.stream_id]; }
 
     reset() {
         Object.assign(this.$, this.defaults);
-        this.emit("reset");
     }
 
     /** @param {string} type @param {T} $ @param {any} defaults @param {string} id @param {string} name */
@@ -95,9 +96,8 @@ export class Session extends DataNodeID {
 
         this.reset();
         
+        /** @type {ClientUpdater<MainClient>} */
         this.client_updater = new ClientUpdater(this.observer, ["sessions", this.id]);
-        this.on("attach", (client)=>this.client_updater.add_client(client));
-        this.on("detach", (client)=>this.client_updater.remove_client(client));
 
         globals.app.sessions[this.id] = this;
         globals.app.$.sessions[this.id] = this.$;
@@ -168,7 +168,7 @@ export class Session extends DataNodeID {
         globals.app.sessions_ordered.filter(s=>s!=this).forEach((s,i)=>s.$.index=i); // update indices
 
         for (var c of clients) {
-            c.attach_to(null);
+            c.subscribe_session(null);
         }
         this.logger.info(`${this.name} was destroyed.`);
 

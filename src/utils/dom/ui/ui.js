@@ -17,7 +17,7 @@ import "./ui.scss";
 var ID = 0;
 const PRE = "uis";
 const EXPANDO = `${PRE}-${Date.now()}`;
-var updating;
+// var updating;
 
 /** @param {Element} type @param {function(UI):boolean|boolean} deep @param {boolean} include_self @returns {Generator<UI>} */
 export function *traverse(elem, deep=false, include_self=false) {
@@ -53,15 +53,15 @@ export function closest(elem, type = UI) {
         if (ui instanceof type) return ui;
     }
 }
-class UpdateContext {
+class UIContext {
     /** @param {UI} parent */
     constructor(parent, index=0) {
         this.parent = parent;
-        this.index = index;
+        this.index = +index;
     }
 }
 
-/** @template {UI} ThisType @template Value @typedef {(Value|(this:ThisType)=>Value)} UISetting */
+/** @template {UI} [ThisType=UI] @template Value @typedef {(Value|(this:ThisType)=>Value)} UISetting */
 /**
  * @template {UI} [ThisType=UI]
  * @typedef {{
@@ -76,9 +76,10 @@ class UpdateContext {
  *   justify: UISetting<ThisType,string>,
  *   flex: UISetting<ThisType,string>,
  *   id: UISetting<ThisType,string>,
- *   children: UISetting<UI[],ThisType>,
- *   content: UISetting<string,ThisType>,
+ *   children: UISetting<ThisType,UI[]>,
+ *   content: UISetting<ThisType,string>,
  *   click: (this:ThisType, e:Event)=>void,
+ *   click_async: (this:ThisType, e:Event)=>Promise<void>,
  *   render: (this:ThisType, e:Event)=>void,
  *   mousedown: (this:ThisType, e:Event)=>void,
  *   mouseup: (this:ThisType, e:Event)=>void,
@@ -98,8 +99,8 @@ class UpdateContext {
  */
 
 /**
-* @template {UISettings<UI>} Settings
-* @template {UIEvents} Events
+* @template {UISettings<UI>} [Settings=UISettings<UI>]
+* @template {UIEvents} [Events=UIEvents]
 * @extends {EventEmitter<Events>}
 */
 export class UI extends EventEmitter {
@@ -108,12 +109,14 @@ export class UI extends EventEmitter {
     #updating = false;
     #layout_hash;
     #destroyed = false;
-    __context = new UpdateContext();
+    #context = new UIContext();
+    #async_click_promise;
 
+    get async_click_promise() { return this.#async_click_promise; }
     get is_hidden() { return ("hidden" in this.#settings) && !!this.get_setting("hidden"); }
-    get parent() { return this.__context.parent; }
+    get parent() { return this.#context.parent; }
     get settings() { return this.#settings; }
-    get index() { return this.__context.index; }
+    get index() { return this.#context.index; }
     get visible() { return is_visible(this.elem); } // not the opposite of hidden
     get descendents() { return [...this.iterate_descendents()]; }
     get parents() { return [...this.iterate_parents()]; }
@@ -127,14 +130,16 @@ export class UI extends EventEmitter {
     /** @type {boolean} */
     get is_disabled() {
         var parent = this.parent;
-        return (parent && parent.is_disabled) || ("disabled" in this.#settings && !!this.get_setting("disabled"));
+        return !!this.#async_click_promise || (parent && parent.is_disabled) || ("disabled" in this.#settings && !!this.get_setting("disabled"));
     }
     set layout(v) { this.set_layout(v); }
     
-    iterate_children() { return traverse(this.elem, false); }
-    /** @return {Generator<UI>} */
+    iterate_children() {
+        return traverse(this.elem, false);
+    }
+    /** @returns {Generator<UI>} */
     *iterate_descendents() {
-        for (var c of this.children) {
+        for (var c of this.iterate_children()) {
             yield c;
             yield* c.iterate_descendents();
         }
@@ -194,15 +199,16 @@ export class UI extends EventEmitter {
         this.__render();
     }
 
-    __update_context() {}
+    __update_context() {
+    }
 
     __update(parent, index) {
-        parent = parent ?? this.__context.parent; // will this work if update is called from a child?
+        parent = parent ?? this.#context.parent; // will this work if update is called from a child?
 
         var resolve;
         this.#updating = new Promise((r)=>resolve=r);
 
-        this.__context = new UpdateContext(parent, index);
+        this.#context = new UIContext(parent, index);
         this.__update_context();
 
         this.get_setting("update");
@@ -221,9 +227,10 @@ export class UI extends EventEmitter {
         this.emit("post_update");
     }
     __render() {
+        
         var is_hidden = this.is_hidden;
         var is_disabled = this.is_disabled;
-        toggle_class(this.elem, "d-none", is_hidden);
+        toggle_class(this.elem, "hidden", is_hidden);
         toggle_attribute(this.elem, "disabled", is_disabled);
 
         if ("gap" in this.#settings) {
@@ -240,10 +247,20 @@ export class UI extends EventEmitter {
         if ("children" in this.#settings) set_children(this.elem, this.get_setting("children"));
         if ("content" in this.#settings) set_inner_html(this.elem, this.get_setting("content"));
 
-        if ("click" in this.#settings) this.elem.onclick = (e) => this.#do_event(e);
-        if ("mousedown" in this.#settings) this.elem.onmousedown = (e) => this.#do_event(e);
-        if ("mouseup" in this.#settings) this.elem.onmouseup = (e) => this.#do_event(e);
-        if ("dblclick" in this.#settings) this.elem.ondblclick = (e) => this.#do_event(e);
+        if ("click" in this.#settings) this.elem.onclick = (e) => this.#do_event(e, "click");
+        else if ("click_async" in this.#settings) {
+            this.elem.onclick = async (e) => {
+                this.#async_click_promise = this.#do_event(e, "click_async").finally(()=>{
+                    this.#async_click_promise = null;
+                    this.update();
+                });
+                this.update();
+            }
+        }
+
+        if ("mousedown" in this.#settings) this.elem.onmousedown = (e) => this.#do_event(e, "mousedown");
+        if ("mouseup" in this.#settings) this.elem.onmouseup = (e) => this.#do_event(e, "mouseup");
+        if ("dblclick" in this.#settings) this.elem.ondblclick = (e) => this.#do_event(e, "dblclick");
 
         this.get_setting("render");
         this.emit("render");
@@ -254,8 +271,8 @@ export class UI extends EventEmitter {
     }
 
     /** @param {Event} e */
-    #do_event(e) {
-        var res = this.get_setting(e.type, e);
+    #do_event(e, setting) {
+        var res = this.get_setting(setting, e);
         this.emit(e.type);
         return res;
     }
@@ -263,7 +280,7 @@ export class UI extends EventEmitter {
     /**
      * @template {keyof Settings} K
      * @param {K} key
-     * @returns {Settings[K] extends UISetting<infer Value> ? Value : Settings[K] extends Function ? ReturnType<Settings[K]> : Settings[K]}
+     * @returns {Settings[K] extends UISetting<any, infer Value> ? Value : Settings[K] extends Function ? ReturnType<Settings[K]> : Settings[K]}
     */
     get_setting(key, ...args) {
         var setting = this.#settings[key];
@@ -333,6 +350,15 @@ export class UI extends EventEmitter {
     }
 }
 
+export class UINoChildren extends UI {
+    constructor(elem, settings) {
+        super(elem, settings);
+    }
+    *iterate_children() {
+        return;
+    }
+}
+
 var old_append = Element.prototype.append;
 var old_prepend = Element.prototype.prepend;
 
@@ -343,7 +369,7 @@ Element.prototype.prepend = function(...children) {
     old_prepend.apply(this, [...handle_els(children)]);
 }
 
-/** @return {Iterable<HTMLElement>} */
+/** @returns {Iterable<HTMLElement>} */
 function *handle_els(o) {
     if (Array.isArray(o)) for (var c of o) for (var c2 of handle_els(c)) yield c2;
     else if (o instanceof UI) yield o.elem;

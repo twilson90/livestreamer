@@ -39,12 +39,7 @@ export class ElFinder {
 		this.config = config;
 
 		var router = Router();
-
-		express.use(async (req, res, next) => {
-			var user = await globals.app.authorise(req, res);
-			if (user) next();
-			else res.send(401);
-		})
+		
 		express.use(`/api`, router);
 		
 		router.use(bodyParser.json({

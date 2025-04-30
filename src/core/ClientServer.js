@@ -21,37 +21,24 @@ import {globals, Logger, utils} from "./exports.js";
 export class ClientServer extends events.EventEmitter {
     /** @type {Record<PropertyKey,T>} */
     clients = {};
-    #ready;
-    get ready() { return this.#ready; }
 
     /** @param {WebSocket.Server} wss  @param {new () => T} ClientClass */
-    constructor(id, wss, ClientClass, auth) {
+    constructor(id, wss, ClientClass) {
         super();
         this.id = id;
         this.clients_dir = path.join(globals.app.clients_dir, id);
-        this.auth = auth;
         this.logger = new Logger(`client-server`);
         this.logger.on("log", (log)=>{
             globals.app.logger.log(log)
         });
         this.wss = wss;
         this.ClientClass = ClientClass;
-        this.#ready = this.#init();
-    }
-    
-    async #init() {
-        await fs.mkdir(this.clients_dir, {recursive:true});
+        
+        fs.mkdirSync(this.clients_dir, {recursive:true});
 
-        this.wss.on("connection", async (ws, request)=>{
-            await globals.app.ready;
-            var user = null;
-            user = await globals.app.authorise(request);
-            if (this.auth && !user) {
-                ws.close(1014, "go away");
-                return;
-            }
+        this.wss.on("connection", (ws, request)=>{
             var alive = true;
-            var client = new this.ClientClass(user);
+            var client = new this.ClientClass();
             client.init(this, ws, request);
 
             var heartbeat_interval = setInterval(()=>{
@@ -70,13 +57,12 @@ export class ClientServer extends events.EventEmitter {
                 if (m === "ping") {
                     ws.send("pong");
                     alive = true;
-                    return;
                 } else if (m === "pong") {
                     ws.send("ping");
                     alive = true;
-                    return;
+                } else {
+                    client.onmessage(m);
                 }
-                client.onmessage(m);
             });
             ws.on('error',(e)=>{
                 client.onerror(e);

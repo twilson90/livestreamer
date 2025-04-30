@@ -5,6 +5,10 @@ import * as dom from '../../utils/dom/exports.js';
 // -----------------------------
 // Sortable bullshit.
 // -----------------------------
+
+/** @typedef {{sortable: Sortable}} SortablePlugin */
+
+/** @extends {SortablePlugin} */
 export class CancelSortPlugin {
     constructor(){
         this.defaults = {
@@ -38,6 +42,45 @@ export class CancelSortPlugin {
     static pluginName = "cancelSort";
 }
 
+/** @extends {SortablePlugin} */
+export class RememberScrollPositionsPlugin {
+    /** @param {Sortable} sortable */
+    constructor(sortable){
+        sortable.el.addEventListener("start", (e)=>{
+            /** @type {Map<HTMLElement, number>} */
+            var scroll_map = new Map();
+            var lock_scroll = (e)=>{
+                var s = scroll_map.get(e.target);
+                if (s) e.target.scrollTop = s;
+            }
+            var els = sortable.el.querySelectorAll("*");
+            // var els = new Set([...e.items, e.item]);
+            // els = new Set([...els].flatMap(el=>[...el.querySelectorAll("*")]));
+            for (var c of els) {
+                scroll_map.set(c, c.scrollTop);
+                c.addEventListener("scroll", lock_scroll);
+            }
+            var onchange = ()=>{
+                for (var [el,s] of scroll_map) {
+                    el.scrollTop = s;
+                }
+            }
+            var onend = ()=>{
+                for (var [el, s] of scroll_map) {
+                    el.removeEventListener("scroll", lock_scroll);
+                    el.scrollTop = s;
+                }
+                scroll_map.clear();
+                sortable.el.removeEventListener("change", onchange);
+                sortable.el.removeEventListener("end", onend);
+            };
+            sortable.el.addEventListener("change", onchange);
+            sortable.el.addEventListener("end", onend);
+        });
+    }
+    static pluginName = "rememberScrollPositions";
+}
+
 export class ResponsiveSortable extends Sortable {
     /** @type {ResponsiveSortable[]} */
     static instances = [];
@@ -46,7 +89,7 @@ export class ResponsiveSortable extends Sortable {
     static VERTICAL = "vertical";
     static HORIZONTAL = "horizontal";
     
-    /** @return {ResponsiveSortable} */
+    /** @returns {ResponsiveSortable} */
     static closest(e) {
         if (!e) return null;
         if (e instanceof Sortable) return e;
@@ -324,7 +367,7 @@ export class ResponsiveSortable extends Sortable {
         e = this.get_item(e);
         return e ? e.classList.contains(this.options.selectedClass) : false;
     }
-    /** @return {HTMLElement} */
+    /** @returns {HTMLElement} */
     get_item(e) {
         e = Sortable.utils.closest(e, this.options.draggable, this.el, false);
         return (e && e.parentElement === this.el) ? e : undefined;

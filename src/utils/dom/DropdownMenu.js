@@ -3,31 +3,33 @@ import { closest } from './closest.js';
 import { create_menu } from './create_menu.js';
 import tippy from 'tippy.js';
 import "tippy.js/dist/tippy.css";
-/** @import {Instance as TippyInstance} from "tippy.js"  */
+/** @import {Instance as TippyInstance, Props as TippyProps} from "tippy.js"  */
+
+const default_opts = {
+    target: null,
+    parent: document.body,
+    params: [],
+    /** @type {TippyProps} */
+    tippy_opts: {},
+    contextmenu: false,
+    x: undefined,
+    y: undefined,
+    items: [],
+}
+
 export class DropdownMenu extends EventEmitter {
     showing = false;
     /** @type {HTMLElement} */
     el;
     /** @type {TippyInstance} */
     tippy;
+    /** @param {typeof default_opts} opts */
     constructor(opts) {
         super();
-        opts = {
-            target: null,
-            parent: document.body,
-            params: [],
-            tippy_opts: {},
-            contextmenu: false,
-            x: undefined,
-            y: undefined,
+        this.opts = {
+            ...default_opts,
             ...opts,
         };
-        if (opts.target) {
-            opts.target.addEventListener("click", (e)=>{
-                this.toggle();
-            });
-        }
-        this.opts = opts;
     }
     toggle(show) {
         if (show === undefined) show = !this.showing;
@@ -40,7 +42,7 @@ export class DropdownMenu extends EventEmitter {
         if (this.opts.items) {
             var items = typeof this.opts.items === "function" ? this.opts.items() : this.opts.items;
             this.el = create_menu(items, {
-                click: ()=>this.hide(),
+                click: ()=>this.toggle(false),
                 params: this.opts.params,
             });
         } else if (this.opts.content) {
@@ -48,12 +50,12 @@ export class DropdownMenu extends EventEmitter {
             if (typeof content === "string") content = $(content)[0];
             this.el = content;
         }
-        /** @type {TippyInstance} */
+        /** @type {TippyProps} */
         var tippy_opts = {
             trigger: "manual",
             placement: "top-start",
             interactive: true,
-            hideOnClick: true,
+            hideOnClick: false,
             arrow: false,
             appendTo: this.opts.parent,
             theme: "list",
@@ -79,24 +81,36 @@ export class DropdownMenu extends EventEmitter {
             this.tippy.destroy();
             this.tippy = null;
         }
+
+        /* if (this.opts.target) {
+            this.opts.target.addEventListener("click", (e)=>{
+                if (this.showing) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return false;
+                }
+            }, {capture: true});
+        } */
+
+            
+
         document.body.addEventListener("click", this.on_click = (e)=>{
-            /** @type {HTMLElement} */
-            var t = e.target;
-            if (closest(t, (el)=>el === this.opts.target || el === this.el)) return;
-            this.hide();
-        });
+            if (this.opts.target && this.opts.target.contains(e.target)) return false;
+            this.toggle(false);
+        }, {capture: true});
+
         this.tippy = tippy(this.opts.target || document.body, {
             ...tippy_opts,
-            onShow: ()=>this.emit("show"),
-            onHide: ()=>this.emit("hide"),
+            onShow: ()=>{
+                this.emit("show");
+                this.toggle(true);
+            },
+            onHide: ()=>{
+                this.emit("hide");
+                this.toggle(false);
+            },
         });
         this.tippy.show();
-    }
-    show() {
-        this.toggle(true)
-    }
-    hide() {
-        this.toggle(false);
     }
     destroy() {
         document.body.removeEventListener("click", this.on_click);

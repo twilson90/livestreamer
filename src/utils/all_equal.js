@@ -1,4 +1,4 @@
-/** @param {Iterable<any>} iterable @return {boolean} */
+/** @param {Iterable<any>} iterable @returns {boolean} */
 export function all_equal(iterable) {
 	var first = undefined;
 	for (var o of iterable) {

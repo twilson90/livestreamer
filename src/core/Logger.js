@@ -5,10 +5,10 @@ import {globals, utils} from "./exports.js";
 
 /** @typedef {{file:boolean, stdout:boolean, prefix:string}} Settings */
 
-const info = console.info;
-const warn = console.warn;
-const error = console.error;
-const debug = console.debug;
+export const info = console.info.bind(console);
+export const warn = console.warn.bind(console);
+export const error = console.error.bind(console);
+export const debug = console.debug.bind(console);
 
 export class Log {
 	level = Logger.INFO;
@@ -32,7 +32,10 @@ export class Log {
 		} else {
 			this.level = args[0];
 			this.message = args.slice(1).map(m=>{
-				if (m instanceof Error) m = m.stack;
+				if (m instanceof Error) {
+					if (this.level === Logger.ERROR && m.stack && globals.app.debug) m = m.stack;
+					else m = m.message;
+				}
 				if (typeof m === "object") {
 					try { m = JSON.stringify(m) } catch {};
 				}
@@ -110,16 +113,6 @@ export class Logger extends events.EventEmitter {
 		this.emit("log", log);
 		return log;
 	}
-	log_to_stdout() {
-		let log = this.#process_log(...arguments);
-		this.log_to_stdout(log);
-		return log;
-	}
-	log_to_file() {
-		let log = this.#process_log(...arguments);
-		this.log_to_file(log);
-		return log;
-	}
 	#end() {
 		if (!this.#stream) return;
 		write_header_line(this.#stream, "END OF LOG");
@@ -136,10 +129,10 @@ export class Logger extends events.EventEmitter {
 	log_to_stdout(log) {
 		if (!this.#settings.stdout || !log.level) return;
 		var message_str = log.toString();
-		if (log.level === Logger.WARN) warn.apply(null, [message_str]);
-		else if (log.level === Logger.ERROR) error.apply(null, [message_str]);
-		else if (log.level === Logger.DEBUG) debug.apply(null, [message_str]);
-		else info.apply(null, [message_str]);
+		if (log.level === Logger.WARN) warn(message_str);
+		else if (log.level === Logger.ERROR) error(message_str);
+		else if (log.level === Logger.DEBUG) debug(message_str);
+		else info(message_str);
 	}
 	
 	/** @param {Log} log */
@@ -181,6 +174,7 @@ export class LogCollector {
 		this.#$ = $;
 		this.#filter = filter;
 	}
+	
 	/** @param {Log} log */
 	register(log) {
 		if (log.level === Logger.TRACE) return;

@@ -6,9 +6,11 @@ import { Diff } from "../../Diff.js";
 import { walk } from "../../walk.js";
 /** @import {PropertySettings,PropertyEvents} from './exports.js' */
 
+/** @typedef {{path:string[],new_value:any,old_value:any}} PropertyChange */
+
 /** 
  * @template ItemType 
- * @template ValueType
+ * @template [ValueType=any]
  * @template {PropertySettings<ItemType,ValueType,PropertyGroup>} [Settings=PropertySettings<ItemType,ValueType,PropertyGroup>]
  * @template {PropertyEvents} [Events=PropertyEvents]
  * @extends {Property<ItemType,ValueType,Settings,Events>} 
@@ -28,13 +30,21 @@ export class PropertyGroup extends Property {
     }
     get changes() {
         var datas = this.datas;
-        var values = this.values;
-        return datas.map((data,i)=>{
-            var diff = deep_diff(data, values[i]);
-            walk(diff, function(k,v,path){
-                if (v instanceof Diff) this[k] = v.new_value;
-            });
-            return diff;
+        var values = this.raw_values;
+        /** @returns {PropertyChange[]} */
+        var walk = (o1, o2, path, changes) => {
+            if (typeof o1 === "object" && typeof o2 === "object" && o1 !== null && o2 !== null) {
+                for (var k in o1) {
+                    walk(o1[k], o2[k], [...path, k], changes);
+                }
+            } else if (o1 !== o2) {
+                changes.push({path, new_value: o1, old_value: o2});
+            }
+            return changes;
+        };
+        return values.map((value,i)=>{
+            var data = datas[i];
+            return walk(value, data, [], []);
         });
     }
     get named_properties() {

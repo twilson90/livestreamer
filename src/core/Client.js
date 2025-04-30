@@ -22,6 +22,7 @@ export class Client extends DataNodeID {
     get ip_hash() { return this.$.ip_hash; }
     get username() { return this.$.username; }
     get is_admin() { return !!this.$.is_admin; }
+    api = {};
 
     /** @param {T} $ */
     constructor($) {
@@ -30,7 +31,7 @@ export class Client extends DataNodeID {
 
     oninit() { throw new Error("not implemented"); }
 
-    /** @param {ClientServer<Client>} this.server @param {http.IncomingMessage} req @param {WebSocket} ws */
+    /** @param {ClientServer<Client>} server @param {http.IncomingMessage} req @param {WebSocket} ws */
     async init(server, ws, req) {
         this.server = server;
         this.ws = ws;
@@ -44,6 +45,7 @@ export class Client extends DataNodeID {
         this.logger = new Logger(`client-${this.id}`);
         this.logger.on("log", (log)=>this.server.logger.log(log));
         
+        this.$.user = req.user;
         this.$.ip = ip;
         this.$.ip_hash = utils.md5(ip);
         this.$.init_ts = Date.now();
@@ -57,13 +59,9 @@ export class Client extends DataNodeID {
         await utils.append_line_truncate(this.client_history_path, JSON.stringify(this.$), 32);
     }
 
-    async get_client_info(id) {
-        var c = this.server.clients[id];
-        if (c) return c.get_info();
-    }
-
-    async get_info() {
-        var lines = (await fs.exists(this.client_history_path)) ? (await utils.read_last_lines(this.client_history_path, 512, "utf8")) : [];
+    async get_client_info(ip_hash) {
+        var filename = path.join(this.server.clients_dir, `${ip_hash}.json`);
+        var lines = (await fs.exists(filename)) ? (await utils.read_last_lines(filename, 512, "utf8")) : [];
         return Object.fromEntries(lines.map((line)=>{
             var data = JSON.parse(line.trim());
             return [data.id, data];
@@ -77,41 +75,44 @@ export class Client extends DataNodeID {
 
     async onmessage(m) {
         this.logger.debug(`message: ${m}`);
-        var request;
+        var json;
         try {
-            request = JSON.parse(m);
+            json = JSON.parse(m);
         } catch {
             this.logger.warn("Bad request.");
             return;
         }
-        var request_id = request.id;
-        var result, error;
-        // var fn_path = Array.isArray(request.path) ? request.path : String(request.path).split(/[\.\/]+/);
-        var run = ()=>{
-            if (request.call) result = utils.reflect.call(this, request.call, request.arguments);
-            else if (request.get) result = utils.reflect.get(this, request.get);
-            else if (request.set) result = utils.reflect.set(this, request.set, request.value);
-            else if (request.delete) result = utils.reflect.deleteProperty(this, request.delete);
-            else error = `Invalid request: ${JSON.stringify(request)}`;
-        };
-        if (globals.app.debug) {
-            run();
-        } else {
-            try { run(); } catch (e) { error = e; }
+        if (json.request) {
+            let {request} = json;
+            let {method, arguments:args, id} = request;
+            let result, error;
+            // var fn_path = Array.isArray(request.path) ? request.path : String(request.path).split(/[\.\/]+/);
+            let run = ()=>{
+                if (method && typeof this.api[method] == "function") {
+                    result = this.api[method].apply(this, args || []);
+                } else {
+                    error = `Invalid request: ${JSON.stringify(request)}`;
+                }
+            };
+            if (globals.app.debug) {
+                run();
+            } else {
+                try { run(); } catch (e) { error = e; }
+            }
+            result = await Promise.resolve(result).catch(e=>{
+                error = e;
+                if (globals.app.debug) throw e;
+            });
+            result = {
+                id: id,
+                result,
+            };
+            if (error) {
+                this.logger.error(error);
+                result.error = { message: error.toString() }
+            }
+            this.send({request:result});
         }
-        result = await Promise.resolve(result).catch(e=>{
-            error = e;
-            if (globals.app.debug) throw e;
-        });
-        result = {
-            id: request_id,
-            result,
-        };
-        if (error) {
-            this.logger.error(error);
-            result.error = { message: error.toString() }
-        }
-        this.send(result);
     }
 
     onerror(error) {

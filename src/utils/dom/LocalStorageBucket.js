@@ -11,6 +11,7 @@ export class LocalStorageBucket extends EventEmitter {
     #data = {};
     #hashes = {};
     #defaults;
+    #default_hashes = {};
     #last_data_hash;
     #interval;
 
@@ -19,20 +20,26 @@ export class LocalStorageBucket extends EventEmitter {
         this.save = debounce(this.#save, 0);
         this.#name = name;
         this.#defaults = defaults ? json_copy(defaults) : {};
+        this.#default_hashes = Object.fromEntries(Object.entries(this.#defaults).map(([k,v])=>[k, JSON.stringify(v)]));
         // in case it is altered in another window.
         // this.load();
         // this.#save();
     }
     get(k) {
-        return (k in this.#data) ? this.#data[k] : this.#defaults[k];
+        return this.#data[k] ?? this.#defaults[k];
     }
     set(k, new_value) {
+        if (new_value == undefined) new_value = this.#defaults[k];
         var new_hash = JSON.stringify(new_value);
-        var old_value = this.#data[k];
-        var default_hash = JSON.stringify(this.#defaults[k]);
-        if (new_hash === this.#hashes[k]) return;
-        if (new_hash === default_hash) delete this.#data[k];
-        else this.#data[k] = new_value;
+        var default_hash = this.#default_hashes[k];
+        var old_hash = this.#hashes[k];
+        if (new_hash === old_hash) return;
+        var old_value = this.get(k);
+        if (new_hash === default_hash) {
+            delete this.#data[k];
+        } else {
+            this.#data[k] = new_value;
+        }
         this.#hashes[k] = new_hash;
         this.emit("change", { name: k, old_value, new_value });
         this.save();

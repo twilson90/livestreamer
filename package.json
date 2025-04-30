@@ -74,6 +74,7 @@
     "string-argv": "^0.3.2",
     "tar": "^7.4.3",
     "tippy.js": "^6.3.7",
+    "ts-ebml": "^3.0.1",
     "unzip-stream": "^0.3.4",
     "upath": "^2.0.1",
     "uuid": "^10.0.0",

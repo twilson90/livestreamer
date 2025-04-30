@@ -32,6 +32,7 @@ export const DEFAULT_PROBE_MEDIA_OPTS = {
     silent: false, // if true doesn't set processing flag
     cache: true, // if true uses cache
 }
+export const MPV_LUA_ARGS = ["--no-config", '--frames=0', '--vo=null', '--ao=null'];
 
 const ALBUMART_FILENAMES = Object.fromEntries([
     "albumart", "album", "cover", "front", "albumartsmall", "folder", ".folder", "thumb",
@@ -49,8 +50,6 @@ const IMAGE_EXTS = Object.fromEntries([
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"
 ].map((ext)=>[ext, 1]));
 
-const mpv_args = ["--no-config", '--frames=0', '--vo=null', '--ao=null'];
-
 var ext_format_map = {
     ".mkv": "matroska",
     ".flv": "flv",
@@ -58,33 +57,16 @@ var ext_format_map = {
 };
 var format_ext_map = Object.fromEntries(utils.reverse_map(ext_format_map));
 
-const SESSION_PUBLIC_PROPS = [
-    ["id"],
-    ["index"],
-    ["name"],
-    ["creation_time"],
-    ["type"],
-    ["version"],
-    ["schedule_start_time"],
-    ["access_control"],
-];
-
-const STREAM_PUBLIC_PROPS = [
-    ["id"],
-    ["session_id"],
-    ["state"],
-];
-
 /** @typedef {string} Domain */
 /** @typedef {Record<PropertyKey,{access:string, password:string, suspended:boolean}>} AccessControl */
 
 export class MainApp$ {
     /** @type {Record<PropertyKey,Session$>} */
     sessions = {};
-    /** @type {Record<PropertyKey,MainClient$>} */
-    clients = {};
     /** @type {Record<PropertyKey,Stream$>} */
     streams = {};
+    /** @type {Record<PropertyKey,MainClient$>} */
+    clients = {};
     /** @type {Record<PropertyKey,Log$>} */
     logs = {};
     /** @type {Record<PropertyKey,Target$>} */
@@ -227,8 +209,7 @@ export class MainApp extends CoreFork {
         var exp = express();
         this.web = new WebServer(exp, {
             auth: true,
-            // username: core.conf["main.http_username"],
-            // password: core.conf["main.http_password"],
+            allow_unauthorised: false,
         });
         
         exp.use(bodyParser.urlencoded({
@@ -292,7 +273,6 @@ export class MainApp extends CoreFork {
                         }
                     }
                     if (item) {
-                        item.upload_id = upload.$.id;
                         item.filename = upload.unique_dest_path;
                     }
 
@@ -339,7 +319,7 @@ export class MainApp extends CoreFork {
         exp.use("/", await this.serve({
             root: this.public_html_dir
         }));
-        this.client_server = new ClientServer("main", this.web.wss, MainClient, true);
+        this.client_server = new ClientServer("main", this.web.wss, MainClient);
 
         this.netstats = []
         let nethogs = child_process.spawn(`nethogs`, ["-t"]);
@@ -387,20 +367,7 @@ export class MainApp extends CoreFork {
             };
         }
 
-        var check_prop = (path, props)=>{
-            if (!path.length || props.some(p=>utils.array_starts_with(path, p))) return true;
-            return false;
-        }
-
-        this.client_updater = new ClientUpdater(this.observer, [], {
-            filter: (path)=>{
-                if (path[0] === "sessions") return check_prop(path.slice(2), SESSION_PUBLIC_PROPS);
-                if (path[0] === "streams") return check_prop(path.slice(2), STREAM_PUBLIC_PROPS);
-                return true;
-            }
-        });
-        this.client_server.on("connect", (client)=>this.client_updater.add_client(client));
-        this.client_server.on("disconnect", (client)=>this.client_updater.remove_client(client));
+        this.#setup_client_updaters();
 
         update_change_log();
         var change_log_watcher = chokidar.watch(this.change_log_path, {awaitWriteFinish:true});
@@ -417,6 +384,53 @@ export class MainApp extends CoreFork {
         });
         
         await this.client_server.ready;
+    }
+
+    #setup_client_updaters() {
+        var check_prop = (path, props)=>{
+            if (!path.length || props.some(p=>utils.array_starts_with(path, p))) return true;
+            return false;
+        }
+        
+        const SESSION_PUBLIC_PROPS = [
+            ["id"],
+            ["index"],
+            ["name"],
+            ["creation_time"],
+            ["type"],
+            ["version"],
+            ["schedule_start_time"],
+            ["access_control"],
+            ["stream_id"]
+        ];
+
+        const STREAM_PUBLIC_PROPS = [
+            ["id"],
+            ["session_id"],
+            ["state"],
+        ];
+
+        this.client_updater = new ClientUpdater(this.observer, [], {
+            filter: (path)=>{
+                if (path[0] === "sessions") return check_prop(path.slice(2), SESSION_PUBLIC_PROPS);
+                if (path[0] === "streams") return check_prop(path.slice(2), STREAM_PUBLIC_PROPS);
+                if (path[0] === "logs") return false;
+                if (path[0] === "sysinfo") return false;
+                return true;
+            }
+        });
+        
+        this.admin_updater = new ClientUpdater(this.observer, [], {
+            filter: (path)=>(path[0] === "logs")
+        });
+
+        this.sysinfo_client_updater = new ClientUpdater(this.observer, [], {
+            filter: (path)=>(path[0] === "sysinfo")
+        });
+        
+        this.client_server.on("connect", (client)=>{
+            this.client_updater.subscribe(client);
+        });
     }
 
     check_volumes() {
@@ -710,7 +724,7 @@ export class MainApp extends CoreFork {
                 mi: {
                     mi = {exists:false};
                     if (uri.protocol.match(/^https?:/)) {
-                        let raw = await ytdl_probe(abspath).catch(()=>null);
+                        let raw = await this.ytdl_probe(abspath).catch(()=>null);
                         if (raw) {
                             mi.ytdl = true;
                             mi.size = +raw.filesize_approx;
@@ -748,7 +762,7 @@ export class MainApp extends CoreFork {
                         mi.size = stat.size;
                         mi.mtime = stat.mtimeMs;
                         
-                        let raw = await ffprobe(abspath).catch(()=>null);
+                        let raw = await this.ffprobe(abspath).catch(()=>null);
                         if (raw) {
                             var parse_stream = (s)=>{
                                 let stream = {};
@@ -789,7 +803,7 @@ export class MainApp extends CoreFork {
                             mi.external_files = [];
                             
                             var add_external = async(filename, type)=>{
-                                var raw = await ffprobe(filename);
+                                var raw = await this.ffprobe(filename);
                                 if (!raw || !raw.streams) return;
                                 mi.external_files.push({filename, type, streams:raw.streams.map(s=>parse_stream(s))});
                             }
@@ -833,7 +847,7 @@ export class MainApp extends CoreFork {
                     }
                     
                     if (is_edl_file || uri.protocol === "edl:") {
-                        raw = await edl_probe(abspath).catch(e=>this.logger.warn("EDL error:", e));
+                        raw = await this.edl_probe(abspath).catch(e=>this.logger.warn("EDL error:", e));
                         if (raw) {
                             mi.exists = true;
                             mi.duration = raw.duration;
@@ -863,7 +877,6 @@ export class MainApp extends CoreFork {
                 if (!opts.silent) {
                     this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
                 }
-                mi.ts = t1;
                 if (mi.exists && opts.cache) this.#media_info_cache.set(cache_key, mi);
             }
             return mi;
@@ -888,33 +901,6 @@ export class MainApp extends CoreFork {
         }
         var v = this.$.volumes[id];
         return await process(path.dirname(v.root), path.basename(v.root), (await fs.stat(v.root)).isDirectory());
-    }
-
-    update_system_info() {
-        if (!this.updating_system_info) {
-            this.updating_system_info = (async()=>{
-                var [disk, cpu_avg] = await Promise.all([
-                    checkDiskSpace(utils.is_windows() ? 'c:' : '/'),
-                    utils.get_cpu_load_avg()
-                ]);
-                var sysinfo = this.$.sysinfo;
-                sysinfo.disk_total = disk.size;
-                sysinfo.disk_free = disk.free;
-                var freemem = utils.is_windows() ? os.freemem() : (1024 * Number(/MemAvailable:[ ]+(\d+)/.exec(fs.readFileSync('/proc/meminfo', 'utf8'))[1]));
-                sysinfo.memory_total = os.totalmem();
-                sysinfo.memory_free = freemem;
-                sysinfo.uptime = os.uptime();
-                sysinfo.cpu_avg = cpu_avg;
-                sysinfo.received = sysinfo.sent = 0;
-                for (var d of this.netstats) {
-                    sysinfo.received += d.received;
-                    sysinfo.sent += d.sent;
-                }
-                await this.update_process_infos();
-                this.updating_system_info = null;
-            })();
-        }
-        return this.updating_system_info;
     }
 
     async update_process_infos() {
@@ -945,9 +931,70 @@ export class MainApp extends CoreFork {
             this.$.process_info[p.value.pid] = {sent,received,elapsed,cpu,memory};
         }
     }
+    async ytdl_probe(uri) {
+        var proc = await utils.execa(this.conf["core.ytdl_path"] || "yt-dlp", [
+            uri,
+            "--dump-json",
+            "--no-warnings",
+            "--no-call-home",
+            "--no-check-certificate",
+            // "--prefer-free-formats",
+            // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
+            "--flat-playlist",
+            "--format", this.conf["core.ytdl_format"]
+        ]);
+        var lines = proc.stdout.split("\n");
+        var arr = lines.map(line=>JSON.parse(line));
+        if (arr.length > 1) {
+            return {
+                is_playlist: true,
+                items: arr
+            };
+        }
+        return arr[0];
+    }
+
+    async ffprobe(filename) {
+        var proc = await utils.execa("ffprobe", [
+            '-show_streams',
+            '-show_chapters',
+            '-show_format',
+            '-print_format', 'json',
+            filename
+        ]);
+        return JSON.parse(proc.stdout);
+    }
+
+    async edl_probe(uri) {
+        var output = await utils.execa(this.mpv_path, [
+            ...MPV_LUA_ARGS,
+            `--script=${path.resolve(this.mpv_lua_dir, 'get_media_info.lua')}`,
+            uri
+        ]);
+        var m = output.stdout.match(/^\[get_media_info\] (.+)/);
+        try { return JSON.parse(m[1].trim()); } catch { }
+    }
+
+    async youtube_url_to_edl(url) {
+        var output = await utils.execa(this.mpv_path, [
+            ...MPV_LUA_ARGS,
+            `--ytdl-format=${this.conf["core.ytdl_format"]}`,
+            `--script-opts-append=ytdl_hook-ytdl_path=${this.conf["core.ytdl_path"]}`,
+            `--script-opts-append=ytdl_hook-try_ytdl_first=yes`, // important otherwise on_load_fail hook is used
+            `--script=${path.resolve(this.mpv_lua_dir, 'get_stream_open_filename.lua')}`,
+            url
+        ]).catch(()=>null);
+        if (!output) return;
+        var lines = output.stdout.split(/\r?\n/);
+        for (var line of lines) {
+            var m = line.match(/^\[get_stream_open_filename\] (.+)$/);
+            try { return JSON.parse(m[1].trim()); } catch { }
+        }
+    }
 
     async destroy() {
         this.client_updater.destroy();
+        this.admin_updater.destroy();
         this.logger.info("Saving all sessions before exit...");
         await this.save_sessions();
         this.web.destroy();
@@ -961,52 +1008,6 @@ async function read_file(filename, start, length) {
         chunks.push(chunk);
     }
     return Buffer.concat(chunks);
-}
-
-async function ytdl_probe(uri) {
-    var proc = await utils.execa(globals.app.conf["core.ytdl_path"] || "yt-dlp", [
-        uri,
-        "--dump-json",
-        "--no-warnings",
-        "--no-call-home",
-        "--no-check-certificate",
-        // "--prefer-free-formats",
-        // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
-        "--flat-playlist",
-        "--format", globals.app.conf["core.ytdl_format"]
-    ]);
-    var lines = proc.stdout.split("\n");
-    var arr = lines.map(line=>JSON.parse(line));
-    if (arr.length > 1) {
-        return {
-            is_playlist: true,
-            items: arr
-        };
-    }
-    return arr[0];
-}
-
-async function ffprobe(filename) {
-    var proc = await utils.execa("ffprobe", [
-        '-show_streams',
-        '-show_chapters',
-        '-show_format',
-        '-print_format', 'json',
-        filename
-    ]);
-    return JSON.parse(proc.stdout);
-}
-
-async function edl_probe(uri) {
-    var output = await utils.execa(globals.app.mpv_path, [...mpv_args,`--script=${path.resolve(globals.app.mpv_lua_dir, 'get_media_info.lua')}`, uri]);
-    var m = output.stdout.match(/^\[get_media_info\] (.+)/);
-    try { return JSON.parse(m[1].trim()); } catch { }
-}
-
-async function youtube_url_to_edl(filename) {
-    var output = await utils.execa(globals.app.mpv_path, [...mpv_args, `--script=${path.resolve(globals.app.mpv_lua_dir, 'get_stream_open_filename.lua')}`, filename]);
-    var m = output.stdout.match(/^\[get_stream_open_filename\] (.+)/m);
-    try { return JSON.parse(m[1].trim()); } catch { }
 }
 
 export default MainApp;

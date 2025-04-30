@@ -4,6 +4,7 @@ export class FilterContext {
 	#id_map = {};
 	aid = "aid1";
 	vid = "vid1";
+	sid = "sid1";
     color = "#000000";
 	width = 720;
 	height = 1280;

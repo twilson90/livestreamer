@@ -14,7 +14,7 @@ export * from "./ExternalSession.js";
 export * from "./InternalSession.js";
 export * from "./MainClient.js";
 export * from "./MPVEDL.js";
-export * from "./MPVSessionWrapper.js";
+export * from "./SessionPlayer.js";
 export * from "./Stream.js";
 export * from "./StreamTarget.js";
 export * from "./Target.js";

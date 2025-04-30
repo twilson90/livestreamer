@@ -23,7 +23,7 @@ export function normalizePath(...args) {
     return path.resolve(...args).replace(/\\/g, "/");
 }
 
-/** @return {vite.Plugin} */
+/** @returns {vite.Plugin} */
 export function importMetaPlugin() {
     return {
         resolveImportMeta(property, { format }) {
@@ -73,7 +73,7 @@ export class API {
         process.env.DEBUG = 1;
     }
 
-    /** @return {Promise<vite.InlineConfig[]>} */
+    /** @returns {Promise<vite.InlineConfig[]>} */
     async generate_configs(opts) {
         opts = {
             input: [],

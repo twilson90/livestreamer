@@ -1,4 +1,4 @@
-/** @template T, K @param {Iterable<T>} values @param {function(T):K} cb @return {Map<K,T[]>} */
+/** @template T, K @param {Iterable<T>} values @param {function(T):K} cb @returns {Map<K,T[]>} */
 export function group_by(values, cb) {
 	/** @type {Map<T,K[]>} */
 	var groups = new Map();

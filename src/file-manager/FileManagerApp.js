@@ -17,7 +17,8 @@ export class FileManagerApp extends CoreFork {
         const exp = express();
 
         this.web = new WebServer(exp, {
-            auth: true
+            auth: true,
+            allow_unauthorised: false,
         });
 
         this.ipc.respond("volumes", ()=>Object.fromEntries(Object.entries(this.elFinder.volumes).map(([k,v])=>[k,v.config])));

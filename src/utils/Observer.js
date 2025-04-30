@@ -116,12 +116,11 @@ export class Observer extends EventEmitter {
                 if (old_value !== new_value) {
                     try_unregister_child(old_value, prop);
                     var exists = (prop in target);
+                    var e = new ObserverChangeEvent([prop], exists ? Observer_UPDATE : Observer_SET, old_value, new_value, false);
                     
                     target[prop] = new_value;
 
                     try_register_child(new_value, prop);
-
-                    var e = new ObserverChangeEvent([prop], exists ? Observer_UPDATE : Observer_SET, old_value, new_value, false);
                     this.emit("change", e);
                 }
                 return true;
@@ -129,8 +128,10 @@ export class Observer extends EventEmitter {
             deleteProperty: (target, prop)=>{
                 if (prop in target) {
                     var old_value = target[prop];
-                    delete target[prop];
                     var e = new ObserverChangeEvent([prop], Observer_DELETE, old_value, undefined, false);
+
+                    delete target[prop];
+                    
                     this.emit("change", e);
                     try_unregister_child(old_value, prop);
                 }
@@ -167,7 +168,7 @@ export class Observer extends EventEmitter {
     }
 
     static RESET_KEY = "__RESET_0f726b__";
-    /** @return {Observer} */
+    /** @returns {Observer} */
     static get_observer(proxy) {
         if (proxy) return proxy[Observer_core];
     }

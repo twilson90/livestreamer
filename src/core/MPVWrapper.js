@@ -23,13 +23,13 @@ export class MPVWrapper extends events.EventEmitter {
     #message_id;
     #observed_id;
     #socket_requests;
-    #observed_properties;
+    #observed_prop_id_map;
     #quitting = false;
     #closed = false;
     #observed_props;
-    #loading = false;
     /** @type {import("child_process").ChildProcessWithoutNullStreams} */
     #process;
+    #load_id = 0;
     /** @type {net.Socket} */
     #socket;
     #socket_path = "";
@@ -39,9 +39,9 @@ export class MPVWrapper extends events.EventEmitter {
 
     get observed_props() { return this.#observed_props; }
     get process() { return this.#process; }
-    get loading() { return this.#loading; }
     get quitting() { return this.#quitting; }
     get cwd() { return path.resolve(this.options.cwd); }
+    get load_id() { return this.#load_id; }
 
     constructor(options) {
         super();
@@ -74,11 +74,11 @@ export class MPVWrapper extends events.EventEmitter {
         this.#message_id = 0;
         this.#observed_id = 0;
         this.#socket_requests = {}
-        this.#observed_properties = {};
+        this.#observed_prop_id_map = {};
         this.#observed_props = {};
         
         this.logger.info("Starting MPV...");
-        this.logger.info("MPV args:", args);
+        this.logger.debug("MPV args:", args);
         
         this.#process = child_process.spawn(this.options.executable, args, {
             cwd: this.cwd,
@@ -91,6 +91,7 @@ export class MPVWrapper extends events.EventEmitter {
         this.emit("before-start", this.#process);
 
         this.#process.on("close", (e)=>{
+            this.#socket.end(()=>this.#socket.destroy());
             this.#closed = true;
             this.quit();
         });
@@ -101,9 +102,8 @@ export class MPVWrapper extends events.EventEmitter {
         });
 
         var std_info = is_piped ? this.#process.stderr : this.#process.stdout;
-        std_info.on("data", (data)=>{
-            // data;
-            this.logger.debug(data.toString());
+        readline.createInterface(std_info).on("line", (line)=>{
+            this.logger.debug(line.trim());
         });
 
         globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
@@ -157,7 +157,7 @@ export class MPVWrapper extends events.EventEmitter {
                 this.#process.once("close", resolve);
                 setTimeout(async ()=>{
                     if (this.#closed) return;
-                    this.logger.warn("Quit signal not working. Terminating MPV process tree with SIGKILL...");
+                    this.logger.debug("Quit signal not working. Terminating MPV process tree with SIGKILL...");
                     await utils.tree_kill(this.#process.pid, "SIGKILL");
                     resolve();
                 }, 1000);
@@ -191,9 +191,10 @@ export class MPVWrapper extends events.EventEmitter {
                 await utils.timeout(100);
             }
             this.#socket.off("error", onerror);
+            // ------------
             this.#socket.on("close", ()=>this.quit());
             this.#socket.on("error", (error)=>{
-                this.logger.error("socket error:", error);
+                this.logger.warn("socket error:", error);
             });
             var socket_listener = readline.createInterface(this.#socket);
             socket_listener.on("line", (msg)=>{
@@ -210,11 +211,11 @@ export class MPVWrapper extends events.EventEmitter {
                         if (msg.error === "success") req.resolve(msg.data);
                         else req.reject({error: msg.error, command:req.command});
                     } else {
-                        if (msg.event == "property-change") {
-                            this.#observed_props[msg.name] = msg.data;
-                        }
                         this.emit("message", msg);
                         if ("event" in msg) {
+                            if (msg.event == "property-change") {
+                                this.#observed_props[msg.name] = msg.data;
+                            }
                             this.emit(msg.event, msg);
                         }
                     }
@@ -300,16 +301,16 @@ export class MPVWrapper extends events.EventEmitter {
     }
 
     observe_property(property) {
-        if (this.#observed_properties[property] !== undefined) return;
+        if (this.#observed_prop_id_map[property] !== undefined) return;
         const prop_id = ++this.#observed_id;
-        this.#observed_properties[property] = prop_id;
+        this.#observed_prop_id_map[property] = prop_id;
         return this.command("observe_property", prop_id, property);
     }
 
     unobserve_property(property) {
-        if (this.#observed_properties[property] === undefined) return;
-        const prop_id = this.#observed_properties[property];
-        delete this.#observed_properties[property];
+        if (this.#observed_prop_id_map[property] === undefined) return;
+        const prop_id = this.#observed_prop_id_map[property];
+        delete this.#observed_prop_id_map[property];
         return this.command("unobserve_property", prop_id);
     }
 
@@ -358,40 +359,35 @@ export class MPVWrapper extends events.EventEmitter {
 
     async command(...command) {
         return new Promise(async (resolve, reject)=>{
-            setTimeout(()=>reject(`command timeout: ${JSON.stringify(command)}`), TIMEOUT);
-            if (this.#socket.closed) {
-                this.logger.warn(`Command '${command}' failed, socket is destroyed.`);
-                process.nextTick(()=>reject());
-                return;
-            }
+            // setTimeout(()=>reject(`Command timeout: ${JSON.stringify(command)}`), TIMEOUT);
             const request_id = ++this.#message_id;
             const msg = { command, request_id };
-            this.#socket_requests[request_id] = {
-                command: command,
-                resolve: resolve,
-                reject: reject,
-            };
+            this.#socket_requests[request_id] = {command,resolve,reject};
+
             try {
-                this.#socket.write(JSON.stringify(msg) + "\n", (e)=>{
-                    if (!this.#socket.closed && !this.#quitting) {
+                if (!this.#socket.destroyed && this.#socket.writable) {
+                    this.#socket.write(JSON.stringify(msg) + "\n", (e)=>{
                         if (e) {
-                            this.logger.error(e);
                             delete this.#socket_requests[request_id];
-                            reject();
+                            reject(e);
                         }
-                    }
-                });
+                    });
+                }
             } catch (e) {
-                this.logger.error(e);
+                reject(e);
             }
-        })
+        }).catch((e)=>{
+            if (!this.#socket.closed && !this.#quitting) {
+                throw e;
+            }
+        });
     }
 
     // remember playlist-count observe message always comes after playlist
     async on_playlist_change_promise(promise, count) {
         var handler;
         await new Promise((resolve, reject)=>{
-            setTimeout(()=>reject(`on_playlist_change_promise timed out`), TIMEOUT);
+            // setTimeout(()=>reject(`on_playlist_change_promise timed out`), TIMEOUT);
             if (count === undefined) {
                 handler = (e)=>{
                     if (e.name == "playlist") resolve();
@@ -403,27 +399,32 @@ export class MPVWrapper extends events.EventEmitter {
             }
             this.on("property-change", handler);
             if (promise) promise.catch(reject);
-        }).catch((e)=>this.logger.error(e));
-        this.off("property-change", handler);
-        return true;
+        }).finally(()=>{
+            this.off("property-change", handler);
+        });
     }
 
     async on_load_promise(promise) {
         var handler;
-        let started = false;
-        this.#loading = true;
+        let start_event;
+        var load_id = ++this.#load_id;
         return new Promise((resolve, reject)=>{
-            setTimeout(()=>reject(`File load timed out`), TIMEOUT);
+            // setTimeout(()=>reject(`File load timed out`), TIMEOUT);
             handler = (msg)=>{
                 // console.log(msg);
+                if (this.#load_id != load_id) {
+                    reject(new MPVLoadFileError("overridden", "Another file was loaded."));
+                    return;
+                }
                 if ("event" in msg) {
                     if (msg.event === "start-file") {
-                        started = true;
-                    } else if (msg.event === "file-loaded" && started) {
-                        this.#loading = false;
+                        start_event = msg;
+                    } else if (msg.event === "file-loaded" && start_event) {
                         resolve();
-                    } else if (msg.event === "end-file" && started) {
-                        reject("File immediately ended.");
+                        return;
+                    } else if (msg.event === "end-file" && start_event && start_event.playlist_entry_id == msg.playlist_entry_id) {
+                        reject(new MPVLoadFileError("ended", "File immediately ended."));
+                        return;
                     }
                 }
             };
@@ -432,6 +433,13 @@ export class MPVWrapper extends events.EventEmitter {
         }).finally(()=>{
             this.off("message", handler);
         });
+    }
+}
+
+export class MPVLoadFileError extends Error {
+    constructor(name, message) {
+        super(message);
+        this.name = name;
     }
 }
 

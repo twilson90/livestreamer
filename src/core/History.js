@@ -18,16 +18,17 @@ export class History$ extends DataNode$ {
 
 /** @extends {DataNode<HistoryEntry$>} */
 export class HistoryEntry extends DataNode {
+    get num_changes() { return this.$.num_changes; }
+    get ts() { return this.$.ts; }
+    get name() { return this.$.name; }
     /** @param {History} parent @param {utils.ObserverChangeEvent[]} changes */
     constructor(name, changes) {
         super(new HistoryEntry$())
         var ts = Date.now();
-        this.name = name;
-        this.num_changes = changes.length;
+        this.$.name = name;
+        this.$.num_changes = changes.length;
+        this.$.ts = ts;
         this.changes = changes;
-        // this.forward_changes = utils.Observer.flatten_changes(changes)
-        // this.backward_changes = utils.Observer.flatten_changes(changes, true);
-        this.ts = ts;
     }
     undo($) {
         for (var i = this.changes.length-1; i >= 0; i--) {

@@ -201,8 +201,7 @@ export class MediaServerApp extends CoreFork {
                 port: this.conf["media-server.rtmp_port"],
                 chunk_size: 60000,
                 gop_cache: true,
-                ping: 60,
-                ping_timeout: 30,
+                ping_timeout: 2147483647,
                 // ssl: {
                 //     ...await this.get_ssl_certs(),
                 //     port: this.conf["media-server.rtmps_port"],
@@ -211,7 +210,10 @@ export class MediaServerApp extends CoreFork {
         });
 
         let exp = express();
-        this.web = new WebServer(exp);
+        this.web = new WebServer(exp, {
+            auth: false,
+            allow_unauthorised: false,
+        });
         
         exp.use(bodyParser.urlencoded({ extended: true }));
 
@@ -237,6 +239,8 @@ export class MediaServerApp extends CoreFork {
         });
         nms_ctx.nodeEvent.on('postPublish', (id, args)=>{
             nms_ctx.stat.accepted++;
+            // let session = nms_ctx.sessions.get(id);
+            // session.socket.setTimeout(0);
         });
         nms_ctx.nodeEvent.on('doneConnect', (id, args)=>{
             let session = nms_ctx.sessions.get(id);
@@ -398,12 +402,12 @@ export class MediaServerApp extends CoreFork {
         if (session) session.stop();
     }
 
-    /** @return {(NodeRtmpSession | NodeFlvSession)} */
+    /** @returns {(NodeRtmpSession | NodeFlvSession)} */
     get_session(id) {
         return this.nms.getSession(id);
     }
 
-    /** @return {(NodeRtmpSession | NodeFlvSession)} */
+    /** @returns {(NodeRtmpSession | NodeFlvSession)} */
     get_session_from_stream_path(path) {
         for (var session of nms_ctx.sessions.values()) {
             if (session.publishStreamPath === path) {

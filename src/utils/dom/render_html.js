@@ -1,5 +1,5 @@
 const _temp_div = document.createElement('div');
-/** @return {ChildNode[]} */
+/** @returns {ChildNode[]} */
 export function render_html(htmlString) {
     if (typeof htmlString !== "string") return null;
     _temp_div.innerHTML = htmlString.trim();

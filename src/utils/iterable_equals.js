@@ -1,4 +1,4 @@
-/** @param {Iterable<any>} it1 @param {Iterable<any>} it2 @return {boolean} */
+/** @param {Iterable<any>} it1 @param {Iterable<any>} it2 @returns {boolean} */
 export function iterable_equals(it1, it2) {
 	while (true) {
 		var a = it1.next();

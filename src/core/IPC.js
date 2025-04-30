@@ -224,11 +224,13 @@ function write(sock, event, data) {
         if (sock.closed) return;
         let payload = JSON.stringify({event, data})+"\n";
         try {
-            sock.write(payload, (err)=>{
-                if (sock.closed || err) return;
-                // if (err) console.error(err); // maybe just write error?
-                resolve();
-            });
+            if (!sock.destroyed && sock.writable) {
+                sock.write(payload, (err)=>{
+                    if (sock.closed || err) return;
+                    // if (err) console.error(err); // maybe just write error?
+                    resolve();
+                });
+            }
         } catch (e) {}
     });
 }

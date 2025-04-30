@@ -1,5 +1,5 @@
-/** @import { Core } from './exports.js' */
+/** @import { CoreFork } from './exports.js' */
 export default {
-    /** @type {Core} */
+    /** @type {CoreFork} */
     app: undefined
 }

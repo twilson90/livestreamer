@@ -8,18 +8,20 @@ import { Fancybox } from "@fancyapps/ui/src/Fancybox/Fancybox.js";
 import "@fancyapps/ui/dist/fancybox.css";
 import noUiSlider from 'nouislider';
 import "nouislider/dist/nouislider.css";
+import Cookies from 'js-cookie';
 import flvjs from 'flv.js';
 import {Chart} from 'chart.js/auto';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import Hammer from 'hammerjs';
 import Sortable, {MultiDrag} from 'sortablejs';
 import Color from 'color';
-import { ResponsiveSortable, CancelSortPlugin } from './ResponsiveSortable.js';
+import { ResponsiveSortable, CancelSortPlugin, RememberScrollPositionsPlugin } from './ResponsiveSortable.js';
 import { terminalCodesToHtml } from "terminal-codes-to-html";
 import * as constants from "../../core/constants.js" ;
 import { get_default_stream, get_auto_background_mode } from "../shared.js";
 import { filters } from "../filters.js";
-import { InternalSessionProps, PlaylistItemProps } from "../InternalSessionProps.js";
+import { InternalSessionProps, PlaylistItemProps, SessionProps } from "../InternalSessionProps.js";
+
 
 import "../../utils/dom/dom.scss";
 import "./style.scss";
@@ -29,7 +31,7 @@ import "./style.scss";
 /** @import {Fancybox as FancyboxType} from "@fancyapps/ui/src/Fancybox/Fancybox.js" */
 
 /** @type {MainWebApp} */
-let app;
+export let app;
 
 export { ui, utils, jQuery, $, Fancybox, noUiSlider, flvjs, Chart, Hammer, Sortable, MultiDrag }
 
@@ -70,6 +72,15 @@ export const ignore_logging_session_$ = new Set([
 export const UPLOAD_STATUS = { STARTED:1, FINISHED:2, CANCELLED:3, ERROR:4 };
 export const PLAYLIST_VIEW = { LIST: "list", TIMELINE: "timeline" };
 export const PLAYLIST_MODE = { NORMAL: 0, MERGED: 1, DUAL_TRACK: 2 };
+
+const buffer_duration_opts = {
+    "label": "Buffer",
+    "step": 0.1,
+    "min": 0,
+    "max": 20,
+    "suffix": `secs`,
+    "info": "Buffer duration in seconds. If set, the stream will be buffered for the specified duration (roughly). Helps with latency and stability.",   
+}
 
 // --------------------------------------------------------------------
 
@@ -457,14 +468,10 @@ export function ondrag(elem, handler) {
         }
     }, true);
 }
-export function get_clip_segments(start, end, duration, offset=0) {
-    if (typeof start == "object") {
-        var o = start;
-        start = o.start;
-        end = o.end;
-        duration = o.duration;
-        offset = o.offset;
-    }
+
+/** @param {Clipping} clipping */
+export function get_clip_segments(clipping) {
+    var {start, end, duration, offset} = clipping;
     var segments = [];
     var length = Math.max(0,end-start);
     var t = utils.loop(start + offset, start, end);
@@ -740,9 +747,12 @@ function get_file_manager_url(opts) {
  */
 async function open_file_manager(options) {
     // console.log(options);
-    options = Object.assign({
-        "new_window" : app.local_settings.get("open_file_manager_in_new_window")
-    }, default_file_manager_options, options);
+    options = {
+        "new_window" : app.settings.get("open_file_manager_in_new_window"),
+        ...default_file_manager_options,
+        ...options
+    };
+
     if (!options.standalone && options.id === undefined) options.id = dom.uuidb64();
     // if ("start" in options && !Array.isArray(options.start)) options.start = [options.start];
 
@@ -875,9 +885,230 @@ export class PlaylistCommand {
 
 // -----------------------------
 
+
+// --------------------------------------------
+
+/** @template T @param {(key:string,value:any)=>T} cb @returns {Record<PropertyKey,T>} */
+export function create_proxy(cb) {
+    return new Proxy({}, {
+        set(target, prop, value) {
+            target[prop] = cb(prop, value);
+            return true;
+        }
+    });
+}
+
+const EMPTY_CHAPTERS = Object.freeze([]);
+
+export class Media {
+    time_pos = 0;
+    playback_speed = 1;
+    duration = 0;
+    chapters = [];
+    seekable = false;
+    seeking = false;
+    buffering = false;
+    running = false;
+    #cache = {};
+
+    update() {
+        var session = app.$._session;
+        var stream = app.$._session._stream;
+        // var item = session._current_playlist_item;
+        var running = session._is_running;
+        var loaded = running ? !!stream.player.loaded : true;
+        var seeking = running ? !!(loaded && stream.player.seeking) : false;
+        var buffering = (seeking || !loaded || !!stream.player.props["paused-for-cache"]);
+        var seekable = running ? !!stream.player.seekable : true;
+
+        this.buffering = buffering;
+        this.seeking = seeking;
+        this.running = running;
+
+        this.playback_speed = running ? stream.player.playback_speed : 1;
+        this.time_pos = session.time_pos;
+        this.paused = running ? !!(stream.player.props.pause || stream.player.props["paused-for-cache"]) : false;
+        this.duration = running ? stream.player.duration : session._current_playlist_item._duration;
+        this.chapters = loaded ? session._current_playlist_item._userdata.chapters : EMPTY_CHAPTERS;
+        this.seekable = loaded ? (this.duration != 0 && seekable) : false;
+        this.status = running ? (loaded ? "Playing" : "Loading") : "Pending";
+        this.stats = {};
+        this.stats["V-FPS"] = (+stream.player.props["estimated-vf-fps"] || 0).toFixed(2);
+        if (!stream.is_encode) this.stats["D-FPS"] = (+stream.player.props["estimated-display-fps"] || 0).toFixed(2);
+        this.stats["INTRP"] = stream.player.interpolation ? "On" : "Off";
+        this.stats["DEINT"] = stream.player.deinterlace ? "On" : "Off";
+        this.ranges = session._current_seekable_ranges;
+        // this.#last_seeks = stream.ctx.seeks;
+        this.#cache = {};
+    }
+    get curr_chapters() {
+        var session = app.$._session;
+        return this.#cache["curr_chapters"] = this.#cache["curr_chapters"] ?? session._get_current_chapters_at_time(this.time_pos);
+    }
+    get time_left() {
+        return Math.max(0, this.duration - this.time_pos);
+    }
+    get do_live_seek(){
+        var stream = app.$._session._stream;
+        return stream._is_running && !stream.is_encode; //  && !stream.ctx.is_special
+    }
+}
+
+class Progress$ extends utils.remote.ProxyID$ {
+    bytes = 0;
+    total = 0;
+    speed = 0;
+    cancelled = false;
+    status = 0;
+    stage = 0;
+    stages = 0;
+}
+
+
+/** @typedef {{url:string,rect:utils.Rectangle}} Crop$ */
+/** @typedef {{crops:Crop$[],combined:utils.Rectangle,width:number,height:number}} DetectedCrop$ */
+/** @typedef {{start:number,end:number,duration:number,offset:number}} Clipping */
+export class Remote$ extends utils.remote.Proxy$ {
+    client_id = "";
+    clients = utils.remote.Collection$.create(()=>new Client$());
+    sessions = utils.remote.Collection$.create(()=>new Session$());
+    targets = utils.remote.Collection$.create(()=>new Target$());
+    streams = utils.remote.Collection$.create(()=>new Stream$());
+    uploads = utils.remote.Collection$.create(()=>new Progress$());
+    downloads = utils.remote.Collection$.create(()=>new Progress$());
+    volumes = {};
+    change_log = {};
+    logs = new utils.remote.Proxy$({
+        set: (k,v)=>{
+            app.logger.add_log(v);
+            return v;
+        }
+    });
+    nms_sessions = {};
+    fonts = {};
+    processes = {};
+    sysinfo = new class {
+        platform = "";
+    };
+    process_info = {};
+    conf = {};
+    /** @type {Record<string,DetectedCrop$>} */
+    detected_crops = {};
+    ts = 0;
+
+    _local_ts = Date.now();
+    _pending_requests = new Set();
+    _pending_loader_requests = new Set();
+    _refresh_ping() {return app.ws.ping(); }
+    get _ping() { return app.ws.last_ping; }
+    get _session() { return this.sessions[this._client.session_id] || this.sessions[utils.remote.Null$]; }
+    get _client() { return this.clients[this.client_id] || this.clients[utils.remote.Null$]; }
+    // gets server time
+    get _now() { return Date.now() - (this._local_ts - this.ts); }
+    get _targets() {
+        var targets = Object.values(this.targets);
+        targets = targets.filter(t=>t.locked?true:t.access_control._self_has_access());
+        utils.sort(targets, t=>!t.locked, t=>t.ts);
+        return Object.fromEntries(targets.map(t=>[t.id, t]));
+    }
+}
+
+class LogProxy {
+    /** @param {LogPanel} logger */
+    constructor(logger) {
+        return logger.create_proxy(this);
+    }
+}
+export class Client$ extends utils.remote.ProxyID$ {
+    session_id = "";
+    is_admin = false;
+    username = null;
+    email = null;
+}
+
+export class Target$ extends utils.remote.ProxyID$ {
+    name = ""
+    description = ""
+    rtmp_host = ""
+    rtmp_key = ""
+    url = ""
+    access_control = new AccessControl$();
+    ts = 0
+    limit = 0
+    locked = false
+    opts = {};
+    get _streams() { return Object.values(app.$.streams).filter(st=>st.stream_targets[this.id]); }
+    get _active_streams() { return this._streams.filter(s=>s._is_running); }
+    get _in_use() { return !!this._active_streams.length; }
+    get _can_edit() { return !this.locked && this.access_control._self_can_edit; }
+}
+
+export class StreamTarget$ extends utils.remote.ProxyID$ {
+    state = "stopped";
+    stream_id = "";
+    target_id = "";
+
+    get _session() {
+        return this._stream._session;
+    }
+    get _stream() {
+        return app.$.streams[this.stream_id] || app.$.streams[utils.remote.Null$];
+    }
+    get _target() {
+        return app.$.targets[this.target_id] || app.$.targets[utils.remote.Null$];
+    }
+}
+class SessionPlayer$ extends utils.remote.Proxy$ {
+    item = {};
+    preloaded = false;
+    loaded = false;
+    seeking = false;
+    seekable = false;
+    interpolation = false;
+    deinterlace = false;
+    duration = 0;
+    chapters = [];
+    time_pos = 0;
+    seekable_ranges = [];
+    props = {};
+    playback_speed = 1;
+}
+export class Stream$ extends utils.remote.ProxyID$ {
+    start_time = 0;
+    state = "stopped";
+    metrics = {};
+    session_id = "";
+    targets = [];
+    target_opts = {};
+    stream_targets = {};
+    test = false;
+    bitrate = 0;
+    internal_path;
+    is_encode = false;
+    restart = 0;
+    player = new SessionPlayer$();
+    
+    get _is_only_gui() {
+        return !!(Object.keys(this.targets).length == 1 && this.targets["gui"]);
+    }
+    
+    get _session() {
+        return app.$.sessions[this.session_id] || app.$.sessions[utils.remote.Null$];
+    }
+    get _is_running() {
+        return this.state !== "stopped";
+    }
+    get _live_nms_session() {
+        return Object.values(app.$.nms_sessions).find(s=>s.appname === "live" && this.internal_path === s.publishArgs.origin);
+    }
+    get _run_time() {
+        return app.$._now - this.start_time;
+    }
+}
 /** @typedef {{username:string, access:string, suspended:boolean, password:string}} AccessControlUser */
-export class AccessControl {
+export class AccessControl$ extends utils.remote.Proxy$ {
     constructor(data) {
+        super();
         Object.assign(this, data);
     }
     get _users() {
@@ -885,7 +1116,7 @@ export class AccessControl {
             delete data.username; // incase username was accidentally saved
             return {username, ...data};
         });
-        return utils.sort(users, v=>(v.username=="*")?0:1, v=>v.access=="owner"?0:1, v=>AccessControl.ACCESS_ORDER[v.access], v=>v.username.toLowerCase());
+        return utils.sort(users, v=>(v.username=="*")?0:1, v=>v.access=="owner"?0:1, v=>AccessControl$.ACCESS_ORDER[v.access], v=>v.username.toLowerCase());
     }
     get _owners() { return this._users.filter(d=>d.access==="owner"); }
     _edit(username, data) {
@@ -924,321 +1155,21 @@ export class AccessControl {
     }
     static ACCESS_ORDER = {"owner":1,"allow":2,"deny":3};
 }
-
-// --------------------------------------------
-
-/** @template T @param {(key:string,value:any)=>T} cb @return {Record<PropertyKey,T>} */
-export function create_proxy(cb) {
-    return new Proxy({}, {
-        set(target, prop, value) {
-            target[prop] = cb(prop, value);
-            return true;
-        }
-    });
-}
-
-const EMPTY_CHAPTERS = Object.freeze([]);
-
-export class Media {
-    time_pos = 0;
-    playback_speed = 1;
-    duration = 0;
-    chapters = [];
-    seekable = false;
-    seeking = false;
-    buffering = false;
-    loaded;
-    running = false;
-    #cache = {};
-
-    update() {
-        var session = app.$._session;
-        var stream = app.$._stream;
-        var item = session._current_playlist_item;
-        var running = session._is_running;
-        var loaded = !!(!running || stream.mpv.ctx.loaded);
-        var seeking = running ? !!(loaded && stream.mpv.ctx.seeking) : false;
-        var buffering = (seeking || !loaded || !!stream.mpv.ctx.props["paused-for-cache"]);
-        var seekable = !running || !!stream.mpv.ctx.seekable;
-
-        this.buffering = buffering;
-        this.seeking = seeking;
-        this.running = running;
-
-        this.playback_speed = stream.mpv.ctx.playback_speed;
-        this.time_pos = session.time_pos;
-        this.paused = stream.mpv.ctx.props.pause || stream.mpv.ctx.props["paused-for-cache"];
-        this.duration = session._current_playlist_item._duration;
-        this.chapters = loaded ? session._current_playlist_item._userdata.chapters : EMPTY_CHAPTERS;
-        this.seekable = loaded ? this.duration != 0 && seekable && item.filename !== "livestreamer://empty" : false;
-        this.loaded = loaded;
-        this.status = running ? (loaded ? "Playing" : "Loading") : "Pending";
-        this.stats = {};
-        this.stats["V-FPS"] = (+stream.mpv.ctx.props["estimated-vf-fps"] || 0).toFixed(2);
-        if (!stream.is_encode) this.stats["D-FPS"] = (+stream.mpv.ctx.props["estimated-display-fps"] || 0).toFixed(2);
-        this.stats["INTRP"] = stream.mpv.ctx.interpolation ? "On" : "Off";
-        this.stats["DEINT"] = stream.mpv.ctx.deinterlace ? "On" : "Off";
-        this.ranges = session._current_seekable_ranges;
-        // this.#last_seeks = stream.mpv.ctx.seeks;
-        this.#cache = {};
-    }
-    get curr_chapters() {
-        var session = app.$._session;
-        return this.#cache["curr_chapters"] = this.#cache["curr_chapters"] ?? session._get_current_chapters_at_time(this.time_pos);
-    }
-    get time_left() {
-        return Math.max(0, this.duration - this.time_pos);
-    }
-    get do_live_seek(){
-        var stream = app.$._stream;
-        return stream._is_running && !stream.is_encode; //  && !stream.mpv.ctx.is_special
-    }
-}
-
-/** @typedef {{url:string,rect:utils.Rectangle}} Crop */
-/** @typedef {{crops:Crop[],combined:utils.Rectangle,width:number,height:number}} DetectedCrop */
-
-
-const Node$_Target = Symbol("Node$_Target");
-const Node$_passthrough = (_,v)=>v;
-
-class Node$ {
-    /** @param {any} data @param {(prop:string,newValue:any)=>T} handler */
-    constructor(handler = Node$_passthrough) {
-        var proxy = new Proxy(this, {
-            set(target, prop, value) {
-                target[prop] = handler(prop, value);
-                return true;
-            },
-            get(target, prop) {
-                if (prop === Node$_Target) return target;
-                return target[prop];
-            }
-        });
-        return proxy;
-    }
-}
-
-
-const Collection$_null = Symbol("Collection$_null");
-
-/** @template T @param {()=>T} generator @param {Record<PropertyKey,T>} target @param {(item:T)=>void} ondelete @returns {Record<PropertyKey,T>} */
-function Collection$(generator, target, ondelete) {
-    var null_item;
-    if (!target) target = {};
-    var proxy = new Proxy(target, {
-        set(target, prop, value) {
-            var n = generator();
-            utils.deep_merge(n, value);
-            target[prop] = n;
-            return true;
-        },
-        get(target, prop) {
-            if (prop == Collection$_null) {
-                if (!null_item) null_item = generator(prop, null);
-                return null_item;
-            }
-            return  Reflect.get(target, prop, proxy);
-        },
-        has(target, prop) {
-            return Reflect.has(target, prop);
-        },
-        deleteProperty(target, prop) {
-            if (prop in target) {
-                if (ondelete) ondelete(target[prop]);
-                delete target[prop];
-                return true;
-            }
-            return false;
-        }
-    });
-    return proxy;
-}
-
-class DataNodeID$ extends Node$ {
-    id = "";
-    get _is_null() { return !this.id; }
-}
-
-class Progress$ extends DataNodeID$ {
-    id = "";
-    bytes = 0;
-    total = 0;
-    speed = 0;
-    cancelled = false;
-    status = 0;
-    stage = 0;
-    stages = 0;
-}
-
-export class Remote$ extends Node$ {
-    client_id = null;
-    clients = Collection$(()=>new Client$());
-    sessions = Collection$(()=>new Session$());
-    targets = Collection$(()=>new Target$());
-    streams = Collection$(()=>new Stream$());
-    uploads = Collection$(()=>new Progress$());
-    downloads = Collection$(()=>new Progress$());
-    volumes = {};
-    change_log = {};
-    logs = app.logger.create_proxy();
-    nms_sessions = {};
-    fonts = {};
-    processes = {};
-    sysinfo = {
-        platform: ""
-    };
-    process_info = {};
-    conf = {};
-    /** @type {Record<string,DetectedCrop>} */
-    detected_crops = {};
-    ts = 0;
-    local_ts = Date.now();
-
-    _changes = [];
-    _pending_requests = new Set();
-
-    _refresh_ping() {return app.ws.ping(); }
-    get _ping() { return app.ws.last_ping; }
-    /** @type {Session$} */
-    get _session() { return this.sessions[this._client.session_id] || this.sessions[Collection$_null]; }
-    /** @type {Client$} */
-    get _client() { return this.clients[this.client_id] || this.clients[Collection$_null]; }
-    get _stream() { return this._session._stream; }
-    get _streams() { return Object.fromEntries(Object.values(this.sessions).map(s=>s._stream).filter(s=>s).map((s)=>[s.id, s])); }
-    // gets server time
-    get _now() { return Date.now() - (this.local_ts - this.ts); }
-    get _targets() {
-        var targets = Object.values(this.targets);
-        targets = targets.filter(t=>t.locked?true:t.access_control._self_has_access());
-        utils.sort(targets, t=>!t.locked, t=>t.ts);
-        return Object.fromEntries(targets.map(t=>[t.id, t]));
-    }
-}
-
-export class Client$ extends DataNodeID$ {
-    session_id = undefined;
-    is_admin = false;
-    username = null;
-    email = null;
-}
-
-export class Target$ extends DataNodeID$ {
-    name = ""
-    description = ""
-    rtmp_host = ""
-    rtmp_key = ""
-    url = ""
-    access_control = new AccessControl();
-    ts = 0
-    limit = 0
-    locked = false
-    opts = {};
-    get _streams() { return Object.values(app.$._streams).filter(st=>st.stream_targets[this.id]); }
-    get _active_streams() { return this._streams.filter(s=>s._is_running); }
-    get _in_use() { return !!this._active_streams.length; }
-    get _can_edit() { return !this.locked && this.access_control._self_can_edit; }
-    // get _stream_targets() { return Object.values(app.$._streams).map(s=>s._get_stream_target(this.id)).filter(st=>st); }
-}
-
-export class Chapter$ {
-    index = 0;
-    start = 0;
-    end = 0;
-    id = "";
-    constructor(data) {
-        Object.assign(this, data);
-    }
-}
-
-export class StreamTarget$ extends DataNodeID$ {
-    state = "stopped";
-    stream_id = "";
-    target_id = "";
-
-    get _session() {
-        return this._stream._session;
-    }
-    get _stream() {
-        return app.$._streams[this.stream_id] || app.$._streams[Collection$_null];
-    }
-    get _target() {
-        return app.$.targets[this.target_id] || app.$.targets[Collection$_null];
-    }
-}
-
-export class Stream$ extends DataNodeID$ {
-    start_time = 0;
-    state = "stopped";
-    metrics = new Node$((prop,value)=>{
-        return value;
-    });
-    session_id = 0;
-    mpv = new class {
-        ctx = new class {
-            id = "";
-            item = new ParsedPlaylistItem$();
-            preloaded = false;
-            loaded = false;
-            seeking = false;
-            seekable = false;
-            interpolation = false;
-            deinterlace = false;
-            duration = 0;
-            time = 0;
-            seekable_ranges = [];
-            props = {};
-            playback_speed = 1;
-
-            get _item() {
-                if (!(this.item instanceof ParsedPlaylistItem$)) {
-                    debugger;
-                    this.item = new ParsedPlaylistItem$(this.item);
-                }
-                return this.item;
-            }
-        }
-    }
-    targets = [];
-    target_opts = {};
-    stream_targets = Collection$(()=>new StreamTarget$());
-    test = false;
-    bitrate = 0;
-    internal_path;
-    is_encode = false;
-    restart = 0;
-    
-    get _is_only_gui() {
-        return !!(Object.keys(this.targets).length == 1 && this.targets["gui"]);
-    }
-    
-    get _session() {
-        return app.$.sessions[this.session_id] || app.$.sessions[Collection$_null];
-    }
-    get _is_running() {
-        return this.state !== "stopped";
-    }
-    get _live_nms_session() {
-        return Object.values(app.$.nms_sessions).find(s=>s.appname === "live" && this.internal_path === s.publishArgs.origin);
-    }
-    get _run_time() {
-        return app.$._now - this.start_time;
-    }
-    _get_stream_target(id) {
-        return Object.values(this.stream_targets).find(st=>st.id == id || st.target_id == id || st.stream_id == id);
-    }
-}
-
-export class Session$ extends DataNodeID$ {
+export class Session$ extends utils.remote.ProxyID$ {
     type = "";
     index = 0;
     playlist_id = "";
     time_pos = 0;
     creation_time = 0;
     /** @type {Record<string,Log>} */
-    logs = app.session_logger.create_proxy();
+    logs = new utils.remote.Proxy$({
+        set: (k,v)=>{
+            app.session_logger.add_log(v);
+            return v;
+        }
+    });
     downloads = {};
-    access_control = new AccessControl();
+    access_control = new AccessControl$();
     player_default_override = {};
     stream_settings = {};
     /** @type {Record<string,MediaInfo>} */
@@ -1249,40 +1180,51 @@ export class Session$ extends DataNodeID$ {
     volume_speed = 0;
     stream_id = "";
 
-    playlist = Collection$(
-        ()=>new PlaylistItem$(null, this),
-        { "0": new PlaylistItem$({id:"0", parent_id:null}, this) },
-        (item)=>item._parent._private.children = null,
-    );
+    /** @type {Record<string,PlaylistItem$>} */
+    playlist = (new class extends utils.remote.Collection$ {
 
-    playlist_info = Collection$(()=>new PlaylistInfo$());
+        ["0"] = new PlaylistItem$({ id:"0", parent_id:null });
 
-    playlist_history = {
-        position: 0,
-        start: 0,
-        end: 0,
-        stack: {},
-        get _size() { return this.end-this.start; },
-        get _next() { return this.stack[this.position]; },
-        get _prev() { return this.stack[this.position-1]; },
-    };
+        constructor() {
+            super(()=>new PlaylistItem$(), {
+                deleteProperty: (target, prop)=>{
+                    if (prop == "0") return false;
+                    target[prop]._parent._private.children = null;
+                    return true;
+                }
+            });
+        }
+    }).__proxy__;
+
+    playlist_info = utils.remote.Collection$.create(()=>new PlaylistInfo$());
+
+    playlist_history = new PlaylistHistory$();
+
     get _connected_nms_sessions() {
         return Object.values(app.$.nms_sessions).filter(s=>s.publishStreamPath.split("/").pop() === this.id);
     }
-    /** @return {PlaylistItem$} */
+    /** @returns {PlaylistItem$|ParsedPlaylistItem$} */
     get _current_playlist_item() {
         var stream = this._stream;
         if (stream._is_running) {
-            var item = stream.mpv.ctx.item;
-            if (item && item.id) return item;
+            var item = stream.player.item;
+            if (item && item.id) {
+                if (!item.__evaluated__) {
+                    Object.defineProperty(item, "__evaluated__", {
+                        value: new ParsedPlaylistItem$(item),
+                        enumerable: false,
+                    });
+                }
+                return item.__evaluated__;
+            }
         }
-        return this.playlist[this.playlist_id] || this.playlist[Collection$_null];
+        return this.playlist[this.playlist_id] || this.playlist[utils.remote.Null$];
     }
     get _is_running() {
         return this._stream._is_running;
     }
     get _current_seekable_ranges() {
-        if (this._stream._is_running) return this._stream.mpv.ctx.seekable_ranges;
+        if (this._stream._is_running) return this._stream.player.seekable_ranges;
         return [];
     }
     _get_connected_nms_session_with_appname(...appnames) {
@@ -1295,72 +1237,81 @@ export class Session$ extends DataNodeID$ {
         return this._get_current_chapters_at_time(t).pop();
     }
     get _stream() {
-        return app.$.streams[this.stream_id] || app.$.streams[Collection$_null];
+        return app.$.streams[this.stream_id] || app.$.streams[utils.remote.Null$];
     }
 }
 
-class PlaylistInfo$ {
+class PlaylistInfo$ extends utils.remote.Proxy$ {
     filenames = [];
+}
+
+class PlaylistHistory$ extends utils.remote.Proxy$ {
+    position = 0;
+    start = 0;
+    end = 0;
+    stack = {};
+    get _size() { return this.end-this.start; }
+    get _next() { return this.stack[this.position]; }
+    get _prev() { return this.stack[this.position-1]; }
 }
 
 class PlaylistItemPrivate$ {
     /** @type {PlaylistItem$} */
     item;
-    /** @type {Session$} */
-    session;
+    session_id = "";
     num_user_updates = 0;
     /** @type {PlaylistItemUserData$} */
     userdata;
     /** @type {PlaylistItem$[]} */
     children;
-    /** @param {PlaylistItem$} item @param {Session$} session */
-    constructor(item, session) {
+    /** @param {PlaylistItem$} item @param {string} session_id */
+    constructor(item, session_id) {
         this.item = item;
-        this.session = session;
+        this.session_id = session_id;
     }
 }
 
-export class PlaylistItem$ extends DataNodeID$ {
+export class PlaylistItem$ extends utils.remote.ProxyID$ {
     parent_id = "0";
     filename = "";
     index = 0;
     track_index = 0;
     props = {};
-    /** @type {string} */
-    upload_id = null;
 
     /** @type {PlaylistItemPrivate$} */
-    get _private() { return this.__private; }
-
-    /** @param {Session$} session */
-    constructor(data, session) {
-        if (!session) session = app.$._session;
-        super((prop, value)=>{
-            // if (session) {
-            this._clear_userdata();
-            if (prop == "parent_id") {
-                let old_parent = this._parent;
-                let new_parent = this._session.playlist[value];
-                if (old_parent) old_parent._private.children = null;
-                if (new_parent) new_parent._private.children = null;
-            } else if (prop == "track_index" || prop == "index") {
-                let parent = this._parent;
-                if (parent) parent._private.children = null;
+    get _private() { return this.__private__; }
+    
+    /** @param {any} data @param {Session$} session */
+    constructor(data) {
+        var session_id = app.$._client.session_id;
+        super({
+            set: (prop, value)=>{
+                if (this._is_connected) {
+                    this._clear_userdata();
+                    if (prop == "parent_id") {
+                        let old_parent = this._parent;
+                        let new_parent = this._session.playlist[value];
+                        if (old_parent) old_parent._private.children = null;
+                        if (new_parent) new_parent._private.children = null;
+                    } else if (prop == "track_index" || prop == "index") {
+                        let parent = this._parent;
+                        if (parent) parent._private.children = null;
+                    }
+                }
+                return value;
             }
-            // }
-            return value;
         });
-        Object.defineProperty(this, "__private", {
-            value: new PlaylistItemPrivate$(this, session),
+        Object.defineProperty(this, "__private__", {
+            value: new PlaylistItemPrivate$(this, session_id),
             enumerable: false,
         });
-        if (data) Object.assign(this[Node$_Target], data);
+        if (data) Object.assign(this, data);
     }
-    /** @return {Session$} */
+    /** @returns {Session$} */
     get _session() {
-        return this._private.session || app.$.sessions[Collection$_null];
+        return app.$.sessions[this._private.session_id] || app.$._session;
     }
-    /** @return {PlaylistItemUserData$} */
+    /** @returns {PlaylistItemUserData$} */
     get _userdata() {
         if (!this._private.userdata) {
             this._private.userdata = new PlaylistItemUserData$(this);
@@ -1382,7 +1333,7 @@ export class PlaylistItem$ extends DataNodeID$ {
         return !this._session.playlist[this.id];
     }
     get _is_connected() {
-        return this.id in this._session.playlist;
+        return this._session.playlist[this.id] === this;
     }
     get _is_playlist() {
         return this._is_root || this.filename === "livestreamer://playlist" || this._has_children;
@@ -1391,20 +1342,21 @@ export class PlaylistItem$ extends DataNodeID$ {
         return this.id === this._session._current_playlist_item.id;
     }
     get _is_descendent_of_current() {
-        for (var i of this._session._current_playlist_item._get_children(null, true)) {
-            if (i === this) return true;
+        for (var i of this._session._current_playlist_item._iterate_children(null, true)) {
+            if (i.id === this.id) return true;
         }
         return false;
     }
     get _is_ancestor_of_current() {
         for (var i of this._session._current_playlist_item._iterate_parents()) {
-            if (i === this) return true;
+            if (i.id === this.id) return true;
         }
         return false;
     }
     get _is_currently_playing() {
-        var stream = this._session._stream;
-        return stream._is_running && this.id === stream.mpv.ctx.item.id;
+        var session = this._session;
+        var stream = session._stream;
+        return stream._is_running && this.id === session._current_playlist_item.id;
     }
     get _is_root() {
         return this.id == "0";
@@ -1436,22 +1388,24 @@ export class PlaylistItem$ extends DataNodeID$ {
     _calculate_contents_hash() {
         return hash(JSON.stringify([this, this._children.map(c=>c._calculate_contents_hash())]))
     }
-    /** @return {Iterable<PlaylistItem$>} */
-    *_get_children(track_index=null, recursive=false) {
+    /** @returns {Generator<PlaylistItem$, void>} */
+    *_iterate_children(track_index=null, recursive=false) {
+        if (!this.id) return;
         var children = this._children;
         if (track_index != null) children = children.filter(i=>track_index == null || i.track_index == track_index);
         for (var item of children) {
             yield item;
-            if (recursive) yield* item._get_children(null, true);
+            if (recursive) yield* item._iterate_children(null, true);
         }
     }
-    /** @return {PlaylistItem$[]} */
+    /** @returns {PlaylistItem$[]} */
     get _children() {
+        if (!this.id) return [];
         if (!this._private.children) this._private.children = Object.values(this._session.playlist).filter(i=>this.id == i.parent_id).sort((a,b)=>(a.track_index-b.track_index) || (a.index-b.index));
         return [...this._private.children];
     }
     get _descendents() {
-        return [...this._get_children(null, true)];
+        return [...this._iterate_children(null, true)];
     }
     get _is_rtmp() {
         return this.filename === "livestreamer://rtmp";
@@ -1468,7 +1422,7 @@ export class PlaylistItem$ extends DataNodeID$ {
     get _related_media_infos() {
         return this._filenames.map(f=>this._session.media_info[f]).filter(mi=>mi);
     }
-    /** @return {boolean} */
+    /** @returns {boolean} */
     get _is_processing() {
         return this._related_media_infos.some(mi=>mi.processing) || this._children.some(i=>i._is_processing);
     }
@@ -1479,15 +1433,15 @@ export class PlaylistItem$ extends DataNodeID$ {
         return this._parent._get_track(this.track_index);
     }
     _get_track(t) {
-        return [...this._get_children(t)];
+        return [...this._iterate_children(t)];
     }
-    /** @return {PlaylistItem$[][]} */
+    /** @returns {PlaylistItem$[][]} */
     get _tracks() {
         var tracks = [];
         if (this.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK) {
-            for (var i = 0; i<2; i++) tracks.push([...this._get_children(i)]);
+            for (var i = 0; i<2; i++) tracks.push([...this._iterate_children(i)]);
         } else {
-            tracks[0] = [...this._get_children()];
+            tracks[0] = [...this._iterate_children()];
         }
         return tracks;
     }
@@ -1522,7 +1476,7 @@ export class PlaylistItem$ extends DataNodeID$ {
         return app.$.downloads[this.id];
     }
     get _upload() {
-        return app.$.uploads[this.upload_id];
+        return app.$.uploads[this.id];
     }
     get _is_downloadable() {
         return !this._download && this._url.protocol.match(/^https?:$/) && !this._is_playlist;
@@ -1609,7 +1563,7 @@ export class PlaylistItem$ extends DataNodeID$ {
         if (this._is_root) next = this;
         app.playlist.open(next, [this]);
     }
-    /** @param {PlaylistItem$} until @return {Iterable<PlaylistItem$>} */
+    /** @param {PlaylistItem$} until @returns {Iterable<PlaylistItem$>} */
     *_iterate_parents(until) {
         var item = this;
         while (!item._is_root) {
@@ -1637,6 +1591,11 @@ export class ParsedPlaylistItem$ extends PlaylistItem$ {
         files: [],
         streams: [],
     };
+    children = [];
+    constructor(item) {
+        super(item);
+        this._private.children = this.children.map(c=>new ParsedPlaylistItem$(c));
+    }
 }
 class PlaylistItemUserData$ {
     /** @param {PlaylistItem$} item */
@@ -1650,7 +1609,7 @@ class PlaylistItemUserData$ {
 
         let name = item._get_pretty_name();
         
-        let media_duration = round_ms(media_info.duration || 0);
+        let media_duration = Math.max(0, round_ms(media_info.duration || 0));
         if (media_duration <= IMAGE_DURATION) media_duration = 0;
         let children_duration = 0;
         let timeline_duration = media_duration;
@@ -1674,18 +1633,20 @@ class PlaylistItemUserData$ {
                 children_duration = Math.max(...track_durations);
                 timeline_duration = Math.max(...track_timeline_durations);
             }
-            media_duration = children_duration;
+            media_duration = Math.max(0, children_duration);
         }
-        let duration = item.props.duration || media_duration;
+        let duration = Math.max(0, item.props.duration || media_duration);
         let clipping;
-        if ("clip_start" in item.props || "clip_end" in item.props || "clip_loops" in item.props || "clip_offset" in item.props) {
+        {
             let start = item.props.clip_start || 0;
             let end = item.props.clip_end || duration;
-            let length = end-start;
             let loops = item.props.clip_loops ?? 1;
+            let length = Math.max(0, end-start);
             let offset = ((item.props.clip_offset || 0) % length) || 0;
-            duration = length * loops;
-            clipping = { start, end, length, duration, offset, loops };
+            if (start != 0 || end != duration || loops != 1 || offset != 0) {
+                duration = Math.max(0, length * loops);
+                clipping = { start, end, length, duration, offset, loops };
+            }
         }
         timeline_duration = round_ms(Math.max(ZERO_DURATION, duration));
 
@@ -1751,6 +1712,16 @@ class PlaylistItemUserData$ {
         this.timeline_duration = timeline_duration || 0;
         this.clipping = clipping;
         this.chapters = chapters;
+    }
+}
+
+export class Chapter$ {
+    index = 0;
+    start = 0;
+    end = 0;
+    id = "";
+    constructor(data) {
+        Object.assign(this, data);
     }
 }
 
@@ -2072,7 +2043,7 @@ export function get_rect_pt_percent(rect, pt) {
 }
 
 Object.assign(Fancybox.defaults, {
-    closeButton:false,
+    // closeButton:false,
     Hash: false,
     ScrollLock: false,
     dragToClose: false,
@@ -2205,9 +2176,9 @@ export class JSONContainer extends ui.UI {
 *  "modal.footer": ui.UISetting<ThisType, boolean>,
 *  "modal.header": ui.UISetting<ThisType, boolean>,
 *  "modal.width": ui.UISetting<ThisType, number|string>,
+*  "modal.items": ui.UISetting<ThisType, ItemType[]>,
 *  "modal.hide": (this: ThisType) => void,
 *  "modal.show": (this: ThisType) => void,
-*  "modal.data": (this: ThisType, item: ItemType, path: string[]) => any,
 * }} ModalSettings
 */
 
@@ -2254,10 +2225,10 @@ export class Modal extends ui.UI {
             "modal.footer": false,
             "modal.header": true,
             "modal.width": undefined,
-            "modal.data": (item, path)=>utils.reflect.get(item, path),
             "modal.items": [undefined],
             "modal.return_value": (r)=>r,
             "modal.blocking": true,
+            "modal.show_close_button": true,
             ...settings
         };
 
@@ -2275,11 +2246,11 @@ export class Modal extends ui.UI {
             hidden: !this.get_setting("modal.footer"),
         });
 
+        this.elem.classList.add("modal");
         this.elem.append(this.header, this.content, this.footer);
 
         this.props = new ui.PropertyGroup({
             "items": ()=>this.get_setting("modal.items"),
-            "data": (item, path)=>this.get_setting("modal.data", item, path),
             "show_changed": true,
             "show_not_default": true,
         });
@@ -2336,7 +2307,6 @@ export class Modal extends ui.UI {
 
                 var loader = new Loader({
                     "loader.background": "transparent",
-                    "loader.color": "white",
                 });
                 loader.elem.onclick = ()=>this.hide();
                 this.fb = new Fancybox([
@@ -2348,7 +2318,6 @@ export class Modal extends ui.UI {
                     closeButton: false,
                     mainClass: "loading-modal",
                 });
-
                 await this.get_setting("modal.load");
                 // await utils.timeout(1000000);
 
@@ -2357,11 +2326,12 @@ export class Modal extends ui.UI {
             }
             
             this.emit("before-show");
-
+            console.log("modal.show_close_button", this.get_setting("modal.show_close_button"));
             this.fb = new Fancybox([{
                 src: this.elem,
                 type: "html",
             }], {
+                closeButton: this.get_setting("modal.show_close_button") ? "inside" : false,
                 hideOnSlideClick: this.get_setting("modal.hide_on_click_outside"),
             });
             this.fb.on("closing",()=>{
@@ -2409,6 +2379,7 @@ export class EditModal extends Modal {
         super({
             "modal.footer": true,
             "modal.hide_on_click_outside": ()=>this.get_setting("modal.auto_apply"),
+            "modal.show_close_button": ()=>this.get_setting("modal.auto_apply"),
             "modal.auto_apply": true,
             "modal.allow_invalid": false,
             "modal.ok": "OK",
@@ -2627,14 +2598,10 @@ export class UserConfigurationSettings extends EditModal {
     constructor() {
         super({
             "modal.title": "Client Configuration",
-            /* "modal.data": (_,k)=>{
-                console.log(k)
-                return app.local_settings.get(k[0])
-            }, */
             "modal.apply": ()=>{
                 var value = this.props.value;
                 for (var k in value) {
-                    app.local_settings.set(k, value[k]);
+                    app.settings.set(k, value[k]);
                 }
             }
         });
@@ -2651,10 +2618,7 @@ export class UserConfigurationSettings extends EditModal {
                     "title": def.__title__,
                     "options": def.__options__,
                     "default": def.__default__,
-                    "data": (_,k)=>{
-                        console.log(k)
-                        return app.local_settings.get(k[0])
-                    }
+                    "data": (_,k)=>app.settings.get(k[0])
                 };
                 if (def.__info__) prop_settings.info = def.__info__;
                 
@@ -2669,16 +2633,10 @@ export class UserConfigurationSettings extends EditModal {
             "reset": false,
         });
         this.props.append(ping);
-        var refreshing = false;
         this.ping_button = new ui.Button(`<button><i class="fas fa-arrows-rotate"></i></button>`, {
-            "click":async()=>{
-                refreshing = true;
-                this.update();
+            "click_async":async()=>{
                 await app.$._refresh_ping();
-                refreshing = false;
-                this.update();
             },
-            "disabled":()=>refreshing,
             "title": "Refresh Ping",
         });
         ping.outer_el.append(this.ping_button);
@@ -2691,14 +2649,14 @@ export class UserConfigurationSettings extends EditModal {
         
         var reset_layout_button = new ui.Button(`<button>Reset Layout</button>`, {
             "click": ()=>{
-                app.local_settings.set("layout", null);
+                app.settings.set("layout", null);
                 app.update_layout();
             }
         });
         this.footer.append(reset_layout_button);
         var logout_button = new ui.Button(`<button>Log Out</button>`, {
             "click": async ()=>{
-                dom.Cookies.remove("ls_key");
+                Cookies.remove("livestreamer_auth");
                 var request = new XMLHttpRequest();
                 request.addEventListener("loadend", ()=>window.location.reload());
                 request.open("get", "/logout", false, "false", "false");
@@ -2836,10 +2794,7 @@ export class FileSystemInfoMenu extends Modal {
                 var volume = app.$.volumes[id];
                 var loading_el = $(`<tr><td colspan="6"><i class="fas fa-sync fa-spin"></i> Loading...</td></tr>`)[0];
                 tbody.append(loading_el);
-                var r = await app.request({
-                    call: ["app", "analyze_local_file_system_volume"],
-                    arguments: [id]
-                });
+                var r = await app.request("analyze_local_file_system_volume", [id]);
                 loading_el.remove();
                 var root_node = process(r, {path:volume.root.split("/").slice(0, -1).join("/"), level:-1}, "drive");
                 root_node.name = volume.name
@@ -3009,28 +2964,19 @@ export class SystemManagerMenu extends Modal {
                 var stats_ui = this.append(new ui.Row({justify:"right"}));
                 var restart_button = new ui.Button(`<button>RESTART</button>`, {
                     "click": ()=>{
-                        app.request_no_timeout({
-                            call: ["core", `module_restart`],
-                            arguments: [name]
-                        });
+                        app.request(`module_restart`, [name]);
                     },
                     hidden: ()=>!is_running()
                 });
                 var stop_button = new ui.Button(`<button>STOP</button>`, {
                     "click": ()=>{
-                        app.request_no_timeout({
-                            call: ["core", `module_stop`],
-                            arguments: [name]
-                        });
+                        app.request(`module_stop`, [name]);
                     },
                     hidden: ()=>!is_running()
                 });
                 var start_button = new ui.Button(`<button>START</button>`, {
                     "click": ()=>{
-                        app.request_no_timeout({
-                            call: ["core", `module_start`],
-                            arguments: [name]
-                        });
+                        app.request(`module_start`, [name]);
                     },
                     hidden: ()=>is_running()
                 });
@@ -3049,14 +2995,14 @@ export class SystemManagerMenu extends Modal {
                     dom.set_inner_html(name_ui.elem, `${conf_name} [<span class="status">${p.status.toUpperCase()}</span>]`);
                     var status_el = name_ui.elem.querySelector(".status");
                     status_el.style.color = color;
-                    dom.set_style_property(name_ui, "font-weight", "bold");
+                    name_ui.elem.style["font-weight"] = "bold";
                     dom.set_inner_html(description_ui.elem, conf_desc);
                     
                     var pinfo = app.$.process_info[p.pid] || {};
                     var cpu = Number((pinfo.cpu||0)*100).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})+"%";
                     var mem = utils.format_bytes(pinfo.memory||0);
                     var uptime = utils.ms_to_human_readable_str(pinfo.elapsed||0);
-                    var s = {"CPU":cpu,"Memory":mem,"Transfer rate":`↑ ${utils.format_bytes(pinfo.sent)}ps / ↓ ${utils.format_bytes(pinfo.received)}ps`, "Uptime":uptime};
+                    var s = {"CPU":cpu,"Memory":mem,"Transfer rate":`↑ ${utils.format_bytes(pinfo.sent||0)}ps / ↓ ${utils.format_bytes(pinfo.received||0)}ps`, "Uptime":uptime};
                     dom.set_inner_html(stats_ui.elem, Object.entries(s).map(([k,v])=>`${k}: ${v}`).join(" | "));
                 })
             }
@@ -3108,12 +3054,10 @@ export class SystemManagerMenu extends Modal {
         });
         var tick_timeout;
         var tick = async ()=>{
-            await app.request({
-                call: ["app", "update_system_info"]
-            });
+            await app.request("subscribe_sysinfo", true);
             if (this.showing) next_tick();
         }
-        var next_tick = ()=>tick_timeout = setTimeout(tick, 2000);
+        var next_tick = ()=>tick_timeout = setTimeout(tick, 1000);
         var clear_tick = ()=>clearTimeout(tick_timeout);
 
         this.on("before-show", ()=>{
@@ -3129,8 +3073,9 @@ export class SystemManagerMenu extends Modal {
 export class FileManagerMenu extends Modal {
     constructor(url) {
         super({
-            "modal.footer": false,
             "modal.header": false,
+            // "modal.title": "File Manager",
+            "modal.footer": false,
             "modal.width":"100%"
         });
         Object.assign(this.elem.style, {
@@ -3157,7 +3102,7 @@ export class ScheduleGeneratorMenu extends EditModal {
     constructor() {
         super({
             "modal.title": "Schedule Generator",
-            "modal.items": ()=>[app.local_settings.get("schedule_generator") || {}],
+            "modal.items": ()=>[app.settings.get("schedule_generator") || {}],
         });
 
         var row = this.props.append(new ui.FlexRow());
@@ -3222,7 +3167,7 @@ export class ScheduleGeneratorMenu extends EditModal {
 
         this.props.on("change", (e)=>{
             if (!e.name || !e.trigger) return;
-            app.local_settings.set("schedule_generator", this.props.raw_value);
+            app.settings.set("schedule_generator", this.props.raw_value);
         });
 
         this.on("update", ()=>{
@@ -3308,10 +3253,7 @@ export class FontSettings extends EditModal {
         
         var delete_button = new ui.Button(`<button>Delete</button>`, {
             "click":async ()=>{
-                await app.request({
-                    call: ["app", "delete_font"],
-                    arguments: [list.selected.id]
-                });
+                await app.request("delete_font", [list.selected.id]);
             },
             "disabled":()=>!list.selected,
         });
@@ -3485,7 +3427,7 @@ export class SplitMenu extends EditModal {
 
 /** @extends {EditModal<PlaylistItem$>} */
 export class CropEditMenu extends EditModal {
-    /** @param {ui.MultiInputProperty} crop_property @param {DetectedCrop} data @param {Rectangle} rect */
+    /** @param {ui.MultiInputProperty} crop_property @param {DetectedCrop$} data @param {Rectangle} rect */
     constructor(crop_property, data, index) {
         super({
             "modal.title": "Crop Editor",
@@ -3561,10 +3503,7 @@ export class ScheduleStreamMenu extends EditModal {
         super({
             "modal.title": "Schedule Stream Start",
             "modal.apply": ()=>{
-                app.request({
-                    call: ["session", "update_values"],
-                    arguments: this.props.raw_value
-                });
+                app.request("session_update_values", [this.props.raw_value]);
             },
             "modal.items": [app.$._session],
         });
@@ -3593,19 +3532,19 @@ export class SessionConfigurationMenu extends EditModal {
         super({
             "modal.title":"Session Configuration",
             "modal.apply": ()=>{
-                app.request({
-                    call: ["session", "update_values"],
-                    arguments: this.props.raw_value
-                });
+                app.request("session_update_values", [this.props.value]);
             },
             "modal.items": [app.$._session],
         });
 
         function get_default() { return utils.try_catch(()=>InternalSessionProps[this.name].__default__); }
+        function get_options() { return utils.try_catch(()=>InternalSessionProps[this.name].__options__, []); }
+        
         this.name = new ui.InputProperty(`<input type="text">`, {
             "name": "name",
             "label": "Session Name",
-            "reset": false,
+            "default": app.$._session.name,
+            "nullify_default": false,
         });
         this.name.validators.push(VALIDATORS.not_empty);
 
@@ -3639,23 +3578,11 @@ export class SessionConfigurationMenu extends EditModal {
             "copy": true,
             "value": ()=>`session/${app.$._session.id}`,
         });
-
-        /* var regenerate_button = new ui.Button(`<button><i class="fas fa-sync-alt"></i></button>`, {
-            "click":async ()=>{
-                regenerate_button.settings.disabled = true;
-                await app.request({
-                    call: ["session", "generate_rtmp_key"]
-                });
-                regenerate_button.settings.disabled = false;
-            },
-            "title": "Regenerate Key",
-        });
-        this.stream_key.group_elem.append(regenerate_button); */
         this.background_mode = new ui.InputProperty(`<select></select>`, {
             "name": "background_mode",
             "label": "Background Mode",
-            "options": ()=>utils.try_catch(()=>InternalSessionProps.background_mode.__options__, []),
-            "default": ()=>utils.try_catch(()=>InternalSessionProps.background_mode.__default__, null),
+            "options": get_options,
+            "default": get_default,
         });
 
         this.background_color = new ui.InputProperty(`<input type="color">`, {
@@ -3684,19 +3611,15 @@ export class SessionConfigurationMenu extends EditModal {
         this.interpolation_mode = new ui.InputProperty(`<select></select>`, {
             "name": "interpolation_mode",
             "label": "Interpolation Mode",
-            "options":()=>{
-                return [["auto","Auto"], [false, "Off"], [true, "On"]];
-            },
+            "options": get_options,
             "default": get_default,
         });
         this.auto_interpolation_rate = new ui.InputProperty(`<select></select>`, {
             "name": "auto_interpolate_rate",
             "label": "Auto Interpolation Target FPS",
-            "options":()=>{
-                return [24, 25, 30, 60];
-            },
-            "disabled":()=>this.interpolation_mode.value !== "auto",
+            "options": get_options,
             "default": get_default,
+            "disabled":()=>this.interpolation_mode.value !== "auto",
         });
 
         this.members = new AccessControlProperty({
@@ -3754,7 +3677,7 @@ export class ChangeLogMenu extends Modal {
                 // "font-family": "monospace",
                 "font-size": "1.2em",
             });
-            app.local_settings.set("last_change_log", app.$.change_log.mtime);
+            app.settings.set("last_change_log", app.$.change_log.mtime);
         })
     }
 }
@@ -3857,30 +3780,30 @@ export class SetTimePosMenu extends EditModal {
         });
         var chapter_select = new ui.InputProperty(`<select>`, {
             "label": "Chapter",
-            "disabled":()=>!app.local_settings.get("show_chapters") || app.$._session._current_playlist_item._userdata.chapters.length < 2,
             "options":()=>{
                 return app.$._session._current_playlist_item._userdata.chapters.map((c,i)=>[i, app.chapter_to_string(c, true)])
             },
             "reset":false,
+            "hidden":()=>app.$._session._current_playlist_item._userdata.chapters.length==0,
         });
         var time_pos = new ui.TimeSpanProperty({
             "label": "Time",
             "timespan.format":()=>"h:mm:ss.SSS",
-            "default": app.$._session.time_pos,
             "min": 0,
             "reset":false,
         })
         var row = this.props.append(new ui.FlexRow());
         row.append(chapter_select, time_pos);
         time_pos.on("change",(e)=>{
-            if (!e.trigger) return;
-            chapter_select.set_values((app.$._session._get_current_chapter_at_time(e.value)||EMPTY_OBJECT).index);
+            console.log(e);
+            chapter_select.set_value((app.$._session._get_current_chapter_at_time(e.value)||EMPTY_OBJECT).index);
         })
         chapter_select.on("change",(e)=>{
             if (!e.trigger) return;
             var c = app.$._session._current_playlist_item._userdata.chapters[e.value];
             time_pos.set_values(c.start);
         })
+        time_pos.set_value(app.$._session.time_pos);
     }
 }
 
@@ -3899,10 +3822,8 @@ export class SetVolumeSettings extends EditModal {
         //<div style="padding:0 5px; border-left: 1px solid #aaa; border-bottom: 1px solid #aaa;">
         var volume_input = new ui.InputProperty(`<input type="number">`, {
             "label": "Volume (%)",
-            "default": 100,
-            "min": 0,
-            "max": 200,
             "data": app.$._session.volume_target,
+            ...get_prop_attrs(InternalSessionProps.volume_target),
         });
         volume_input.on("change", (e)=>{
             if (e.trigger) volume_slider.set_value(e.value);
@@ -3911,8 +3832,7 @@ export class SetVolumeSettings extends EditModal {
 
         var volume_speed = new ui.InputProperty(`<select>`, {
             "label": "Volume Transition Speed",
-            "default": 4.0,
-            "options": [[0.5, "Very Slow"], [1.0, "Slow"], [2.0, "Medium"], [4.0, "Fast"], [8.0, "Very Fast"], [0, "Immediate"]],
+            ...get_prop_attrs(InternalSessionProps.volume_speed),
             "data": app.$._session.volume_speed,
         });
         row.append(volume_speed);
@@ -3940,7 +3860,7 @@ export class ExternalSessionConfigurationMenu extends Modal {
     constructor() {
         super({
             "modal.title": "Setup External Session",
-            "modal.items": ()=>[app.local_settings.get("external-session-config")||{}],
+            "modal.items": ()=>[app.settings.get("external-session-config")||{}],
         });
         
         var row = this.props.append(new ui.FlexRow());
@@ -3965,6 +3885,7 @@ export class ExternalSessionConfigurationMenu extends Modal {
             "reset": true,
             "show_in_use":false,
             "opts_name": "target_opts",
+            "default": SessionProps.stream_settings.targets.__default__,
         });
         this.props.append(this.stream_targets, this.stream_targets.opts);
 
@@ -4018,7 +3939,7 @@ export class ExternalSessionConfigurationMenu extends Modal {
 
         this.props.on("change", (e)=>{
             if (e.trigger) {
-                app.local_settings.set("external-session-config", this.props.raw_value);
+                app.settings.set("external-session-config", this.props.raw_value);
             }
         })
     }
@@ -4041,15 +3962,9 @@ export class EditTargetMenu extends EditModal {
             "modal.auto_apply": !is_new,
             "modal.apply": ()=>{
                 if (is_new) {
-                    app.request({
-                        call: ["app", "create_target"],
-                        arguments: [this.props.value]
-                    });
+                    app.request("create_target", [this.props.value]);
                 } else {
-                    app.request({
-                        call: ["app", "update_target"],
-                        arguments: [target.id, this.props.value]
-                    });
+                    app.request("update_target", [target.id, this.props.value]);
                 }
             }
         });
@@ -4223,7 +4138,7 @@ export class ExpandedTargetsProperty extends ui.Property {
 
             label_el.append(checkbox, text_wrapper_elem);
 
-            var up_button = new ui.Button(`<button><i class="fas fa-arrow-up"></i></button>`, {
+            var up_button = new ui.Button(`<button class="icon button"><i class="fas fa-arrow-up"></i></button>`, {
                 "click":()=>{
                     dom.move(elem, -1);
                     update_target_ids();
@@ -4233,7 +4148,7 @@ export class ExpandedTargetsProperty extends ui.Property {
                 "title": "Move Up",
             });
 
-            var down_button = new ui.Button(`<button><i class="fas fa-arrow-down"></i></button>`, {
+            var down_button = new ui.Button(`<button class="icon button"><i class="fas fa-arrow-down"></i></button>`, {
                 "click":()=>{
                     dom.move(elem, 1);
                     update_target_ids();
@@ -4251,31 +4166,24 @@ export class ExpandedTargetsProperty extends ui.Property {
                 return !!app.target_config_menus[target.id];
             }
 
-            var config_button = new ui.Button(`<button><i class="fas fa-cog"></i></button>`, {
+            var config_button = new ui.Button(`<button class="icon button"><i class="fas fa-cog"></i></button>`, {
                 "hidden": ()=>!editing || !has_config_menu(),
                 "click": ()=>get_config_menu().show(),
                 "title": "Configure",
             });
 
-            var disabled_restart = false;
-            var restart_button = new ui.Button(`<button><i class="fas fa-sync"></i></button>`, {
+            var restart_button = new ui.Button(`<button class="icon button"><i class="fas fa-sync"></i></button>`, {
                 "hidden": ()=>{
                     if (!editing) return true;
-                    var stream = app.$._stream;
+                    var stream = app.$._session._stream;
                     if (!stream) return true;
                     return !stream.stream_targets[target.id];
                 },
-                "disabled": ()=>disabled_restart,
-                "click": async ()=>{
-                    disabled_restart = true;
-                    app.stream_restart([target.id]);
-                    await utils.timeout(5000);
-                    disabled_restart = false;
-                },
+                "click_async": ()=>app.restart_stream([target.id]),
                 "title": "Restart",
             });
 
-            var edit_button = new ui.Button(`<button><i class="fas fa-edit"></i></button>`, {
+            var edit_button = new ui.Button(`<button class="icon button"><i class="fas fa-edit"></i></button>`, {
                 "click":()=>{
                     new EditTargetMenu(target).show()
                 },
@@ -4283,13 +4191,10 @@ export class ExpandedTargetsProperty extends ui.Property {
                 "title": "Edit",
             });
 
-            var delete_button = new ui.Button(`<button><i class="fas fa-trash-can"></i></button>`, {
+            var delete_button = new ui.Button(`<button class="icon button"><i class="fas fa-trash-can"></i></button>`, {
                 "click":()=>{
                     if (confirm(`Are you sure you want to delete Target '${target.name}'?`)) {
-                        app.request({
-                            call: ["app", "delete_target"],
-                            arguments: [target.id]
-                        });
+                        app.request("delete_target", [target.id]);
                     }
                 },
                 "hidden":()=>!target._can_edit,
@@ -4374,7 +4279,6 @@ export class TargetsProperty extends ui.InputProperty {
         input.style.cursor = "pointer";
 
         super(input, {
-            "default": ["local"],
             "reset": false,
             "prefix": `<i class="far fa-circle-dot"></i>`,
             "show_in_use": true,
@@ -4409,6 +4313,8 @@ export class TargetsProperty extends ui.InputProperty {
         });
     }
 }
+
+
 export class SeekBar extends ui.UI {
     #seeking = false;
     #seek_pos = 0;
@@ -4693,7 +4599,7 @@ export class SeekBar extends ui.UI {
 export class MediaSeekBar extends SeekBar {
     constructor() {
         super({
-            "seek.time_pos_left_mode": ()=>app.local_settings.get("media_time_left_mode"),
+            "seek.time_pos_left_mode": ()=>app.settings.get("media_time_left_mode"),
         });
     
         var seek_time = 0, last_seek_time, seeking_interval;
@@ -4721,18 +4627,16 @@ export class MediaSeekBar extends SeekBar {
             }
         });
         this.on("time_left_mode", (v)=>{
-            app.local_settings.set("media_time_left_mode", v);
+            app.settings.set("media_time_left_mode", v);
         });
 
-        var last_time = 0;
-        var speed = 1;
         var is_playing = ()=>app.$._session._is_running && !app.media.paused && !app.media.buffering;
-
         this.on("update", ()=>{
             var time = app.media.time_pos;
-            if (last_time != time || !is_playing()) this.settings["seek.time_pos"] = time;
-            last_time = time;
+            var paused = !is_playing();
+
             Object.assign(this.settings, {
+                "seek.time_pos": time,
                 "seek.seekable": app.media.seekable,
                 "seek.duration": app.media.duration,
                 "seek.chapters": app.media.chapters,
@@ -4740,34 +4644,7 @@ export class MediaSeekBar extends SeekBar {
                 "seek.buffering": app.media.buffering,
             });
 
-            set_interpolation(app.local_settings.get("media_seek_time_interpolation"));
         })
-
-        var interpolation_interval;
-        var interpolation_enabled = false;
-        var set_interpolation = (enabled)=>{
-            if (enabled == interpolation_enabled) return;
-            interpolation_enabled = enabled;
-            clearInterval(interpolation_interval);
-            var now = Date.now();
-            if (enabled) {
-                interpolation_interval = setInterval(()=>{
-                    let c = Date.now();
-                    if (is_playing()) {
-                        let new_speed = app.media.playback_speed;
-                        speed += (new_speed-speed) * 0.6;
-                        var delta = (c-now);
-                        this.settings["seek.time_pos"] += (delta/1000)*speed;
-                        this.render_time();
-                    }
-                    now = c;
-                }, 1000/30);
-            }
-        }
-
-        this.on("destroy", ()=>{
-            set_interpolation(false);
-        });
     }
 }
 
@@ -4776,12 +4653,9 @@ export class StreamConfigurationMenu extends EditModal {
     constructor(){
         super({
             "modal.title": "Stream Configuration",
-            "modal.items": [app.$._stream],
+            "modal.items": [app.$._session._stream],
             "modal.apply": ()=>{
-                app.request({
-                    call: ["session", "stream", "update_values"],
-                    arguments: [this.props.raw_value]
-                });
+                app.request("stream_update_values", [this.props.value]);
             },
         });
         var title_ui = new ui.InputProperty(`<input type="text">`, {
@@ -4791,36 +4665,38 @@ export class StreamConfigurationMenu extends EditModal {
         });
         this.props.append(title_ui);
         
-        var row = this.props.append(new ui.FlexRow({
+        var row = new ui.FlexRow({
             "align":"end",
-        }));
+        });
+        
+        function get_default() { return utils.try_catch(()=>SessionProps.stream_settings[this.name].__default__); }
 
         var targets = new TargetsProperty({
             "name": "targets",
             "label": "Target(s)",
-            "allow_empty": false,
+            "allow_empty": true,
             "auto_apply": false,
+            "default": get_default,
             "opts_name": "target_opts",
         });
 
-        var disabled = false;
         var restart_button = new ui.Button(`<button><i class="fas fa-sync"></i></button>`, {
-            "hidden": ()=>!app.$._stream._is_running,
-            "disabled": ()=>disabled,
-            "click": async()=>{
-                disabled = true;
-                restart_button.update();
-                app.stream_restart();
-                await utils.timeout(5000);
-                disabled = false
-                restart_button.update();
-            },
+            "hidden": ()=>!app.$._session._stream._is_running,
+            "click_async": app.restart_stream(),
             "title": "Restart Stream Targets",
             "flex": 0
         });
         targets.outer_el.append(restart_button);
 
         row.append(targets, targets.opts)
+        this.props.append(row);
+
+        var buffer_duration = new ui.InputProperty(`<input type="number">`, {
+            ...buffer_duration_opts,
+            "name": "buffer_duration",
+            "default": get_default,
+        });
+        this.props.append(buffer_duration);
     }
 }
 export class HandoverSessionMenu extends EditModal {
@@ -4831,10 +4707,7 @@ export class HandoverSessionMenu extends EditModal {
             "modal.auto_apply": false,
             "modal.ok": "Handover",
             "modal.apply": ()=>{
-                app.request({
-                    call: ["session", "handover"],
-                    arguments: [handover_stream_property.value]
-                });
+                app.request("session_handover", [handover_stream_property.value]);
             },
         });
         var row = this.props.append(new ui.FlexRow());
@@ -4853,7 +4726,7 @@ export class SavePlaylistMenu extends EditModal {
         super({
             "modal.title": ()=>`Save Playlist '<span>${playlist_name}</span>'`,
             "modal.title_overflow": true,
-            "modal.items": [app.local_settings.get("save_playlist_settings")||{}],
+            "modal.items": [app.settings.get("save_playlist_settings")||{}],
             "modal.ok": "Save",
             "modal.apply": ()=>{
                 save_local_file(this.playlist_save_file.value+"."+this.playlist_save_format.value, serialize());
@@ -4862,7 +4735,7 @@ export class SavePlaylistMenu extends EditModal {
         
         this.props.on("change", (e)=>{
             if (!e.name || !e.trigger) return;
-            app.local_settings.set("save_playlist_settings", this.props.raw_value);
+            app.settings.set("save_playlist_settings", this.props.raw_value);
         });
 
         var playlist_name = app.playlist.current._get_pretty_name() || app.$._session.name;
@@ -4921,10 +4794,7 @@ export class SavePlaylistMenu extends EditModal {
             "flex": 0,
             "disabled":()=>!this.props.is_valid,
             "click": ()=>{
-                app.request({
-                    call: ["save_file"],
-                    arguments: [this.playlist_save_dir.value+"/"+this.playlist_save_file.value, serialize()]
-                });
+                app.request("save_file", [this.playlist_save_dir.value+"/"+this.playlist_save_file.value, serialize()]);
                 this.hide();
             }
         });
@@ -5014,9 +4884,7 @@ export class HistoryMenu extends Modal {
         
         var history = [];
         var load = async ()=>{
-            history = await app.request({
-                call: ["session","get_autosave_history"],
-            });
+            history = await app.request("session_get_autosave_history");
     
             selectable_list.select(null);
             dom.remove_children(table.tBodies[0]);
@@ -5048,10 +4916,7 @@ export class HistoryMenu extends Modal {
         var load_button = new ui.Button(`<button>Load</button>`, {
             "click":async ()=>{
                 loading = true;
-                await app.request({
-                    call: ["session","client_load_autosave"],
-                    arguments: [history[selectable_list.selected_index].filename]
-                });
+                await app.request("load_session_autosave", [history[selectable_list.selected_index].filename]);
                 loading = false;
                 this.hide();
             },
@@ -5130,10 +4995,8 @@ export class PlaylistAddURLMenu extends EditModal {
 export class PlaylistItemModifyMenu extends EditModal {
 
     get changes() {
-        var changes = super.changes;
-        delete changes.label;
-        delete changes.color;
-        return changes;
+        var exclude = [["props","label"], ["props","color"]];
+        return super.changes.map(changes=>changes.filter(({path})=>exclude.every(p=>!utils.array_starts_with(path, p))))
     }
 
     /** @param {PlaylistItem$[]} items */
@@ -5146,23 +5009,21 @@ export class PlaylistItemModifyMenu extends EditModal {
             },
             "modal.auto_apply": !is_new,
             "modal.apply": ()=>{
-                if (app.$._session._is_running && this.props.items.some(d=>d === app.$._session._current_playlist_item) && Object.keys(this.changes).length) {
+                if (is_new) {
+                    var value = this.props.raw_value;
+                    value.props = Object.fromEntries(Object.entries(value.props).filter(([k,v])=>v!=undefined));
+                    app.playlist_add(value);
+                    return;
+                }
+                if (app.$._session._is_running && this.props.items.some(d=>d.id == app.$._session._current_playlist_item.id) && this.changes.some(c=>c.length)) {
                     app.alert_for_reload_of_current_item();
                     // app.prompt_for_reload_of_current_item();
                 }
-                var raw_values = this.props.raw_values.map((v,i)=>{
-                    if (v.filename == undefined) delete v.filename;
-                    return v;
-                });
-                if (is_new) {
-                    var value = raw_values[0];
-                    value.props = Object.fromEntries(Object.entries(value.props).filter(([k,v])=>v!=undefined));
-                    app.playlist_add(value);
-                } else if (reset) {
+                if (reset) {
                     let d = Object.fromEntries(this.items.map((item,i)=>[item.id, {props:{}}]));
                     app.playlist_update(d, {replace_props:true});
                 } else {
-                    let d = Object.fromEntries(this.items.map((item,i)=>[item.id, raw_values[i]]));
+                    let d = Object.fromEntries(this.items.map((item,i)=>[item.id, this.props.raw_values[i]]));
                     app.playlist_update(d);
                 }
             },
@@ -5178,7 +5039,7 @@ export class PlaylistItemModifyMenu extends EditModal {
             "label": "Path / URI",
             "default": (item)=>item.filename,
             "file.check_media": true,
-            "reset": true,
+            "nullify_default": false,
         });
         filename.validators.push(VALIDATORS.not_empty);
 
@@ -5224,7 +5085,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 if (mode == MediaSettingsMode.current) return [app.$._session._current_playlist_item];
                 if (mode == MediaSettingsMode.selected) {
                     let items = app.playlist.get_selected_items();
-                    if (!items.length) items = [app.$._session.playlist[Collection$_null]];
+                    if (!items.length) items = [app.$._session.playlist[utils.remote.Null$]];
                     return items;
                 }
                 if (mode == MediaSettingsMode.all) {
@@ -5232,7 +5093,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 }
             },
             "disabled": ()=>{
-                return (this.items.every(i=>i._is_null));
+                return mode === MediaSettingsMode.custom ? false : (this.items.every(i=>i._is_null));
             }
         });
 
@@ -5279,7 +5140,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             let mi = item._media_info;
             streams = mi ? mi.streams : null;
             /* if (item._is_currently_playing) {
-                streams = app.$._stream.mpv.ctx.streams;
+                streams = app.$._stream.ctx.streams;
             } */
             if (!streams) streams = [];
             if (type) streams = streams.filter(s=>s.type == type);
@@ -5447,6 +5308,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 "empty": "No filters",
                 "item_size": 25,
                 "vertical": true,
+                "copy_id": "filter",
                 "new": ()=>{
                     return new FilterConfigurationMenu().show();
                 },
@@ -5749,29 +5611,20 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 this.detected_crops_images.update();
             });
 
-            /** @type {DetectedCrop} */
+            /** @type {DetectedCrop$} */
             var last_detected_crop = null;
-            var auto_cropping = false;
             this.auto_crop_button = new ui.Button(null, {
                 "flex": 0,
-                "disabled":()=>auto_cropping,
-                "content":()=>auto_cropping ? `Detecting <i class="fas fa-sync fa-spin"></i>` : `Detect`,
-                "click":async ()=>{
-                    auto_cropping = true;
-                    this.auto_crop_button.update()
-                    last_detected_crop = await app.request({
-                        call: ["session", "detect_crop"],
-                        arguments: [_this.item.id]
-                    }, {
+                "content": ()=>this.auto_crop_button.async_click_promise ? `Detecting <i class="fas fa-sync fa-spin"></i>` : `Detect`,
+                "click_async":async ()=>{
+                    last_detected_crop = await app.request("session_detect_crop", [_this.item.id], {
                         show_spinner: false,
                         timeout: 0
                     }).catch(utils.noop);
 
                     var r = new utils.Rectangle(last_detected_crop.combined);
                     this.crop.set_value([r.left, r.top, 1-r.right, 1-r.bottom], {trigger:true});
-                    auto_cropping = false;
-                    this.auto_crop_button.update();
-                    this.detected_crops_images.update();
+                    this.update();
                 },
                 "hidden": ()=>{
                     var info = get_info();
@@ -5881,7 +5734,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 "label": "Letter Spacing",
                 "default": get_default,
                 "min": -50,
-                "min": 50,
+                "max": 50,
             });
             this.title_outline_thickness = new ui.InputProperty(`<input type="number"></div>`, {
                 "name": "title_outline_thickness",
@@ -6104,11 +5957,6 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                     Object.assign(svg.style, {
                         "transition":"all 0.5s",
                         "user-select": "none",
-                        "font-weight": style.includes("bold") ? "bold" : "normal",
-                        "font-style": style.includes("italic") ? "italic" : "normal",
-                        "font-family": this.title_font.value,
-                        "letter-spacing": `${this.title_spacing.value}px`,
-                        "text-decoration": this.title_underline.value ? "underline" : "",
                     });
                     if (this.title_shadow_depth.value) {
                         svg_text.style.filter = "url(#shadow)";
@@ -6119,6 +5967,11 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                     svg_text.setAttribute("stroke", this.title_outline_color.value ? this.title_outline_color.value : "none");
                     svg_text.setAttribute("fill", this.title_color.value);
                     svg_text.setAttribute("font-size", `${this.title_size.value}`);
+                    svg_text.setAttribute("font-weight", style.includes("bold") ? "bold" : "normal");
+                    svg_text.setAttribute("font-style", style.includes("italic") ? "italic" : "normal");
+                    svg_text.setAttribute("font-family", this.title_font.value);
+                    svg_text.setAttribute("letter-spacing", `${this.title_spacing.value}px`);
+                    svg_text.setAttribute("text-decoration", this.title_underline.value ? "underline" : "none");
 
                     var fe = svg.querySelector("filter#shadow feDropShadow");
                     fe.setAttribute("dx", this.title_shadow_depth.value);
@@ -6610,13 +6463,13 @@ export class EditAccessControlMemberMenu extends EditModal {
 
 /** 
  * @template ItemType 
- * @template {AccessControl} [ValueType=AccessControl] 
+ * @template {AccessControl$} [ValueType=AccessControl$] 
  * @template {ui.InputPropertySettings<ItemType,ValueType,AccessControlProperty>} [Settings=ui.InputPropertySettings<ItemType,ValueType,AccessControlProperty>]
  * @extends {ui.InputProperty<ItemType,ValueType,Settings>} 
  */
 export class AccessControlProperty extends ui.InputProperty {
     get values() {
-        return super.values.map(v=>new AccessControl(v));
+        return super.values.map(v=>new AccessControl$(v));
     }
     /** @param {Settings} settings */
     constructor(settings) {
@@ -6830,17 +6683,13 @@ export class RangeProperty extends ui.InputProperty {
 
 
 export class Panel extends ui.UI {
-    get collapsible() { return !!this.elem.dataset.collapsible; }
-    set collapsible(value) {
-        if (value) {
-            this.elem.dataset.collapsible = 1;
-        } else {
-            delete this.elem.dataset.collapsible;
-        }
-    }
-    constructor(title, settings) {
-        super({...settings});
-        this.panel_id = title.toLowerCase().replace(/[^\w]+/, "-");
+    constructor(id, settings) {
+        super({
+            "panel.title": "",
+            "panel.collapsible": true,
+            ...settings
+        });
+        this.panel_id = id;
         app.panels[this.panel_id] = this;
 
         dom.add_class(this.elem, "drawer");
@@ -6853,19 +6702,22 @@ export class Panel extends ui.UI {
         this.collapse_arrow_elem = header_container_elem.querySelector(".collapse-arrow");
 
         var title_elem = $(`<span></span>`)[0];
-        dom.set_inner_html(title_elem, title);
         this.header_elem.append(title_elem, $(`<span class="gap"></span>`)[0]);
 
         this.elem.append(header_container_elem, this.body_elem);
         
-        this.collapsible = true;
-        
         header_container_elem.addEventListener("click", (e)=>{
-            if (!this.elem.dataset.collapsible) return;
+            var collapsible = this.get_setting("panel.collapsible");
+            if (!collapsible) return;
             if (e.target != header_container_elem) return;
             var setting_id = `drawer:${this.panel_id}`;
-            if (app.local_settings.get(setting_id) === undefined) app.local_settings.set(setting_id, false);
-            else app.local_settings.toggle(setting_id);
+            if (app.settings.get(setting_id) === undefined) app.settings.set(setting_id, false);
+            else app.settings.toggle(setting_id);
+        });
+
+        this.on("render", ()=>{
+            dom.set_inner_html(title_elem, this.get_setting("panel.title") || "");
+            dom.toggle_attribute(this.elem, "data-collapsible", !!this.get_setting("panel.collapsible"));
         });
     }
 
@@ -6896,7 +6748,9 @@ export class Panel extends ui.UI {
 
 export class StreamSettings extends Panel {
     constructor() {
-        super("Stream Settings");
+        super("stream-settings", {
+            "panel.title": "Stream Settings",
+        });
         this.props = new ui.PropertyGroup({
             "items": ()=>[app.$._session.stream_settings],
             // "disabled": ()=>app.$.session.is_running,
@@ -6908,6 +6762,11 @@ export class StreamSettings extends Panel {
         this.props.append(left, right);
 
         this.set_reset_button(this.props, { "disabled":()=>app.$._session._is_running });
+        var restart_elem = $(`<span>Restarting... [<span class="restart-time"></span>] <a class="restart-cancel" href="javascript:void(0)">Cancel</a></span>`)[0];
+        restart_elem.querySelector(".restart-cancel").onclick =()=>{
+            app.request("stop_stream");
+        };
+        this.header_elem.children[0].insertAdjacentElement("afterend", restart_elem);
         
         this.properties_ui = new ui.Row({
             "class":"stream-properties",
@@ -6920,21 +6779,13 @@ export class StreamSettings extends Panel {
             "hidden": ()=>!app.$._session._is_running
         });
         left.append(this.properties_ui, this.info_ui);
+
+        var stream_info_el = $(`<span class="stream-info"></span>`)[0];
+        this.info_ui.append(stream_info_el);
         
         this.button_group_ui = new ui.FlexRow({gap:0, class:"button-group"});
+        this.button_group_ui.elem.style.flexDirection = "column";
         right.append(this.button_group_ui);
-
-        var restart_elem = $(`<div>Restarting... [<span class="restart-time"></span>] <a class="restart-cancel" href="javascript:void(0)">Cancel</a></div>`)[0];
-        this.on("update", ()=>{
-            var restart_time = app.$._session._stream.restart;
-            dom.toggle_class(restart_elem, "d-none", restart_time == 0);
-            dom.set_text(restart_elem.querySelector(".restart-time"), `${restart_time}s`);
-        });
-        restart_elem.querySelector(".restart-cancel").addEventListener("click", ()=>{
-            app.request({
-                call: ["session", "stop_stream"],
-            });
-        });
 
         this.toggle_streaming_button = new ui.Button(null, {
             "id": "toggle-streaming",
@@ -6950,15 +6801,11 @@ export class StreamSettings extends Panel {
             // },
             "click": (e)=>{
                 if (app.$._session._is_running) {
-                    app.request({
-                        call: ["session", "stop_stream"],
-                    });
+                    app.request("stop_stream");
                 } else {
                     var msg = "Another stream is already running, playback of all streams may by slower than realtime.\nAre you sure you want to start streaming?";
-                    if (Object.values(app.$._streams).filter(s=>s._is_running).length == 0 || confirm(msg)) {
-                        app.request({
-                            call: ["session", "start_stream"],
-                        });
+                    if (Object.values(app.$.streams).filter(s=>s._is_running).length == 0 || confirm(msg)) {
+                        app.request("start_stream");
                         // app.$.push([`sessions/${app.$.session.id}/core/state`, "starting"]);
                     }
                     // app.$.push([`sessions/${app.$.session.id}/core/state`, "stopping"]);
@@ -6981,7 +6828,7 @@ export class StreamSettings extends Panel {
             "click": (e)=>{
                 new ScheduleStreamMenu().show();
             },
-            "disabled":()=>app.$._session._is_running,
+            "disabled":()=>!this.props.is_valid,
             "hidden":()=>app.$._session._is_running
         });
         this.handover_button = new ui.Button(`<button>Handover</button>`, {
@@ -6989,7 +6836,7 @@ export class StreamSettings extends Panel {
             "click": async (e)=>{
                 new HandoverSessionMenu().show();
             },
-            "hidden":()=>!app.$._session._is_running || app.$._session.type != SessionTypes.INTERNAL || app.$._stream.test
+            "hidden":()=>!app.$._session._is_running || app.$._session.type != SessionTypes.INTERNAL
         });
         this.config_button = new ui.Button(`<button><i class="fas fa-cog"></i></button>`, {
             "id": "config-button",
@@ -6997,12 +6844,23 @@ export class StreamSettings extends Panel {
             "click": async (e)=>{
                 new StreamConfigurationMenu().show();
             },
-            "hidden":()=>!app.$._session._is_running || app.$._stream.test
+            "hidden":()=>!app.$._session._is_running
         });
-        var row = new ui.FlexRow({gap:0});
+
+        this.test_button = new ui.Button(`<button>TEST</button>`, {
+            "disabled": ()=>!app.$.processes["media-server"],
+            "title": ()=>`Starts a test stream. `+(app.$.conf["test_stream_low_settings"] ? `Ignores h264 preset, bitrates & resolution settings, uses a medium quality preset instead.` : `Ignores targets.`),
+            "click": ()=> {
+                app.request("start_stream", [{ "test": true }])
+            },
+            "hidden":()=>app.$._session._is_running
+        })
+        this.properties_ui.append(this.test_button);
+
+        var row = new ui.FlexRow({gap:0, "hidden":()=>!app.$._session._is_running || app.$._session._stream.test});
         dom.set_style_property(row.elem, "flex-wrap", "nowrap");
         row.append(this.schedule_stream_button, this.handover_button, this.config_button);
-        this.button_group_ui.append(restart_elem, this.toggle_streaming_button, row);
+        this.button_group_ui.append(this.test_button, this.toggle_streaming_button, row);
 
         function get_default() {
             return InternalSessionProps.stream_settings[this.name].__default__;
@@ -7080,6 +6938,14 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.frame_rate)
 
+        this.buffer_duration = new ui.InputProperty(`<input type="number">`, {
+            ...buffer_duration_opts,
+            "name": "buffer_duration",
+            "default": get_default,
+            width: 140,
+        });
+        this.properties_ui.append(this.buffer_duration);
+
         this.experimental_mode = new ui.InputProperty(`<select></select>`, {
             "name": "experimental_mode",
             "label": "Experimental Mode",
@@ -7098,30 +6964,15 @@ export class StreamSettings extends Panel {
         });
         this.properties_ui.append(this.use_hardware)
 
-        this.test_button = new ui.Button(`<button>Test</button>`, {
-            "disabled": ()=>!app.$.processes["media-server"],
-            "title": ()=>`Starts a test stream. `+(app.$.conf["test_stream_low_settings"] ? `Ignores h264 preset, bitrates & resolution settings, uses a medium quality preset instead.` : `Ignores targets.`),
-            "click": ()=> {
-                app.request({
-                    call: ["session", "start_stream"],
-                    arguments: [{ "test": true }],
-                })
-            },
-        })
-        this.properties_ui.append(this.test_button)
-
         this.props.on("change", (e)=>{
             if (!e.name || !e.trigger) return;
-            if (e.raw_value == null) delete app.$._session.stream_settings[e.name];
-            else app.$._session.stream_settings[e.name] = e.raw_value;
+            app.$._session.stream_settings[e.name] = e.value;
             app.update();
-            app.request({
-                call: ["session", "update_values"],
-                arguments: [{stream_settings:{[e.name]:e.raw_value}}]
-            });
+            app.request("session_update_values", [{stream_settings:{[e.name]:e.value}}]);
         });
 
         var last_stream_info_hash;
+
         this.on("render", ()=>{
             var session = app.$._session;
             var stream = session._stream;
@@ -7133,8 +6984,12 @@ export class StreamSettings extends Panel {
             else if (stream.state === "starting") state = `Starting...`;
             dom.set_text(this.toggle_streaming_button, state);
 
+            var restart_time = stream.restart;
+            dom.toggle_class(restart_elem, "d-none", restart_time == 0);
+            dom.set_text(restart_elem.querySelector(".restart-time"), `${restart_time}s`);
+
             var stream_info = {};
-            if (app.$._session.type === SessionTypes.INTERNAL) {
+            if (session.type === SessionTypes.INTERNAL) {
                 let parts = {
                     "h264 Preset": `${stream["h264_preset"]}`,
                     "Video Bitrate": `${stream["video_bitrate"]}Kbps`,
@@ -7155,14 +7010,14 @@ export class StreamSettings extends Panel {
                 }
                 stream_info["Frame Rate"] = `${stream["frame_rate"]}`;
             } else {
-                var nms_session = app.$._session._get_connected_nms_session_with_appname("livestream", "external");
+                var nms_session = session._get_connected_nms_session_with_appname("livestream", "external");
                 if (nms_session) {
                     stream_info["Resolution"] = `${nms_session.videoWidth}x${nms_session.videoHeight}`;
                     stream_info["Frame Rate"] = `${nms_session["videoFps"]}`;
                 }
             }
             // if (!stream["test"]) {
-            stream_info["Target(s)"] = Object.keys(stream.targets).map((id)=>`${id} <span style="color:${stream.stream_targets[id]?"#00f":"f00"}">[${stream.stream_targets[id]?"OK":"NOT EXIST"}]</span>`).join(", ") || `<span style="color:#00f">NONE</span>`;
+            stream_info["Target(s)"] = (stream.targets||[]).map((id)=>`${id} <span style="color:${stream.stream_targets[id]?"#00f":"f00"}">[${stream.stream_targets[id]?"OK":"NOT FOUND"}]</span>`).join(", ") || `<span style="color:#00f">NONE</span>`;
             if (stream.title) {
                 stream_info["Title"] = stream.title;
             }
@@ -7177,31 +7032,28 @@ export class StreamSettings extends Panel {
                     stream_info["Thumbnail"] = `<a href="${live.thumbnail_url}" target="_blank">${new URL(live.thumbnail_url).pathname}</a>`;
                 } */
             }
-            var internal_session = app.$._session._get_connected_nms_session_with_appname("internal");
-            if (internal_session) {
-                let url = new URL(`${app.get_media_server_base_url()}${internal_session.publishStreamPath}`);
+            var internal_nms_session = session._get_connected_nms_session_with_appname("internal");
+            if (internal_nms_session) {
+                let url = new URL(`${app.get_media_server_base_url()}${internal_nms_session.publishStreamPath}`);
                 // url.search = new URLSearchParams(internal_session.publishArgs);
                 stream_info["Internal URL"] = `<a href="${url.toString()}" target="_blank">${url}</a>`;
             }
             stream_info["Bit Rate"] = utils.format_bytes_short(session._stream.bitrate, "k")+"ps";
             stream_info["Run Time"] = session._is_running ? utils.ms_to_timespan_str(session._stream._run_time) : 0;
 
-            var hash = JSON.stringify(stream_info);
-            if (hash !== last_stream_info_hash) {
-                last_stream_info_hash = hash;
-                dom.rebuild(this.info_ui.elem, Object.keys(stream_info), {
-                    id_callback: (k)=>utils.sanitize_filename(k),
-                    add: (k, elem, index)=>{
-                        if (!elem) elem = $(`<span></span>`)[0];
-                        var v = stream_info[k];
-                        if (elem.__hash !== v) {
-                            elem.__hash = v;
-                            elem.innerHTML = `${k}: ${v}`;
-                        }
-                        return elem;
+            dom.rebuild(stream_info_el, Object.keys(stream_info), {
+                id_callback: (k)=>utils.sanitize_filename(k),
+                add: (k, elem, index)=>{
+                    if (!elem) elem = $(`<span></span>`)[0];
+                    var v = stream_info[k];
+                    if (elem.__hash !== v) {
+                        elem.__hash = v;
+                        elem.innerHTML = `${k}: ${v}`;
                     }
-                });
-            }
+                    return elem;
+                }
+            });
+            
         })
     }
 }
@@ -7213,7 +7065,9 @@ export class MediaPlayerPanel extends Panel {
     }
 
     constructor() {
-        super("Media Player");
+        super("media-player", {
+            "panel.title": "Media Player",
+        });
         this.props = new ui.PropertyGroup({
             "items": ()=>[app.$._session],
         });
@@ -7340,28 +7194,14 @@ video { width: 100% !important; height: 100% !important; }`;
             this.toggle_play_pause_button = new ui.Button(null, {
                 "title":"Play/Pause",
                 "class":"player-button",
-                "content": ()=>app.$._stream.mpv.ctx.props.pause ? `<i class="fas fa-play"></i>` : `<i class="fas fa-pause"></i>`,
+                "content": ()=>app.$._session._stream.player.props.pause ? `<i class="fas fa-play"></i>` : `<i class="fas fa-pause"></i>`,
                 "click": (e)=>{
-                    var new_pause = !app.$._stream.mpv.ctx.props.pause;
-                    app.$._stream.mpv.ctx.props.pause = new_pause;
+                    var new_pause = !app.$._session._stream.player.props.pause;
+                    app.$._session._stream.player.props.pause = new_pause;
                     app.update();
-                    app.request({
-                        call: ["session", "mpv", "set_property"],
-                        arguments: ["pause", new_pause]
-                    });
+                    app.request("pause", [new_pause]);
                 },
                 "disabled":()=>!app.$._session._is_running,
-            }),
-            this.stop_button = new ui.Button(`<button><i class="fas fa-stop"></i></button>`, {
-                "title":"Stop",
-                "class":"player-button",
-                "hidden":true,
-                "click": (e)=>{
-                    app.request({
-                        call: ["session", "stop"],
-                    });
-                },
-                "disabled": ()=>!app.$._session._is_running,
             }),
             this.forward_button = new ui.Button(`<button><i class="fas fa-forward"></i></button>`, {
                 "title":"+30 Seconds",
@@ -7386,7 +7226,7 @@ video { width: 100% !important; height: 100% !important; }`;
                     app.seek_chapter(-1,true)
                 },
                 "disabled": ()=>app.media.chapters.length == 0 || app.media.time_pos <= app.media.chapters[0].start,
-                "hidden": ()=>!app.local_settings.get("show_chapters") || app.media.chapters.length == 0
+                "hidden": ()=>!app.settings.get("show_chapters") || app.media.chapters.length == 0
             }),
             this.next_chapter_button = new ui.Button(`<button><i class="fas fa-fast-forward"></i></button>`, {
                 "title":"Next Chapter",
@@ -7395,15 +7235,13 @@ video { width: 100% !important; height: 100% !important; }`;
                     app.seek_chapter(1,true)
                 },
                 "disabled": ()=>app.media.chapters.length == 0 || app.media.time_pos >= app.media.chapters[app.media.chapters.length-1].start,
-                "hidden": ()=>!app.local_settings.get("show_chapters") || app.media.chapters.length == 0
+                "hidden": ()=>!app.settings.get("show_chapters") || app.media.chapters.length == 0
             }),
             this.reload_button = new ui.Button(`<button><i class="fas fa-sync"></i></button>`, {
                 "title":"Reload",
                 "class":"player-button",
                 "click": (e)=>{
-                    app.request({
-                        call: ["session", "reload"]
-                    });
+                    app.request("reload_current_item");
                 },
                 "disabled":()=>!app.$._session._is_running,
                 "update": function(){
@@ -7425,10 +7263,7 @@ video { width: 100% !important; height: 100% !important; }`;
 
         this.volume = new ui.InputProperty(`<input id="volume" type="range" value="100" title="Volume" style="width:100px">`, {
             "name": "volume_target",
-            "default": 100,
-            "step": 1,
-            "min": 0,
-            "max": 200,
+            ...get_prop_attrs(InternalSessionProps.volume_target),
             "reset": false,
             "dblclick": ()=>this.volume.reset(),
         });
@@ -7437,20 +7272,17 @@ video { width: 100% !important; height: 100% !important; }`;
         this.vol_speed = new ui.InputProperty(`<select>`, {
             "name": "volume_speed",
             "title": "Volume Transition Speed",
-            "default": 4,
+            ...get_prop_attrs(InternalSessionProps.volume_speed),
             "reset": false,
-            "options": [[0.5, "Very Slow"], [1.0, "Slow"], [2.0, "Medium"], [4.0, "Fast"], [8.0, "Very Fast"], [0, "Immediate"]],
             "hidden": true,
         });
         /** @param {ui.PropertyChangeEvent} e */
         var on_volume_prop_change = (e)=>{
             if (e.trigger) {
-                app.$._session[e.name] = e.value;
+                var v = {volume_target: this.volume.value, volume_speed: this.vol_speed.value};
+                Object.assign(app.$._session, v);
                 app.update();
-                app.request({
-                    call:["session", "update_values"],
-                    arguments: [{[e.name]: e.value}]
-                });
+                app.request("update_volume", [v]);
             }
             this.set_volume_button.update();
         }
@@ -7491,23 +7323,6 @@ video { width: 100% !important; height: 100% !important; }`;
                 this.volume.set_values(utils.floor_to_factor(this.volume.value+VOLUME_STEP,VOLUME_STEP), {trigger:true});
             }
         })
-        
-        /* this.mute_button = new ui.Button(`<button><i class="fas fa-volume-xmark"></i></button>`, {
-            "class":"player-button",
-            "title":"Mute",
-            "hidden": true,
-            "click": (e)=>{
-                var new_muted = !app.$.stream.mpv.ctx.muted;
-                app.request({
-                    call:["session", "stream", "mpv", "set_property"],
-                    arguments: ["muted", new_muted]
-                });
-                app.$.push([`sessions/${app.$.session.id}/mpv/muted`, new_muted]);
-            },
-            "update":function() {
-                toggle_class(this.elem, "mute", !!app.$.stream.mpv.ctx.muted);
-            }
-        }); */
         this.volume_wrapper.append(this.set_volume_button, this.vol_down_button, this.volume, this.vol_up_button /*,this.mute_button */, this.vol_speed);
         
         this.stats_elem = $(`<div class="stats">`)[0];
@@ -7531,7 +7346,7 @@ video { width: 100% !important; height: 100% !important; }`;
             dom.toggle_class(this.stats_elem, "d-none", !started);
             // toggle_class(this.status_elem, "d-none", app.$._session._current_playing_item.id == -1);
 
-            dom.toggle_class(this.test_stream_info_elem, "d-none", !app.local_settings.get("show_player_info"));
+            dom.toggle_class(this.test_stream_info_elem, "d-none", !app.settings.get("show_player_info"));
             dom.toggle_class(this.elem, "chapters-available", app.media.chapters.length > 0);
             
             if (app.media.chapters.length) {
@@ -7547,11 +7362,14 @@ video { width: 100% !important; height: 100% !important; }`;
     }
 
     async refresh_player(force) {
-        var show = !!(app.$._session._is_running && !app.$._stream._is_only_gui);
+        var session = app.$._session;
+        var stream = session._stream;
+        var show = !!(session._is_running && !stream._is_only_gui);
         dom.toggle_class(this.elem, "live-feed-available", show);
-        if (!app.local_settings.get("show_live_feed")) show = false;
-        var is_popped_out = !!windows["test-"+app.$._session.id];
-        var is_playable = !!(show && app.$._session._get_connected_nms_session_with_appname("internal"));
+        if (!app.settings.get("show_live_feed")) show = false;
+        var is_popped_out = !!windows["test-"+session.id];
+        var url = location.protocol === "https:" ? stream.wss_output_url : stream.ws_output_url;
+        var is_playable = !!(show && url);
 
         dom.toggle_class(this.test_stream_container_elem, "d-none", !show);
         dom.toggle_class(this.test_stream_overlay_elem, "d-none", !is_playable);
@@ -7587,7 +7405,7 @@ video { width: 100% !important; height: 100% !important; }`;
             this.test_stream_video_wrapper.append(this.video_el);
             this.flv_player = flvjs.createPlayer({
                 type: "flv",
-                url: location.protocol === "https:" ? app.$._stream.wss_output_url : app.$._stream.ws_output_url,
+                url,
                 hasAudio: true,
                 hasVideo: true,
                 isLive: true,
@@ -7599,6 +7417,7 @@ video { width: 100% !important; height: 100% !important; }`;
             
             this.flv_player.on(flvjs.Events.MEDIA_INFO, (s)=>{
                 this.flv_media_info = s;
+                // console.log(s);
             })
             var initialized = false;
             this.flv_player.on(flvjs.Events.STATISTICS_INFO, (s)=>{
@@ -7629,10 +7448,7 @@ export class MediaSettingsPanel extends Panel {
             if (this.mode === MediaSettingsMode.all) {
                 app.$._session.player_default_override[e.name] = e.value;
                 app.update();
-                app.request({
-                    call: ["session", "set_player_default_override"],
-                    arguments: [e.name, e.value]
-                });
+                app.request("set_player_default_override", [e.name, e.value]);
             } else {
                 app.playlist_update(Object.fromEntries(this.group.items.map(i=>[i.id, { props: { [e.name]: e.value } }])), {register_history:false});
             }
@@ -7643,7 +7459,8 @@ export class MediaSettingsPanel extends Panel {
     }
 
     constructor() {
-        super("Media Settings", {
+        super("media-settings", {
+            "panel.title": "Media Settings",
             "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL,
         });
 
@@ -7711,10 +7528,11 @@ export class LogPanel extends Panel {
     /** @type { Record<string,Log> } */
     #pending_logs = {};
     #get_logs;
-    get _logs() { return this.#get_logs(); }
 
-    constructor(name, get_logs) {
-        super(name);
+    constructor(id, name, get_logs) {
+        super(id, {
+            "panel.title": name,
+        });
         dom.add_class(this.body_elem, "no-padding");
         this.#get_logs = get_logs;
         this.logs_wrapper = $(`<div class="logs-wrapper"></div>`)[0];
@@ -7808,9 +7626,12 @@ export class LogPanel extends Panel {
         this.load();
 
         var last_logs;
-        this.on("update", ()=>{
-            var scroll_bottom = dom.scroll_pos_from_bottom(this._logs_container) < 10;
-            var logs = this._logs;
+        this.on("render", ()=>{
+            var scroll_bottom = dom.scroll_pos_from_bottom(this._logs_container);
+            for (var k in this._logger_settings) {
+                dom.toggle_attribute(this.logs_wrapper, `data-show-${k}`, this._logger_settings[k]);
+            }
+            var logs = this.#get_logs();
 
             if (logs != last_logs) {
                 last_logs = logs;
@@ -7818,16 +7639,8 @@ export class LogPanel extends Panel {
                 utils.clear(this._registered_logs);
                 this._last_log_elem = null;
                 this._last_log_id = 0;
-                Object.assign(this.#pending_logs, this._logs);
+                Object.assign(this.#pending_logs, logs);
             }
-
-            /* if (this.#pending_clear) {
-                this.#pending_clear = false;
-                dom.set_inner_html(this._logs_container, "");
-                utils.clear(this._logs);
-                this._last_log_elem = null;
-                this._last_log_id = 0;
-            } */
 
             for (var id in this.#pending_logs) {
                 var log = this.#pending_logs[id];
@@ -7873,34 +7686,22 @@ export class LogPanel extends Panel {
                     this._registered_logs[log.level].total--;
                 }
             }
-            if (scroll_bottom) dom.scroll_y_percent(this._logs_container, 1);
+            if (scroll_bottom < 10) dom.scroll_y_percent(this._logs_container, 1);
             utils.clear(this.#pending_logs);
-        });
-
-        this.on("render", ()=>{
-            for (var k in this._logger_settings) {
-                dom.toggle_attribute(this.logs_wrapper, `data-show-${k}`, this._logger_settings[k]);
-            }
         });
     }
 
-    create_proxy(){
-        var proxy = new Proxy({}, {
-            set:(target, prop, value)=>{
-                target[prop] = value;
-                this.#pending_logs[prop] = value;
-                return true;
-            }
-        });
-        return proxy;
+    /** @param {Log} log */
+    add_log(log) {
+        this.#pending_logs[log.id] = log;
     }
 
     save() {
-        app.local_settings.set(this.storage_name, this._logger_settings);
+        app.settings.set(this.storage_name, this._logger_settings);
     }
 
     load() {
-        this._logger_settings = utils.json_copy({ ...this._default_logger_settings, ...app.local_settings.get(this.storage_name) });
+        this._logger_settings = utils.json_copy({ ...this._default_logger_settings, ...app.settings.get(this.storage_name) });
     }
 }
 
@@ -7912,7 +7713,9 @@ export class StreamMetricsPanel extends Panel {
     #last_data_max = 0;
     _updates = 0;
     constructor() {
-        super("Stream Metrics");
+        super("stream-metrics", {
+            "panel.title": "Stream Metrics",
+        });
 
         this.body_elem.classList.add("chart-wrapper", "no-padding");
         this.body_elem.style.gap = 0;
@@ -8092,12 +7895,12 @@ export class StreamMetricsPanel extends Panel {
                             this.update();
                         }
                     },
-                    decimation: {
+                    /* decimation: {
                         enabled: true,
                         algorithm: 'lttb',
                         samples: 128,
                         threshold: 128
-                    },
+                    }, */
                 }
             }
         });
@@ -8131,7 +7934,7 @@ export class StreamMetricsPanel extends Panel {
             this._mode_hash = mode_hash;
             this.chart.data.datasets = [];
         }
-        var reinit_hash = JSON.stringify([app.$._stream.id, app.$._session.id]);
+        var reinit_hash = JSON.stringify([app.$._session._stream.id, app.$._session.id]);
         if (this._reinit_hash != reinit_hash) {
             this._reinit_hash = reinit_hash;
             this.chart.data.datasets = [];
@@ -8178,7 +7981,7 @@ export class StreamMetricsPanel extends Panel {
         var type = this.#mode;
         // var type = ds.label.split(":").pop();
         if (type == "speed") return `${value.toFixed(3)}x`;
-        if (type == "bitrate") return utils.format_bytes_short(value, "k");
+        if (type == "bitrate") return utils.format_bytes_short(value, "k")+"ps";
     }
     #update_pan(reset=false) {
         if (!this.chart.scales.x) return;
@@ -8257,7 +8060,7 @@ export class PlaylistPanel extends Panel {
     get selection() { return this.active_sortable.get_selection(); }
     
     #current_id;
-    /** @return {PlaylistItem$} */
+    /** @returns {PlaylistItem$} */
     get current() { return app.$._session.playlist[this.#current_id] || app.$._session.playlist["0"]; }
 
     /** @type {dom.DropdownMenu} */
@@ -8265,19 +8068,19 @@ export class PlaylistPanel extends Panel {
 
     /** @param {Element} elem */
     constructor() {
-        super("Playlist", {
+        super("playlist", {
+            "panel.title": "Playlist",
+            "panel.collapsible": false,
             "disabled": ()=>app.$._session.type === SessionTypes.EXTERNAL
         });
 
-        this.collapsible = false;
         this.clipping = null;
 
-        this.header_elem
-        this.header_elem.innerHTML =
-            `<span>Playlist</span>
-            <span class="playlist-time-total" title='Playlist Total Duration'></span>
-            <span class="playlist-time-left"title='Playlist Time Remaining'></span>
-            <span class="gap"></span>`;
+        this.playlist_time_total_elem = $(`<span class="playlist-time-total" title='Playlist Total Duration'></span>`)[0];
+        this.playlist_time_left_elem = $(`<span class="playlist-time-left" title='Playlist Time Remaining'></span>`)[0];
+
+        this.header_elem.children[0].insertAdjacentElement("afterend", this.playlist_time_total_elem);
+        this.playlist_time_total_elem.insertAdjacentElement("afterend", this.playlist_time_left_elem);
 
         this.body_elem.innerHTML =
             `<div class="playlist-info-wrapper">
@@ -8383,9 +8186,6 @@ export class PlaylistPanel extends Panel {
         this.cursor_elem = this.elem.querySelector(".timeline-cursor");
         this.limits_elem = this.elem.querySelector(".timeline-limits");
         this.highlights_elem = this.elem.querySelector(".timeline-highlights");
-        
-        this.playlist_time_total_elem = this.elem.querySelector(".playlist-time-total");
-        this.playlist_time_left_elem = this.elem.querySelector(".playlist-time-left");
 
         this.playlist_info_wrapper_elem = this.elem.querySelector(".playlist-info-wrapper");
         
@@ -8454,12 +8254,12 @@ export class PlaylistPanel extends Panel {
             this.scroll_to_playhead();
         });
         this.playlist_display_mode_select.addEventListener("change", (e)=>{
-            app.local_settings.set("playlist_display_mode", +this.playlist_display_mode_select.value);
+            app.settings.set("playlist_display_mode", +this.playlist_display_mode_select.value);
             this.sortables.forEach(s=>s.orientation = this.orientation);
             this.update();
             this.scroll_to_playhead();
         });
-        app.local_settings.on("change", (e)=>{
+        app.settings.on("change", (e)=>{
             if (e.name === "playlist_display_mode") {
                 if (this.playlist_display_mode_select.value != e.new_value) {
                     this.playlist_display_mode_select.value = e.new_value;
@@ -8663,8 +8463,7 @@ export class PlaylistPanel extends Panel {
                 "mode": PLAYLIST_VIEW.TIMELINE,
             }),
             clipboard_copy: new PlaylistCommand({
-                "label": "Copy",
-                "description": "Copy to clipboard",
+                "label": "Copy to clipboard",
                 "icon": `<i class="fas fa-copy"></i>`,
                 "visible": (items)=>items.length>0,
                 "click": (items)=>{
@@ -8673,8 +8472,7 @@ export class PlaylistPanel extends Panel {
                 "shortcut": "Ctrl+C",
             }),
             clipboard_cut: new PlaylistCommand({
-                "label": "Cut",
-                "description": "Cut to clipboard",
+                "label": "Cut to clipboard",
                 "icon": `<i class="fas fa-cut"></i>`,
                 "visible": (items)=>items.length>0,
                 "click": (items)=>{
@@ -8845,7 +8643,7 @@ export class PlaylistPanel extends Panel {
                 "label": ()=>"Unload Current File",
                 "icon": `<i class="fas fa-minus-circle"></i>`,
                 "disabled": ()=>app.$._session._current_playlist_item._is_null,
-                "click": ()=>app.playlist_play(app.$._session.playlist[Collection$_null]),
+                "click": ()=>app.playlist_play(app.$._session.playlist[utils.remote.Null$]),
             }),
             rescan_all: new PlaylistCommand({
                 "label": ()=> "Rescan All",
@@ -8867,7 +8665,7 @@ export class PlaylistPanel extends Panel {
 
         var menu = new dom.DropdownMenu({
             target: this.pl_add_other_button,
-            parent: this.elem,
+            parent: app.elem,
             items:()=>{
                 var c = this.commands;
                 return [
@@ -8886,6 +8684,7 @@ export class PlaylistPanel extends Panel {
                 ];
             }
         });
+        this.pl_add_other_button.onclick = ()=>menu.toggle();
 
         for (let color_key in item_colors) {
             let color = item_colors[color_key] || "#fff";
@@ -8984,7 +8783,7 @@ export class PlaylistPanel extends Panel {
                 if (parent_el) resize_observer.observe(parent_el);
             }
             if (!this.current || this.current._session != app.$._session) {
-                this.open(null);
+                this.open(app.$._session.playlist["0"], [], false);
             }
             if (last_current != this.current) {
                 if (this.playlist_display_as_timeline && this.clipping) {
@@ -9162,6 +8961,7 @@ export class PlaylistPanel extends Panel {
         current_playlist._private.children = null;
 
         var current_playlist_tracks = current_playlist._tracks;
+        console.log(current_playlist);
 
         this.set_tracks(current_playlist_tracks.length, current_playlist && current_playlist.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK);
 
@@ -9171,7 +8971,7 @@ export class PlaylistPanel extends Panel {
             var items = current_playlist_tracks[i] || EMPTY_ARRAY;
             dom.rebuild(sortable.el, items, {
                 add: (item, elem, index)=>{
-                    return elem || new PlaylistItem(item).elem;
+                    return elem || new PlaylistItem(item.id).elem;
                 },
                 remove:(elem)=>{
                     var sortable = ResponsiveSortable.closest(elem);
@@ -9183,7 +8983,7 @@ export class PlaylistPanel extends Panel {
     }
 
 
-    /** @return {PlaylistCommand[]} */
+    /** @returns {PlaylistCommand[]} */
     get all_commands() {
         return Object.values(this.commands);
     }
@@ -9241,7 +9041,7 @@ export class PlaylistPanel extends Panel {
                 var keys = k.split(/\s*[\+]\s*/);
                 var keys_lower = new Set([...keys, ...keys.map(k=>k.toLowerCase())]);
                 if (keys_lower.has("ctrl") == e.ctrlKey && keys_lower.has("alt") == e.altKey && keys_lower.has("shift") == e.shiftKey && keys_lower.has(e.key.toLowerCase())) {
-                    if (this.context_menu) this.context_menu.hide();
+                    if (this.context_menu) this.context_menu.toggle(false);
                     c.click(this.get_selected_items());
                     e.preventDefault();
                     e.stopPropagation();
@@ -9264,7 +9064,8 @@ export class PlaylistPanel extends Panel {
     
     open_context_menu(e) {
         this.context_menu = new dom.DropdownMenu({
-            parent: this.elem,
+            target: this.timeline_container_elem,
+            parent: app.elem,
             items: ()=>{
                 var items = this.get_selected_items();
                 var c = this.commands;
@@ -9293,7 +9094,7 @@ export class PlaylistPanel extends Panel {
             x: e.clientX,
             y: e.clientY,
         });
-        this.context_menu.show();
+        this.context_menu.toggle(true);
     }
 
     sync_positions() {
@@ -9442,15 +9243,14 @@ export class PlaylistPanel extends Panel {
     }
 
     /** @param {PlaylistItem$} item */
-    async open(item, selection = []) {
-        if (!item) item = app.$._session.playlist["0"];
+    async open(item, selection = [], focus=true) {
         if (!item._is_playlist) return;
         this.sortables.forEach(s=>s.forget_last_active());
         this.#current_id = item.id;
         this.cursor_position = null;
         item._private.hash_on_open = item._calculate_contents_hash();
         this.update();
-        this.set_selection(selection);
+        this.set_selection(selection, focus);
     }
     
     #update_info() {
@@ -9481,7 +9281,7 @@ export class PlaylistPanel extends Panel {
             this.base_min_height = parseFloat(c.getPropertyValue("--min-height"));
         }
         var get_style = ()=>{
-            if (!app.local_settings.get("playlist_sticky")) return;
+            if (!app.settings.get("playlist_sticky")) return;
             if (this.elem.parentElement.childElementCount > 1) return;
             var r = this.elem.parentElement.getBoundingClientRect();
             var min_height = 400;
@@ -9636,10 +9436,10 @@ class PlaylistItem extends ui.UI {
     /** @type {ProgressBar} */
     progress;
 
-    /** @param {PlaylistItem$} item */
-    constructor(item) {
+    /** @param {string} id */
+    constructor(id) {
         super(`<li class="item"><div class="clips"></div><div class="front"><span class="play-icons"></span><span class="icons"></span><span class="filename"></span><span class="extra"></span><span class="badges"></span><div class="duration"></div></div></li>`);
-        
+
         var play_icons_elem = this.elem.querySelector(".play-icons");
         var icons_elem = this.elem.querySelector(".icons");
         var filename_elem = this.elem.querySelector(".filename");
@@ -9650,6 +9450,7 @@ class PlaylistItem extends ui.UI {
         
         var last_hash;
         this.on("update", ()=>{
+            var item = app.$._session.playlist[id];
             var index = this.index;
             var is_current = item._is_current;
             var is_currently_playing = item._is_currently_playing;
@@ -9657,12 +9458,12 @@ class PlaylistItem extends ui.UI {
             var is_cutting = !!(app.playlist.clipboard && app.playlist.clipboard.cutting && app.playlist.clipboard.items_set.has(item));
             var is_buffering = app.media.buffering;
             let media_info = item._media_info || EMPTY_OBJECT;
-            let media_info_hash = media_info ? media_info.ts : 0;
+            let media_info_hash = media_info ? [media_info.ts, media_info.processing] : 0;
             let is_rtmp_live = item._is_rtmp_live;
             var upload = item._upload;
             var download = item._download;
             
-            var _hash = JSON.stringify([item, index, item._hash, is_current, is_currently_playing, is_ancestor_of_current, is_cutting, is_buffering, is_rtmp_live, media_info_hash, upload, download]);
+            var _hash = JSON.stringify([item, index, is_current, is_currently_playing, is_ancestor_of_current, is_cutting, is_buffering, is_rtmp_live, media_info_hash, upload, download]);
 
             if (last_hash === _hash) return;
 
@@ -9839,7 +9640,7 @@ class PlaylistItem extends ui.UI {
                 icons.push(`<i class="fas fa-wrench"></i>`);
             }
             
-            let d = userdata.duration || userdata.children_duration;
+            let d = userdata.duration;
             let duration_str = d ? utils.seconds_to_timespan_str(d, "h?:mm:ss") : " - ";
 
             dom.set_inner_html(duration_elem, duration_str);
@@ -9898,21 +9699,20 @@ class ProgressBar extends ui.UI {
 
 //------------------------------------------------------
 
-export function create_loading_icon() {
-    return $(`<div class="loading-icon"><i></i><i></i><i></i></div>`)[0];
-}
 
 /**
  * @template {Loader} [ThisType=Loader]
  * @typedef {ui.UISettings<ThisType> & {
-*  "loader.background": ui.UISetting<ThisType, string>,
-*  "loader.color": ui.UISetting<ThisType, string>,
-* }} LoaderSettings
-*/
+ *  "loader.background": ui.UISetting<ThisType, string>,
+ *  "loader.color": ui.UISetting<ThisType, string>,
+ * }} LoaderSettings
+ */
 
-/** @template {LoaderSettings} [Settings=ui.UISettings<Loader>] */
-/** @template {ui.UIEvents} [Events=ui.UIEvents] */
-/** @extends {ui.UI<Settings,Events>} */
+/** 
+ * @template {LoaderSettings} [Settings=ui.UISettings<Loader>]
+ * @template {ui.UIEvents} [Events=ui.UIEvents]
+ * @extends {ui.UI<Settings,Events>}
+ */
 export class Loader extends ui.UI {
     /** @param {Settings} settings */
     constructor(settings) {
@@ -9923,15 +9723,15 @@ export class Loader extends ui.UI {
             ...settings,
         }
         super(`<div class="loader"></div>`, settings);
-        this.icon_el = create_loading_icon();
+        this.icon_el = $(`<div class="loading-icon"><i></i><i></i><i></i></div>`)[0];
         this.message_el = $(`<div class="msg"></div>`)[0];
         this.elem.style.zIndex = 999999999;
-        this.append(this.icon_el, this.message_el);
+        this.elem.append(this.icon_el, this.message_el);
         var update = ()=>{
-            this.message_el.textContent = this.get_setting("loader.message");
+            this.message_el.innerHTML = this.get_setting("loader.message");
             this.elem.style.backgroundColor = this.get_setting("loader.background");
             this.elem.style.color = this.get_setting("loader.color");
-        }
+        };
         this.on("render",()=>{
             update();
         })
@@ -9948,25 +9748,6 @@ export class Area extends ui.Column {
         dom.add_class(this.elem, "area");
         dom.add_class(this.elem, `area-${app.areas.length+1}`);
         app.areas.push(this);
-    }
-}
-
-class PromiseSet {
-    /** @type {Promise<any>[]} */
-    #promises = new Set();
-    /** @param {Promise<any>} promise */
-    get size() { return this.#promises.size; }
-    add(promise) {
-        var report = ()=>console.log(`Blocking promises (${this.#promises.size})`);
-        this.#promises.add(promise);
-        report();
-        promise.finally(()=>{
-            this.#promises.delete(promise);
-            report();
-        });
-    }
-    get ready() {
-        return Promise.all(this.#promises);
     }
 }
 
@@ -9996,29 +9777,25 @@ export class SessionPasswordInput extends ui.InputProperty {
 }
 
 export class MainWebApp extends utils.EventEmitter {
-    /** @type {MainWebApp} */
-    static instance;
 
     #updating = false;
-    blocking_updates = new PromiseSet();
+    blocking_updates = new utils.PromiseSet();
     /** @type {Record<string,Promise<MediaInfo>>} */
     media_info_promises = {};
     /** @type {Record<string,MediaInfo>} */
     media_info = {};
+    $ = new Remote$();
 
-    get focused_element() { return this.elem.activeElement; }
-    get dev_mode() { return this.$.conf["debug"] || new URLSearchParams(window.location.search.slice(1)).has("dev"); }
+    get is_debug_mode() { return this.$.conf["debug"] || new URLSearchParams(window.location.search.slice(1)).has("debug"); }
     get is_os_gui() { return this.$.sysinfo.platform.match(/^win/i); }
 
     constructor() {
-        
         super();
+        
+        app = this;
 
         /** @type {HTMLElement} */
         this.elem = document.querySelector("#livestreamer");
-
-        var request_loading_elem = $(`<div id="request-loading" class="v-none"><i class="fas fa-sync fa-spin"></i></div>`)[0];
-        this.elem.append(request_loading_elem);
     
         var main_elem = $(
         `<div class="main">
@@ -10080,12 +9857,10 @@ export class MainWebApp extends utils.EventEmitter {
         </div>`)[0];
         this.elem.append(main_elem);
 
-        app = MainWebApp.instance = this;
-
         Chart.register(zoomPlugin);
         // Chart.register(annotationPlugin);
         
-        Sortable.mount(new MultiDrag(), CancelSortPlugin);
+        Sortable.mount(new MultiDrag(), CancelSortPlugin, RememberScrollPositionsPlugin);
         
         window.onbeforeunload = (e)=>{
             if (ALL_XHRS.size) return `Uploads are in progress, leaving will abort the uploads.`;
@@ -10176,13 +9951,13 @@ export class MainWebApp extends utils.EventEmitter {
                 __default__: TimeLeftMode.TIME_LEFT,
                 __options__: [[0, "Time Remaining"], [1, "Duration"]],
             },
-            "media_seek_time_interpolation": {
+            /* "media_seek_time_interpolation": {
                 __group__: "media_player",
                 __input__: "<select>",
                 __title__: "Seek Bar Time Interpolation",
                 __default__: true,
                 __options__: YES_OR_NO,
-            },
+            }, */
             "show_metrics_info": {
                 __group__: "metrics",
                 __input__: "<select>",
@@ -10213,9 +9988,9 @@ export class MainWebApp extends utils.EventEmitter {
             },
         }
         var settings_defaults = Object.fromEntries(Object.entries(this.settings_prop_defs).map(([k,v])=>[k, v.__default__]));
-        // console.log(settings_defaults);
+        console.log(settings_defaults);
         
-        this.local_settings = new dom.LocalStorageBucket("livestreamer-1.0", {
+        this.settings = new dom.LocalStorageBucket("livestreamer-1.0", {
             ...settings_defaults,
             "layout": null,
             "session_order": null,
@@ -10228,20 +10003,20 @@ export class MainWebApp extends utils.EventEmitter {
         this.root = new Root(this.elem);
         this.roots.add(this.root);
         this.media = new Media();
-
-        this.loader = new Loader({
-            "hidden": ()=>this.ws.ready_state == WebSocket.OPEN,
-            "update":()=>{
+        
+        var connection_loader = new Loader({
+            "hidden": ()=>app.ws.ready_state == WebSocket.OPEN,
+            update() {
                 var text = {
                     [WebSocket.CONNECTING]: "Connecting...",
                     [WebSocket.OPEN]: "Connected",
                     [WebSocket.CLOSING]: "Disconnecting...",
                     [WebSocket.CLOSED]: "Disconnected",
-                }[this.ws.ready_state];
-                this.loader.settings["loader.message"] = text;
+                }[app.ws.ready_state];
+                this.settings["loader.message"] = text;
             }
         });
-        this.root.append(this.loader);
+        this.elem.append(connection_loader);
 
         // this.conf = await fetch("conf").then(r=>r.json()); // crazy...;
         /** @type {Area[]} */
@@ -10267,8 +10042,8 @@ export class MainWebApp extends utils.EventEmitter {
         this.session_elem = this.elem.querySelector("#session");
         this.session_controls_wrapper_elem = this.elem.querySelector(".session-controls-wrapper");
         this.session_controls_elem = this.elem.querySelector("#session-controls");
-        this.session_load_save_elem = this.elem.querySelector("#session-load-save");
-        new ui.UI(this.session_load_save_elem, {
+        this.load_session_save_elem = this.elem.querySelector("#session-load-save");
+        new ui.UI(this.load_session_save_elem, {
             "hidden": ()=>this.$._session.type === SessionTypes.EXTERNAL
         })
         this.session_inner_elem = this.elem.querySelector("#session-inner");
@@ -10285,7 +10060,6 @@ export class MainWebApp extends utils.EventEmitter {
         this.history_session_button = this.elem.querySelector("#history-session");
         this.session_tabs_elem = this.elem.querySelector("#session-tabs");
         this.users_elem = this.elem.querySelector("#users");
-        this.request_loading_elem = this.elem.querySelector("#request-loading");
 
         var session_select_wrapper = this.elem.querySelector(".session-select-wrapper");
         var session_select = new ui.InputProperty(`<select id="session-select"></select>`, {
@@ -10322,13 +10096,13 @@ export class MainWebApp extends utils.EventEmitter {
         this.media_player = new MediaPlayerPanel();
         this.media_settings = new MediaSettingsPanel();
         this.metrics = new StreamMetricsPanel();
-        this.session_logger = new LogPanel("Session Log", ()=>this.$._session.logs);
+        this.session_logger = new LogPanel("session-log", "Session Log", ()=>this.$._session.logs);
 
         this.areas[2].append(this.media_player,this.media_settings,this.metrics,this.session_logger);
         this.default_layout = this.get_layout();
         
         this.log_section = this.elem.querySelector(".app-logs-section");
-        this.logger = new LogPanel("Application Log", ()=>this.$.logs);
+        this.logger = new LogPanel("app-log", "Application Log", ()=>this.$.logs);
         this.log_section.append(this.logger);
 
         var session_password_elem = this.elem.querySelector("#session-password");
@@ -10350,7 +10124,9 @@ export class MainWebApp extends utils.EventEmitter {
                         if (dom.has_touch_screen() || e.target.closest("button,input,select")) return true;
                     }
                 },
-                onEnd: ()=>this.save_layout(),
+                onEnd: ()=>{
+                    this.save_layout()
+                },
                 preventOnFilter: false,
             });
         }
@@ -10362,12 +10138,9 @@ export class MainWebApp extends utils.EventEmitter {
             handle: ".handle",
             onEnd: (evt)=>{
                 if (this.$.conf["session_order_client"]) {
-                    this.local_settings.set("session_order", [...this.session_tabs_elem.children].map(e=>e.dataset.id));
+                    this.settings.set("session_order", [...this.session_tabs_elem.children].map(e=>e.dataset.id));
                 } else {
-                    this.request({
-                        call: ["rearrange_sessions"],
-                        arguments: [evt.oldIndex, evt.newIndex]
-                    });
+                    this.request("rearrange_sessions", [evt.oldIndex, evt.newIndex]);
                 }
             },
         });
@@ -10427,7 +10200,7 @@ export class MainWebApp extends utils.EventEmitter {
                 "click": ()=>new ChangeLogMenu().show(),
                 /** @this {UI} */
                 "update": function() {
-                    var diff = (app.local_settings.get("last_change_log") != app.$.change_log.mtime);
+                    var diff = (app.settings.get("last_change_log") != app.$.change_log.mtime);
                     if (this.__last_diff != diff) {
                         if (diff) {
                             this.elem.animate([
@@ -10457,7 +10230,7 @@ export class MainWebApp extends utils.EventEmitter {
             }),
         );
 
-        this.local_settings.on("change", (e)=>{
+        this.settings.on("change", (e)=>{
             var k = e.name;
             var v = e.new_value;
             if (k.includes(":")) {
@@ -10500,7 +10273,7 @@ export class MainWebApp extends utils.EventEmitter {
             if (!isNaN(e.key) && e.ctrlKey) {
                 var sessions = this.sessions_ordered;
                 var i = +e.key-1;
-                this.try_attach_to(sessions[i] ? sessions[i].id : null);
+                this.try_subscribe_to(sessions[i] ? sessions[i].id : null);
             } else if (e.key === "s" && e.ctrlKey) {
                 this.save_session();
             } else if (e.key === "z" && e.ctrlKey) {
@@ -10527,10 +10300,7 @@ export class MainWebApp extends utils.EventEmitter {
                 var session_id = this.$._client.session_id;
                 window.location.hash = "";
                 app.update();
-                this.request({
-                    call: ["destroy_session"],
-                    arguments: [session_id, true],
-                });
+                this.request("destroy_session", [session_id, true]);
             }
         });
 
@@ -10546,9 +10316,8 @@ export class MainWebApp extends utils.EventEmitter {
             e.preventDefault();
             curr = this.$.sessions[elem.dataset.id];
             var menu = new dom.DropdownMenu({
+                target: elem,
                 parent: this.elem,
-                x: e.clientX,
-                y: e.clientY,
                 items: [
                     {
                         label: ()=>`ID: ${curr.id}`,
@@ -10556,7 +10325,7 @@ export class MainWebApp extends utils.EventEmitter {
                     }
                 ]
             });
-            menu.show();
+            menu.toggle(true);
         });
 
         this.load_session_button.addEventListener("click", async (e)=>{
@@ -10579,7 +10348,7 @@ export class MainWebApp extends utils.EventEmitter {
         this.show_admin_button.addEventListener("click", ()=>new AdminMenu().show());
 
         window.addEventListener("hashchange", ()=>{
-            this.try_attach_to(window.location.hash.slice(1));
+            this.try_subscribe_to(window.location.hash.slice(1));
         });
 
         window.addEventListener("beforeunload", ()=>{
@@ -10632,33 +10401,21 @@ export class MainWebApp extends utils.EventEmitter {
             this.playlist_add(items);
         });
         
-        var key = new URL(window.location.href).searchParams.get("ls_key");
+        var key = new URL(window.location.href).searchParams.get("livestreamer_auth");
         var ws_url = dom.get_url(null, "main", true);
-        if (key) ws_url.searchParams.set("ls_key", key);
+        if (key) ws_url.searchParams.set("livestreamer_auth", key);
 
         this.ws = new dom.ReconnectingWebSocket();
         this.ws.on("open", ()=>{
             this.$ = new Remote$();
+            var session_id = window.location.hash.slice(1) || this.settings.get("last_session_id");
+            var hash = `#${session_id}`;
+            if (window.location.hash != hash) window.history.replaceState(null, "", hash);
+            if (session_id) this.request("subscribe_session", [session_id]);
         });
         this.ws.on("data", (data)=>{
-            if (data.init) {
-                utils.deep_merge(this.$, data.init);
-                var session_id = window.location.hash.slice(1) || this.local_settings.get("last_session_id");
-                if (session_id) this.try_attach_to(session_id);
-                this.passwords.load();
-                this.local_settings.load();
-                this.update_next_frame();
-            }
-            if (data.changes) {
-                for (var [type, path, value] of data.changes) {
-                    if (type == "delete") {
-                        utils.reflect.deleteProperty(this.$, path);
-                    } else {
-                        utils.reflect.set(this.$, path, value);
-                    }
-                }
-                this.update_next_frame();
-            }
+            utils.remote.apply$(this.$, data);
+            this.update_next_frame();
         });
         this.ws.on("close", ()=>{
             for (var m of Modal.showing) m.hide();
@@ -10669,6 +10426,9 @@ export class MainWebApp extends utils.EventEmitter {
         this.tick();
         
         this.update_layout();
+
+        this.passwords.load();
+        this.settings.load();
 
         this.ws.connect(ws_url.toString());
     }
@@ -10689,7 +10449,7 @@ export class MainWebApp extends utils.EventEmitter {
             }
             dom.closest(elem, (e)=>e.matches("button") && get_data_setting_attribute(e));
             if (data_setting_key) {
-                this.local_settings.toggle(data_setting_key);
+                this.settings.toggle(data_setting_key);
             }
             // if (elem.matches("a")) {
             //     var url = dom.get_anchor_url(e.target);
@@ -10729,7 +10489,7 @@ export class MainWebApp extends utils.EventEmitter {
         var has_access = is_null_session || access_control._self_has_access(app.passwords.get(this.$._session.id))
         var requires_password = access_control._self_requires_password;
 
-        dom.toggle_class(this.session_elem, "is-rtmp-connected", this.$._session._get_connected_nms_session_with_appname("internal", "private"));
+        dom.toggle_class(this.session_elem, "is-rtmp-connected", !!this.$._session._get_connected_nms_session_with_appname("internal", "private"));
         dom.set_dataset_value(this.session_elem, "session-type", this.$._session.type);
         dom.toggle_class(this.session_elem, "d-none", is_null_session);
         dom.toggle_class(this.session_inner_elem, "d-none", !has_access);
@@ -10774,10 +10534,7 @@ export class MainWebApp extends utils.EventEmitter {
 
     load_font(id) {
         if (!this.font_cache[id]) {
-            this.font_cache[id] = app.request({
-                call: ["app", "get_font"],
-                arguments: [id]
-            });
+            this.font_cache[id] = app.request("get_font", [id]);
         }
         return this.font_cache[id];
     }
@@ -10786,10 +10543,10 @@ export class MainWebApp extends utils.EventEmitter {
         return this.areas.map(area=>[...area.elem.children].map(c=>c.dataset.id))
     }
     save_layout() {
-        this.local_settings.set("layout", this.get_layout())
+        this.settings.set("layout", this.get_layout())
     }
     update_layout() {
-        (this.local_settings.get("layout")||this.default_layout).forEach((blocks, i)=>{
+        (this.settings.get("layout")||this.default_layout).forEach((blocks, i)=>{
             this.areas[i].append(...blocks.map(id=>this.panels[id]).filter(b=>b));
         });
         this.update_next_frame();
@@ -10800,18 +10557,8 @@ export class MainWebApp extends utils.EventEmitter {
         if (!Array.isArray(items)) items = [items];
         if (!items.length) return;
 
-        this.request({
-            call: ["session", "update_media_info_from_ids"],
-            arguments: [items.map(item=>item.id), true],
-        });
+        this.request("update_media_info_from_ids", [items.map(item=>item.id), true]);
     }
-
-    /* playlist_rescan_all() {
-        this.request({
-            call: ["session", "update_media_info_all"],
-            arguments: [true],
-        });
-    } */
 
     /** @param {PlaylistItem$[]} items */
     playlist_split(items, splits, local_times=false) {
@@ -10879,11 +10626,6 @@ export class MainWebApp extends utils.EventEmitter {
         })[0];
         var changes = Object.fromEntries(items.map((item,i)=>[item.id, {parent_id: new_item.id, index: i, track_index: 0}]));
         this.playlist_update(changes, {register_history:false});
-
-        /* await app.request({
-            call: ["session", "create_playlist"],
-            arguments: [items.map(item=>item.id)]
-        }); */
 
         // delete this.$.session.playlist[fake_id];
         // this.$.push([`sessions/${this.$.session.id}/playlist/${new_item.id}`, null]);
@@ -10955,7 +10697,7 @@ export class MainWebApp extends utils.EventEmitter {
 
         /** @type {PlaylistItem$[]} */
         var new_items = [];
-        var add_file = async (data, index, parent_id, track_index)=>{
+        var add_file = (data, index, parent_id, track_index)=>{
             let id = dom.uuid4();
             let filename, props, children;
             if (typeof data === "string") {
@@ -10998,11 +10740,9 @@ export class MainWebApp extends utils.EventEmitter {
             item.index = insert_pos+items.length+i;
         });
         for (var item of new_items) this.$._session.playlist[item.id] = item;
+        
         this.update();
-        this.request({
-            call: ["session","playlist_add"],
-            arguments: [new_items, {insert_pos, parent_id:parent.id, track_index, register_history}]
-        })
+        this.request("playlist_add", [new_items, {insert_pos, parent_id:parent.id, track_index, register_history}])
         this.playlist.set_selection(new_items);
         
         return new_items;
@@ -11023,10 +10763,7 @@ export class MainWebApp extends utils.EventEmitter {
             for (var item of all_deleted_items) {
                 delete this.$.sessions[session_id].playlist[item.id];
             }
-            this.request({
-                call: ["sessions", session_id, "playlist_remove"],
-                arguments: [group.map(i=>i.id), {register_history}]
-            });
+            this.request("playlist_remove", [group.map(i=>i.id), {session_id, register_history}]);
             var next_item, current_item;
             next_item = current_item = this.$._session._current_playlist_item;
             if (all_deleted_items.has(next_item)) {
@@ -11035,7 +10772,7 @@ export class MainWebApp extends utils.EventEmitter {
                         next_item = next_item._next;
                     }
                 } else {
-                    next_item = app.$._session.playlist[Collection$_null];
+                    next_item = app.$._session.playlist[utils.remote.Null$];
                 }
             }
             if (next_item !== current_item) {
@@ -11046,7 +10783,6 @@ export class MainWebApp extends utils.EventEmitter {
 
     /** @param {object} changes */
     async playlist_update(changes, opts) {
-        var session_id = app.$._session.id;
         let {register_history, replace_props} = opts ?? {};
         // changes = utils.tree_from_pathed_entries(changes);
         // var playlist = this.$.sessions[session_id].playlist;
@@ -11064,38 +10800,26 @@ export class MainWebApp extends utils.EventEmitter {
         }
         // Observer.apply_changes(playlist, changes);
         // this.update();
-        this.request({
-            call: ["sessions", session_id, "playlist_update"],
-            arguments: [changes, {register_history, replace_props}]
-        });
+        this.request("playlist_update", [changes, {register_history, replace_props}]);
     }
 
     async playlist_undo() {
         var h = this.$._session.playlist_history;
         if (h.position <= h.start) return;
-        var session_id = app.$._session.id;
-        this.request({
-            call: ["sessions", session_id, "playlist_undo"],
-        });
+        this.request("playlist_undo");
     }
 
     async playlist_redo() {
         var h = this.$._session.playlist_history;
         if (h.position >= h.end) return;
-        var session_id = app.$._session.id;
-        this.request({
-            call: ["sessions", session_id, "playlist_redo"],
-        });
+        this.request("playlist_redo");
     }
     
     /** @param {PlaylistItem$[]} items */
     playlist_download(items) {
         if (!Array.isArray(items)) items = [items];
         if (items.length == 0) return;
-        this.request({
-            call: ["session", "download_and_replace"],
-            arguments: [items.map(item=>item.id)]
-        }, {
+        this.request("download_and_replace", [items.map(item=>item.id)], {
             show_spinner: false
         });
     }
@@ -11104,10 +10828,7 @@ export class MainWebApp extends utils.EventEmitter {
     playlist_cancel_download(items){
         if (!Array.isArray(items)) items = [items];
         if (items.length == 0) return;
-        this.request({
-            call: ["session", "cancel_download"],
-            arguments: [items.map(item=>item.id)]
-        }, {
+        this.request("cancel_download", [items.map(item=>item.id)], {
             show_spinner: false
         });
     }
@@ -11118,17 +10839,14 @@ export class MainWebApp extends utils.EventEmitter {
         items.forEach(i=>app.upload_queue.cancel(i.id));
         if (items.length == 0) return;
         // this also cancels it for other users:
-        this.request({
-            call: ["session", "cancel_upload"],
-            arguments: [items.map(item=>item.id)]
-        }, {
+        this.request("cancel_upload", [items.map(item=>item.id)], {
             show_spinner: false
         });
     }
 
     /** @param {PlaylistItem$} item */
     playlist_play(item, start=0) {
-        item = item ?? this.$._session.playlist[Collection$_null];
+        item = item ?? this.$._session.playlist[utils.remote.Null$];
         var options = {pause:false};
         var root_merged = item._root_merged_playlist;
         if (root_merged) {
@@ -11144,10 +10862,7 @@ export class MainWebApp extends utils.EventEmitter {
         // this.$._session._stream.mpv.time = start; // necessary?
         this.update();
         
-        return this.request({
-            call: ["session","playlist_play"],
-            arguments: [item.id, options]
-        });
+        return this.request("playlist_play", [item.id, options]);
     }
 
     /** @param {string[]} uris */
@@ -11172,10 +10887,7 @@ export class MainWebApp extends utils.EventEmitter {
         if (t < 0) t = 0;
         this.$._session.time_pos = t;
         this.update();
-        return this.request({
-            call: ["session", "seek"],
-            arguments: [t]
-        })
+        return this.request("seek", [t])
     }
 
     seek_chapter(i, relative=false) {
@@ -11219,83 +10931,75 @@ export class MainWebApp extends utils.EventEmitter {
         return options;
     }
 
-    update_request_loading() {
-        dom.toggle_class(this.request_loading_elem, "v-none", this.$._pending_requests.size == 0);
-    }
-
-    request_no_timeout(data) {
-        return this.ws.request(data, 0);
-    }
-
-    request(data, opts) {
+    request(method, args, opts) {
         opts = {
             show_spinner: true,
-            timeout: 60 * 1000,
+            show_loader: false,
             ...opts
         };
         return new Promise(async (resolve)=>{
-            // replace undefineds with nulls
-            /* utils.deep_walk(data, function(k,v) {
-                if (v === undefined) this[k] = null;
-            }); */
-            if (this.dev_mode) {
-                console.debug(`request`, JSON.stringify(data));
+            var request = {method, arguments:args};
+            if (this.is_debug_mode) {
+                console.debug(`request`, JSON.stringify(request));
             }
-            var ws_promise = this.ws.request(data, opts.timeout);
-
+            var ws_promise = this.ws.request(request);
             if (opts.show_spinner) {
+                if (!this.request_spinner) {
+                    this.request_spinner = new ui.UI(`<div id="request-loading" class="v-none"><i class="fas fa-sync fa-spin"></i></div>`, {
+                        "hidden": ()=>this.$._pending_requests.size == 0,
+                    });
+                    this.elem.append(this.request_spinner);
+                }
                 this.$._pending_requests.add(ws_promise);
             }
-            this.update_request_loading();
+            if (opts.show_loader) {
+                this.$._pending_loader_requests.add(ws_promise);
+                if (!this.request_loader) {
+                    this.request_loader = new Loader({
+                        "hidden": ()=>this.$._pending_loader_requests.size == 0,
+                    });
+                    this.elem.append(this.request_loader);
+                }
+            }
+            var update = ()=>{
+                if (this.request_spinner) this.request_spinner.update();
+                if (this.request_loader) this.request_loader.update();
+            }
 
-            // delete this.expected_changes[r];
-            this.last_request = ws_promise
+            update();
+
+            ws_promise
                 .then(d=>resolve(d))
                 .catch((e)=>{
                     if (e instanceof utils.TimeoutError) return;
-                    if (this.dev_mode) {
+                    if (this.is_debug_mode) {
                         console.warn("Server error:\n" + e.toString());
                         window.alert("Server error:\n" + e.toString());
                     }
                 })
                 .finally(()=>{
-                    if (opts.show_spinner) {
-                        this.$._pending_requests.delete(ws_promise);
-                    }
-                    this.update_request_loading();
+                    this.$._pending_requests.delete(ws_promise);
+                    this.$._pending_loader_requests.delete(ws_promise);
+                    update();
                 });
         })
     }
 
-    /* chat_blocklist_add = (...args)=>this.blocklist_command("chat_blocklist", "add", ...args);
-    chat_blocklist_remove = (...args)=>this.blocklist_command("chat_blocklist", "remove", ...args);
-    app_blocklist_add = (...args)=>this.blocklist_command("app_blocklist", "add", ...args);
-    app_blocklist_remove = (...args)=>this.blocklist_command("app_blocklist", "remove", ...args);
-    
-    blocklist_command(blocklist, command, ...args) {
-        return this.request({
-            call: [["app", blocklist, command], args],
-        });
-    } */
-
-    async try_attach_to(session_id) {
+    async try_subscribe_to(session_id) {
         if (session_id && !this.$.sessions[session_id]) return;
         if (!this.$.client_id) return;
         session_id = session_id || "";
         var new_hash = `#${session_id}`;
-        this.local_settings.set("last_session_id", session_id);
+        this.settings.set("last_session_id", session_id);
         if (window.location.hash !== new_hash) {
             window.history.replaceState({}, "", new_hash);
         }
         if (this.$._client.session_id != session_id) {
-            if (session_id) {
+            /* if (session_id) {
                 this.$._client.session_id = session_id;
                 this.update();
-            }
-            this.request({
-                call: ["attach_to"],
-                arguments: [session_id]
-            });
+            } */
+            this.request("subscribe_session", [session_id], {show_loader:true});
             this.session_password.reset();
         }
         return true;
@@ -11343,7 +11047,7 @@ export class MainWebApp extends utils.EventEmitter {
 
     get sessions_ordered() {
         if (this.$.conf["session_order_client"]) {
-            var order = this.local_settings.get("session_order") || EMPTY_ARRAY;
+            var order = this.settings.get("session_order") || EMPTY_ARRAY;
             return utils.sort(Object.values(this.$.sessions), (s)=>{
                 var i = order.indexOf(s.id);
                 if (i == -1) return Number.MAX_SAFE_INTEGER;
@@ -11417,7 +11121,7 @@ export class MainWebApp extends utils.EventEmitter {
         return null;
     }
 
-    get user_time_format() { return this.local_settings.get("time_display_ms") ? "h:mm:ss.SSS" : "h:mm:ss"; }
+    get user_time_format() { return this.settings.get("time_display_ms") ? "h:mm:ss.SSS" : "h:mm:ss"; }
 
     async load_session() {
         var files = await open_file_dialog(".json,.csv,.txt");
@@ -11436,17 +11140,12 @@ export class MainWebApp extends utils.EventEmitter {
         var data;
         try { data = JSON.parse(text); } catch {}
         if (data) {
-            this.request({
-                call: ["session","load"],
-                arguments: [data]
-            });
+            this.request("load_session", [data]);
         }
     }
 
     async save_session() {
-        var data = await this.request({
-            call: ["session", "get_user_save_data"]
-        });
+        var data = await this.request("get_user_save_data");
         var name = `${utils.sanitize_filename(this.$._session.name)}-${utils.date_to_string()}`
         await save_local_file(`${name}.json`, JSON.stringify(data, null, "  "));
     }
@@ -11491,33 +11190,23 @@ export class MainWebApp extends utils.EventEmitter {
 
     prompt_for_reload_of_current_item() {
         if (window.confirm(`The item is currently playing and some changes may require reloading to apply changes.\nDo you want to reload?`)) {
-            app.request({
-                call: ["session", "reload"]
-            });
+            app.request("reload_current_item");
         }
     }
 
-    stream_restart(ids) {
-        app.request({
-            call: ["stream", "restart"],
-            arguments: [ids]
-        });
+    restart_stream(ids) {
+        app.request("restart_stream", [ids]);
     }
 
     async new_session() {
-        var id = await this.request({
-            call: ["new_session"]
-        });
+        var id = await this.request("new_session");
         window.location.hash = id;
     }
 
     async get_media_info(filename) {
         if (filename in this.$._session.media_info) return this.$._session.media_info[filename];
         if (!(filename in this.media_info_promises)) {
-            this.media_info_promises[filename] = app.request({
-                call: ["get_media_info"],
-                arguments: [filename]
-            }).then((mi)=>{
+            this.media_info_promises[filename] = app.request("get_media_info", [filename]).then((mi)=>{
                 this.media_info[filename] = mi;
             })
         }
@@ -11545,6 +11234,17 @@ class Root extends ui.UI {
         app.roots.delete(this);
         super.destroy();
     }
+}
+
+function get_prop_attrs(prop) {
+    var attrs = {};
+    if ("__default__" in prop) attrs.default = prop.__default__;
+    if ("__step__" in prop) attrs.step = prop.__step__;
+    if ("__min__" in prop) attrs.min = prop.__min__;
+    if ("__max__" in prop) attrs.max = prop.__max__;
+    if ("__options__" in prop) attrs.options = prop.__options__;
+    
+    return attrs;
 }
 
 export default MainWebApp;

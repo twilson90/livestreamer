@@ -1,6 +1,6 @@
 import { timeout } from "./timeout.js";
 
-/** @param {function():Promise<any>} cb @param {number} attempts @param {number} delay @param {string} msg @return {Promise<any>} */
+/** @param {function():Promise<any>} cb @param {number} attempts @param {number} delay @param {string} msg @returns {Promise<any>} */
 export function retry_until(cb, attempts, delay, msg) {
 	return new Promise(async (resolve, reject) => {
 		while (attempts--) {

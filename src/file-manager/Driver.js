@@ -153,7 +153,7 @@ export class Driver extends events.EventEmitter {
 		return this.elfinder.hash(this.volume, id);
 	}
 
-	/** @param {ID} src @param {express.Response} res @return {string} ID */
+	/** @param {ID} src @param {express.Response} res @returns {string} ID */
 	fetch(src, res) {
 		return new Promise(async (resolve,reject)=>{
 			var stat = await this.stat(src);
@@ -189,7 +189,7 @@ export class Driver extends events.EventEmitter {
 		});
 	}
 
-	/** @param {ID} dirid @param {string} origname @param {string} suffix @return {string} ID */
+	/** @param {ID} dirid @param {string} origname @param {string} suffix @returns {string} ID */
 	async unique(dirid, origname, suffix) {
 		if (!suffix || suffix === "~") suffix = " - Copy"
 		var names = (await Promise.all((await this.readdir(dirid)).map(f=>this.stat(f)))).map(s=>s.name);
@@ -203,7 +203,7 @@ export class Driver extends events.EventEmitter {
 	}
 	
 	/** @callback WalkCallback @param {string} id @param {Stat} stat @param {string[]} parents */
-	/** @param {ID} id @param {WalkCallback} cb @return {ID[]} */
+	/** @param {ID} id @param {WalkCallback} cb @returns {ID[]} */
 	async walk(id, cb) {
 		var all = [];
 		const walk = async (id, cb, parents=[])=>{
@@ -233,7 +233,7 @@ export class Driver extends events.EventEmitter {
 		return all;
 	}
 
-	/** @param {ID[]} ids @return {string} */
+	/** @param {ID[]} ids @returns {string} */
 	async archivetmp(ids) {
 		var tmpdst = path.join(this.elfinder.tmp_dir, uuid.v4()+".zip");
 		const writable = fs.createWriteStream(tmpdst);
@@ -264,7 +264,7 @@ export class Driver extends events.EventEmitter {
 		return tmpdst;
 	}
 
-	/** @param {ID[]} ids @param {ID} dir @param {string} name @return {string} */
+	/** @param {ID[]} ids @param {ID} dir @param {string} name @returns {string} */
 	async archive(ids, dir, name) {
 		var tmp = await this.archivetmp(ids);
 		var dstid = await this.write(dir, name, this.register_stream(fs.createReadStream(tmp)));
@@ -272,7 +272,7 @@ export class Driver extends events.EventEmitter {
 		return dstid;
 	}
 
-	/** @param {ID} dstid @return {string} */
+	/** @param {ID} dstid @returns {string} */
 	async extracttmp(archiveid) {
 		var tmpdst = path.join(this.elfinder.tmp_dir, uuid.v4());
 		await fs.mkdir(tmpdst)
@@ -285,7 +285,7 @@ export class Driver extends events.EventEmitter {
 		return tmpdst
 	}
 
-	/** @param {ID} dstid @return {ID[]} */
+	/** @param {ID} dstid @returns {ID[]} */
 	async extract(archiveid, dstid) {
 		var tmpdir = await this.extracttmp(archiveid);
 		var newids = [];
@@ -300,7 +300,7 @@ export class Driver extends events.EventEmitter {
 		return newids;
 	}
 
-	/** @param {ID} id @return {string|null} returns null if thumbnail not generatable. */
+	/** @param {ID} id @returns {string|null} returns null if thumbnail not generatable. */
 	async tmb(id, create=false) {
 		var stat = await this.stat(id);
 		if (stat.parent == this.thumbnails_dir) return id; // I am a thumbnail!
@@ -430,57 +430,57 @@ export class Driver extends events.EventEmitter {
 
 	// -------------------------------------------------------------
 
-	/** @return {Promise<void>} */
+	/** @returns {Promise<void>} */
 	async __init() { throw new errors.NotImplementedException; }
 
-	/** @return {Promise<void>} */
+	/** @returns {Promise<void>} */
 	async __config() { throw new errors.NotImplementedException; }
 
-	/** @return {Promise<void>} */
+	/** @returns {Promise<void>} */
 	async __destroy() { throw new errors.NotImplementedException; }
 
-	/** @param {ID} id @return {Promise<string>} */
+	/** @param {ID} id @returns {Promise<string>} */
 	async __uri(id) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} id @return {Promise<void>} */
+	/** @param {ID} id @returns {Promise<void>} */
 	async __fix_permissions(id) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} id @return {Promise<Stat>} */
+	/** @param {ID} id @returns {Promise<Stat>} */
 	async __stat(id) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} srcid @param {ID} dstid @param {string} name @return {Promise<ID>} */
+	/** @param {ID} srcid @param {ID} dstid @param {string} name @returns {Promise<ID>} */
 	async __move(srcid, dstid, name) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} srcid @param {string} newname @return {Promise<ID>} */
+	/** @param {ID} srcid @param {string} newname @returns {Promise<ID>} */
 	async __rename(srcid, newname) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} srcid @param {ID} dstid @param {string} name @return {Promise<ID>} */
+	/** @param {ID} srcid @param {ID} dstid @param {string} name @returns {Promise<ID>} */
 	async __copy(srcid, dstid, name) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} srcid @param {string} mode @return {Promise<ID>} */
+	/** @param {ID} srcid @param {string} mode @returns {Promise<ID>} */
 	async __chmod(srcid, mode) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} srcid @return {Promise<void>} */
+	/** @param {ID} srcid @returns {Promise<void>} */
 	async __rm(srcid) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} srcid @param {any} options @return {Promise<stream.Readable>} */
+	/** @param {ID} srcid @param {any} options @returns {Promise<stream.Readable>} */
 	async __read(srcid, options) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} srcid @return {Promise<ID[]>} */
+	/** @param {ID} srcid @returns {Promise<ID[]>} */
 	async __readdir(srcid) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} dirid @param {string} name @param {stream.Readable|Buffer|string} data @return {Promise<ID>} */
+	/** @param {ID} dirid @param {string} name @param {stream.Readable|Buffer|string} data @returns {Promise<ID>} */
 	async __write(dirid, name, data) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} dirid @param {string} name @return {Promise<ID>} */
+	/** @param {ID} dirid @param {string} name @returns {Promise<ID>} */
 	async __mkdir(dirid, name) { throw new errors.NotImplementedException; }
 
-	/** @param {string} tmpfile @param {ID} dstdir @param {string} filename @return {Promise<ID>} */
+	/** @param {string} tmpfile @param {ID} dstdir @param {string} filename @returns {Promise<ID>} */
 	async __upload(tmpfile, dstdir, filename) { throw new errors.NotImplementedException; }
 
-	/** @param {ID} id @return {ID} */
+	/** @param {ID} id @returns {ID} */
 	__abspath(id) { return this.id + this.volume.config.separator + id; }
-	/** @param {ID} id @return {Promise<ID>} */
+	/** @param {ID} id @returns {Promise<ID>} */
 	__options() {
 		var base = globals.app.get_urls().url;
 		return {

@@ -3,7 +3,10 @@ import EventEmitter from "../EventEmitter.js";
 export class ReconnectingWebSocket extends EventEmitter {
     last_ping = 0;
     #ready_promise;
-    get requests() { return this._requests; }
+    #num_requests = 0;
+    #request_ids = {};
+
+    get num_requests() { return this.#num_requests; }
 
     constructor(options = {}) {
         super();
@@ -29,19 +32,16 @@ export class ReconnectingWebSocket extends EventEmitter {
     }
     get ready_promise() { return this.#ready_promise; }
 
-    request(data, timeout) {
+    async request(request) {
+        await this.ready_promise;
         return new Promise((resolve, reject) => {
-            var rid = ++this._requests;
-            this._request_ids[rid] = (response) => {
+            var rid = ++this.#num_requests;
+            this.#request_ids[rid] = (response) => {
                 if (response.error) reject(response.error.message);
                 else resolve(response.result);
             };
-            this.send(Object.assign({
-                id: rid,
-            }, data));
-            if (timeout) {
-                setTimeout(() => reject(`WebSocket2 request ${rid} timed out`), timeout);
-            }
+            request.id = rid;
+            this.send({request});
         }).catch((e) => console.error(e));
     }
 
@@ -55,8 +55,8 @@ export class ReconnectingWebSocket extends EventEmitter {
     }
 
     #init_websocket() {
-        this._request_ids = {};
-        this._requests = 0;
+        this.#request_ids = {};
+        this.#num_requests = 0;
 
         var heartbeat_interval_id;
         var url = this.url;
@@ -85,11 +85,12 @@ export class ReconnectingWebSocket extends EventEmitter {
                 console.error(ex);
                 return;
             }
-            if (data) {
-                if (data.id !== undefined) {
-                    var cb = this._request_ids[data.id];
-                    delete this._request_ids[data.id];
-                    cb(data);
+            if (data.request) {
+                let {request} = data;
+                if (request.id !== undefined) {
+                    var cb = this.#request_ids[request.id];
+                    delete this.#request_ids[request.id];
+                    cb(request);
                 }
             }
             this.emit("data", data);
@@ -100,9 +101,9 @@ export class ReconnectingWebSocket extends EventEmitter {
             clearInterval(heartbeat_interval_id);
             this.emit("close", e);
             this.#reset_ready_promise();
-            if (e.code == 1014) {
+            if (e.code == 401) {
                 // bad gateway, don't bother.
-                console.error("Connection refused: Bad gateway.");
+                console.error("Connection refused: Unauthorized.");
             } else {
                 if (!this.options.auto_reconnect) return;
                 clearTimeout(this._reconnect_timeout);
