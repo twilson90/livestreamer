@@ -1,4 +1,5 @@
-import {globals, utils, SessionTypes, Session, SessionProps, Session$} from "./exports.js";
+import {globals, SessionTypes, Session, SessionProps, Session$} from "./exports.js";
+import {utils} from "../core/exports.js";
 
 class ExternalSession$ extends Session$ {
     client_ip = "";
@@ -16,7 +17,9 @@ export class ExternalSession extends Session {
         var id = nms_session.publishStreamPath.split("/").pop();
         var name = nms_session.publishArgs["name"] || `[${ip}]`;
 
-        super(SessionTypes.EXTERNAL, new ExternalSession$(), utils.get_defaults(SessionProps), id, name);
+        super(SessionTypes.EXTERNAL, new ExternalSession$(id), utils.get_defaults(SessionProps));
+        
+        this.$.name = name;
 
         this.nms_session = nms_session;
         

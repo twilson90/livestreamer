@@ -100,8 +100,8 @@ export class FFMPEGWrapper extends events.EventEmitter {
                                     add_nodes(n[k], metadata);
                                 } else if (m = k.match(/^Stream #(\d+):(\d+)\((.+?)\):\s+(.+?):\s+(.+)/)) {
                                     let metadata = {};
-                                    var [_, file_id, stream_id, lang, type, info] = m;
-                                    var stream = {file_id, stream_id, lang, type, metadata};
+                                    let [_, file_id, stream_id, lang, type, info] = m;
+                                    let stream = {file_id, stream_id, lang, type, metadata};
                                     type = type.toLowerCase();
                                     info = info.trim();
                                     if (type == "video") {
@@ -131,8 +131,8 @@ export class FFMPEGWrapper extends events.EventEmitter {
                         this.#outputs = outputs;
                     }
 
-                    var ts = Date.now();
-                    var info = {
+                    let ts = Date.now();
+                    let info = {
                         frame: parseInt(m[1]),
                         fps: parseInt(m[2]),
                         q: parseInt(m[3]),
@@ -143,7 +143,7 @@ export class FFMPEGWrapper extends events.EventEmitter {
                         bitrate_str: m[6],
                         speed: parseFloat(m[7]),
                         speed_alt: 1,
-                    }
+                    };
                     if (last_info) {
                         info.speed_alt = (info.time - last_info.time) / (ts - last_ts);
                     }

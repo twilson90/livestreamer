@@ -1,4 +1,4 @@
-export {default as globals} from "./globals.js";
+export * from "./globals.js";
 export {default as config_default} from "../config.default.js";
 export * as constants from "./constants.js";
 export * as utils from "./utils.js";
@@ -18,6 +18,7 @@ export * from "./Logger.js";
 export * from "./MPVWrapper.js";
 export * from "./StopStartStateMachine.js";
 export * from "./WebServer.js";
+export * from "./StreamRangeServer.js";
 export * from "./index.js";
 
 export {start as default} from "./index.js";

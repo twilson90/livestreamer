@@ -129,3 +129,17 @@ body, html {
 		box-shadow: 0px 0px 5px 0px rgba(0,0,0,0.75);
 	}
 }
+
+button.quit {
+	font-size: 18px;
+	width: 26px;
+	height: 26px;
+	background: none;
+	border: none;
+	float: right;
+	margin-left:-10px;
+	cursor: pointer;
+	&:hover {
+		color: #444;
+	}
+}

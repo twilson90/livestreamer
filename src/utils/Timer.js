@@ -1,4 +1,4 @@
-import { EventEmitter } from "events";
+import { EventEmitter } from "./EventEmitter.js";
 import { StopWatch } from "./StopWatch.js";
 export class Timer extends EventEmitter {
 	static TICK_INTERVAL = 1000/60;

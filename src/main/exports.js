@@ -1,11 +1,9 @@
-export {default as globals} from "./globals.js";
-export * from "../core/exports.js";
+export * from "./globals.js";
 export * from "./SessionProps.js";
 export * from "./InternalSessionProps.js";
 export * from "./Filter.js";
 export * from "./FilterContext.js";
 export * from "./shared.js";
-
 export * from "./API.js";
 export * from "./Download.js";
 export * from "./Session.js";
@@ -19,4 +17,7 @@ export * from "./Stream.js";
 export * from "./StreamTarget.js";
 export * from "./Target.js";
 export * from "./Upload.js";
+
+export * as downloaders from "./downloaders/exports.js";
+
 export * from "./MainApp.js";

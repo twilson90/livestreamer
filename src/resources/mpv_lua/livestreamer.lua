@@ -147,7 +147,7 @@ mp.add_hook("on_preloaded", 50, function ()
     local path = mp.get_property_native("path")
     if path == loadfile_opts.filename then
         if loadfile_opts.commands then
-            msg.info("loadfile_opts.commands: "..JSON.stringify(loadfile_opts.commands))
+            msg.verbose("loadfile_opts.commands: "..JSON.stringify(loadfile_opts.commands))
             for _,c in ipairs(loadfile_opts.commands) do
                 local _,err = mp.commandv(unpack(c))
                 if err then
@@ -156,10 +156,15 @@ mp.add_hook("on_preloaded", 50, function ()
             end
         end
         if loadfile_opts.props then
-            msg.info("loadfile_opts.props: "..JSON.stringify(loadfile_opts.props))
+            msg.verbose("loadfile_opts.props: "..JSON.stringify(loadfile_opts.props))
             for k,v in pairs(loadfile_opts.props) do
                 mp.set_property_native(k, v)
             end
         end
     end
 end)
+
+--[[ mp.add_periodic_timer(1, function ()
+    msg.info("estimated-frame-count: "..JSON.stringify(mp.get_property_native("estimated-frame-count")))
+    msg.info("estimated-frame-number: "..JSON.stringify(mp.get_property_native("estimated-frame-number")))
+end) ]]

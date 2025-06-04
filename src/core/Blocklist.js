@@ -1,12 +1,12 @@
 import fs from "fs-extra";
 import chokidar from "chokidar";
-import {DataNodeID, DataNodeID$, utils} from "./exports.js";
+import {DataNode, DataNode$, utils} from "./exports.js";
 
-/** @type {DataNodeID$ & Record<PropertyKey,number>}  */
-export class Blocklist$ extends DataNodeID$ {}
+/** @type {DataNode$ & Record<PropertyKey,number>}  */
+export class Blocklist$ extends DataNode$ {}
 
-/** @extends {DataNodeID<Blocklist$>} */
-export class Blocklist extends DataNodeID {
+/** @extends {DataNode<Blocklist$>} */
+export class Blocklist extends DataNode {
     #path;
     #expire_timeouts = {};
     #loading = false;

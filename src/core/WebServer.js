@@ -77,7 +77,8 @@ export class WebServer {
             res.setHeader('Access-Control-Allow-Origin', [urls.http, urls.https].join(" "));
             res.setHeader('Access-Control-Allow-Credentials', true);
             res.setHeader('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', 'Origin, Accept, X-Requested-With, Content-Type, Authorization, Access-Control-Allow-Headers, Access-Control-Request-Method, Access-Control-Request-Headers');
+            res.setHeader('Access-Control-Allow-Headers', '*');
+            //'Origin, Accept, X-Requested-With, Content-Type, Authorization, Access-Control-Allow-Headers, Access-Control-Request-Method, Access-Control-Request-Headers'
             res.setHeader('Content-Security-Policy', `frame-ancestors 'self' ${allow_origin}`);
             // res.setHeader('Content-Security-Policy', `default-src 'self' ${host}`);
 

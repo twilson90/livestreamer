@@ -7,12 +7,14 @@ export class Tooltip {
     #content;
     /** @type {TippyInstance} */
     #tippy;
-    constructor(elem, content){
+    static defaults = {
+        allowHTML: true,
+        zIndex: 99999,
+        appendTo: "parent",
+    }
+    constructor(elem, content) {
         this.#tippy = tippy(elem, {
-            allowHTML: true,
-            zIndex: 99999,
-            appendTo: "parent",
-            // trigger: "click"
+            ...Tooltip.defaults
         });
         this.elem = elem;
         if (content) this.set_content(content);

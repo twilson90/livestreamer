@@ -1,0 +1,375 @@
+[   0.000][d][global] user path: 'out.txt' -> 'out.txt'
+[   0.002][v][cplayer] mpv 0.39.0 Copyright © 2000-2024 mpv/MPlayer/mplayer2 projects
+[   0.002][v][cplayer]  built on Sep 28 2024 01:30:48
+[   0.002][v][cplayer] libplacebo version: v7.349.0 (v7.349.0-13-ga018ab0-dirty)
+[   0.002][v][cplayer] FFmpeg version: N-117212-g01c47dd23
+[   0.002][v][cplayer] FFmpeg library versions:
+[   0.002][v][cplayer]    libavcodec      61.20.100
+[   0.002][v][cplayer]    libavdevice     61.4.100
+[   0.002][v][cplayer]    libavfilter     10.5.100
+[   0.002][v][cplayer]    libavformat     61.8.100
+[   0.002][v][cplayer]    libavutil       59.40.100
+[   0.002][v][cplayer]    libswresample   5.4.100
+[   0.002][v][cplayer]    libswscale      8.4.100
+[   0.002][v][cplayer] Configuration: -Ddebug=true -Db_ndebug=true -Doptimization=3 -Db_lto=true -Db_lto_mode=thin -Dlibmpv=true -Dpdf-build=enabled -Dlua=enabled -Djavascript=enabled -Dsdl2=enabled -Dlibarchive=enabled -Dlibbluray=enabled -Ddvdnav=enabled -Duchardet=enabled -Drubberband=enabled -Dlcms2=enabled -Dopenal=enabled -Dspirv-cross=enabled -Dvulkan=enabled -Dvapoursynth=enabled -Dgl=enabled -Degl-angle=enabled -Dc_args=-Wno-error=int-conversion -Dprefix=/__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/x86_64-w64-mingw32 -Dlibdir=/__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/x86_64-w64-mingw32/lib -Ddefault_library=shared -Dprefer_static=True --cross-file=/__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/meson_cross.txt
+[   0.002][v][cplayer] List of enabled features: build-date cplugins cuda-hwaccel cuda-interop d3d-hwaccel d3d11 d3d9-hwaccel debug direct3d dos-paths dvdnav dxgi-debug dxgi-debug-d3d11 egl-angle egl-angle-win32 ffmpeg ffnvcodec gl gl-dxinterop gl-dxinterop-d3d9 gl-win32 glob glob-win32 gpl iconv javascript jpeg lcms2 libarchive libass libavdevice libbluray libplacebo luajit openal pathcch rubberband rubberband-3 sdl2 sdl2-audio sdl2-gamepad sdl2-video shaderc spirv-cross uchardet vaapi vaapi-win32 vapoursynth vector vulkan wasapi win32 win32-desktop win32-executable win32-smtc win32-threads zimg zimg-st428 zlib
+[   0.002][v][cplayer] Built with NDEBUG.
+[   0.002][v][cplayer] Command line options: 'C:\Users\hedge\Downloads\file_example_MP4_480_1_5MG.mp4' '--lavfi-complex=[vid1]scale=100:100[vo];[aid1]pan=stereo|FL<1.0*FL+0.707*FC+0.707*BL|FR<1.0*FR+0.707*FC+0.707*BR,aresample=async=1,dynaudnorm=f=500:p=0.9:m=8.0:g=7[ao]' '--o=out.mkv' '--of=mkv' '--script=mpv-frame-report.lua' '--log-file=out.txt'
+[   0.002][v][cplayer] mpv 0.39.0 Copyright © 2000-2024 mpv/MPlayer/mplayer2 projects
+[   0.002][v][cplayer]  built on Sep 28 2024 01:30:48
+[   0.002][v][cplayer] libplacebo version: v7.349.0 (v7.349.0-13-ga018ab0-dirty)
+[   0.002][v][cplayer] FFmpeg version: N-117212-g01c47dd23
+[   0.002][v][cplayer] FFmpeg library versions:
+[   0.002][v][cplayer]    libavcodec      61.20.100
+[   0.002][v][cplayer]    libavdevice     61.4.100
+[   0.002][v][cplayer]    libavfilter     10.5.100
+[   0.002][v][cplayer]    libavformat     61.8.100
+[   0.002][v][cplayer]    libavutil       59.40.100
+[   0.002][v][cplayer]    libswresample   5.4.100
+[   0.002][v][cplayer]    libswscale      8.4.100
+[   0.002][v][cplayer] Configuration: -Ddebug=true -Db_ndebug=true -Doptimization=3 -Db_lto=true -Db_lto_mode=thin -Dlibmpv=true -Dpdf-build=enabled -Dlua=enabled -Djavascript=enabled -Dsdl2=enabled -Dlibarchive=enabled -Dlibbluray=enabled -Ddvdnav=enabled -Duchardet=enabled -Drubberband=enabled -Dlcms2=enabled -Dopenal=enabled -Dspirv-cross=enabled -Dvulkan=enabled -Dvapoursynth=enabled -Dgl=enabled -Degl-angle=enabled -Dc_args=-Wno-error=int-conversion -Dprefix=/__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/x86_64-w64-mingw32 -Dlibdir=/__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/x86_64-w64-mingw32/lib -Ddefault_library=shared -Dprefer_static=True --cross-file=/__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/meson_cross.txt
+[   0.002][v][cplayer] List of enabled features: build-date cplugins cuda-hwaccel cuda-interop d3d-hwaccel d3d11 d3d9-hwaccel debug direct3d dos-paths dvdnav dxgi-debug dxgi-debug-d3d11 egl-angle egl-angle-win32 ffmpeg ffnvcodec gl gl-dxinterop gl-dxinterop-d3d9 gl-win32 glob glob-win32 gpl iconv javascript jpeg lcms2 libarchive libass libavdevice libbluray libplacebo luajit openal pathcch rubberband rubberband-3 sdl2 sdl2-audio sdl2-gamepad sdl2-video shaderc spirv-cross uchardet vaapi vaapi-win32 vapoursynth vector vulkan wasapi win32 win32-desktop win32-executable win32-smtc win32-threads zimg zimg-st428 zlib
+[   0.002][v][cplayer] Built with NDEBUG.
+[   0.004][d][global] home path: '' -> 'C:\Users\hedge\AppData\Roaming/mpv'
+[   0.004][d][global] user path: '~~home/' -> 'C:\Users\hedge\AppData\Roaming/mpv'
+[   0.004][d][global] user path: '~~old_home/' -> ''
+[   0.004][d][global] config path: 'encoding-profiles.conf' -/-> 'C:\Users\hedge\AppData\Roaming/mpv/encoding-profiles.conf'
+[   0.004][d][global] config path: 'encoding-profiles.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/encoding-profiles.conf'
+[   0.004][d][global] config path: 'encoding-profiles.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/encoding-profiles.conf'
+[   0.004][d][global] config path: 'mpv.conf' -> 'C:\Users\hedge\AppData\Roaming/mpv/mpv.conf'
+[   0.004][d][global] config path: 'config' -/-> 'C:\Users\hedge\AppData\Roaming/mpv/config'
+[   0.004][d][global] config path: 'mpv.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv.conf'
+[   0.004][d][global] config path: 'config' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/config'
+[   0.004][d][global] config path: 'mpv.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/mpv.conf'
+[   0.004][d][global] config path: 'config' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/config'
+[   0.004][v][cplayer] Reading config file C:\Users\hedge\AppData\Roaming/mpv/mpv.conf
+[   0.004][v][ifo_dvdnav] Opening C:\Users\hedge\AppData\Roaming/mpv/mpv.conf
+[   0.004][v][bdmv/bluray] Opening C:\Users\hedge\AppData\Roaming/mpv/mpv.conf
+[   0.004][v][file] Opening C:\Users\hedge\AppData\Roaming/mpv/mpv.conf
+[   0.004][d][file] resize stream to 131072 bytes, drop 0 bytes
+[   0.004][d][file] Stream opened successfully.
+[   0.005][v][cplayer] Applying profile 'default'...
+[   0.005][v][cplayer] Applying profile 'encoding'...
+[   0.005][v][cplayer] Setting option 'vo' = 'lavc' (flags = 4)
+[   0.005][v][cplayer] Setting option 'ao' = 'lavc' (flags = 4)
+[   0.005][v][cplayer] Setting option 'keep-open' = 'no' (flags = 4)
+[   0.005][v][cplayer] Setting option 'force-window' = 'no' (flags = 4)
+[   0.005][v][cplayer] Setting option 'gapless-audio' = 'yes' (flags = 4)
+[   0.005][v][cplayer] Setting option 'resume-playback' = 'no' (flags = 4)
+[   0.005][v][cplayer] Setting option 'load-scripts' = 'no' (flags = 4)
+[   0.005][v][cplayer] Setting option 'osc' = 'no' (flags = 4)
+[   0.005][v][cplayer] Setting option 'framedrop' = 'no' (flags = 4)
+[   0.005][v][cplayer] Setting option 'lavfi-complex' = '[vid1]scale=100:100[vo];[aid1]pan=stereo|FL<1.0*FL+0.707*FC+0.707*BL|FR<1.0*FR+0.707*FC+0.707*BR,aresample=async=1,dynaudnorm=f=500:p=0.9:m=8.0:g=7[ao]' (flags = 8)
+[   0.005][v][cplayer] Setting option 'o' = 'out.mkv' (flags = 8)
+[   0.005][v][cplayer] Setting option 'of' = 'mkv' (flags = 8)
+[   0.005][v][cplayer] Setting option 'scripts-append' = 'mpv-frame-report.lua' (flags = 8)
+[   0.005][v][cplayer] Setting option 'log-file' = 'out.txt' (flags = 8)
+[   0.006][d][global] config path: 'input.conf' -> 'C:\Users\hedge\AppData\Roaming/mpv/input.conf'
+[   0.006][d][global] config path: 'input.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/input.conf'
+[   0.006][d][global] config path: 'input.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/input.conf'
+[   0.006][d][global] user path: 'C:\Users\hedge\AppData\Roaming/mpv/input.conf' -> 'C:\Users\hedge\AppData\Roaming/mpv/input.conf'
+[   0.006][v][ifo_dvdnav] Opening C:\Users\hedge\AppData\Roaming/mpv/input.conf
+[   0.006][v][bdmv/bluray] Opening C:\Users\hedge\AppData\Roaming/mpv/input.conf
+[   0.006][v][file] Opening C:\Users\hedge\AppData\Roaming/mpv/input.conf
+[   0.006][d][file] resize stream to 131072 bytes, drop 0 bytes
+[   0.006][d][file] Stream opened successfully.
+[   0.006][v][input] Parsing input config file C:\Users\hedge\AppData\Roaming/mpv/input.conf
+[   0.006][v][input] Input config file C:\Users\hedge\AppData\Roaming/mpv/input.conf parsed: 8 binds
+[   0.006][d][global] user path: 'out.txt' -> 'out.txt'
+[   0.006][d][ytdl_hook] Loading lua script @ytdl_hook.lua...
+[   0.006][d][stats] Loading lua script @stats.lua...
+[   0.006][d][console] Loading lua script @console.lua...
+[   0.006][d][auto_profiles] Loading lua script @auto_profiles.lua...
+[   0.007][d][select] Loading lua script @select.lua...
+[   0.007][v][cplayer] Applying profile 'encoding'...
+[   0.007][v][cplayer] Setting option 'vo' = 'lavc' (flags = 4)
+[   0.007][v][cplayer] Setting option 'ao' = 'lavc' (flags = 4)
+[   0.007][v][cplayer] Setting option 'keep-open' = 'no' (flags = 4)
+[   0.007][v][cplayer] Setting option 'force-window' = 'no' (flags = 4)
+[   0.007][v][cplayer] Setting option 'gapless-audio' = 'yes' (flags = 4)
+[   0.007][v][cplayer] Setting option 'resume-playback' = 'no' (flags = 4)
+[   0.007][v][cplayer] Setting option 'load-scripts' = 'no' (flags = 4)
+[   0.007][v][cplayer] Setting option 'osc' = 'no' (flags = 4)
+[   0.007][v][cplayer] Setting option 'framedrop' = 'no' (flags = 4)
+[   0.007][d][global] user path: 'mpv-frame-report.lua' -> 'mpv-frame-report.lua'
+[   0.007][d][mpv_frame_report] Loading lua script mpv-frame-report.lua...
+[   0.007][v][cplayer] Waiting for scripts...
+[   0.007][d][ytdl_hook] loading mp.defaults
+[   0.007][d][auto_profiles] loading mp.defaults
+[   0.007][d][stats] loading mp.defaults
+[   0.007][d][select] loading mp.defaults
+[   0.007][d][console] loading mp.defaults
+[   0.007][d][mpv_frame_report] loading mp.defaults
+[   0.007][d][auto_profiles] loading @auto_profiles.lua
+[   0.008][d][ytdl_hook] loading @ytdl_hook.lua
+[   0.008][d][stats] loading @stats.lua
+[   0.008][d][mpv_frame_report] loading file mpv-frame-report.lua
+[   0.008][d][console] loading @console.lua
+[   0.008][d][select] loading @select.lua
+[   0.008][i][mpv_frame_report] t:0 f:1 vfps:inf
+[   0.008][d][cplayer] Run command: define-section, flags=64, args=[name="input_select", contents="", flags="default"]
+[   0.008][d][ytdl_hook] reading options for ytdl_hook
+[   0.008][d][cplayer] Run command: enable-section, flags=64, args=[name="input_select", flags="allow-hide-cursor+allow-vo-dragging"]
+[   0.008][d][cplayer] Run command: define-section, flags=64, args=[name="input_forced_select", contents="", flags="force"]
+[   0.008][d][cplayer] Run command: enable-section, flags=64, args=[name="input_forced_select", flags="allow-hide-cursor+allow-vo-dragging"]
+[   0.009][d][global] config path: 'script-opts/ytdl_hook.conf' -/-> 'C:\Users\hedge\AppData\Roaming/mpv/script-opts/ytdl_hook.conf'
+[   0.009][d][global] config path: 'script-opts/ytdl_hook.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/script-opts/ytdl_hook.conf'
+[   0.009][d][global] config path: 'script-opts/ytdl_hook.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/script-opts/ytdl_hook.conf'
+[   0.009][d][ytdl_hook] script-opts/ytdl_hook.conf not found.
+[   0.009][d][stats] reading options for stats
+[   0.009][d][global] config path: 'lua-settings/ytdl_hook.conf' -/-> 'C:\Users\hedge\AppData\Roaming/mpv/lua-settings/ytdl_hook.conf'
+[   0.009][d][global] config path: 'lua-settings/ytdl_hook.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/lua-settings/ytdl_hook.conf'
+[   0.009][d][console] reading options for console
+[   0.009][d][global] config path: 'lua-settings/ytdl_hook.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/lua-settings/ytdl_hook.conf'
+[   0.009][d][ytdl_hook] lua-settings/ytdl_hook.conf not found.
+[   0.009][d][global] config path: 'script-opts/stats.conf' -/-> 'C:\Users\hedge\AppData\Roaming/mpv/script-opts/stats.conf'
+[   0.009][d][global] config path: 'script-opts/stats.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/script-opts/stats.conf'
+[   0.009][d][global] config path: 'script-opts/console.conf' -/-> 'C:\Users\hedge\AppData\Roaming/mpv/script-opts/console.conf'
+[   0.009][d][global] config path: 'script-opts/stats.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/script-opts/stats.conf'
+[   0.009][d][stats] script-opts/stats.conf not found.
+[   0.009][d][global] config path: 'script-opts/console.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/script-opts/console.conf'
+[   0.009][d][global] config path: 'script-opts/console.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/script-opts/console.conf'
+[   0.009][d][console] script-opts/console.conf not found.
+[   0.009][d][global] config path: 'lua-settings/console.conf' -/-> 'C:\Users\hedge\AppData\Roaming/mpv/lua-settings/console.conf'
+[   0.009][d][global] config path: 'lua-settings/stats.conf' -/-> 'C:\Users\hedge\AppData\Roaming/mpv/lua-settings/stats.conf'
+[   0.009][d][global] config path: 'lua-settings/console.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/lua-settings/console.conf'
+[   0.009][d][global] config path: 'lua-settings/stats.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/lua-settings/stats.conf'
+[   0.009][d][global] config path: 'lua-settings/console.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/lua-settings/console.conf'
+[   0.009][d][console] lua-settings/console.conf not found.
+[   0.010][d][global] config path: 'lua-settings/stats.conf' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/lua-settings/stats.conf'
+[   0.010][d][stats] lua-settings/stats.conf not found.
+[   0.010][d][cplayer] Run command: define-section, flags=64, args=[name="input_stats", contents="", flags="default"]
+[   0.010][d][cplayer] Run command: enable-section, flags=64, args=[name="input_stats", flags="allow-hide-cursor+allow-vo-dragging"]
+[   0.010][d][cplayer] Run command: define-section, flags=64, args=[name="input_forced_stats", contents="", flags="force"]
+[   0.010][d][cplayer] Run command: enable-section, flags=64, args=[name="input_forced_stats", flags="allow-hide-cursor+allow-vo-dragging"]
+[   0.010][v][cplayer] Done loading scripts.
+[   0.010][v][cplayer] Running hook: auto_profiles/on_before_start_file
+[   0.010][v][cplayer] Running hook: ytdl_hook/on_load
+[   0.010][v][cplayer] Running hook: ytdl_hook/on_load
+[   0.010][v][ytdl_hook] playlist hook
+[   0.011][v][cplayer] Running hook: auto_profiles/on_load
+[   0.011][d][cplayer] Run command: define-section, flags=64, args=[name="input_console", contents="", flags="default"]
+[   0.011][d][cplayer] Run command: enable-section, flags=64, args=[name="input_console", flags="allow-hide-cursor+allow-vo-dragging"]
+[   0.011][d][cplayer] Run command: define-section, flags=64, args=[name="input_forced_console", contents="", flags="force"]
+[   0.011][d][cplayer] Run command: enable-section, flags=64, args=[name="input_forced_console", flags="allow-hide-cursor+allow-vo-dragging"]
+[   0.011][v][ifo_dvdnav] Opening C:\Users\hedge\Downloads\file_example_MP4_480_1_5MG.mp4
+[   0.011][v][bdmv/bluray] Opening C:\Users\hedge\Downloads\file_example_MP4_480_1_5MG.mp4
+[   0.011][v][file] Opening C:\Users\hedge\Downloads\file_example_MP4_480_1_5MG.mp4
+[   0.011][d][file] resize stream to 131072 bytes, drop 0 bytes
+[   0.011][d][file] Stream opened successfully.
+[   0.011][v][demux] Trying demuxers for level=normal.
+[   0.011][d][demux] Trying demuxer: directory (force-level: normal)
+[   0.011][d][demux] Trying demuxer: disc (force-level: normal)
+[   0.011][d][demux] Trying demuxer: edl (force-level: normal)
+[   0.011][d][demux] Trying demuxer: cue (force-level: normal)
+[   0.011][d][demux] Trying demuxer: rawaudio (force-level: normal)
+[   0.011][d][demux] Trying demuxer: rawvideo (force-level: normal)
+[   0.011][d][demux] Trying demuxer: mkv (force-level: normal)
+[   0.011][d][demux] Trying demuxer: libarchive (force-level: normal)
+[   0.011][d][demux] Trying demuxer: lavf (force-level: normal)
+[   0.013][v][lavf] Found 'mov,mp4,m4a,3gp,3g2,mj2' at score=100 size=2048.
+[   0.014][v][demux] Detected file format: mov,mp4,m4a,3gp,3g2,mj2 (libavformat)
+[   0.014][v][cplayer] Opening done: C:\Users\hedge\Downloads\file_example_MP4_480_1_5MG.mp4
+[   0.015][v][find_files] Loading external files in C:\Users\hedge\Downloads\
+[   0.016][d][global] config path: 'sub' -/-> 'C:\Users\hedge\AppData\Roaming/mpv/sub'
+[   0.016][d][global] config path: 'sub' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/sub'
+[   0.016][d][global] config path: 'sub' -/-> 'C:/ProgramData/chocolatey/lib/mpvio.install/tools/mpv/sub'
+[   0.016][v][cplayer] Running hook: ytdl_hook/on_preloaded
+[   0.016][v][cplayer] Running hook: auto_profiles/on_preloaded
+[   0.017][d][ffmpeg] Parsed_scale_0: w:100 h:100 flags:'' interl:0
+[   0.021][v][vf] User filter list:
+[   0.021][v][vf]   (empty)
+[   0.022][v][af] User filter list:
+[   0.022][v][af]   (empty)
+[   0.022][v][vd] Container reported FPS: 30.000000
+[   0.022][v][vd] Codec list:
+[   0.022][v][vd]     h264 - H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10
+[   0.022][v][vd]     h264_qsv (h264) - H264 video (Intel Quick Sync Video acceleration)
+[   0.022][v][vd]     h264_cuvid (h264) - Nvidia CUVID H264 decoder
+[   0.022][v][vd] Opening decoder h264
+[   0.022][v][vd] No hardware decoding requested.
+[   0.022][v][vd] Using software decoding.
+[   0.022][v][vd] Detected 16 logical cores.
+[   0.022][v][vd] Requesting 16 threads for decoding.
+[   0.025][v][vd] Selected decoder: h264 - H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10
+[   0.025][v][ad] Codec list:
+[   0.025][v][ad]     aac - AAC (Advanced Audio Coding)
+[   0.025][v][ad]     aac_fixed (aac) - AAC (Advanced Audio Coding)
+[   0.025][v][ad] Opening decoder aac
+[   0.025][v][ad] Requesting 1 threads for decoding.
+[   0.026][v][ad] Selected decoder: aac - AAC (Advanced Audio Coding)
+[   0.026][v][lavf] select track 0
+[   0.026][v][lavf] select track 1
+[   0.026][i][cplayer] ● Video  --vid=1  (h264 480x270 30 fps) [default]
+[   0.026][i][cplayer] ● Audio  --aid=1  (aac 2ch 48000 Hz 112 kbps) [default]
+[   0.026][v][cplayer] Starting playback...
+[   0.027][d][ffmpeg/video] h264: Reinit context to 480x272, pix_fmt: yuv420p
+[   0.031][v][vd] Using software decoding.
+[   0.031][v][vd] Decoder format: 480x270 yuv420p auto/auto/auto/auto/auto CL=mpeg2/4/h264 crop=480x270+0+0
+[   0.031][v][vd] Using container aspect ratio.
+[   0.031][d][ffmpeg] mpv_src_vid1: w:480 h:270 pixfmt:yuv420p tb:1/1000000 fr:30/1 sar:1/1 csp:smpte170m range:tv
+[   0.031][d][ffmpeg] mpv_src_aid1: tb:1/48000 samplefmt:fltp samplerate:48000 chlayout:stereo
+[   0.036][d][ffmpeg] Parsed_scale_0: w:480 h:270 fmt:yuv420p csp:smpte170m range:tv sar:1/1 -> w:100 h:100 fmt:yuv420p csp:smpte170m range:tv sar:16/9 flags:0x00000004
+[   0.036][d][ffmpeg] framesync: Selected 1/1000000 time base
+[   0.036][d][ffmpeg] framesync: Sync level 1
+[   0.036][d][ffmpeg] Parsed_pan_1: o0 = 1 i0 + 0 i1
+[   0.036][d][ffmpeg] Parsed_pan_1: o1 = 0 i0 + 1 i1
+[   0.036][d][ffmpeg] Parsed_aresample_2: ch:2 chl:stereo fmt:fltp r:48000Hz -> ch:2 chl:stereo fmt:dblp r:48000Hz
+[   0.036][d][lavfi] Filter graph:
+[   0.036][d][lavfi]                                                     +----------------+
+[   0.036][d][lavfi] mpv_src_vid1:default--[480x270 1:1 yuv420p]--default| Parsed_scale_0 |default--[100x100 16:9 yuv420p]--mpv_sink_vo:default
+[   0.036][d][lavfi]                                                     |    (scale)     |
+[   0.036][d][lavfi]                                                     +----------------+
+[   0.036][d][lavfi] 
+[   0.036][d][lavfi]                                                     +--------------+
+[   0.036][d][lavfi] mpv_src_aid1:default--[48000Hz fltp:stereo]--default| Parsed_pan_1 |default--[48000Hz fltp:stereo]--Parsed_aresample_2:default
+[   0.036][d][lavfi]                                                     |    (pan)     |
+[   0.036][d][lavfi]                                                     +--------------+
+[   0.036][d][lavfi] 
+[   0.036][d][lavfi]                                                     +--------------------+
+[   0.036][d][lavfi] Parsed_pan_1:default--[48000Hz fltp:stereo]--default| Parsed_aresample_2 |default--[48000Hz dblp:stereo]--Parsed_dynaudnorm_3:default
+[   0.036][d][lavfi]                                                     |    (aresample)     |
+[   0.036][d][lavfi]                                                     +--------------------+
+[   0.036][d][lavfi] 
+[   0.036][d][lavfi]                                                           +---------------------+
+[   0.036][d][lavfi] Parsed_aresample_2:default--[48000Hz dblp:stereo]--default| Parsed_dynaudnorm_3 |default--[48000Hz dblp:stereo]--mpv_sink_ao:default
+[   0.036][d][lavfi]                                                           |    (dynaudnorm)     |
+[   0.036][d][lavfi]                                                           +---------------------+
+[   0.036][d][lavfi] 
+[   0.036][d][lavfi]                                                        +--------------+
+[   0.036][d][lavfi] Parsed_scale_0:default--[100x100 16:9 yuv420p]--default| mpv_sink_vo  |
+[   0.036][d][lavfi]                                                        | (buffersink) |
+[   0.036][d][lavfi]                                                        +--------------+
+[   0.036][d][lavfi] 
+[   0.036][d][lavfi]                                                            +---------------+
+[   0.036][d][lavfi] Parsed_dynaudnorm_3:default--[48000Hz dblp:stereo]--default|  mpv_sink_ao  |
+[   0.036][d][lavfi]                                                            | (abuffersink) |
+[   0.036][d][lavfi]                                                            +---------------+
+[   0.036][d][lavfi] 
+[   0.036][d][lavfi] +--------------+
+[   0.036][d][lavfi] | mpv_src_vid1 |default--[480x270 1:1 yuv420p]--Parsed_scale_0:default
+[   0.036][d][lavfi] |   (buffer)   |
+[   0.036][d][lavfi] +--------------+
+[   0.036][d][lavfi] 
+[   0.036][d][lavfi] +--------------+
+[   0.036][d][lavfi] | mpv_src_aid1 |default--[48000Hz fltp:stereo]--Parsed_pan_1:default
+[   0.036][d][lavfi] |  (abuffer)   |
+[   0.036][d][lavfi] +--------------+
+[   0.036][d][lavfi] 
+[   0.036][d][lavfi] 
+[   0.040][v][af] [in] 48000Hz stereo 2ch doublep
+[   0.040][v][af] [userspeed] 48000Hz stereo 2ch doublep
+[   0.040][v][af] [userspeed] (disabled)
+[   0.040][v][af] [convert] 48000Hz stereo 2ch doublep
+[   0.040][v][vf] [in] 100x100 [16:9] yuv420p bt.601/bt.709/bt.1886/limited/display CL=mpeg2/4/h264 crop=100x100+0+0
+[   0.040][v][vf] [userdeint] 100x100 [16:9] yuv420p bt.601/bt.709/bt.1886/limited/display CL=mpeg2/4/h264 crop=100x100+0+0
+[   0.040][v][vf] [userdeint] (disabled)
+[   0.040][v][vf] [autorotate] 100x100 [16:9] yuv420p bt.601/bt.709/bt.1886/limited/display CL=mpeg2/4/h264 crop=100x100+0+0
+[   0.040][v][vf] [autorotate] (disabled)
+[   0.040][v][vf] [convert] 100x100 [16:9] yuv420p bt.601/bt.709/bt.1886/limited/display CL=mpeg2/4/h264 crop=100x100+0+0
+[   0.040][v][vf] [convert] (disabled)
+[   0.040][v][vf] [out] 100x100 [16:9] yuv420p bt.601/bt.709/bt.1886/limited/display CL=mpeg2/4/h264 crop=100x100+0+0
+[   0.040][i][cplayer] VO: [lavc] 100x100 => 177x100 yuv420p
+[   0.041][v][cplayer] VO: Description: video encoding using libavcodec
+[   0.041][v][vo/lavc] reconfig to 100x100 [16:9] yuv420p bt.601/bt.709/bt.1886/limited/display CL=mpeg2/4/h264 crop=100x100+0+0
+[   0.041][i][vo/lavc] Opening encoder: libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 [libx264]
+[   0.041][v][ffmpeg] libx264: using SAR=16/9
+[   0.041][v][ffmpeg] libx264: using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2
+[   0.042][v][ffmpeg] libx264: profile High, level 1.0, 4:2:0, 8-bit
+[   0.042][v][ffmpeg] libx264: 264 - core 164 r3192 c24e06c - H.264/MPEG-4 AVC codec - Copyleft 2003-2024 - http://www.videolan.org/x264.html - options: cabac=1 ref=3 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=7 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=3 lookahead_threads=1 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=2 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc_lookahead=40 rc=crf mbtree=1 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+[   0.042][v][ao] Trying audio driver 'lavc'
+[   0.042][v][ao/lavc] requested format: 48000 Hz, stereo channels, doublep
+[   0.042][v][ao/lavc] Channel layouts:
+[   0.042][v][ao/lavc]  - anything
+[   0.042][v][ao/lavc] result: stereo
+[   0.042][i][ao/lavc] Opening encoder: libvorbis [libvorbis]
+[   0.045][i][encode] Opening output file: out.mkv
+[   0.045][i][encode] Opening muxer: Matroska [matroska]
+[   0.046][v][ao/lavc] device buffer: 12032 samples.
+[   0.046][v][ao/lavc] using soft-buffer of 12032 samples.
+[   0.046][i][cplayer] AO: [lavc] 48000Hz stereo 2ch floatp
+[   0.046][v][cplayer] AO: Description: audio encoding using libavcodec
+[   0.046][v][cplayer] first video frame after restart shown
+[   0.046][v][autoconvert] inserting resampler
+[   0.046][v][swresample] format change, reinitializing resampler
+[   0.046][v][swresample] 48000Hz stereo doublep -> 48000Hz stereo floatp
+[   0.046][v][af] [out] 48000Hz stereo 2ch floatp
+[   0.046][i][mpv_frame_report] t:0 f:2 vfps:inf
+[   0.046][v][cplayer] audio ready
+[   0.046][d][cplayer] starting video playback
+[   0.046][v][cplayer] starting audio playback
+[   0.047][v][cplayer] playback restart complete @ 0.000000, audio=playing, video=playing
+[   0.047][v][ao/lavc] starting AO
+[   0.049][i][mpv_frame_report] t:0.033333 f:3 vfps:90.000900009
+[   0.089][i][mpv_frame_report] t:3.033333 f:4 vfps:1.3186814635914
+[   0.090][i][mpv_frame_report] t:3.066667 f:5 vfps:1.6304346053875
+[   0.130][i][mpv_frame_report] t:6 f:6 vfps:1
+[   0.131][i][mpv_frame_report] t:6.066667 f:7 vfps:1.153846090448
+[   0.169][i][mpv_frame_report] t:9 f:8 vfps:0.88888888888889
+[   0.170][i][mpv_frame_report] t:9.066667 f:9 vfps:0.99264702232915
+[   0.208][i][mpv_frame_report] t:12 f:10 vfps:0.83333333333333
+[   0.210][i][mpv_frame_report] t:12.066667 f:11 vfps:0.91160218476237
+[   0.247][i][mpv_frame_report] t:15 f:12 vfps:0.8
+[   0.249][i][mpv_frame_report] t:15.033333 f:13 vfps:0.86474503026042
+[   0.288][i][mpv_frame_report] t:18 f:14 vfps:0.77777777777778
+[   0.289][i][mpv_frame_report] t:18.066667 f:15 vfps:0.83025828726461
+[   0.327][i][mpv_frame_report] t:21 f:16 vfps:0.76190476190476
+[   0.328][i][mpv_frame_report] t:21.033333 f:17 vfps:0.80824090028908
+[   0.367][i][mpv_frame_report] t:24.033333 f:18 vfps:0.74895978847378
+[   0.368][i][mpv_frame_report] t:24.066667 f:19 vfps:0.78947367327599
+[   0.392][v][lavf] EOF reached.
+[   0.406][i][mpv_frame_report] t:27.033333 f:20 vfps:0.73982738273523
+[   0.407][i][mpv_frame_report] t:27.066667 f:21 vfps:0.77586205941057
+[   0.442][i][mpv_frame_report] t:30 f:22 vfps:0.73333333333333
+[   0.442][d][ffmpeg] framesync: Sync level 0
+[   0.442][v][vf] filter input EOF
+[   0.442][v][vf] filter output EOF
+[   0.442][v][cplayer] video EOF reached
+[   0.442][d][cplayer] video EOF (status=4)
+[   0.443][d][cplayer] video EOF (status=4)
+[   0.444][v][af] filter input EOF
+[   0.444][v][af] filter output EOF
+[   0.444][v][cplayer] audio filter EOF
+[   0.445][v][ao/lavc] audio end or underrun
+[   0.445][v][cplayer] AO signaled EOF (while in state playing)
+[   0.445][d][cplayer] video EOF (status=4)
+[   0.445][v][cplayer] EOF code: 1  
+[   0.446][d][vd] Uninit decoder.
+[   0.451][d][ad] Uninit decoder.
+[   0.451][v][lavf] deselect track 0
+[   0.451][v][lavf] deselect track 1
+[   0.451][d][cplayer] Terminating demuxers...
+[   0.452][d][cplayer] Done terminating demuxers.
+[   0.452][v][cplayer] finished playback, success (reason 0)
+[   0.452][v][cplayer] Running hook: ytdl_hook/on_after_end_file
+[   0.452][d][cplayer] Run command: del, flags=64, args=[name="user-data/mpv/ytdl/json-subprocess-result"]
+[   0.460][v][ffmpeg] libx264: frame I:4     Avg QP:17.49  size:   960
+[   0.460][v][ffmpeg] libx264: frame P:804   Avg QP:20.20  size:    61
+[   0.460][v][ffmpeg] libx264: frame B:93    Avg QP:13.69  size:    18
+[   0.460][v][ffmpeg] libx264: consecutive B-frames: 85.5%  2.0%  1.0% 11.5%
+[   0.460][v][ffmpeg] libx264: mb I  I16..4: 12.8% 54.6% 32.7%
+[   0.460][v][ffmpeg] libx264: mb P  I16..4:  0.0%  0.0%  0.0%  P16..4:  8.2%  5.2%  2.3%  0.0%  0.0%    skip:84.2%
+[   0.460][v][ffmpeg] libx264: mb B  I16..4:  0.2%  0.0%  0.0%  B16..8:  5.5%  0.1%  0.0%  direct: 0.0%  skip:94.2%  L0:29.1% L1:70.9% BI: 0.0%
+[   0.460][v][ffmpeg] libx264: 8x8 transform intra:53.4% inter:43.5%
+[   0.460][v][ffmpeg] libx264: coded y,uvDC,uvAC intra: 28.5% 43.0% 35.4% inter: 2.5% 1.5% 0.2%
+[   0.460][v][ffmpeg] libx264: i16 v,h,dc,p: 28%  5% 68%  0%
+[   0.460][v][ffmpeg] libx264: i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 49%  9% 30%  3%  1%  2%  1%  4%  1%
+[   0.460][v][ffmpeg] libx264: i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 25%  7% 28%  6%  7% 10%  5%  8%  4%
+[   0.460][v][ffmpeg] libx264: i8c dc,h,v,p: 69%  9% 19%  3%
+[   0.460][v][ffmpeg] libx264: Weighted P-Frames: Y:0.0% UV:0.0%
+[   0.460][v][ffmpeg] libx264: ref P L0: 79.3% 10.4%  5.8%  4.6%
+[   0.460][v][ffmpeg] libx264: ref B L0: 53.7% 31.3% 15.0%
+[   0.460][v][ffmpeg] libx264: ref B L1: 93.9%  6.1%
+[   0.460][v][ffmpeg] libx264: kb/s:14.44
+[   0.461][i][encode] video: encoded 54902 bytes
+[   0.461][i][encode] audio: encoded 1433 bytes
+[   0.461][i][encode] muxing overhead 18974 bytes
+[   0.461][d][ffmpeg] AVIOContext: Statistics: 75309 bytes written, 0 seeks, 1 writeouts
+[   0.462][i][cplayer] Exiting... (End of file)
+[   0.463][d][stats] Exiting...
+[   0.463][d][auto_profiles] Exiting...
+[   0.463][d][ytdl_hook] Exiting...
+[   0.463][d][select] Exiting...
+[   0.463][d][mpv_frame_report] Exiting...
+[   0.463][d][console] Exiting...
+[   0.467][d][SystemMediaTransportControls] Exiting...

@@ -3,10 +3,8 @@ import EventEmitter from "../EventEmitter.js";
 export class ReconnectingWebSocket extends EventEmitter {
     last_ping = 0;
     #ready_promise;
-    #num_requests = 0;
-    #request_ids = {};
-
-    get num_requests() { return this.#num_requests; }
+    #rid = 0;
+    #requests = {};
 
     constructor(options = {}) {
         super();
@@ -35,8 +33,8 @@ export class ReconnectingWebSocket extends EventEmitter {
     async request(request) {
         await this.ready_promise;
         return new Promise((resolve, reject) => {
-            var rid = ++this.#num_requests;
-            this.#request_ids[rid] = (response) => {
+            var rid = ++this.#rid;
+            this.#requests[rid] = (response) => {
                 if (response.error) reject(response.error.message);
                 else resolve(response.result);
             };
@@ -55,20 +53,20 @@ export class ReconnectingWebSocket extends EventEmitter {
     }
 
     #init_websocket() {
-        this.#request_ids = {};
-        this.#num_requests = 0;
-
         var heartbeat_interval_id;
         var url = this.url;
         var protocols = this.protocols;
+        var reconnect_timeout;
         if (typeof url === "function") url = url();
         if (typeof protocols === "function") protocols = protocols();
         this.ws = new WebSocket(url, protocols);
         this.emit("connecting");
         this.ws.addEventListener("open", (e) => {
-            clearTimeout(this._reconnect_timeout);
+            clearTimeout(reconnect_timeout);
             this.emit("open", e);
             heartbeat_interval_id = setInterval(()=>this.ping(), 30 * 1000);
+            this.#requests = {};
+            this.#rid = 0;
             this.ping();
         });
 
@@ -88,9 +86,9 @@ export class ReconnectingWebSocket extends EventEmitter {
             if (data.request) {
                 let {request} = data;
                 if (request.id !== undefined) {
-                    var cb = this.#request_ids[request.id];
-                    delete this.#request_ids[request.id];
-                    cb(request);
+                    var cb = this.#requests[request.id];
+                    delete this.#requests[request.id];
+                    if (cb) cb(request);
                 }
             }
             this.emit("data", data);
@@ -106,8 +104,8 @@ export class ReconnectingWebSocket extends EventEmitter {
                 console.error("Connection refused: Unauthorized.");
             } else {
                 if (!this.options.auto_reconnect) return;
-                clearTimeout(this._reconnect_timeout);
-                this._reconnect_timeout = setTimeout(() => {
+                clearTimeout(reconnect_timeout);
+                reconnect_timeout = setTimeout(() => {
                     this.#init_websocket();
                 }, this.options.auto_reconnect_interval);
             }

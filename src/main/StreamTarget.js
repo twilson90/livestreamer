@@ -2,7 +2,8 @@ import fs from "fs-extra";
 import path from "node:path";
 import child_process from "node:child_process";
 import url from "node:url";
-import {globals, utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger} from "./exports.js";
+import {globals} from "./exports.js";
+import {utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger} from "../core/exports.js";
 /** @import { Target, Stream } from './exports.js' */
 
 export class StreamTarget$ extends StopStartStateMachine$ {
@@ -28,7 +29,7 @@ export class StreamTarget extends StopStartStateMachine {
     constructor(stream, target) {
         super(null, new StreamTarget$());
 
-        this.logger = new Logger(`target-${target.id}`);
+        this.logger = new Logger(`stream-target-${target.id}`);
         this.logger.on("log", (log)=>{
             this.stream.logger.log(log)
         });

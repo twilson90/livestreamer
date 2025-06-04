@@ -413,7 +413,7 @@ export class MPVWrapper extends events.EventEmitter {
             handler = (msg)=>{
                 // console.log(msg);
                 if (this.#load_id != load_id) {
-                    reject(new MPVLoadFileError("overridden", "Another file was loaded."));
+                    reject(new MPVLoadFileError("override", "Another file was loaded."));
                     return;
                 }
                 if ("event" in msg) {
@@ -440,6 +440,9 @@ export class MPVLoadFileError extends Error {
     constructor(name, message) {
         super(message);
         this.name = name;
+    }
+    toString() {
+        return `LoadFileError (${this.name}): ${this.message}`;
     }
 }
 

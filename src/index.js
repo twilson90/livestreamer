@@ -1,6 +1,9 @@
-import livestreamer from "./core/exports.js";
-import "./electron/index.js";
-livestreamer({
+import {start} from "./exports.js";
+
+// const dirname = import.meta.dirname;
+// cwd: dirname,
+
+start({
     modules: [
         "media-server",
         "file-manager",

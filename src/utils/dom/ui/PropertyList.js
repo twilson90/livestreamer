@@ -16,7 +16,6 @@ import { json_copy } from "../../json_copy.js";
  * @template {PropertyList} [ThisType=PropertyList]
  * @typedef {InputPropertySettings<ItemType,ValueType,ThisType> & {
 *   'item_size': UISetting<ThisType,string>,
-*   'allow_empty': UISetting<ThisType,boolean>,
 *   'ui': (this:ThisType,ui:PropertyListItem)=>void,
 *   'new': (this:ThisType)=>ValueType,
 * }} PropertyListSettings
@@ -31,7 +30,7 @@ import { json_copy } from "../../json_copy.js";
 export class PropertyList extends InputProperty {
     get values() { return super.values.map(v=>v||[]); }
     get is_disabled() {
-        return super.is_disabled || this.is_indeterminate;
+        return super.is_disabled;
     }
 
     /** @param {Settings} settings */
@@ -40,7 +39,7 @@ export class PropertyList extends InputProperty {
         super(wrapper.elem, {
             "setup": false,
             "item_size": "auto",
-            "allow_empty": true,
+            // "allow_empty": true,
             "empty": "No items",
             "new": ()=>({}),
             "default": ()=>[],
@@ -49,7 +48,7 @@ export class PropertyList extends InputProperty {
             ...settings
         });
 
-        var add_button = new Button(`<button><i class="fas fa-plus"></i></button>`, {
+        var add_button = new Button(`<button style="flex:1"><i class="fas fa-plus"></i></button>`, {
             title: "Add",
             "click": async() => {
                 var value = this.value;
@@ -76,19 +75,19 @@ export class PropertyList extends InputProperty {
         }
 
         var more_button = new Button(`<button class="icon button"><i class="fas fa-ellipsis-v"></i></button>`, {
-            title: "More",
-            "click": ()=>more_dropdown.toggle()
+            title: "More"
         });
         more_button.elem.style.flex = "none";
 
         var more_dropdown = new DropdownMenu({
             target: more_button.elem,
             parent: this.elem,
+            trigger: "click",
             "items": [
                 {
                     icon: `<i class="fas fa-copy"></i>`,
                     label: `Copy`,
-                    disabled: ()=>!this.value.length,
+                    // disabled: ()=>!this.value.length,
                     click: ()=>copy()
                 },
                 {
@@ -137,7 +136,7 @@ export class PropertyList extends InputProperty {
             if (is_indeterminate) num_filters = 0;
             empty_el.style.display = num_filters ? "none" : "";
             list.elem.style.display = num_filters ? "" : "none";
-            set_inner_html(empty_el, is_indeterminate?"Multiple Items":this.get_setting("empty"));
+            set_inner_html(empty_el, is_indeterminate?"Multiple values":this.get_setting("empty"));
             set_inner_html(count_el, `(${is_indeterminate?"-":value.length})`);
         });
     }
@@ -190,7 +189,7 @@ export class PropertyListItem extends UI {
                 value.splice(index, 1);
                 list.set_value(value, { trigger: true });
             },
-            "disabled": () => (!list.get_setting("allow_empty") && list.value.length <= 1),
+            // "disabled": () => (list.value.length <= 1), // !list.get_setting("allow_empty")
             "title": "Delete",
         });
         buttons.append(up_button, down_button, delete_button);

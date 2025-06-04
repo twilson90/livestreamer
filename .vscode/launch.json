@@ -14,12 +14,6 @@
             "type": "node",
         },
         {
-            "type": "node",
-            "request": "attach",
-            "name": "PM2 Attach",
-            "port": 9232
-        },
-        {
             "name": "Launch Currently Open Script (JS)",
             "type": "node",
             "request": "launch",
@@ -30,38 +24,42 @@
             ]
         },
         {
+            "name": "livestreamer-test",
+            "type": "node",
+            "request": "launch",
+            "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/vitest",
+            "runtimeArgs": ["run", "--inspect-brk"],
+            "cwd": "${workspaceFolder}",
+            "skipFiles": [
+                "<node_internals>/**"
+            ]
+        },
+        {
             "name": "livestreamer",
             "type": "node",
             "request": "launch",
             "program": "src/index.js",
+            "cwd": "${workspaceFolder}",
             "runtimeArgs": [
                 "--unhandled-rejections=strict",
+                "--trace-warnings"
             ],
             "skipFiles": [
-                "<node_internals>/**"
+                "<node_internals>/**",
+                "**/livestreamer/src/core/Logger.js"
             ],
+            "env":{
+                "LIVESTREAMER_DEBUG": "1",
+            },
+            "console": "integratedTerminal",
         },
         {
             "name": "livestreamer-pm2",
             "type": "node",
             "request": "launch",
-            "program": "pm2",
-            "args": ["start", "src/pm2.config.cjs"],
+            "runtimeExecutable": "pm2",
             "runtimeArgs": [
-                "--unhandled-rejections=strict",
-            ],
-            "skipFiles": [
-                "<node_internals>/**"
-            ],
-        },
-        {
-            "name": "livestreamer-pm2-dist",
-            "type": "node",
-            "request": "launch",
-            "program": "pm2",
-            "args": ["start", "dist/pm2.config.cjs"],
-            "runtimeArgs": [
-                "--unhandled-rejections=strict",
+                "start", "src/pm2.config.cjs",
             ],
             "skipFiles": [
                 "<node_internals>/**"
@@ -76,35 +74,23 @@
                 "--unhandled-rejections=strict",
             ],
             "skipFiles": [
-                "<node_internals>/**"
+                "<node_internals>/**",
+                "**/livestreamer/src/core/Logger.js"
             ]
         },
         {
-            "name": "livestreamer-electron",
+            "name": "livestreamer-electron-interface",
             "type": "node",
             "request": "launch",
             "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd",
-            "program": "src/index.js",
+            "program": "electron/index.js",
             "args": ["-d"],
             "runtimeArgs": [
-                "--unhandled-rejections=strict",
+                "--unhandled-rejections=strict"
             ],
             "skipFiles": [
-                "<node_internals>/**"
-            ],
-        },
-        {
-            "name": "livestreamer-electron-dist",
-            "type": "node",
-            "request": "launch",
-            "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd",
-            "program": "dist/index.js",
-            "args": ["-d"],
-            "runtimeArgs": [
-                "--unhandled-rejections=strict",
-            ],
-            "skipFiles": [
-                "<node_internals>/**"
+                "<node_internals>/**",
+                "**/livestreamer/src/core/Logger.js"
             ],
         },
         {
@@ -112,7 +98,7 @@
             "type": "node",
             "request": "launch",
             "program": "tools/cmd.js",
-            "args": ["build", "-p"],
+            "args": ["build"],
             "runtimeArgs": [
                 "--unhandled-rejections=strict",
             ],

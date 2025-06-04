@@ -1,6 +1,8 @@
 import * as utils from "../core/utils.js";
 import path from "node:path";
 
+const delim_map = Object.fromEntries(["\n", ",", "%", "=", ";"].map(c=>[c, Buffer.from(c, 'utf8')[0]]));
+
 export const MAX_EDL_REPEATS = 1024;
 export const EDL_GENERAL_HEADERS = ["new_stream", "no_clip", "delay_open", "mp4_dash", "global_tags", "no_chapters", "track_meta"];
 
@@ -13,12 +15,13 @@ function shorten(filename) {
 
 export class MPVEDLEntry {
     /** @type {string|MPVEDL} */
-    #header;
+    #header = "";
     /** @type {Record<string, string>} */
-    #params;
+    #params = {};
 
     get header() { return this.#header; }
     get params() { return this.#params; }
+    get is_file() { return !this.#header.startsWith("!"); }
 
     constructor(header, named_params) {
         if (header instanceof MPVEDLEntry) {
@@ -28,16 +31,15 @@ export class MPVEDLEntry {
             [header, named_params] = header;
         }
         this.#header = header;
-        this.#params = {
-            ...named_params,
-        }
+        Object.assign(this.#params, named_params);
     }
+
     toString() {
         let header = (typeof this.#header === "string") ? this.#header : this.#header.toString();
-        header = (header.startsWith("!")) ? header : MPVEDL.escape_value(shorten(header.toString()));
+        header = (header.startsWith("!")) ? header : MPVEDL.escape_if_necessary(shorten(header.toString()));
         let parts = [header];
         for (var k in this.#params) {
-            parts.push(`${MPVEDL.escape_key(k)}=${MPVEDL.escape_value(this.#params[k].toString())}`);
+            parts.push(`${k}=${MPVEDL.escape_if_necessary(this.#params[k].toString())}`);
         }
         return parts.join(",");
     }
@@ -54,7 +56,7 @@ export class MPVEDL {
     }
     /** @type {MPVEDLEntry[]} */
     #entries = [];
-    get entries() { return this.#entries[Symbol.iterator](); }
+    get entries() { return this.#entries; }
     get length() { return this.#entries.length; }
 
     /** @param {Iterable<MPVEDLEntry>} entries */
@@ -63,18 +65,16 @@ export class MPVEDL {
         if (entries) this.append(...entries);
     }
 
-    /** @param {string} str @param {boolean} force */
-    static escape_key(str, force=false) {
-        if (!force && !str.match(/[=%,;\n!]/)) return str;
+    /** @param {string} str */
+    static escape(str) {
         // str.length returns incorrect length if slanted apostrophe in string, Buffer.byteLength is correct
         return `%${Buffer.byteLength(str, "utf8")}%${str}`;
     }
 
     /** @param {string} str @param {boolean} force */
-    static escape_value(str, force=false) {
-        if (!force && !str.match(/[,;\n!]/)) return str;
-        // str.length returns incorrect length if slanted apostrophe in string, Buffer.byteLength is correct
-        return `%${Buffer.byteLength(str, "utf8")}%${str}`;
+    static escape_if_necessary(str) {
+        if (str.match(/[,;\n!]/)) return MPVEDL.escape(str);
+        return str;
     }
 
     /** @param {string} filename @param {{start:number, end:number, duration:number, offset:number, loops:number}} opts */
@@ -112,17 +112,93 @@ export class MPVEDL {
         return entries;
     }
 
+    /** @param {string} str */
+    static parse(str) {
+        /** @param {string} str @param {number[]} delimiters */
+        function *split(str, delimiters) {
+            var buffer = Buffer.from(str, 'utf8');
+            var last_index = 0;
+            for (var i = 0; i < buffer.length; i++) {
+                if (buffer[i] == delim_map["%"]) {
+                    let s = ++i;
+                    for (; buffer[i] != delim_map["%"]; i++);
+                    let len = parseInt(buffer.subarray(s, i).toString('utf8'));
+                    i += len;
+                    continue;
+                }
+                if (delimiters.includes(buffer[i])) {
+                    yield buffer.subarray(last_index, i).toString('utf8');
+                    last_index = i + 1;
+                }
+            }
+            buffer = buffer.subarray(last_index, i);
+            if (buffer.length) yield buffer.toString('utf8');
+        }
+
+        function unescape_value(value) {
+            var m;
+            if (m = value.match(/^%[0-9]+%/)) {
+                value = value.slice(m[0].length);
+            }
+            return value;
+        }
+
+        /** @param {string} str */
+        function parse_entry(str) {
+            var param_map = {};
+            var params  = [...split(str, [delim_map[","]])];
+            if (params[0].startsWith("!")) {
+                let header = params.shift();
+                for (let param of params) {
+                    let [key, value] = [...split(param, [delim_map["="]])];
+                    if (value) value = unescape_value(value);
+                    param_map[key] = value;
+                }
+                return new MPVEDLEntry(header, param_map);
+            }
+
+            if (params.length > 3) throw new Error("Invalid EDL entry", params);
+            var filename = unescape_value(params.shift());
+            if (params.length) {
+                for (let i=0; i<2; i++) {
+                    let [key, value] = [...split(params[i], [delim_map["="]])];
+                    if (!value) {
+                        value = key;
+                        key = (i == 0) ? "start" : "length";
+                    }
+                    param_map[key] = unescape_value(value);
+                }
+            }
+            return new MPVEDLEntry(filename, param_map);
+        }
+        var sep = ";";
+        if (str.startsWith("edl://")) {
+            str = str.slice(6);
+            sep = ";";
+        } else {
+            str = str.replace(/^# mpv EDL v0\n/, "");
+            sep = "\n";
+        }
+        var edl = new MPVEDL();
+        var buffer = Buffer.from(str, 'utf8')
+        var entry_strs = [...split(buffer, [delim_map[sep]])];
+        for (var entry of entry_strs) {
+            edl.append(parse_entry(entry));
+        }
+        return edl;
+    }
+
     /** @param {any[]} entries */
     append(...entries) {
         for (let e of entries) {
-            this.#entries.push(new MPVEDLEntry(e));
+            this.#entries.push(e instanceof MPVEDLEntry ? e : new MPVEDLEntry(e));
         }
     }
 
     /** @param {any[]} entries */
     prepend(...entries) {
         for (let e of entries) {
-            this.#entries.unshift(new MPVEDLEntry(e));
+            this.#entries.unshift(e instanceof MPVEDLEntry ? e : new MPVEDLEntry(e));
         }
     }
 

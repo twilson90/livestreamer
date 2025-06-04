@@ -3,18 +3,18 @@ import path from "node:path";
 import Mime from "mime";
 import fs from "fs-extra";
 import stream from "node:stream";
-import {Driver, constants, utils} from "../exports.js";
+import {Driver} from "../exports.js";
+import {constants, utils} from "../../core/exports.js";
 
 /**
  * @inheritDoc
  */
 export class LocalFileSystem extends Driver {
+    static net_protocol = "";
+    static separator = "/";
+    
 	__abspath(id_or_path) {
 		return upath.join(this.volume.root, id_or_path);
-	}
-	__config(config) {
-		config.separator = "/";
-		config.root = upath.resolve(config.root);
 	}
 	__destroy() { }
 	async __init() {

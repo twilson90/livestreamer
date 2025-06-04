@@ -1,4 +1,4 @@
-/** @param {Element} elem @param {string} new_value @param {{trigger:boolean|"change"}} opts */
+/** @param {HTMLElement} elem @param {string} new_value @param {{trigger:boolean|"change"}} opts */
 export function set_value(elem, new_value, opts) {
     if (typeof elem.value === "undefined") throw new Error();
 
@@ -32,7 +32,11 @@ export function set_value(elem, new_value, opts) {
             var pos = elem.selectionStart;
             var at_end = pos == elem.value.length;
             changed = true;
-            elem.value = new_value;
+            if (elem.nodeName == "INPUT" || elem.nodeName == "SELECT" || elem.nodeName == "TEXTAREA") {
+                elem.value = new_value;
+            } else if (elem.contentEditable) {
+                elem.innerText = new_value;
+            }
             if (at_end) pos = elem.size;
             if (pos !== undefined && elem.selectionEnd != null) elem.selectionEnd = pos;
         }

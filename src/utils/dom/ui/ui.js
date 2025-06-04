@@ -9,8 +9,7 @@ import { set_children } from "../set_children.js";
 import { set_inner_html } from "../set_inner_html.js";
 import { toggle_attribute } from "../toggle_attribute.js";
 import { toggle_class } from "../toggle_class.js";
-
-import "./ui.scss";
+import { DeferredReady } from "../../DeferredReady.js";
 
 /** @import events from "node:events" */
 
@@ -109,14 +108,21 @@ export class UI extends EventEmitter {
     #updating = false;
     #layout_hash;
     #destroyed = false;
-    #context = new UIContext();
     #async_click_promise;
+    #content_override = "";
+    #content_timeout;
+    #temp_content_deferred = new DeferredReady();
 
-    get async_click_promise() { return this.#async_click_promise; }
+    #parent;
+    /** @returns {UI} */
+    get parent() { return this.#parent; }
+    #index = 0;
+    /** @returns {number} */
+    get index() { return this.#index; }
+
+    get async_click_in_progress() { return !!this.#async_click_promise; }
     get is_hidden() { return ("hidden" in this.#settings) && !!this.get_setting("hidden"); }
-    get parent() { return this.#context.parent; }
     get settings() { return this.#settings; }
-    get index() { return this.#context.index; }
     get visible() { return is_visible(this.elem); } // not the opposite of hidden
     get descendents() { return [...this.iterate_descendents()]; }
     get parents() { return [...this.iterate_parents()]; }
@@ -187,6 +193,23 @@ export class UI extends EventEmitter {
             this.update();
         } */
     }
+    
+    override_content_temporarily(content, timeout) {
+        clearTimeout(this.#content_timeout);
+        this.#content_override = content;
+        var content_old = this.elem.innerHTML;
+        this.update();
+        this.#temp_content_deferred.state = false;
+        if (timeout) {
+            this.#content_timeout = setTimeout(()=>{
+                this.#content_override = null;
+                this.elem.innerHTML = content_old;
+                this.update();
+                this.#temp_content_deferred.state = true;
+            }, timeout);
+        }
+        return this.#temp_content_deferred.ready;
+    }
 
     init() { }
 
@@ -199,17 +222,18 @@ export class UI extends EventEmitter {
         this.__render();
     }
 
-    __update_context() {
+    __before_update() {
     }
 
     __update(parent, index) {
-        parent = parent ?? this.#context.parent; // will this work if update is called from a child?
+        parent = parent ?? this.parent; // will this work if update is called from a child?
 
         var resolve;
         this.#updating = new Promise((r)=>resolve=r);
 
-        this.#context = new UIContext(parent, index);
-        this.__update_context();
+        this.#parent = parent;
+        this.#index = +index;
+        this.__before_update();
 
         this.get_setting("update");
         this.emit("update");
@@ -226,6 +250,7 @@ export class UI extends EventEmitter {
         this.get_setting("post_update");
         this.emit("post_update");
     }
+
     __render() {
         
         var is_hidden = this.is_hidden;
@@ -245,12 +270,13 @@ export class UI extends EventEmitter {
         if ("flex" in this.#settings) this.elem.style.flex = this.get_setting("flex") || "";
         if ("id" in this.#settings) this.elem.id = this.get_setting("id") || "";
         if ("children" in this.#settings) set_children(this.elem, this.get_setting("children"));
-        if ("content" in this.#settings) set_inner_html(this.elem, this.get_setting("content"));
+        if (this.#content_override) set_inner_html(this.elem, this.#content_override);
+        else if ("content" in this.#settings) set_inner_html(this.elem, this.get_setting("content"));
 
         if ("click" in this.#settings) this.elem.onclick = (e) => this.#do_event(e, "click");
         else if ("click_async" in this.#settings) {
             this.elem.onclick = async (e) => {
-                this.#async_click_promise = this.#do_event(e, "click_async").finally(()=>{
+                this.#async_click_promise = Promise.resolve(this.#do_event(e, "click_async")).finally(()=>{
                     this.#async_click_promise = null;
                     this.update();
                 });
@@ -284,8 +310,8 @@ export class UI extends EventEmitter {
     */
     get_setting(key, ...args) {
         var setting = this.#settings[key];
-        if (typeof setting === "function") {
-            return setting.apply(this, args);
+        while (typeof setting === "function") {
+            setting = setting.apply(this, args);
         }
         return setting;
     }
@@ -297,22 +323,26 @@ export class UI extends EventEmitter {
         remove_children(this.elem);
         return this;
     }
+
     /** @template T @param {T} el @returns {T} */
     append(el) {
         this.elem.append(...arguments);
         return el;
     }
+
     /** @template T @param {T} el @returns {T} */
     prepend(el) {
         this.elem.prepend(...arguments);
         return el;
     }
+
     destroy() {
         if (this.#destroyed) return;
         this.#destroyed = true;
         this.elem.remove();
         this.emit("destroy");
     }
+
     set_layout(layout) {
         var hash = JSON.stringify(layout, (k, p) => p instanceof UI ? p.id : p);
         if (hash === this.#layout_hash) return;
@@ -410,6 +440,7 @@ export class Box extends UI {
  * @extends {UI<Settings,Events>} 
  */
 export class Button extends UI {
+
     /** @param {HTMLElement} elem @param {Settings} settings */
     constructor(elem, settings) {
         super(elem || `<button></button>`, {
@@ -417,7 +448,7 @@ export class Button extends UI {
                 if (!this.elem.children.length) return this.elem.innerHTML;
                 if (original_title) return original_title;
             },
-            ...settings
+            ...settings,
         });
         var original_title = this.elem.title;
         this.elem.classList.add("button");

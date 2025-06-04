@@ -26,6 +26,11 @@ export class Cache {
 		}
 		this.#cache.set(key, {value, timeout});
 	}
+	delete(key) {
+		var {timeout} = this.#cache.get(key);
+		clearTimeout(timeout);
+		this.#cache.delete(key);
+	}
 	clear() {
 		for (var [key, {timeout}] of [...this.#cache]) {
 			clearTimeout(timeout);

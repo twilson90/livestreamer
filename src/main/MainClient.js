@@ -1,5 +1,6 @@
 import fs from "fs-extra";
-import {globals, utils, InternalSession, Client, Client$} from "./exports.js";
+import {globals, InternalSession, SessionTypes} from "./exports.js";
+import {utils, Client, Client$} from "../core/exports.js";
 
 export class MainClient$ extends Client$ {
     session_id = "";
@@ -24,20 +25,24 @@ export class MainClient extends Client {
         "delete_target": (...args)=>globals.app.delete_target(...args),
         // "delete_font": (...args)=>globals.app.delete_font(...args),
         // "get_font": (...args)=>globals.app.get_font(...args),
-        "session_update_values": (...args)=>this.session.update_values(...args),
-        "session_handover": (...args)=>this.internal_session.handover(...args),
-        "session_get_autosave_history": (...args)=>this.internal_session.get_autosave_history(...args),
-        "session_detect_crop": (...args)=>this.internal_session.detect_crop(...args),
+        "handover": (...args)=>this.internal_session.handover(...args),
+        "get_autosave_history": (...args)=>this.internal_session.get_autosave_history(...args),
+        "detect_crop": (...args)=>this.internal_session.detect_crop(...args),
         "stop_stream": (...args)=>this.internal_session.stop_stream(...args),
         "start_stream": (...args)=>this.internal_session.start_stream(...args),
-        "reload_current_item": (...args)=>this.internal_session.reload_current_item(...args),
+        "reload": (...args)=>this.internal_session.reload(...args),
         "set_player_default_override": (...args)=>this.internal_session.set_player_default_override(...args),
         "update_media_info_from_ids": (...args)=>this.internal_session.update_media_info_from_ids(...args),
         "playlist_add": (...args)=>this.internal_session.playlist_add(...args),
-        "playlist_remove": (...args)=>this.internal_session.playlist_remove(...args),
+        "playlist_remove": (ids, session_id, opts)=>{
+            /** @type {InternalSession} */
+            var session = globals.app.sessions[session_id] || this.internal_session;
+            session.playlist_remove(ids, opts);
+        },
         "playlist_update": (...args)=>this.internal_session.playlist_update(...args),
         "playlist_undo": (...args)=>this.internal_session.playlist_undo(...args),
         "playlist_redo": (...args)=>this.internal_session.playlist_redo(...args),
+        "playlist_register_history": (...args)=>this.internal_session.playlist_history.push(...args),
         "download_and_replace": (...args)=>this.internal_session.download_and_replace(...args),
         "cancel_download": (...args)=>this.internal_session.cancel_download(...args),
         "cancel_upload": (...args)=>this.internal_session.cancel_upload(...args),
@@ -48,23 +53,25 @@ export class MainClient extends Client {
         "load_session_autosave": (...args)=>this.internal_session.load_autosave(...args),
         "get_user_save_data": (...args)=>this.internal_session.get_user_save_data(...args),
         "pause": (...args)=>this.stream.pause(...args),
-        "stream_update_values": (...args)=>this.stream.update_values(...args),
-        "restart_stream": (...args)=>this.stream.restart_stream(...args),
-        "subscribe": (...args)=>this.subscribe(...args),
+        "session_update_values": (...args)=>utils.merge(this.session.$, args[0], {delete_nulls:true}),
+        "stream_update_values": (...args)=>utils.merge(this.stream.$, args[0], {delete_nulls:true}),
+        "stream_settings_update_values": (...args)=>utils.merge(this.internal_session.$.stream_settings, args[0], {delete_nulls:true}),
+        "restart_stream": (...args)=>this.stream.restart(...args),
         "new_session": (...args)=>this.new_session(...args),
         "get_media_info": (...args)=>this.get_media_info(...args),
         "save_file": (...args)=>this.save_file(...args),
         "rearrange_sessions": (...args)=>this.rearrange_sessions(...args),
         "destroy_session": (...args)=>this.destroy_session(...args),
         "subscribe_session": (...args)=>this.subscribe_session(...args),
+        "subscribe_sysinfo": (...args)=>this.subscribe_sysinfo(...args),
     }
 
     oninit() {
         globals.app.$.clients[this.id] = this.$;
     }
 
-    new_session() {
-        var s = new InternalSession();
+    new_session(name) {
+        var s = new InternalSession(null, name || globals.app.get_new_session_name());
         s.$.access_control[this.username] = {"access":"owner"};
         this.subscribe_session(s.id);
         return s.id;
@@ -73,7 +80,7 @@ export class MainClient extends Client {
     async destroy_session(session_id, move_autosave_dir=true) {
         var s = globals.app.sessions[session_id];
         if (!s) return;
-        if (move_autosave_dir) {
+        if (move_autosave_dir && s.type === SessionTypes.INTERNAL) {
             await s.move_autosave_dir();
         }
         await s.destroy();
@@ -89,13 +96,17 @@ export class MainClient extends Client {
         var old_session = this.session;
         if (old_session) old_session.client_updater.unsubscribe(this);
         let session = globals.app.sessions[id];
-        session.client_updater.subscribe(this);
-        this.$.session_id = session.id;
+        if (session) {
+            session.client_updater.subscribe(this);
+            this.$.session_id = session.id;
+        } else {
+            this.$.session_id = "";
+        }
     }
     
     subscribe_sysinfo(value) {
-        if (value) globals.app.sysinfo_client_updater.add_client(this);
-        else globals.app.sysinfo_client_updater.remove_client(this);
+        if (value) globals.app.sysinfo_client_updater.subscribe(this);
+        else globals.app.sysinfo_client_updater.unsubscribe(this);
     }
 
     async save_file(file, data) {

@@ -8,7 +8,7 @@ export const SessionProps = {
     name: {
         __default__: "",
     },
-    creation_time: {
+    create_ts: {
         __default__: 0,
     },
     version: {
@@ -22,7 +22,7 @@ export const SessionProps = {
         title: {
             __default__: "",
         },
-        frame_rate: {
+        fps: {
             __default__: 30,
             __options__: [[24,"24 fps"],[25,"25 fps"],[30,"30 fps"],[50,"50 fps"],[60,"60 fps"]]
             // ["passthrough","Pass Through"],["vfr","Variable"],

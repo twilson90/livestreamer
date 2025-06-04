@@ -2,7 +2,7 @@ import events from "node:events";
 import {utils} from "./exports.js";
 /** @import {Client} from "./exports.js" */
 
-/** @typedef {{filter: (path:string[])=>boolean}} ClientUpdaterOpts */
+/** @typedef {{filter: (change:utils.ObserverChangeEvent)=>boolean}} ClientUpdaterOpts */
 
 /** @template {Client} T */
 class ClientInfo {
@@ -14,20 +14,23 @@ class ClientInfo {
     }
 }
 
-/** @template {Client} T */
+/** @template {Client} T @typedef {{subscribe: [T], unsubscribe: [T]}} Events */
+
+/** @template {Client} T @extends {events.EventEmitter<Events<T>>} */
 export class ClientUpdater extends events.EventEmitter {
     /** @type {utils.Observer} */
     #observer;
     /** @type {ClientUpdaterOpts} */
     #opts;
-    /** @type {Map<Client<T>,ClientInfo<T>} */
+    /** @type {Map<T,ClientInfo<T>} */
     #client_map = new Map();
-    /** @type {Set<Client<T>>} */
+    /** @type {Set<T>} */
     #new_clients = new Set();
     /** @type {[string, string[], any][]} */
     #$_changes = [];
     #path = [];
     #is_destroyed = false;
+    #onchange;
 
     get clients() { return [...this.#client_map.keys()]; }
     get has_clients() { return !!this.#client_map.size; }
@@ -38,25 +41,24 @@ export class ClientUpdater extends events.EventEmitter {
         this.#observer = observer;
         this.#path = path || [];
         this.#opts = opts || {};
-        /** @type {(change:utils.ObserverChangeEvent)=>void} */
-        var onchange = (c)=>{
-            if (c.subtree) return;
-            if (!this.has_clients) return;
-            if (this.#opts.filter && !this.#opts.filter(c.path)) return;
-            this.#$_changes.push([c.type, [...this.#path, ...c.path], c.new_value]);
-            this.#debounced_update();
-        };
-        observer.on("change", onchange);
-        this.on("destroy", ()=>this.#observer.off("change", onchange));
+        this.on("destroy", ()=>{
+            if (this.#onchange) this.#observer.off("change", this.#onchange);
+        });
     }
 
     #debounced_update = utils.debounce(this.#update_clients.bind(this), 0);
     
     #update_clients() {
         if (this.#is_destroyed) return;
+
         if (this.#new_clients.size) {
-            let $ = this.#observer.$;
-            if (this.#opts.filter) $ = utils.deep_filter($, this.#opts.filter);
+            let $ = {...this.#observer.$};
+            if (this.#opts.filter) {
+                $ = utils.deep_filter($, (path, new_value)=>{
+                    var c = {type:"set", path, new_value};
+                    return this.#opts.filter(c);
+                });
+            }
             for (var client of this.#new_clients) {
                 $.client_id = client.id;
                 $.ts = Date.now();
@@ -71,6 +73,23 @@ export class ClientUpdater extends events.EventEmitter {
             var payload = { changes };
             for (var client of this.#client_map.keys()) client.send(payload);
             utils.clear(this.#$_changes);
+        }
+
+        if (this.#client_map.size && !this.#onchange) {
+            /** @type {(change:utils.ObserverChangeEvent)=>void} */
+            this.#onchange = (c)=>{
+                if (c.subtree) return;
+                if (!this.has_clients) return;
+                if (this.#opts.filter && !this.#opts.filter(c)) return;
+                let path = [...this.#path, ...c.path];
+                let d = c.type === "delete" ? [c.type, path] : [c.type, path, c.new_value];
+                this.#$_changes.push(d);
+                this.#debounced_update();
+            };
+            this.#observer.on("change", this.#onchange);
+        } else if (!this.#client_map.size && this.#onchange) {
+            this.#observer.off("change", this.#onchange);
+            this.#onchange = null;
         }
     }
 

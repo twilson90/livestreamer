@@ -34,18 +34,35 @@ export class DateTimeProperty extends InputProperty {
             setup: false
         });
 
+        this.validators.push((value)=>{
+            if (!this.get_setting("datetime.after_now")) return true;
+            // if (!inputs.some(input => input.value)) return true;
+            if (!value) return true;
+            var before_now = value < Math.floor(Date.now() / 1000) * 1000;
+            var before_today = new Date(inputs[0].value) < new Date(this.today_str);
+            if (before_today) return "Date is in the past.";
+            else if (!before_today && before_now) return "Time is in the past.";
+            return true;
+        });
+
         inputs.forEach(input => {
             input.addEventListener("change", () => {
+                if (input === time_input && !date_input.value) date_input.value = new Date().toISOString().split("T")[0];
+                if (input === date_input && !time_input.value) time_input.value = "00:00";
+
                 var date = +join_datetime(date_input.value, time_input.value, this.get_setting("datetime.apply_timezone"));
                 if (!isNaN(date)) this.set_value(date, { trigger: "change" });
             });
-            input.addEventListener("focus", () => this.update());
-            input.addEventListener("blur", () => this.update());
+            input.addEventListener("focus", ()=>{
+                this.update_next_frame()
+            });
+            input.addEventListener("blur", ()=>{
+                this.update_next_frame()
+            });
         });
 
         this.on("render", (e) => {
             var value = +new Date(this.value) || NaN;
-            console.log(value);
             if (isNaN(value)) {
                 date_input.value = "";
                 time_input.value = "";
@@ -53,19 +70,6 @@ export class DateTimeProperty extends InputProperty {
                 var [date, time] = split_datetime(value, this.get_setting("datetime.apply_timezone"));
                 if (!has_focus(date_input)) date_input.value = date;
                 if (!has_focus(time_input)) time_input.value = time.slice(0, 5);
-            }
-            for (var input of inputs) {
-                var valid = (()=>{
-                    if (!this.get_setting("datetime.after_now")) return true;
-                    if (!inputs.some(input => input.value)) return true;
-                    var before_now = this.value < Math.floor(Date.now() / 1000) * 1000;
-                    var before_today = new Date(inputs[0].value) < new Date(this.today_str);
-                    if (before_today && input == date_input) return "Date is in the past.";
-                    else if (!before_today && before_now && input == time_input) return "Time is in the past.";
-                    return true;
-                })();
-                var invalid_class = this.get_setting("invalid_class");
-                if (invalid_class) toggle_class(input, invalid_class, valid !== true);
             }
         });
     }

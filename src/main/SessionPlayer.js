@@ -3,11 +3,11 @@ import path from "node:path";
 import sharp from "sharp";
 import Color from 'color';
 import events from "node:events";
-import {globals, utils, MPVWrapper, InternalSessionProps, MPVEDL, MPVEDLEntry, MAX_EDL_REPEATS, DataNode, DataNode$, Logger, FilterContext, MPVLoadFileError } from "./exports.js";
+import {globals, MPVEDL, MPVEDLEntry, FilterContext } from "./exports.js";
+import {utils, MPVWrapper, DataNode, DataNode$, Logger} from "../core/exports.js";
 import { get_default_stream, get_stream_by_id, get_auto_background_mode } from "./shared.js";
 
-/** @import { InternalSession, Stream, PlaylistItem$, MediaInfo, PlaylistItemProps, MediaInfoStream, MediaInfoStreamType, FilterInput, Filter } from './exports.js' */
-/** @typedef {Record<keyof typeof PlaylistItemProps.props, any>} PlaylistItemPropsProps */
+/** @import { InternalSession, Stream, PlaylistItem$, MediaInfo, PlaylistItemProps, MediaInfoStream, MediaInfoStreamType, FilterInput, Filter, PlaylistItemPropsProps } from './exports.js' */
 /** @typedef {MediaInfoStream & {id:number, type_id:number, secondary:boolean}} MediaInfoStreamEx */
 /** @typedef {{type:MediaInfoStreamType, start:number, end:number, duration:number, offset:number, loops:number, secondary:boolean, name:string}} RegisterFileOpts */
 /** @typedef {RegisterFileOpts & {filename:string, original_filename:string, streams:MediaInfoStreamEx[], type:MediaInfoStreamType}} RegisterFileResult */
@@ -16,7 +16,6 @@ import { get_default_stream, get_stream_by_id, get_auto_background_mode } from "
 // const FORCE_NEXT_ITEM_TIMEOUT = 5 * 1000;
 const FORCE_NEXT_ITEM_TIMEOUT = Number.MAX_SAFE_INTEGER;
 const FORCE_ABORT_TIMEOUT = 10 * 1000;
-const DEFAULT_FPS = 30;
 const EDL_TRACK_TYPES = ["video", "audio", "sub"];
 /** @type {MediaInfoStreamType[]} */
 const MEDIA_INFO_STREAM_TYPES = ["video", "audio", "subtitle"];
@@ -32,6 +31,7 @@ let IGNORE_MPV_REALTIME_CHANGES = {
     "output-pts": 1,
     "volume": 1,
     "audio-pts": 1,
+    "avsync": 1
 };
 
 const LOCAL_MPV_OPTIONS = {
@@ -71,6 +71,7 @@ export class SessionPlayer$ extends DataNode$ {
     time_pos = 0;
     duration = 0;
     playback_speed = 1;
+    current_fps = 0;
     props = {};
 }
 
@@ -80,10 +81,9 @@ export class SessionPlayer$ extends DataNode$ {
 export class SessionPlayer extends DataNode {
     /** @type {MPVWrapper} */
     #mpv;
-    /** @type {MediaInfo} */
-    #media_info;
     /** @type {PlaylistItemPropsProps} */
     #props = {};
+    #props_hash = {};
     #mpv_load_props = {};
     #last_seek_time = 0;
     /** @type {Stream} */
@@ -93,7 +93,6 @@ export class SessionPlayer extends DataNode {
     #allowed_mpv_props = {};
     #width = 0;
     #height = 0;
-    #loops = 0;
 
     /** @type {ParsedItem} */
     parsed_item = {};
@@ -184,8 +183,12 @@ export class SessionPlayer extends DataNode {
             ["core-idle"]: false,
             // ["idle-active"]: true,
             ["interpolation"]: false,
+            ["avsync"]: 0,
+            ["container-fps"]: 0,
             ["estimated-vf-fps"]: 0,
+            ["display-fps"]: 0,
             ["estimated-display-fps"]: 0,
+            ["estimated-frame-number"]: 0,
             ["file-format"]: null,
             ["track-list"]: [],
             ["aid"]: null,
@@ -199,6 +202,8 @@ export class SessionPlayer extends DataNode {
             ["cache-buffering-state"]: 0,
             ["paused-for-cache"]: false,
             ["audio-pts"]: 0,
+            ["video-bitrate"]: 0,
+            ["audio-bitrate"]: 0,
             // these are new props that I added...
             // ["output-pts"]: 0,
             // ["output-frames"]: 0,
@@ -230,11 +235,6 @@ export class SessionPlayer extends DataNode {
 
         this.#mpv.on("seek", (e)=>{
             this.$.internal_seeking = true;
-            var at_end = this.#props["time-pos"] > (this.duration - 1); // aproximate end
-            if (!this.$.seeking && this.#props.loop_file && at_end) {
-                this.#loops++;
-                this.rebuild_filters(); // rebuild fades to account for loop
-            }
         });
 
         this.#mpv.on("playback-restart", (e)=>{
@@ -250,7 +250,11 @@ export class SessionPlayer extends DataNode {
                 this.next();
             } */
             if (name === "eof-reached" && data) {
-                this.next();
+                if (this.#props.loop_file) {
+                    this.reload();
+                } else {
+                    this.next();
+                }
             }
             if (!(name in IGNORE_MPV_REALTIME_CHANGES)) {
                 this.$.props[name] = data;
@@ -301,45 +305,23 @@ export class SessionPlayer extends DataNode {
             }
             
             if (this.#props.cache) {
-                (async ()=>{
-                    let new_ranges;
-                    let demuxer_cache_state = (await this.#mpv.get_property("demuxer-cache-state").catch(()=>null));
-                    // console.log(demuxer_cache_state);
-                    if (demuxer_cache_state) {
-                        new_ranges = demuxer_cache_state["seekable-ranges"];
-                    }
-                    var new_hash = JSON.stringify(new_ranges);
-                    if (new_hash != seekable_ranges_hash) {
-                        seekable_ranges_hash = new_hash;
-                        this.$.seekable_ranges = new_ranges || [];
-                    }
-                })();
-            }
-    
-            if (!this.is_encoding) {
-                let interpolation_mode = this.session.$.interpolation_mode || false;
-                let curr_val = this.#props.interpolation;
-                let new_val = curr_val;
-                if (interpolation_mode == "auto") {
-                    let df = this.session.$.auto_interpolation_rate || 30;
-                    let vf = this.#props["estimated-vf-fps"];
-                    if (vf) {
-                        if (vf < df) {
-                            let r =  df % vf;
-                            new_val = r > 0.1;
-                        } else {
-                            new_val = false
-                        }
-                    }
-                } else {
-                    new_val = interpolation_mode;
+                let new_ranges;
+                let demuxer_cache_state = (await this.#mpv.get_property("demuxer-cache-state").catch(()=>null));
+                if (demuxer_cache_state) {
+                    new_ranges = demuxer_cache_state["seekable-ranges"];
                 }
-                this.set_property("interpolation", new_val);
+                var new_hash = JSON.stringify(new_ranges);
+                if (new_hash != seekable_ranges_hash) {
+                    seekable_ranges_hash = new_hash;
+                    this.$.seekable_ranges = new_ranges || [];
+                }
             }
     
             for (var k in IGNORE_MPV_REALTIME_CHANGES) {
                 this.$.props[k] = this.#props[k];
             }
+
+            this.$.bitrate = this.#props["video-bitrate"] + this.#props["audio-bitrate"];
     
             this.update_time_pos();
 
@@ -370,7 +352,6 @@ export class SessionPlayer extends DataNode {
     async loadfile(item, opts) {
         this.$.preloaded = false;
         this.$.loaded = false;
-        this.#loops = 0;
         
         opts = {
             pause: false,
@@ -385,6 +366,7 @@ export class SessionPlayer extends DataNode {
         if (!opts.reload_props) props = utils.json_copy(this.#props);
         let parsed_item = this.parsed_item = await this.parse_item({...item, props});
         let {duration, is_unknown_duration} = parsed_item;
+        parsed_item.loops = opts.loops;
 
         if (!is_unknown_duration && !duration) {
             throw `Duration is 0, skipping '${item.filename}'...`;
@@ -413,9 +395,10 @@ export class SessionPlayer extends DataNode {
 
         let secondary_sid = (parsed_item.map.subtitle.streams.find(s=>s.secondary)||{}).type_id ?? false;
         props["secondary-sid"] = secondary_sid;
-        if (!duration) props.loop_file = "inf";
+        if (!duration) props.loop_file = true;
         
         this.#props = {};
+        this.#props_hash = {};
         this.#mpv_load_props = {};
         this.$.props = {};
         for (var k in props) {
@@ -423,7 +406,6 @@ export class SessionPlayer extends DataNode {
         }
 
         this.rebuild_filters();
-        this.rebuild_deinterlace();
         this.update_volume(true);
         
         this.$.preloaded = true;
@@ -543,11 +525,14 @@ export class SessionPlayer extends DataNode {
                 filename = `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}/session/${this.session.$.id}`;
             }
         }
+        if (media_info.virtual_filename) {
+            filename = media_info.virtual_filename;
+        }
 
         if (is_image) {
             // let title = `Image (${path.basename(filename)})`;
             filename = await get_image_as_video(filename, this.#width, this.#height, background_color);
-            map.register_stream({type:"video", codec:"h264", duration:NULL_STREAM_DURATION}, true);
+            map.register_stream({type:"video", codec:"h264", duration:NULL_STREAM_DURATION, fps:1}, true);
             media_duration = NULL_STREAM_DURATION;
         }
         
@@ -555,6 +540,15 @@ export class SessionPlayer extends DataNode {
         if (is_rtmp) {
             map.register_stream({type:"video"}, true);
             map.register_stream({type:"audio"}, true);
+        }
+
+        if (media_info.ytdl && (!is_root || is_clipped)) {
+            filename = await this.youtube_url_to_edl(filename);
+            /* for (var entry of edl.entries) {
+                if (entry.header == "!delay_open") {
+                    map.register_stream({type:entry.header.split(" ")[1]}, true);
+                }
+            } */
         }
 
         if (!map.streams.length) {
@@ -586,10 +580,6 @@ export class SessionPlayer extends DataNode {
             filename = await this.get_image_as_mf_sequence(filename, NULL_STREAM_DURATION);
             media_duration = NULL_STREAM_DURATION;
         } else { */
-
-        if (media_info.ytdl && (!is_root || is_clipped)) {
-            filename = await this.youtube_url_to_edl(filename);
-        }
 
         if (is_playlist && (props.playlist_mode || !is_root)) {
 
@@ -731,7 +721,7 @@ export class SessionPlayer extends DataNode {
                     await add_file(await extract_albumart(filename, map.streams.indexOf(s), s.codec), "video");
                     break embed;
                 }
-                background_mode = background_mode_default;
+            } else if (background_mode == "logo") {
             }
 
             if (background_mode == "file") {
@@ -742,7 +732,7 @@ export class SessionPlayer extends DataNode {
             if (props.video_file) {
                 await add_file(props.video_file, "video", {start:props.video_file_start, end:props.video_file_end});
             }
-            if (background_mode === "none" ||!map.has("video")) {
+            if (background_mode === "none" || !map.has("video")) {
                 await add_file(null, "video");
             }
 
@@ -790,7 +780,7 @@ export class SessionPlayer extends DataNode {
             map = new StreamMap();
             if (!media_type || media_type == "video") map.register_stream({type:"video"}, true);
             if (!media_type || media_type == "audio") map.register_stream({type:"audio"}, true);
-            if (!media_type || media_type == "subtitle") map.register_stream({type:"subtitle"}, true);
+            if (media_type == "subtitle") map.register_stream({type:"subtitle"}, true);
         }
 
         if (fix_low_fps_duration) duration--;
@@ -822,9 +812,10 @@ export class SessionPlayer extends DataNode {
     }
     
     async set_property(key, value) {
-        if (this.#props[key] === value) return;
-        // let changed = this.props[key] != value;
+        var hash = JSON.stringify(value);
+        if (this.#props_hash[key] === hash) return;
         this.#props[key] = value;
+        this.#props_hash[key] = hash;
         this.$.props[key] = value;
         let mpv_key = key, mpv_value = value;
 
@@ -849,7 +840,7 @@ export class SessionPlayer extends DataNode {
                 mpv_key = "sub-pos";
                 break;
             case "loop_file":
-                mpv_key = "loop-file";
+                // mpv_key = "loop-file";
                 break;
             case "audio_pitch_correction":
                 mpv_key = "audio-pitch-correction";
@@ -858,9 +849,15 @@ export class SessionPlayer extends DataNode {
 
         if (this.$.preloaded) {
             switch (key) {
-                case "deinterlace_mode":
-                    this.debounced_rebuild_deinterlace();
+                case "fade_in":
+                case "fade_out":
+                case "video_file":
+                case "audio_file":
+                case "subtitle_file":
+                    this.debounced_reload();
                     break;
+                case "deinterlace_mode":
+                case "interpolation_mode":
                 case "audio_delay":
                 case "audio_channels":
                 case "volume_normalization":
@@ -891,6 +888,10 @@ export class SessionPlayer extends DataNode {
         }
     }
 
+    async reload(remember_time_pos=false) {
+        await this.session.reload(remember_time_pos);
+    }
+
     seek(t) {
         if (!this.parsed_item.internal_seekable) return;
         this.#last_seek_time = t;
@@ -913,23 +914,15 @@ export class SessionPlayer extends DataNode {
                 time_pos = this.#last_seek_time;
             } else {
                 time_pos = Math.max(0, +(this.#props["time-pos"] ?? this.#props["start"] ?? 0));
-                if (!this.duration) time_pos += NULL_STREAM_DURATION * this.#loops;
             }
         }
         this.session.$.time_pos = this.$.time_pos = time_pos;
     }
 
-    rebuild_deinterlace() {
-        let deint = this.#props.deinterlace_mode;
-        if (deint == "auto") {
-            deint = false;
-            if (this.#media_info) deint = !!this.#media_info.interlaced;
-        }
-        this.logger.info(`deint:`, deint)
-        this.set_property("deinterlace", deint);
-    }
-
     rebuild_filters() {
+
+        let [w, h] = [this.#width, this.#height];
+        let fps = this.fps;
 
         let vid_auto = this.parsed_item.map.video.force_id ?? this.parsed_item.map.video.auto_id ?? 1;
         let aid_auto = this.parsed_item.map.audio.force_id ?? this.parsed_item.map.audio.auto_id ?? 1;
@@ -938,44 +931,124 @@ export class SessionPlayer extends DataNode {
         let vid = this.#props.vid_override == "auto" ? vid_auto : this.#props.vid_override;
         let aid = this.#props.aid_override == "auto" ? aid_auto : this.#props.aid_override;
         let sid = this.#props.sid_override == "auto" ? sid_auto : this.#props.sid_override;
+
+        // so confusing...
+        if (vid == false) vid = vid_auto;
+        if (aid == false) aid = aid_auto;
+        
         let v_stream = this.parsed_item.map.video.streams[vid-1];
-        if (!v_stream || v_stream.albumart) {
-            let reason = v_stream.albumart ? "albumart" : "no stream";
+        let reason;
+        if (!v_stream) reason = "no stream";
+        else if (v_stream.albumart) reason = "albumart";
+
+        if (reason) {
             this.logger.error(`Bad video stream selected [${reason}]...`);
-            let safe_v_stream = this.parsed_item.map.video.streams.find(s=>s.type == "video" && !s.albumart);
-            if (safe_v_stream) {
-                vid = safe_v_stream.type_id;
+            v_stream = this.parsed_item.map.video.streams.find(s=>s.type == "video" && !s.albumart);
+            if (v_stream) {
+                vid = v_stream.type_id;
                 this.logger.error(`Setting to a safe fallback [${vid}]...`);
             } else {
                 throw `Stream selection failed.`;
             }
         }
 
-        let [w, h] = [this.#width, this.#height];
+        let a_stream = this.parsed_item.map.audio.streams[aid-1];
+        let s_stream = this.parsed_item.map.subtitle.streams[sid-1];
+
+        let deinterlace = this.#props.deinterlace_mode;
+        if (deinterlace == "auto") {
+            deinterlace = !!v_stream.interlaced;
+        }
+
+        let interpolation;
+        {
+            let dfps = (this.stream.is_encoding ? this.stream.fps : this.#props["display-fps"]) || 30;
+            let vfps = v_stream.fps || v_stream.avg_fps || fps || 30;
+            this.$.current_fps = vfps;
+            if (this.#props.interpolation_mode == "auto") {
+                if (vfps) {
+                    if (vfps < dfps) {
+                        let r =  dfps % vfps;
+                        interpolation = r > 0.1;
+                    } else {
+                        interpolation = false
+                    }
+                }
+            } else {
+                interpolation = this.#props.interpolation_mode;
+            }
+        }
+
+        var ctx = new FilterContext({
+            aid: `aid${aid}`,
+            vid: `vid${vid}`,
+            sid: `sid${sid}`,
+            fps: fps,
+            width: w,
+            height: h,
+            color: this.parsed_item.background_color,
+        });
+
+        // -----------------------------------------
 
         let pre_vf_graph = [];
+        // let fps = +(this.props.force_fps || this.stream.fps);
+
+        {
+            let left = utils.clamp(Math.abs(this.#props.crop[0] || 0));
+            let top = utils.clamp(Math.abs(this.#props.crop[1] || 0));
+            let right = utils.clamp(Math.abs(this.#props.crop[2] || 0));
+            let bottom = utils.clamp(Math.abs(this.#props.crop[3] || 0));
+            let cx = left;
+            let cy = top;
+            let cw = utils.clamp(1 - right - left);
+            let ch = utils.clamp(1 - bottom - top);
+            let min_x = 1 / w;
+            let min_y = 1 / h;
+
+            if ((cw != 1 || ch != 1) && cw >= min_x && ch >= min_y) {
+                pre_vf_graph.push(
+                    `crop=w=iw*${cw}:h=ih*${ch}:x=iw*${cx}:y=ih*${cy}`
+                );
+            }
+        }
+
+        let scale_filter = `scale=width=(iw*sar)*min(${w}/(iw*sar)\\,${h}/ih):height=ih*min(${w}/(iw*sar)\\,${h}/ih):force_divisible_by=2`;
+        
+        pre_vf_graph.push(scale_filter);
+
+        if (this.is_encoding) {
+            if (fps) {
+                // it appears interpolation is not applied in encoding mode so we have to use filters:
+                if (interpolation) {
+                    // works incredibly well but slow as fuck
+                    /* pre_vf_graph.push(
+                        `minterpolate=fps=${fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1`
+                    ); */
+                    pre_vf_graph.push(
+                        `framerate=fps=${fps}`
+                    );
+                } else {
+                    pre_vf_graph.push(
+                        `fps=${fps}`
+                    );
+                }
+            }
+        }
+
+        {
+            let pre_vf = ctx.id("pre_vf");
+            ctx.stack.push(`[${ctx.vid}]${pre_vf_graph.join(",")}[${pre_vf}]`);
+            ctx.vid = pre_vf;
+        }
+
+        ctx.apply([...this.#props.pre_filters, ...this.#props.filters]);
+
+        // -----------------------------------------
+
+
         let vf_graph = [];
         let af_graph = [];
-
-        // let fps = +(this.props.force_fps || this.stream.fps);
-        let fps = this.fps;
-        
-        let left = utils.clamp(Math.abs(this.#props.crop[0] || 0));
-        let top = utils.clamp(Math.abs(this.#props.crop[1] || 0));
-        let right = utils.clamp(Math.abs(this.#props.crop[2] || 0));
-        let bottom = utils.clamp(Math.abs(this.#props.crop[3] || 0));
-        let cx = left;
-        let cy = top;
-        let cw = utils.clamp(1 - right - left);
-        let ch = utils.clamp(1 - bottom - top);
-        let min_x = 1 / w;
-        let min_y = 1 / h;
-
-        if ((cw != 1 || ch != 1) && cw >= min_x && ch >= min_y) {
-            pre_vf_graph.push(
-                `crop=w=iw*${cw}:h=ih*${ch}:x=iw*${cx}:y=ih*${cy}`
-            );
-        }
        
         // {
         //     let left = utils.clamp(Math.abs(this.props.crop[0] || 0));
@@ -1021,24 +1094,14 @@ export class SessionPlayer extends DataNode {
             `aresample=async=1`
         );
 
-        var scale_filter = `scale=width=(iw*sar)*min(${w}/(iw*sar)\\,${h}/ih):height=ih*min(${w}/(iw*sar)\\,${h}/ih):force_divisible_by=2`;
-
         var pad_filter = `pad=width=${w}:height=${h}:x=(ow-iw)/2:y=(oh-ih)/2:color=${this.parsed_item.background_color}`;
-        
-        pre_vf_graph.push(scale_filter);
 
         vf_graph.push(
             pad_filter,
             `format=yuv420p`
         );
-
-        if (fps) {
-            pre_vf_graph.push(
-                `fps=${fps}`
-            );
-        }
         
-        if (this.duration || !this.#loops) {
+        if (this.duration) {
             for (let [type, dir, offset, dur] of this.parsed_item.fades) {
                 offset = Math.max(0, offset);
                 let is_final_out = dir == "out" && Math.abs((offset + dur) - this.duration) < 0.25;
@@ -1055,7 +1118,7 @@ export class SessionPlayer extends DataNode {
 
         if (this.stream.is_test) {
             vf_graph.push(
-                `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(path.resolve(globals.app.resources_dir, "Arial.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`,
+                `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(path.resolve(globals.app.resources_dir,"fonts", "RobotoMono-Regular.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`,
             );
         }
 
@@ -1064,24 +1127,6 @@ export class SessionPlayer extends DataNode {
         if (norm_filter_option) {
             af_graph.push(norm_filter_option);
         }
-
-        var ctx = new FilterContext({
-            aid: `aid${aid}`,
-            vid: `vid${vid}`,
-            sid: `sid${sid}`,
-            fps: fps,
-            width: w,
-            height: h,
-            color: this.parsed_item.background_color,
-        });
-
-        {
-            let pre_vf = ctx.id("pre_vf");
-            ctx.stack.push(`[${ctx.vid}]${pre_vf_graph.join(",")}[${pre_vf}]`);
-            ctx.vid = pre_vf;
-        }
-
-        ctx.apply([...this.#props.pre_filters, ...this.#props.filters]);
 
         if (vf_graph.length) {
             let vf = ctx.id("vf");
@@ -1096,17 +1141,17 @@ export class SessionPlayer extends DataNode {
         }
     
         let lavfi_complex_str = ctx.toString();
-
-        // if (this.last_lavfi_complex_str != lavfi_complex_str) {
         this.set_property("lavfi-complex", lavfi_complex_str);
+        this.set_property("deinterlace", deinterlace); // apparently doesnt need a filter to work in encoding mode
+        this.set_property("interpolation", interpolation);
     }
 
     update_volume(immediate=false) {
         this.lua_message("update_volume", [this.session.$.volume_target * this.#props.volume_multiplier, this.session.$.volume_speed, immediate]);
     }
     
+    debounced_reload = utils.debounce(()=>this.reload(true), 10);
     debounced_rebuild_filters = utils.debounce(()=>this.rebuild_filters(), 10);
-    debounced_rebuild_deinterlace = utils.debounce(()=>this.rebuild_deinterlace(), 10);
     debounced_update_volume = utils.debounce(()=>this.update_volume(), 10);
 
     next() {
@@ -1132,12 +1177,12 @@ class StreamMap {
     /** @param {MediaInfoStreamEx} s @param {MediaInfoStreamType|boolean} force */
     register_stream(s, force) {
         s.id = this.streams.length + 1;
+        if (!this[s.type]) this[s.type] = new StreamCollection(this, s.type);
         s.type_id = this[s.type].streams.length + 1;
         this.streams.push(s);
         if ((typeof force === "string" && s.type == force) || force) {
             this[s.type].force_id = s.type_id;
         }
-        
         return s;
     }
 

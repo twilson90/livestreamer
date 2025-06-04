@@ -11,8 +11,10 @@ import nms_core_logger from "node-media-server/src/node_core_logger.js";
 import nms_ctx from "node-media-server/src/node_core_ctx.js";
 import NodeFlvSession from "node-media-server/src/node_flv_session.js";
 import NodeRtmpSession from "node-media-server/src/node_rtmp_session.js";
+import stream from "node:stream";
 
-import {utils, globals, Blocklist, FFMPEGWrapper, WebServer, CoreFork, Logger, StopStartStateMachine, StopStartStateMachine$} from "./exports.js";
+import {globals} from "./exports.js";
+import {utils, Blocklist, FFMPEGWrapper, WebServer, CoreFork, Logger, StopStartStateMachine, StopStartStateMachine$} from "../core/exports.js";
 
 /** @import {Request, Response} from "express" */
 
@@ -20,6 +22,7 @@ import {utils, globals, Blocklist, FFMPEGWrapper, WebServer, CoreFork, Logger, S
 
 const dirname = import.meta.dirname;
 
+const THUMBNAIL_INTERVAL = 60 * 1000;
 const AUTO_END_LIVE_TIMEOUT = 5 * 60 * 1000;
 const FETCH_TIMEOUT = 60 * 1000;
 const THUMBNAIL_FORMAT = "webp";
@@ -111,7 +114,7 @@ export class MediaServerApp extends CoreFork {
     sessions = {};
 
     constructor() {
-        super("media-server");
+        super("media-server", {});
         globals.app = this;
     }
 
@@ -171,6 +174,9 @@ export class MediaServerApp extends CoreFork {
             this.logger.debug(`[${event}] ${JSON.stringify(d)}`);
         }
 
+        this.ipc.respond("get_session", (id)=>{
+            return this.sessions[id];
+        });
         this.ipc.respond("published_sessions", ()=>{
             return [...nms_ctx.sessions.values()].filter(s=>s.isPublishing).map(s=>session_json(s));
         });
@@ -188,6 +194,13 @@ export class MediaServerApp extends CoreFork {
             }
         });
 
+        this.ipc.on("main.session.destroyed", (id)=>{
+            var session = this.get_session_from_stream_path_id(id);
+            if (session) {
+                session.stop();
+            }
+        });
+
         var live_dirs = await glob("*", {cwd: this.live_dir});
         for (let id of live_dirs) {
             let live = new Live(id);
@@ -201,9 +214,9 @@ export class MediaServerApp extends CoreFork {
                 port: this.conf["media-server.rtmp_port"],
                 chunk_size: 60000,
                 gop_cache: true,
-                ping_timeout: 2147483647,
+                ping_timeout: 2147483647/1000,
                 // ssl: {
-                //     ...await this.get_ssl_certs(),
+                //     ...this.get_ssl_certs(),
                 //     port: this.conf["media-server.rtmps_port"],
                 // },
             },
@@ -344,11 +357,12 @@ export class MediaServerApp extends CoreFork {
         this.nms.on('prePublish', async (id, StreamPath, args)=>{
             log_event('prePublish', {id, StreamPath, args});
             if (!precheck_session(id, StreamPath)) return;
+            let live_id = StreamPath.split("/").pop();
             var session = this.get_session(id);
             if (session.appname === "live") {
-                let live = this.get_live(id);
-                if (live) {
-                    session_reject(session, `live session already exists: ${StreamPath}`);
+                let live = this.get_live(live_id);
+                if (live && live.is_started) {
+                    session_reject(session, `live is already running: ${StreamPath}`);
                 }
             }
             this.ipc.emit("media-server.pre-publish", id);
@@ -366,15 +380,14 @@ export class MediaServerApp extends CoreFork {
                 console.warn(`Session probably just ended but still sending chunks, ignoring...`, id);
                 return;
             }
+
             // /** @type {string} */
-            // let live_id = StreamPath.split("/").pop();
             if (session.appname === "live") {
-                var opts = args.opts ? utils.try_catch(()=>JSON.parse(args.opts)) : undefined;
-                var live_id = StreamPath.split("/").pop();
+                let live_id = StreamPath.split("/").pop();
+                let data = args.opts ? utils.try_catch(()=>JSON.parse(args.opts)) : undefined;
                 let live = this.get_live(live_id) || new Live(live_id);
-                await live.stop();
-                await live.init(opts, session);
-                await live.start();
+                await live.init(data, session);
+                await live.restart();
             }
             this.sessions[id] = session_json(session);
             this.ipc.emit("media-server.metadata-publish", id);
@@ -392,7 +405,7 @@ export class MediaServerApp extends CoreFork {
             for (var live of Object.values(this.lives)) {
                 live.tick();
             }
-        }, 60 * 1000);
+        }, 1000);
 
         this.nms.run();
     }
@@ -416,6 +429,15 @@ export class MediaServerApp extends CoreFork {
         }
     }
 
+    get_session_from_stream_path_id(id) {
+        for (var session of nms_ctx.sessions.values()) {
+            var s_id = session.publishStreamPath.split("/").pop();
+            if (s_id == id) {
+                return session;
+            }
+        }
+    }
+
     get_live(id) {
         if (this.lives[id]) return this.lives[id];
         var session = this.get_session(id);
@@ -429,6 +451,7 @@ export class MediaServerApp extends CoreFork {
             await live.stop();
         }
         await this.web.destroy();
+        return super.destroy();
     }
 }
 
@@ -436,13 +459,14 @@ export class Live$ extends StopStartStateMachine$ {
     hls_list_size = 0;
     hls_max_duration = 0;
     segment_duration = 0;
-    start_ts = 0;
-    is_live = false;
     segment = 0;
     use_hevc = false;
     use_hardware = false;
     outputs = [];
     is_vod = false;
+    is_live = false;
+    ts = Date.now();
+    duration = 0;
 }
 
 /** @extends {StopStartStateMachine<Live$>} */
@@ -454,7 +478,6 @@ export class Live extends StopStartStateMachine {
     metadata = {};
     /** @type {NodeRtmpSession} */
     session;
-    get destroyed() { return !globals.app.lives[this.id]; }
 
     constructor(id) {
 
@@ -477,6 +500,11 @@ export class Live extends StopStartStateMachine {
         
         this.logger = new Logger(`live-${this.id}`);
         this.logger.on("log", (log)=>globals.app.logger.log(log));
+
+        this.observer.on("change", (e)=>{
+            if (e.subtree) return;
+            this.debounced_save();
+        });
     }
 
     async load() {
@@ -484,6 +512,8 @@ export class Live extends StopStartStateMachine {
         try { d = JSON.parse(await fs.readFile(this.data_filename, "utf-8").catch(()=>{})); } catch {};
         if (d) {
             await this.init(d);
+            await this.end();
+            await this.stop();
             return true;
         }
     }
@@ -492,13 +522,15 @@ export class Live extends StopStartStateMachine {
         await fs.writeFile(this.data_filename, JSON.stringify(this.$), "utf-8");
     }
 
+    debounced_save = utils.debounce(async ()=>{
+        await this.save();
+    }, 10);
+
     async tick() {
         var now = Date.now();
         if (this.is_started) {
             this.$.ts = now;
             this.$.duration = now - this.$.start_ts;
-            await this.create_thumbnail();
-            await this.save();
         } else {
             if (!this.$.ended && now > (this.$.ts + AUTO_END_LIVE_TIMEOUT)) {
                 await this.end();
@@ -511,16 +543,18 @@ export class Live extends StopStartStateMachine {
     
     /** @param {any} opts */
     /** @param {NodeRtmpSession} session */
-    async init(opts, session) {
-        opts = utils.json_copy({
+    async init(data, session) {
+        data = {
+            ...data
+        }
+        Object.assign(this.$, utils.json_copy({
             segment: 0,
             use_hardware: false,
             use_hevc: false,
             outputs: [],
-            ...(opts||{}),
-        });
-        
-        Object.assign(this.$, opts);
+            ...data,
+            is_live: false,
+        }));
         
         if (session) {
             this.session = session;
@@ -554,7 +588,7 @@ export class Live extends StopStartStateMachine {
         this.$.segment_duration = +globals.app.conf["media-server.hls_segment_duration"];
         
         for (var l of Object.values(this.levels)) {
-            await l.destroy();
+            await l.stop();
         }
         for (var c of this.$.outputs) {
             new LiveLevel(this, c);
@@ -562,14 +596,16 @@ export class Live extends StopStartStateMachine {
     }
     
     async onstart() {
-        this.$.start_ts = Date.now();
         this.$.is_live = true;
 
         this.ffmpeg = new FFMPEGWrapper();
         this.ffmpeg.on("error", (e)=>this.logger.error(e));
-
+        
+        var last_s;
         this.last_level.on("new_segment", ()=>{
-            if (this.$.segment == 0) this.create_thumbnail();
+            var s = Math.floor(this.$.segment * this.$.segment_duration * 1000 / THUMBNAIL_INTERVAL);
+            if (s != last_s) this.create_thumbnail();
+            last_s = s;
             this.$.segment++;
         });
 
@@ -594,8 +630,7 @@ export class Live extends StopStartStateMachine {
             // `-stream_loop`, `-1`,
         );
         ffmpeg_args.push(
-            // `-re`,
-            // "-f", "flv",
+            `-re`,
             // `-noautoscale`,
             "-i", `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${this.session.publishStreamPath}`,
             `-ar`, `44100`,
@@ -737,10 +772,10 @@ export class Live extends StopStartStateMachine {
     async onstop() {
         console.info(`LIVE [${this.id}] has stopped.`);
         this.$.is_live = false;
-        for (var v in this.levels) {
-            await this.levels[v].destroy();
+        for (var k in this.levels) {
+            await this.levels[k].stop();
         }
-        await this.ffmpeg.stop();
+        if (this.ffmpeg) await this.ffmpeg.stop();
         return super.onstop();
     }
     
@@ -780,17 +815,29 @@ export class Live extends StopStartStateMachine {
     /** @param {Request} req @param {Response} res */
     async fetch(req, res) {
         var {id, v} = req.params;
-        if (this.is_started) {
-            res.set('cache-control', 'no-store');
-            if (this.levels[v]) {
-                await this.levels[v].fetch(req, res);
-                return true;
-            }
-        } else {
+        if (this.$.is_vod) {
             var f = path.join(this.dir, v, `vod.m3u8`);
             if (await fs.exists(f)) {
                 res.header("content-type", "application/vnd.apple.mpegurl");
-                fs.createReadStream(f, {encoding:'utf8'}).pipe(res);
+                const transform = new stream.Transform({
+                    transform(chunk, encoding, callback) {
+                        this.push(chunk);
+                        callback();
+                    },
+                    flush(callback) {
+                        this.push('#EXT-X-ENDLIST\n');
+                        callback();
+                    }
+                });
+                stream.pipeline(fs.createReadStream(f, {encoding:'utf8'}), transform, res, (err)=>{
+                    if (err) console.warn(err);
+                });
+                return true;
+            }
+        } else {
+            res.set('cache-control', 'no-store');
+            if (this.levels[v]) {
+                await this.levels[v].fetch(req, res);
                 return true;
             }
         }
@@ -800,14 +847,12 @@ export class Live extends StopStartStateMachine {
         if (this.$.ended) return;
         this.$.ended = true;
         this.$.is_vod = true;
-        for (var l of Object.values(this.levels)) {
-            await l.end();
-        }
     }
 
     async ondestroy() {
         delete globals.app.lives[this.id];
         await fs.rm(this.dir, { recursive: true });
+        globals.app.logger.info(`LIVE [${this.id}] has been destroyed.`);
         return super.ondestroy();
     }
 }
@@ -817,7 +862,7 @@ export class LiveLevel extends events.EventEmitter {
     /** @type {Segment[]} */
     #segments = [];
     // #bitrates = [];
-    #destroyed = false;
+    #stopped = false;
     #ended = false;
     #started = false;
     #interval;
@@ -888,8 +933,8 @@ export class LiveLevel extends events.EventEmitter {
         if (segments.length && !this.#segments.length) {
             var old = await fs.readFile(this.filename, "utf-8").catch(()=>"");
             if (old) {
-                old = old.replace(/#EXT-X-ENDLIST\n+?$/, "");
-                await fs.writeFile(this.filename, old, "utf-8");
+                // old = old.replace(/#EXT-X-ENDLIST\n+?$/, "");
+                // await fs.writeFile(this.filename, old, "utf-8");
                 this.#segments.push(...this.parse(old));
             } else {
                 var init = str.match(/^#EXT-X-MAP:URI="(.+)"$/m);
@@ -906,13 +951,6 @@ export class LiveLevel extends events.EventEmitter {
     /** @param {Segment} segment */
     async #add_segment(segment) {
         this.#segments.push(segment);
-        /* var stat = await fs.stat(path.join(this.dir, segment.uri)).catch(utils.noop);
-        if (stat) {
-            let bitrate = (stat.size * 8) / segment.duration;
-            this.#bitrates.push(bitrate);
-            while (this.#bitrates.length > 128) this.#bitrates.shift();
-            globals.app.logger.debug(`segment ${segment.uri} bitrate: ${Math.round(bitrate/1024)}kbps | overall_avg: ${Math.round(utils.average(this.#bitrates)/1024)}kbps`);
-        } */
         if (segment.discontinuity) {
             await this.#append(`#EXT-X-DISCONTINUITY\n`);
         }
@@ -963,7 +1001,7 @@ export class LiveLevel extends events.EventEmitter {
         var _HLS_msn = req.query._HLS_msn || 0;
         var _HLS_skip = req.query._HLS_skip || false;
         var ts = Date.now();
-        while (!this.#segments[_HLS_msn] && !this.#destroyed) {
+        while (!this.#segments[_HLS_msn] && !this.#stopped) {
             await new Promise(r=>this.once("update", r));
             if (Date.now() > ts + FETCH_TIMEOUT) throw new Error("This is taking ages.");
         }
@@ -971,15 +1009,9 @@ export class LiveLevel extends events.EventEmitter {
         res.send(this.#render(_HLS_msn, _HLS_skip));
     }
 
-    async end() {
-        if (this.#ended) return;
-        this.#ended = true;
-        await this.#append(`#EXT-X-ENDLIST\n`);
-    }
-
-    async destroy() {
-        if (this.#destroyed) return;
-        this.#destroyed = true;
+    async stop() {
+        if (this.#stopped) return;
+        this.#stopped = true;
         clearInterval(this.#interval);
         await this.#update();
     }

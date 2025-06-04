@@ -11,8 +11,12 @@ export class Client$ extends DataNodeID$ {
     init_ts = 0;
     client_id = "";
     ts = 0;
-    username = "";
-    is_admin = false;
+    user = {
+        user_id: "",
+        email: "",
+        username: "",
+        is_admin: false,
+    }
 }
 
 /** @template {Client$} T @extends {DataNodeID<T>} */
@@ -20,8 +24,8 @@ export class Client extends DataNodeID {
 
     get ip() { return this.$.ip; }
     get ip_hash() { return this.$.ip_hash; }
-    get username() { return this.$.username; }
-    get is_admin() { return !!this.$.is_admin; }
+    get username() { return this.$.user.username; }
+    get is_admin() { return !!this.$.user.is_admin; }
     api = {};
 
     /** @param {T} $ */
@@ -59,15 +63,6 @@ export class Client extends DataNodeID {
         await utils.append_line_truncate(this.client_history_path, JSON.stringify(this.$), 32);
     }
 
-    async get_client_info(ip_hash) {
-        var filename = path.join(this.server.clients_dir, `${ip_hash}.json`);
-        var lines = (await fs.exists(filename)) ? (await utils.read_last_lines(filename, 512, "utf8")) : [];
-        return Object.fromEntries(lines.map((line)=>{
-            var data = JSON.parse(line.trim());
-            return [data.id, data];
-        }));
-    }
-
     onclose(code) {
         this.logger.info(`disconnected.`);
         this.destroy();
@@ -87,31 +82,20 @@ export class Client extends DataNodeID {
             let {method, arguments:args, id} = request;
             let result, error;
             // var fn_path = Array.isArray(request.path) ? request.path : String(request.path).split(/[\.\/]+/);
-            let run = ()=>{
+            let run = async()=>{
                 if (method && typeof this.api[method] == "function") {
-                    result = this.api[method].apply(this, args || []);
-                } else {
-                    error = `Invalid request: ${JSON.stringify(request)}`;
+                    return this.api[method].apply(this, args || []);
                 }
+                throw new Error(`Invalid request: ${JSON.stringify(request)}`);
             };
-            if (globals.app.debug) {
-                run();
-            } else {
-                try { run(); } catch (e) { error = e; }
-            }
-            result = await Promise.resolve(result).catch(e=>{
-                error = e;
-                if (globals.app.debug) throw e;
-            });
-            result = {
-                id: id,
-                result,
-            };
+            result = await run().catch(e=>error = e);
             if (error) {
                 this.logger.error(error);
-                result.error = { message: error.toString() }
+                error = error.toString();
             }
-            this.send({request:result});
+            this.send({
+                request: { id, result, error },
+            });
         }
     }
 

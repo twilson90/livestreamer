@@ -1,14 +1,17 @@
 import path from "node:path";
 import fs from "fs-extra";
-import {globals, utils, constants, DataNodeID, DataNodeID$, Logger, ClientUpdater, Stream, AccessControl, LogCollector} from "./exports.js";
-/** @import {Log, Stream$, MainClient} from "./exports.js" */
+import {globals, Stream} from "./exports.js";
+import {utils, constants, DataNodeID, DataNodeID$, Logger, ClientUpdater, LogCollector, AccessControl } from "../core/exports.js";
+
+/** @import {Stream$, MainClient} from "./exports.js" */
+/** @import {Log} from "../core/exports.js" */
 /** @import * as events from "events" */
 
 export class Session$ extends DataNodeID$ {
     name = "";
     type = "unknown";
     index = 0;
-    creation_time = 0;
+    create_ts = 0;
     /** @type {Record<PropertyKey,Log>} */
     logs = {};
     version = "1.0";
@@ -21,7 +24,7 @@ export class StreamSettings$ {
     targets = [];
     target_opts = {};
     title = "";
-    frame_rate = 30;
+    fps = 30;
     use_hardware = 0;
     experimental_mode = false;
     resolution = "1280x720";
@@ -59,22 +62,29 @@ export class Session extends DataNodeID {
     }
 
     /** @param {string} type @param {T} $ @param {any} defaults @param {string} id @param {string} name */
-    constructor(type, $, defaults, id, name) {
-        super(id, $);
+    constructor(type, $, defaults) {
+        $.type = type;
+        $.index = Object.keys(globals.app.sessions).length;
+        $.create_ts = Date.now();
 
-        this.defaults = {
-            ...utils.json_copy(defaults),
-            type,
-            index: Object.keys(globals.app.sessions).length,
-            name: name || globals.app.get_new_session_name(),
-            creation_time: Date.now(),
-        };
+        super($.id, $);
+
+        defaults = utils.json_copy(defaults);
+        delete defaults.name;
+        delete defaults.access_control;
+        delete defaults.version;
+        delete defaults.create_ts;
+        delete defaults.index;
+        this.defaults = defaults;
+
+        this.reset();
 
         this.logger = new Logger();
 
         let old_name, logger_prefix;
         var update_logger_prefix = ()=>{
-            if (old_name !== this.$.name) {
+            if (old_name !== this.$.name) logger_prefix = null;
+            if (!logger_prefix) {
                 let parts = utils.sanitize_filename(this.$.name).split("-");
                 if (parts[0] != "session") parts.unshift("session");
                 old_name = this.$.name;
@@ -93,8 +103,6 @@ export class Session extends DataNodeID {
         this.logger.on("log", (log)=>{
             log_collector.register({...log, prefix: log.prefix.slice(2)})
         });
-
-        this.reset();
         
         /** @type {ClientUpdater<MainClient>} */
         this.client_updater = new ClientUpdater(this.observer, ["sessions", this.id]);

@@ -3,15 +3,13 @@ import mime from "mime-types";
 import fs from "fs-extra";
 import stream from "node:stream";
 import ftp from "basic-ftp"
-import {Driver, constants} from "../exports.js";
+import {Driver} from "../exports.js";
+import {constants} from "../../core/exports.js";
 
 /** @inheritDoc */
 export class FTP extends Driver {
     static net_protocol = "ftp";
-
-    __config(config) {
-        config.separator = "/";
-    }
+    static separator = "/";
 
     __init() {
         this.client = new ftp.Client();
@@ -41,7 +39,8 @@ export class FTP extends Driver {
     
     __uri(id) {
         var config = this.volume.config;
-        return new URL(id, `ftp${config.ftps?"s":""}://${config.user}:${config.password||""}@${config.host}`).toString();
+        if (id.startsWith("/")) id = id.slice(1);
+        return `ftp${config.ftps?"s":""}://${config.user}:${config.pass||""}@${config.host}:${config.port||(config.ftps?990:21)}/${id}`;
     }
 
     async __readdir(src) {
@@ -125,5 +124,12 @@ export class FTP extends Driver {
         await this.client.ensureDir(dst);
         return dst;
     }
+    __options(id, options) {
+        var opts = super.__options(id, options);
+        opts.csscls = "elfinder-navbar-root-network";
+        opts.disabled.push("duplicate", "paste", "copy", "cut", "archive", "extract");
+        return opts;
+    }
 }
+
 export default FTP;

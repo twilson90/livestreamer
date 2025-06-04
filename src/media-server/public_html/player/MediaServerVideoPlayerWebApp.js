@@ -1,13 +1,43 @@
-import {clamp} from "../../../utils/clamp.js";
-import {sort} from "../../../utils/sort.js";
-import {try_catch} from "../../../utils/try_catch.js";
-import {nearest} from "../../../utils/nearest.js";
+import * as utils from "../../../utils/exports.js";
 import * as dom from "../../../utils/dom/exports.js";
 import {$} from '../../../jquery-global.js';
 import Hls from "hls.js";
-import videojs from "video.js/core";
+import videojs from "video.js/core.es.js";
 import "video.js/dist/video-js.css";
+import "../../../utils/dom/dom.scss";
 import './style.scss';
+
+class Crop {
+    x0 = 0;
+    x1 = 1;
+    y0 = 0;
+    y1 = 1;
+    get w() { return this.x1 - this.x0; }
+    get h() { return this.y1 - this.y0; }
+    get area() { return this.w * this.h; }
+    get valid() { return this.w > 0.5 && this.h > 0.5; }
+    constructor(o) {
+        if (arguments.length == 2) {
+            var [w,h] = [...arguments];
+            this.x1 = w;
+            this.y1 = h;
+        } else if (o) {
+            var {x0,x1,y0,y1} = o;
+            this.x0 = x0;
+            this.x1 = x1;
+            this.y0 = y0;
+            this.y1 = y1;
+        }
+    }
+    /** @param {Crop} b */
+    difference(b) {
+        var a = this;
+        return Math.abs(b.x0-a.x0) + Math.abs(b.y0-a.y0) + Math.abs(b.x1-a.x1) + Math.abs(b.y1-a.y1);
+    }
+    static from(w,h) {
+        return new Crop({x0:(1-w)/2, x1:1-(1-w)/2, y0:(1-h)/2, y1:1-(1-h)/2});
+    }
+}
 
 var conf;
 var time_display_modes = [
@@ -21,95 +51,155 @@ var time_display_modes = [
     }
 ];
 
-var crop_modes = [
-    {
-        "label": "Aspect Ratio: Default",
-        "icon": `-`,
-        "value":0
-    },
-    {
-        "label": "Aspect Ratio: Automatic Detection",
-        "icon": `AUTO`,
-        "value":"auto"
-    },
-    {
-        "label": "Aspect Ratio: 16:9 -> 4:3",
-        "icon": `4:3`,
-        "value": 4/3
-    },
-    {
-        "label": "Aspect Ratio: 4:3 -> 16:9",
-        "icon": `16:9`,
-        "value": 16/9
-    }
+var crops = [
+    Crop.from(1, 1),             // 16:9
+    Crop.from(1/(4/3), 1),       // 16:9 -> 4:3
+    Crop.from(1, (16/9)/(21/9)), // 21:9 -> 16:9
+    Crop.from(1/(4/3), 1/(4/3)), // 16:9 -> 4:3 -> 16:9
 ];
 
-const DEBUG = false;
-var REGION_BUFFER = 30;
+var crop_modes = [
+    {
+        "label": "Automatic",
+        "icon": `AUTO`,
+        "value": "auto"
+    },
+    {
+        "label": "16:9 (Widescreen)",
+        "icon": `16:9`,
+        "value": 16/9,
+        "crop": crops[0]
+    },
+    {
+        "label": "4:3 (Standard)",
+        "icon": `4:3`,
+        "value": 4/3,
+        "crop": crops[1]
+    },
+    {
+        "label": "21:9 (Cinematic)",
+        "icon": `21:9`,
+        "value": 21/9,
+        "crop": crops[2]
+    },
+];
+
+var DEBUG = false;
+var REGION_BUFFER = 10;
 var MIN_REGIONS_FIRST_CROP = 0;
-const CROP_DETECT_INTERVAL = 100;
+const CROP_DETECT_INTERVAL = 1000;
 const VIDEO_UI_UPDATE_INTERVAL = 100;
 const IS_EMBED = window.parent !== window.self;
 
 var settings = new dom.LocalStorageBucket("player", {
     time_display_mode: 0,
     volume: 1,
-    crop_mode: "auto",
+    crop_mode: crop_modes.findIndex(m=>m.value == "auto"),
 });
+settings.load();
 
+/** @type {MediaServerVideoPlayerWebApp} */
+let app;
 export class MediaServerVideoPlayerWebApp {
     /** @type {VideoPlayer} */
     player;
 
     constructor() {
+        app = this;
         this.init();
     }
 
     async init() {
 
-        if (DEBUG) document.body.style.background = "blue";
         if (IS_EMBED) document.body.classList.add("embedded");
         
-        conf = await (await fetch("../conf")).json();
+        conf = await (await fetch("/conf")).json();
 
         var params = new URLSearchParams(location.search);
         var autoplay = params.get("autoplay") == "1"
+        this.src = new URL(`/media/live/${params.get("id")}/master.m3u8`, window.location.origin+window.location.pathname).toString();
 
-        var src = new URL(`../media/live/${params.get("id")}/master.m3u8`, window.location.origin+window.location.pathname).toString();
-        console.log(src);
+        this.play_button = new PlayButton();
+        document.body.append(this.play_button.el);
 
-        var messenger = new dom.WindowCommunicator();
-        messenger.on("set_aspect_ratio", (ar)=>{
-            this.aspect_ratio = ar;
-            return true;
+        var menu = new dom.DropdownMenu({
+            items: [
+                {
+                    label: ()=>`Toggle Debug Mode`,
+                    click: ()=>{
+                        DEBUG = !DEBUG;
+                        this.update();
+                        if (this.player) this.player.update_ratio();
+                    },
+                }
+            ],
+            trigger: "contextmenu",
+            target: document.body,
+            position: "trigger"
         });
-        this.play_button = $(
-            `<div class="play-button" style="z-index:999">
-                <div class="play"><i class="fas fa-play"></i></div>
-            </div>`
-        )[0];
-        this.play_button.onclick = (e)=>{
-            if (this.player) this.player.player.play();
-            else new VideoPlayer(src, true);
-        }
-        document.body.append(this.play_button);
-        new VideoPlayer(src, autoplay);
-        this.showing_play_overlay = false;
-        this.update();
+        
+        setInterval(()=>{
+            app.update()
+        }, VIDEO_UI_UPDATE_INTERVAL);
+
+        this.init_player(autoplay);
     }
 
-    update() {
-        var player = this.player;
-        var show = !player || !player.initialized;
-        this.play_button.querySelector(".play").style.display = show ? "" :  "none";
-        if (show != this.showing_play_overlay) {
-            this.play_button.style.pointerEvents = show ? "" : "none";
-            if (show) $(this.play_button).fadeIn(200);
-            else $(this.play_button).fadeOut(200);
+    init_player(autoplay) {
+        if (this.player) {
+            this.player.play();
+        } else {
+            this.player = new VideoPlayer(this.src);
+            this.player.init(autoplay);
         }
-        // console.log(e, videoWasPlaying);
-        this.showing_play_overlay = show;
-        player.update();
+    }
+    update = dom.debounce_next_frame(()=>this.#update());
+    #update() {
+        if (this.player) this.player.update();
+        this.play_button.update();
+    }
+}
+
+class PlayButton {
+    constructor() {
+        /** @type {HTMLElement} */
+        this.el = $(
+            `<div class="play-button">
+                <div class="play"><i class="fas fa-play"></i></div>
+                <div class="pause"><i class="fas fa-pause"></i></div>
+                <div class="ended"><div style="padding:10px">The stream has ended.</div><i class="fas fa-redo"></i></div>
+            </div>`
+        )[0];
+        this.el.onclick = (e)=>app.init_player(true);
+        document.body.append(this.el);
+        this.el = this.el;
+        this.update();
+    }
+    update() {
+        var paused = false;
+        var ended = false;
+        var seeking = false;
+        var videoWasPlaying = false;
+
+        if (app.player) {
+            var vjs = app.player.player;
+            seeking  = vjs.scrubbing() || vjs.seeking();
+            videoWasPlaying = vjs.controlBar.progressControl.seekBar.videoWasPlaying;
+            ended = vjs.ended();
+            paused = !ended && vjs.hasStarted() && vjs.paused() && (!seeking || !videoWasPlaying);
+        }
+        var initialized = app.player && app.player.initialized;
+        this.el.querySelector(".play").style.display = !initialized ? "" :  "none";
+        this.el.querySelector(".pause").style.display = paused ? "" : "none";
+        this.el.querySelector(".ended").style.display = ended ? "" : "none";
+
+        var showing = ended || paused || !initialized;
+        // this.el.style.display = showing ? "" : "none";
+        if (this._showing != showing) {
+            this._showing = showing;
+            if (showing) $(this.el).stop().fadeIn(200);
+            else $(this.el).stop().fadeOut(200);
+        }
     }
 }
 
@@ -121,30 +211,27 @@ class VideoPlayer {
     /** @type {import("video.js/dist/types/player").default}*/
     player;
     initialized = false;
-    update_interval_id;
+    #update_ratio_interval_id;
 
-    constructor(src, autoplay) {
-        app.player = this;
+    constructor(src) {
         this.src = src;
         this.video_el = $(`<video class="video-js" preload="auto" width="1280" height="720"></video>`)[0];
+        this.crop_detect = new CropDetect(this.video_el);
+        this.crop_detect.ready.then(()=>{
+            this.update_ratio();
+        })
 
         document.body.append(this.video_el);
+
         this.video_el.addEventListener("error", (e)=>{
             console.log(e);
         });
-        if (Hls.isSupported()) {
-            this.init_player(autoplay);
-        } else if (this.video_el.canPlayType('application/vnd.apple.mpegurl')) {
-            this.video_el.src = src;
-        }
-        // this.video_wrapper = $(`<div class="video-wrapper">`)[0];
-        // this.video_el.after(this.video_wrapper)
-        // this.video_wrapper.append(this.video_el);
+        new ResizeObserver(()=>{
+            this.update_ratio();
+        }).observe(this.video_el);
     }
 
-    update = dom.debounce_next_frame(()=>this.__update())
-
-    __update() {
+    update() {
         if (!this.player) return;
 
         var d = this.get_time_until_live_edge_area(true);
@@ -165,13 +252,14 @@ class VideoPlayer {
         // console.log("liveTracker.behindLiveEdge()", liveTracker.behindLiveEdge())
         var stl_text;
         if (this.liveTracker.behindLiveEdge()) {
-            if (this.is_mobile && settings.get("time_display_mode") == 0) {
+            // this.is_mobile && 
+            if (settings.get("time_display_mode") == 0) {
                 stl_text = "["+this.get_live_time(0, this.player.currentTime())+"]"
             } else {
                 stl_text = `[-${videojs.time.formatTime(this.get_time_until_live_edge_area())}]`
             }
         } else {
-            stl_text = "LIVE"
+            stl_text = "LIVE";
         }
         if (this.seekToLive.last_text != stl_text) {
             this.seekToLive.last_text = stl_text
@@ -181,59 +269,34 @@ class VideoPlayer {
         var is_live = this.liveTracker.isLive();
         if (is_live) this.timeDisplayToggle.show();
         else this.timeDisplayToggle.hide();
-
-        if (!this.pause_button) {
-            this.pause_button = $(
-                `<div class="play-button">
-                    <div class="pause"><i class="fas fa-pause"></i></div>
-                    <div class="ended"><div style="padding:10px">The stream has ended.</div><i class="fas fa-redo"></i></div>
-                </div>`
-            )[0];
-            this.pause_button.onclick = ()=>this.player.play();
-        }
-        var seeking  = this.player.scrubbing() || this.player.seeking();
-        var videoWasPlaying = this.player.controlBar.progressControl.seekBar.videoWasPlaying;
-        var ended = this.player.ended();
-        var paused = !ended && this.player.hasStarted() && this.player.paused() && (!seeking || !videoWasPlaying);
-        this.pause_button.querySelector(".pause").style.display = paused ? "" : "none";
-        this.pause_button.querySelector(".ended").style.display = ended ? "" : "none";
-        if (!ended && !paused) {
-            this.pause_button.remove();
-        } else if (!this.pause_button.parentElement) {
-            this.video_el.after(this.pause_button);
-        }
-
-        this.update_aspect_ratio();
     }
 
-    async update_aspect_ratio() {
-        var ar = settings.get("crop_mode");
-        if (DEBUG) {
-            this.video_el.style.background = "red";
+    async update_ratio() {
+        var crop_mode_index = settings.get("crop_mode");
+        var crop_mode = crop_modes[crop_mode_index];
+        let crop = crop_mode.crop || crops[0];
+        if (crop_mode.value == "auto" || DEBUG) {
+            await this.crop_detect.update();
         }
-        var remove_crop_detect = ()=> {
-            if (!this.crop_detect) return;
-            this.crop_detect.dispose();
-            this.crop_detect = null;
-        };
-        if (ar == "auto") {
-            var dims_hash = JSON.stringify([this.video_el.videoWidth, this.video_el.videoHeight]);
-            if (dims_hash !== this._last_dims_hash) remove_crop_detect();
-            this._last_dims_hash = dims_hash;
-            if (!this.crop_detect) this.crop_detect = new CropDetect(this.video_el);
-            this.crop_detect.update();
-        } else {
-            remove_crop_detect();
-            if (ar) {
-                var scale = 1;
-                var height = window.innerWidth / ar;
-                var correction_ratio = window.innerHeight / height;
-                scale = clamp((ar * correction_ratio), 1, 4/3);
-                this.video_el.style.transform = `scale(${scale})`;
-            } else {
-                this.video_el.style.transform = ``;
+        if (crop_mode.value == "auto") {
+            crop = this.crop_detect.region_standardized;
+        }
+        apply_crop(this.video_el, crop);
+
+        // for (var c of crops) {
+        //     this.crop_detect.draw_rect(c, "grey", 1, [2, 2]);
+        // }
+        
+        if (this.crop_detect.canvas) {
+            if (DEBUG && !this.crop_detect.canvas.parentElement) {
+                document.body.append(this.crop_detect.canvas);
+            } else if (!DEBUG && this.crop_detect.canvas.parentElement) {
+                this.crop_detect.canvas.remove();
             }
         }
+        this.crop_detect.draw_rect(this.crop_detect.region_standardized, "red", 1, [2,2]);
+        this.crop_detect.draw_rect(this.crop_detect.region, "yellow", 1, [2,2]);
+        this.crop_detect.draw_rect(crop, "green", 1);
     }
     
     get_preferred_level() {
@@ -242,7 +305,7 @@ class VideoPlayer {
         return +level;
     }
 
-    init_player(autoplay) {
+    init(autoplay) {
         let _this = this;
         var Button = videojs.getComponent("Button");
         var MenuButton = videojs.getComponent("MenuButton");
@@ -359,7 +422,7 @@ class VideoPlayer {
             }
             createItems() {
                 this.hideThreshold_ = 1;
-                var levels = sort([...this.options_.levels], l=>-l.bitrate);
+                var levels = utils.sort([...this.options_.levels], l=>-l.bitrate);
                 return levels.map((level)=>{
                     var item = new MenuItem(this.player_, { label: level.text, selectable: true });
                     item.level = level.value;
@@ -405,19 +468,20 @@ class VideoPlayer {
                 this.el_.prepend(this.icon);
                 this.update();
             }
-            handleClick(event) {
-                var c = (crop_modes.findIndex(m=>m.value == settings.get("crop_mode"))+1)%crop_modes.length;
-                settings.set("crop_mode", crop_modes[c].value);
+            handleClick(e) {
+                var c = (settings.get("crop_mode")+1) % crop_modes.length;
+                settings.set("crop_mode", c);
                 this.update();
+                _this.update_ratio();
             }
             update() {
-                var c = crop_modes.find(m=>m.value == settings.get("crop_mode"));
-                if (!c) return;
-                this.icon.innerHTML = c.icon;
-                this.icon.dataset.ratio = c.icon;
-                // if (c.value) this.icon.style.setProperty("--ratio", c.value);
-                // else this.icon.style.removeProperty("--ratio");
-                this.controlText(`${c.label}`);
+                var c = settings.get("crop_mode") || 0;
+                var d = crop_modes[c];
+                if (d) {
+                    this.icon.innerHTML = d.icon;
+                    this.icon.dataset.ratio = d.icon;
+                    this.controlText(`${d.label}`);
+                }
             }
             buildCSSClass() {
                 return `vjs-crop-toggle vjs-control vjs-button ${super.buildCSSClass()}`;
@@ -525,6 +589,22 @@ class VideoPlayer {
                 } */
             }
         });
+        
+        var c1 = $(`<div></div>`)[0];
+        var c2 = $(`<div></div>`)[0];
+        for (var c of [c1,c2]) {
+            c.style.display = "flex";
+            c.style.justifyContent = "center";
+            c.style.alignItems = "center"; 
+            c.style.width = "100%";
+            c.style.height = "100%";
+        }
+        c2.append(c1);
+        this.video_el.parentElement.insertBefore(c2, this.video_el);
+        c1.append(this.video_el);
+        c2.append(app.play_button.el);
+        c2.style.background = "rgb(10,10,10)";
+        c1.style.background = "black";
 
         // player.on("seeked",(e)=>this.update_play_button(e));
         // seekBarPlayProgressBar.__proto__.update.apply(seekBarPlayProgressBar);
@@ -601,7 +681,7 @@ class VideoPlayer {
         if (conf.logo_url) {
             // let target = IS_EMBED ? `_parent` : `_blank`;
             let target = `_blank`;
-            dom.load_image("../logo").then(img=>{
+            dom.load_image("/logo").then(img=>{
                 this.logo_el = $(`<a target="${target}" class="logo" href="${conf.logo_url}"></a>`)[0];
                 this.logo_el.append(img);
                 this.player.el_.append(this.logo_el);
@@ -643,7 +723,7 @@ class VideoPlayer {
                 _this.seekBarMouseTimeDisplay.el_.style.left = `${seekBarRect.width * seekBarPoint}px`;
                 var w = this.el_.offsetWidth;
                 var x = seekBarRect.width * seekBarPoint;
-                var left = clamp(x, w/2, window.innerWidth-w/2);
+                var left = utils.clamp(x, w/2, window.innerWidth-w/2);
                 var cx = Math.round(left - x - w/2);
                 this.el_.style.transform = `translateX(${cx}px)`;
             };
@@ -664,20 +744,34 @@ class VideoPlayer {
             }
         });
         this.player.on("error", console.error);
-        this.player.on("pause",()=>this.update());
-        this.player.on("seeking",()=>this.update());
-        this.player.on("play",()=>{
-            this.initialized = true;
+        this.player.on("pause",()=>app.update());
+        var was_seeking = false;
+        this.player.on("seeking",()=>{
+            was_seeking = true;
             app.update()
         });
-        this.player.on("ended",(e)=>this.update());
-        this.liveTracker.on("liveedgechange", ()=>this.update());
-        this.player.on("timeupdate", ()=>this.update());
-        this.update_interval_id = setInterval(()=>this.update(), VIDEO_UI_UPDATE_INTERVAL);
+        this.player.on("play",()=>{
+            this.initialized = true;
+            if (was_seeking) {
+                was_seeking = false;
+                this.crop_detect.clear_buffer();
+                this.update_ratio();
+            }
+            app.update()
+        });
+        this.player.on("ended",(e)=>app.update());
+        this.liveTracker.on("liveedgechange", ()=>app.update());
+
+        this.#update_ratio_interval_id = setInterval(()=>{
+            this.update_ratio();
+        }, CROP_DETECT_INTERVAL);
+
+        this.update();
+        this.update_ratio();
     }
 
     get_time_until_live_edge_area(use_latency){
-        const liveCurrentTime = try_catch(()=>this.liveTracker.liveCurrentTime(), 0);
+        const liveCurrentTime = utils.try_catch(()=>this.liveTracker.liveCurrentTime(), 0);
         const currentTime = this.player.currentTime();
         return Math.max(0, Math.abs(liveCurrentTime - currentTime) - (use_latency ? this.hls.targetLatency/2 : 0));
     };
@@ -703,86 +797,77 @@ class VideoPlayer {
         if (player) player.dispose();
         if (this.hls) this.hls.destroy();
         this.hls = null;
-        this.crop_detect_canvas = null;
-        clearInterval(this.update_interval_id);
-        clearInterval(this.update_ar_interval_id);
+        this.crop_detect.destroy();
+        clearInterval(this.#update_ratio_interval_id);
         app.player = null;
+        document.body.append(app.play_button.el);
         app.update();
     }
-}
 
+    play() {
+        this.player.play();
+    }
+}
 class CropDetect {
     /** @type {HTMLVideoElement} */
     video_el;
     /** @type {HTMLCanvasElement} */
     canvas;
     /** @type {Crop[]} */
-    possible_crops;
-    /** @type {Crop[]} */
-    regions = [];
+    buffer = [];
+    region = new Crop();
+    region_standardized = new Crop();
+    #ready;
+    get ready() { return this.#ready; }
     get vw() { return this.video_el.videoWidth; }
     get vh() { return this.video_el.videoHeight; }
 
     constructor(video_el) {
         this.video_el = video_el;
-        this.init();
+        this.#ready = this.#init();
     }
 
-    async init() {
-        /** @type {HTMLCanvasElement} */
-        this.canvas = this.crop_detect_canvas = document.createElement('canvas');
+    clear_buffer() {
+        this.buffer = [];
+    }
 
+    async #init() {
         await new Promise(resolve=>{
             this.video_el.addEventListener("loadeddata", resolve)
             if (this.video_el.readyState >= HTMLMediaElement.HAVE_METADATA) resolve();
         });
-
-        var {vw,vh} = this;
-        var ar = vw / vh;
-        ar = nearest(ar, (4/3), (16/9));
-
-        // if source is 16/9
-        var crops;
-        if (ar == (16/9)) {
-            crops = [
-                [vw, vh],
-                [vh*(4/3), vh],
-                [vh*(4/3), (vh*(4/3))/(16/9)],
-            ]
-        } else {
-            crops = [
-                [vw, vh],
-                [vw, vw/(16/9)],
-                [(vw/(16/9))*(4/3), vw/(16/9)],
-            ]
-        }
-        this.region = new Crop(vw, vh);
-        this.possible_crops = crops.map(([w,h])=>Crop.from(w,h,vw,vh));
-        this.canvas.height = 120;
-        this.canvas.width = this.canvas.height * ar;
-
-        this.ready = true;
-
-        this.update();
     }
     
     async update() {
-        if (!this.ready) return;
+        await this.#ready;
 
         let {vw,vh} = this;
-        // if (this.video_el.paused || this.video_el.ended) return;
-        if (this._last_time == this.video_el.currentTime) return;
-        this._last_time = this.video_el.currentTime;
-        var s = vh / this.canvas.height;
-        let ctx = this.canvas.getContext('2d', {willReadFrequently:true});
+        if (vw == 0 || vh == 0) return;
+
+        // let ar = utils.nearest(vw / vh, (4/3), (16/9));
+        let ar = vw / vh;
+        
+        var dimensions = JSON.stringify([vw,vh]);
+        if (this._last_dimensions != dimensions) {
+            this._last_dimensions = dimensions;
+            if (this.canvas) this.canvas.remove();
+            /** @type {HTMLCanvasElement} */
+            this.canvas = document.createElement('canvas');
+            this.canvas.style.zIndex = 1000;
+            this.canvas.height = 120;
+            this.canvas.width = this.canvas.height * ar;
+            this.ctx = this.canvas.getContext('2d', {willReadFrequently:true});
+            Object.assign(this.canvas.style, {"position":"absolute", "top":"0","right":"0", "pointer-events":"none"});
+        }
+        
         let x0=0, y0=0, ow=this.canvas.width, oh=this.canvas.height;
         let x1=ow, y1=oh;
         let tx, ty;
         let threshold = 0x11;
-        ctx.filter = "grayscale(100%) contrast(1.05)";
-        ctx.drawImage(this.video_el, 0, 0, x1, y1);
-        ctx.filter = "none";
-        let data = ctx.getImageData(0,0, x1, y1).data;
+        this.ctx.filter = "grayscale(100%) contrast(1.05)";
+        this.ctx.drawImage(this.video_el, 0, 0, x1, y1);
+        this.ctx.filter = "none";
+        let data = this.ctx.getImageData(0,0, x1, y1).data;
         var row = (y)=>{
             for (tx=x0; tx<x1; tx++) if (data[(y*ow+tx)*4]>threshold) return true;
         };
@@ -795,116 +880,122 @@ class CropDetect {
         for (;y1>=0;y1--) if (row(y1-1)) break;
         for (;x1>=0;x1--) if (col(x1-1)) break;
 
-        x0*=s; x1*=s; y0*=s; y1*=s;
+        x0/=ow; x1/=ow; y0/=oh; y1/=oh;
         var r = new Crop({x0,y0,x1,y1});
         if (!r.valid) return;
 
-        /** @param {Crop} r */
-        var draw_crop = (r, color="red")=>{
-            let {x0,x1,y0,y1,w,h} = r;
-            ctx.strokeStyle = color;
-            ctx.strokeRect(x0/s, y0/s, w/s, h/s);
-        }
-
-        if (DEBUG) draw_crop(r, "green");
-
-        if (r.w < vw/2 || r.h < vh/2) return;
-
         this.push_region(r);
-
-        this.region_nearest = [...this.possible_crops].sort((a,b)=>{
+        this.region_standardized = [...crops].sort((a,b)=>{
             return a.difference(this.region) - b.difference(this.region);
         })[0];
-
-        if (DEBUG) {
-            if (!this.canvas.parentElement) {
-                Object.assign(this.canvas.style, {"position":"absolute", "top":"0","right":"0", "pointer-events":"none", "border":"1px solid blue"});
-                document.body.append(this.canvas);
-            }
-            draw_crop(this.region_nearest, "red");
-        }
-
-        this.apply();
-
-        return true;
     }
     /** @param {Region} r */
     push_region(r) {
-        this.regions.push(r);
-        while (this.regions.length > REGION_BUFFER) this.regions.shift();
-        if (this.regions.length < MIN_REGIONS_FIRST_CROP) return;
+        this.buffer.push(r);
+        while (this.buffer.length > REGION_BUFFER) this.buffer.shift();
+        if (this.buffer.length < MIN_REGIONS_FIRST_CROP) return;
 
         let x0=0,x1=0,y0=0,y1=0;
-        for (var r of this.regions) {
+        for (var r of this.buffer) {
             x0+=r.x0; x1+=r.x1; y0+=r.y0; y1+=r.y1;
         }
-        x0 /= this.regions.length;
-        x1 /= this.regions.length;
-        y0 /= this.regions.length;
-        y1 /= this.regions.length;
+        x0 /= this.buffer.length;
+        x1 /= this.buffer.length;
+        y0 /= this.buffer.length;
+        y1 /= this.buffer.length;
         this.region = new Crop({x0,x1,y0,y1});
     }
-    apply() {
-        var {vw,vh} = this;
-        var c = this.region_nearest;
-        // console.log(this.region_nearest);
-        if (!c.valid) return;
-        if (c.w < vw/2 || c.h < vh/2) return;
-        var ww = window.innerWidth;
-        var wh = window.innerHeight;
-        var scale = Math.min(ww/c.w, wh/c.h);
-        Object.assign(this.video_el.style, {
-            "width": `${vw}px`,
-            "height": `${vh}px`,
-            "transform-origin": `${c.x0}px ${c.y0}px`,
-            "transform": `translate(${-c.x0}px, ${-c.y0}px) scale(${scale})`,
-            "left": `${(ww/2)-(c.w/2*scale)}px`,
-            "top": `${(wh/2)-(c.h/2*scale)}px`,
-        });
+
+    /** @param {Crop} r */
+    draw_rect(r, color="red", thickness=1, dashed=false){
+        if (!this.ctx) return;
+        let {x0,y0,x1,y1} = r;
+        let ow = this.canvas.width;
+        let oh = this.canvas.height;
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = thickness;
+        this.ctx.setLineDash(Array.isArray(dashed) ? dashed : dashed ? [2, 2] : []);
+        x0 = Math.floor(x0 * (ow-thickness) + thickness/2);
+        y0 = Math.floor(y0 * (oh-thickness) + thickness/2);
+        x1 = Math.ceil(x1 * (ow-thickness) + thickness/2);
+        y1 = Math.ceil(y1 * (oh-thickness) + thickness/2);
+        this.ctx.strokeRect(x0, y0, x1-x0, y1-y0);
     }
 
-    dispose() {
+    async destroy() {
+        await this.#ready;
         this.canvas.remove();
-        this.video_el.style = {};
-        /* Object.assign(this.video_el.style, {
-            "width": ``,
-            "height": ``,
-            "transform-origin": ``,
-            "transform": ``,
-            "left": ``,
-            "top": ``,
-        }) */
     }
 }
 
-class Crop {
-    x0 = 0;
-    x1 = 0;
-    y0 = 0;
-    y1 = 0;
-    get w() { return this.x1 - this.x0; }
-    get h() { return this.y1 - this.y0; }
-    get area() { return this.w * this.h; }
-    get valid() { return this.area > 0; }
-    constructor({x0,x1,y0,y1}) {
-        if (arguments.length == 2) {
-            var [w,h] = [...arguments];
-            this.x1 = w;
-            this.y1 = h;
-        } else {
-            this.x0 = x0;
-            this.x1 = x1;
-            this.y0 = y0;
-            this.y1 = y1;
-        }
+/** @param {HTMLVideoElement} videoElement @param {Crop} crop */
+function apply_crop(videoElement, crop) {
+    var container = videoElement.parentElement;
+    if (!container) return;
+
+    const cropWidth = crop.x1 - crop.x0;
+    const cropHeight = crop.y1 - crop.y0;
+    const videoAspect = videoElement.videoWidth / videoElement.videoHeight;
+    const cropAspect = (cropWidth * videoElement.videoWidth) / (cropHeight * videoElement.videoHeight);
+    const windowAspect = window.innerWidth / window.innerHeight;
+
+    container.style.position = 'relative';
+    container.style.overflow = 'hidden';
+    videoElement.style.position = 'absolute';
+    videoElement.style.objectFit = 'cover';
+
+    videoElement.style.width = `${100/cropWidth}%`;
+    videoElement.style.height = `${100/cropHeight}%`;
+    videoElement.style.left = `50%`;
+    videoElement.style.top = `50%`;
+    videoElement.style.transform = 'translate(-50%, -50%)';
+    videoElement.style.transition = 'all 0.2s ease-in-out';
+    videoElement.style.transitionProperty = "width, height";
+    
+    if (windowAspect > cropAspect) {
+        container.style.width = `${cropAspect * 100 / windowAspect}%`;
+        container.style.height = `100%`;
+    } else {
+        container.style.width = `100%`;
+        container.style.height = `${windowAspect * 100 / cropAspect}%`;
     }
-    /** @param {Crop} b */
-    difference(b) {
-        var a = this;
-        return Math.abs(b.x0-a.x0) + Math.abs(b.y0-a.y0) + Math.abs(b.x1-a.x1) + Math.abs(b.y1-a.y1);
-    }
-    static from(w,h,vw,vh) {
-        return new Crop({x0:(vw-w)/2, x1:vw-(vw-w)/2, y0:(vh-h)/2, y1:vh-(vh-h)/2});
+    
+}
+
+
+/** @param {HTMLVideoElement} videoElement @param {Crop} crop */
+function applyvideocrop(videoElement, crop) {
+    const videoAspect = videoElement.videoWidth / videoElement.videoHeight;
+    const cropWidth = crop.x1 - crop.x0;
+    const cropHeight = crop.y1 - crop.y0;
+    const cropAspect = (cropWidth * videoElement.videoWidth) / (cropHeight * videoElement.videoHeight);
+    
+    // Apply CSS to video element
+    videoElement.style.position = 'absolute';
+    videoElement.style.objectFit = 'cover';
+    
+    // Calculate scale and position
+    const scaleX = 1 / cropWidth;
+    const scaleY = 1 / cropHeight;
+    
+    // Apply transform to "crop" the video
+    videoElement.style.transform = `scale(${scaleX}, ${scaleY}) translate(${-crop.x0 * 100}%, ${-crop.y0 * 100}%)`;
+    videoElement.style.transformOrigin = 'top left';
+    
+    // Adjust container to maintain aspect ratio
+    const container = videoElement.parentElement;
+    container.style.aspectRatio = cropAspect;
+  
+    const windowAspect = window.innerWidth / window.innerHeight;
+
+    if (windowAspect > cropAspect) {
+        // Window is wider than video - fit to height
+        container.style.width = `${cropAspect * 100 / windowAspect}%`;
+        container.style.height = '100%';
+    } else {
+        // Window is taller than video - fit to width
+        container.style.width = '100%';
+        container.style.height = `${windowAspect * 100 / cropAspect}%`;
     }
 }
 

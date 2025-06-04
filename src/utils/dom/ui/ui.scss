@@ -1,16 +1,20 @@
 @use "../_mixins.scss" as *;
 
 :root {
-	--ui-gap: 8px;
-	--ui-property-padding: 4px 4px 4px 4px;
+	--ui-gap: 0.5rem;
+	--ui-property-padding: 0.5rem;
+	--ui-button-padding: 0.5rem;
 	--ui-property-header-gap: 2px;
-	--ui-property-width: 100%;
+	--ui-property-width: auto;
 	--ui-property-min-width: 120px;
-	--ui-property-input-height: 30px;
+	--ui-property-input-height: 2rem;
 	--ui-property-list-item-size: 0;
 	--ui-border-color: #aaa;
 	--ui-border: thin solid var(--ui-border-color);
 	--ui-num-items-per: 1;
+	--ui-direction: row;
+	--ui-button-background: #fff;
+	--ui-property-background: #fff;
 }
 
 .uis {
@@ -24,15 +28,14 @@ label.uis {
 	margin-bottom: 0;
 }
 .uis.property {
-	--direction: row;
-	--buttons-margin: 0 0 0 -1px;
+	--ui-direction: row;
 	display: flex;
 	flex-direction: column;
 	justify-content: flex-end;
 	// width: 100%;
 	width: var(--ui-property-width);
 	min-width: var(--ui-property-min-width);
-	min-height: var(--ui-property-input-height);
+	
 	// flex: 1;
 	&[disabled], &:disabled {
   		pointer-events: none;
@@ -40,10 +43,6 @@ label.uis {
 	}
 	&>* {
 		flex-direction: row;
-	}
-	&.vertical {
-		--direction: column;
-		--buttons-margin: -1px 0 0 0;
 	}
 	&>.property-header {
 		display: flex;
@@ -65,11 +64,19 @@ label.uis {
 	&>.property-outer {
 		display: flex;
 		position: relative;
-		flex-direction: var(--direction);
+		flex-direction: var(--ui-direction);
+		padding-left: 1px;
+		padding-top: 1px;
+		min-height: var(--ui-property-input-height);
+		&>*{
+			margin-left: -1px;
+			margin-top: -1px;
+		}
 		select>option {
 			font-weight:normal;
 		}
 		&>.property-inner {
+			background: var(--ui-property-background);
 			display: flex;
 			position: relative;
 			flex: 1;
@@ -88,15 +95,42 @@ label.uis {
 				display: flex;
 				width: 100%;
 				position:relative;
-				flex-direction: var(--direction);
+				flex-direction: var(--ui-direction);
 				&>*:not(input[type=color]) {
 					padding: var(--ui-property-padding);
 					display: flex;
 					// display: block;
 				}
-				&>input:not([type=checkbox]), &>select, &>textarea, &>.fake-input {
+				/* &>select {
+					appearance: none;
+					-moz-appearance: none;
+					-webkit-appearance: none;
+					display: block; // very weird behaviour, makes the default select padding on chrome disappear.
+					background-image: url('data:image/svg+xml;utf8,<svg fill="black" height="16" width="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>') !important;
+					background-repeat: no-repeat;
+					background-position: right 0 center;
+				} */
+				&>input:not([type=checkbox]), &>select, &>textarea, &>.fake-input, &>[contenteditable=true] {
 					flex: 1;
 					width: 0;
+				}
+				&>.fake-input {
+					color: #000;
+					display: flex !important;
+					align-items: center;
+					gap: 5px;
+					&>*:first-child {
+						flex:1;
+						@include single-line-ellpisis();
+					}
+					&>*:not(:first-child) {
+						flex:none;
+					}
+				}
+				&>.fake-input, &>[contenteditable=true] {
+					display:flex;
+					justify-content: center;
+					align-items: center;
 				}
 				&>input[type=time],&>input[type=date] {
 					padding-top:0;
@@ -119,20 +153,24 @@ label.uis {
 			} */
 		}
 		&>.property-buttons {
-			margin: var(--buttons-margin);
 			display: flex;
+			padding-left:1px;
+			padding-top:1px;
 			&>* {
-				height: 100% !important;
-				flex: 1 0 auto;
-				&:not(:first-child) {
-					margin-left: -1px;
+				// height: 100% !important;
+				// flex: 1 0 auto;
+				margin-left: -1px;
+				margin-top: -1px;
+				&.reset, &.copy {
+					// aspect-ratio: 1/1;
 				}
 			}
 		}
 	}
 	&.invalid:not(:focus-within)>.property-outer>.property-inner>.property-input-wrapper>* {
-		border-color: red !important;
-		box-shadow: inset 0 0 3px red !important;
+		// outline: 1px solid red !important;
+		--ui-border: 1px solid red !important;
+		box-shadow: inset 0 0 4px red !important;
 	}
 	&.is-null:has(input[type=color]) {
 		.property-inner:after {
@@ -148,6 +186,13 @@ label.uis {
 			height: 100%;
 			line-height: 0;
 		}
+	}
+	&.vertical {
+		--ui-direction: column;
+	}
+	
+	&[data-input_type="range"] {
+		--ui-property-background: transparent;
 	}
 }
 .uis.property-list-wrapper {
@@ -195,13 +240,18 @@ label.uis {
 			} */
 			&>.property-list-item-buttons {
 				display: flex;
-				@extend #border-group;
 				margin: -1px;
+				@extend %border-group;
+				&>* {
+					padding:0 5px;
+					min-height: auto !important;
+					width: auto !important;
+					height: auto !important;
+				}
 			}
 			&>.property-list-item-content {
 				display: flex;
 				flex:1;
-				padding: var(--ui-property-padding);
 				justify-content: center;
 			}
 		}
@@ -223,25 +273,26 @@ label.uis {
 		flex:1;
 		flex-wrap: wrap;
 		flex-direction: row;
-		--ui-gap: 0;
-		padding: 0 !important;
+		--ui-gap: 5px;
+		// gap: 5px;
+		padding: 5px !important;
+		border: 1px solid var(--ui-border-color);
+		// padding: 1px 0 0 1px !important;
 		&>* {
 			flex:1;
-			&:not(:first-child) {
-				margin-left:-1px;
-			}
+			// margin: -1px 0 0 -1px;
 		}
 	}
 	
-	&.show-changed {
+	/* &.show-changed {
 		.uis.property.changed:not(.uis.property.changed .uis.property.changed):not(.uis.property-list-wrapper .uis.property) {
 			&>.property-outer {
 				box-shadow: 0 0 0 1px black;
 			}
 		}
-	}
+	} */
 	&.show-not-default {
-		.uis.property.not-default:not(.uis.property.not-default .uis.property.not-default) {
+		.uis.property.not-default { // :not(.uis.property.not-default .uis.property.not-default)
 			&>.property-outer {
 				&>.property-inner>.property-input-wrapper {
 					&>*:not(.uis.property-list-wrapper) {
@@ -278,6 +329,7 @@ label.uis {
 	flex: none;
 	&>* {
 		width: 14px;
+		min-width:auto !important;
 		font-size:8px;
 		flex: 1;
 		padding: 0 !important;
@@ -295,43 +347,54 @@ label.uis {
 	--ui-property-width: 100px;
 	&.flex {
 		&>* {
-			flex: 1 1 auto;
+			flex: 1 1 0;
 		}
 	}
 }
 .uis.row {
 	flex-direction: row;
 	flex-wrap: wrap;
-	&>* { max-width: 100%; }
+	&>* {
+		max-width: 100%;
+		padding: 0;
+		margin: 0;
+	}
 }
 .uis.column {
 	flex-direction: column;
-	&>* { max-height: 100%; }
+	&>* {
+		max-height: 100%;
+		padding: 0;
+		margin: 0;
+	}
 }
 .uis.button {
 	text-align: center;
 	justify-content: center;
 	display: flex;
 	align-items: center;
+	--ui-gap: 5px;
 	gap: var(--ui-gap);
-	padding: var(--ui-property-padding);
-}
-.fake-input {
-	color: #000;
-	display: flex !important;
-	align-items: center;
-	gap: 5px;
-	&>*:first-child {
-		flex:1;
-		@include single-line-ellpisis();
-	}
-	&>*:not(:first-child) {
-		flex:none;
+	min-width: var(--ui-property-input-height);
+	min-height: var(--ui-property-input-height);
+	padding: var(--ui-button-padding);
+	background: var(--ui-button-background);
+	&>* {
+		line-height: inherit;
 	}
 }
-#border-group {
+%border-group {
 	padding: 1px 0 0 1px;
 	&>*{
 		margin: -1px 0 0 -1px;
+	}
+}
+.uis.datetime-property-wrapper{
+	padding: 0 !important;
+	&>* {
+		background: none !important;
+	}
+	[type="time"] {
+		margin-left:-1px;
 	}
 }

@@ -1,5 +1,6 @@
-/** @import { CoreFork } from './exports.js' */
-export default {
-    /** @type {CoreFork} */
+/** @import { CoreMaster, CoreFork } from './exports.js' */
+export const globals = {
+    /** @type {CoreMaster|CoreFork<any>} */
     app: undefined
 }
+export default globals;

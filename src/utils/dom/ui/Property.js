@@ -29,173 +29,7 @@ import deep_equals from "../../deep_equals.js";
 
 /** @typedef {UIEvents & {change:[PropertyChangeEvent]}} PropertyEvents */
 
-var undefined_value = Object.freeze([undefined]);
-
-/** @template ItemType @template ValueType */
-class ValueContext {
-    /** @type {Property<ItemType,ValueType>} */
-    #prop;
-    #raw_values;
-    #values;
-    #is_indeterminate;
-    #has_defaults;
-    #is_default;
-    #is_changed;
-    #valid;
-
-    /** @param {Property<ItemType,ValueType>} prop @param {ValueType[]} raw_values */
-    constructor(prop, raw_values) {
-        this.#prop = prop;
-        this.#raw_values = raw_values;
-    }
-    
-    /** @returns {ValueType[]} */
-    get raw_values() {
-        return this.#raw_values || undefined_value;
-    }
-
-    /** @returns {ValueType[]} */
-    get values() {
-        if (!this.#values) {
-            var defaults = this.#prop.defaults;
-            this.#values = this.raw_values.map((v,i)=>json_copy(v ?? defaults[i]));
-        }
-        return this.#values;
-    }
-
-    /** @returns {boolean} */
-    get is_indeterminate() {
-        if (this.#is_indeterminate === undefined) {
-            this.#is_indeterminate = !deep_equals(...this.values);
-        }
-        return this.#is_indeterminate;
-    }
-
-    /** @returns {boolean} */
-    get has_defaults() {
-        if (this.#has_defaults === undefined) {
-            this.#has_defaults = this.#prop.defaults.some(d=>d != undefined);
-        }
-        return this.#has_defaults;
-    }
-
-    /** @returns {boolean} */
-    get is_default() {
-        if (this.#is_default === undefined) {
-            this.#is_default = deep_equals(this.values, this.#prop.defaults);
-        }
-        return this.#is_default;
-    }
-
-    /** @returns {boolean} */
-    get is_changed() {
-        if (this.#is_changed === undefined) {
-            var datas = this.#prop.datas;
-            var defaults = this.#prop.defaults;
-            this.#is_changed = this.values.some((v,i)=>{
-                return !deep_equals(v??null, datas[i]??defaults[i]??null);
-            });
-        }
-        return this.#is_changed;
-    }
-
-    /** @returns {boolean|string} */
-    get valid() {
-        if (this.#valid === undefined) {
-            var valid = true;
-            var values = this.values;
-            for (var value of values) {
-                for (var validator of this.#prop.validators) {
-                    valid = validator.apply(this, [value]);
-                    if (valid !== true) break;
-                }
-            }
-            this.#valid = valid;
-        }
-        return this.#valid;
-    }
-}
-
-/** @template ItemType @template ValueType */
-class PropertyContext {
-    /** @type {Property<ItemType,ValueType>} */
-    #prop;
-    #parent_property;
-    #items;
-    #datas;
-    #defaults;
-    #datas_error;
-    #path;
-
-    /** @param {Property<ItemType,ValueType>} prop */
-    constructor(prop) {
-        this.#prop = prop;
-    }
-
-    /** @returns {Property} */
-    get parent_property() {
-        if (!this.#parent_property) {
-            for (var ui of this.#prop.iterate_parents()) {
-                if (ui instanceof Property) {
-                    this.#parent_property = ui;
-                    break;
-                }
-            }
-        }
-        return this.#parent_property;
-    }
-
-    /** @returns {ItemType[]} */
-    get items() {
-        if (!this.#items) {
-            var pp = this.parent_property;
-            this.#items = this.#prop.get_setting("items") || (pp && pp.items) || [undefined];
-        }
-        return this.#items;
-    }
-
-    /** @returns {boolean} */
-    get datas_error() { return this.datas && !!this.#datas_error; }
-    
-    /** @returns {ValueType[]} */
-    get datas() {
-        if (!this.#datas) {
-            this.#datas_error = false;
-            var items = this.items;
-            var path = this.path;
-            this.#datas =
-                ("data" in this.#prop.settings && items.map(item=>this.#prop.get_setting("data", item, path))) ||
-                // (pp && pp.datas.map(data=>try_catch(()=>reflect.get(data, this.name_split)))) ||
-                items.map(item=>{
-                    var data = undefined;
-                    try {
-                        data = reflect.get(item, path);
-                    } catch {
-                        this.#datas_error = true;
-                    }
-                    return data;
-                });
-        }
-        return this.#datas;
-    }
-
-    /** @returns {ValueType[]} */
-    get defaults() {
-        if (!this.#defaults) {
-            var items = this.items;
-            this.#defaults = ("default" in this.#prop.settings && items.map((item,i)=>this.#prop.get_setting("default", item))) || items.map(item=>undefined);
-        }
-        return this.#defaults;
-    }
-
-    get path() {
-        if (!this.#path) {
-            var pp = this.parent_property;
-            this.#path = (pp) ? [...pp.path, ...this.#prop.name_split] : [...this.#prop.name_split];
-        }
-        return this.#path;
-    }
-}
+var undefined_values = Object.freeze([undefined]);
 
 /** 
  * @template ItemType
@@ -215,36 +49,152 @@ export class Property extends UI {
     /** @type {((value:any)=>boolean|string)[]} */
     #validators = [];
     #last_values_hash;
+    #raw_values = [undefined];
     /** @type {PropertyContext<ItemType,ValueType>} */
-    #context = new PropertyContext(this);
-    /** @type {ValueContext<ItemType,ValueType>} */
-    #value_context = new ValueContext(this, [undefined]);
 
+    #parent_property;
     /** @returns {Property} */
-    get parent_property() { return this.#context.parent_property; }
+    get parent_property() {
+        if (!this.#parent_property) {
+            for (var ui of this.iterate_parents()) {
+                if (ui instanceof Property) {
+                    this.#parent_property = ui;
+                    break;
+                }
+            }
+        }
+        return this.#parent_property;
+    }
+
+    #items;
     /** @returns {ItemType[]} */
-    get items() { return this.#context.items || undefined_value; }
+    get items() {
+        if (!this.#items) {
+            var pp = this.parent_property;
+            this.#items = this.get_setting("items") || (pp && pp.items) || [undefined];
+        }
+        return this.#items;
+    }
+
+    #datas_error;
+    /** @returns {boolean} */
+    get datas_error() { return this.datas && !!this.#datas_error; }
+    
+    #datas;
     /** @returns {ValueType[]} */
-    get datas() { return this.#context.datas || undefined_value; }
+    get datas() {
+        if (!this.#datas) {
+            this.#datas_error = false;
+            var items = this.items;
+            var path = this.path;
+            this.#datas =
+                ("data" in this.settings && items.map(item=>this.get_setting("data", item, path))) ||
+                // (pp && pp.datas.map(data=>try_catch(()=>reflect.get(data, this.name_split)))) ||
+                items.map(item=>{
+                    var data = undefined;
+                    try {
+                        data = reflect.get(item, path);
+                    } catch {
+                        this.#datas_error = true;
+                    }
+                    return data;
+                });
+        }
+        return this.#datas;
+    }
+
+    #defaults;
     /** @returns {ValueType[]} */
-    get defaults() { return this.#context.defaults || undefined_value; }
-    /** @returns {string[]} */
-    get path() { return this.#context.path; }
+    get defaults() {
+        if (!this.#defaults) {
+            var items = this.items;
+            this.#defaults = ("default" in this.settings && items.map((item,i)=>this.get_setting("default", item))) || items.map(item=>undefined);
+        }
+        return this.#defaults;
+    }
+
+    #path;
+    get path() {
+        if (!this.#path) {
+            var pp = this.parent_property;
+            this.#path = (pp) ? [...pp.path, ...this.name_split] : [...this.name_split];
+        }
+        return this.#path;
+    }
+    
+    #values;
+    /** @returns {ValueType[]} */
+    get values() {
+        if (!this.#values) {
+            var defaults = this.defaults;
+            this.#values = this.raw_values.map((v,i)=>json_copy(v ?? defaults[i]));
+        }
+        return this.#values;
+    }
+
+    #is_indeterminate;
+    /** @returns {boolean} */
+    get is_indeterminate() {
+        if (this.#is_indeterminate === undefined) {
+            this.#is_indeterminate = !deep_equals(...this.values);
+        }
+        return this.#is_indeterminate;
+    }
+
+    #has_defaults;
+    /** @returns {boolean} */
+    get has_defaults() {
+        if (this.#has_defaults === undefined) {
+            this.#has_defaults = this.defaults.some(d=>d != undefined);
+        }
+        return this.#has_defaults;
+    }
+
+    #is_default;
+    /** @returns {boolean} */
+    get is_default() {
+        if (this.#is_default === undefined) {
+            this.#is_default = deep_equals(this.values, this.defaults);
+        }
+        return this.#is_default;
+    }
+
+    #is_changed;
+    /** @returns {boolean} */
+    get is_changed() {
+        if (this.#is_changed === undefined) {
+            var datas = this.datas;
+            var defaults = this.defaults;
+            this.#is_changed = this.values.some((v,i)=>{
+                return !deep_equals(v??null, datas[i]??defaults[i]??null);
+            });
+        }
+        return this.#is_changed;
+    }
+
+    #valid;
+    /** @returns {boolean|string} */
+    get valid() {
+        if (this.#valid === undefined) {
+            var valid = true;
+            for (var value of this.values) {
+                for (var validator of this.validators) {
+                    valid = validator.apply(this, [value]);
+                    if (valid !== true) break;
+                }
+            }
+            this.#valid = valid;
+        }
+        return this.#valid;
+    }
+
     /** @returns {string[]} */
     get name_split() { return this.#name_split; }
     get is_valid() { return this.is_disabled || this.is_indeterminate || this.valid === true; }
     get validators() { return this.#validators; }
-
-    get is_indeterminate() { return this.#value_context.is_indeterminate; }
-    get has_defaults() { return this.#value_context.has_defaults; }
-    get is_default() { return this.#value_context.is_default; }
-    get is_changed() { return this.#value_context.is_changed; }
-    get valid() { return this.#value_context.valid; }
-    get has_datas() { return "data" in this.settings || !!(this.name && !this.#context.datas_error); }
+    get has_datas() { return "data" in this.settings || !!(this.name && !this.datas_error); }
     /** @returns {ValueType[]} */
-    get raw_values() { return this.#value_context.raw_values || undefined_value; }
-    /** @returns {ValueType[]} */
-    get values() { return this.#value_context.values || undefined_value; }
+    get raw_values() { return this.#raw_values; }
     set value(v) { this.set_value(v); }
     get value() { return this.values[0]; }
     set values(v) { this.set_values(v); }
@@ -280,6 +230,9 @@ export class Property extends UI {
                 // e.stopPropagation();
             }
         });
+        if (this.settings.validators) {
+            this.#validators.push(...this.settings.validators);
+        }
     }
 
     reset(trigger=true) {
@@ -316,7 +269,7 @@ export class Property extends UI {
     #set_values(values) {
         var defaults = this.defaults;
         if (!Array.isArray(values)) values = this.items.map(item=>values);
-        var new_raw_values = this.items.map((item,i)=>{
+        this.#raw_values = this.items.map((item,i)=>{
             var value = values[i];
             if (typeof(value) == "number") {
                 var min = this.get_setting("min", item);
@@ -332,40 +285,39 @@ export class Property extends UI {
             if (this.get_setting("nullify_default") && deep_equals(value, defaults[i])) return undefined;
             return value;
         });
-        var new_values_hash = JSON.stringify(new_raw_values);
-        this.#value_context = new ValueContext(this, new_raw_values);
+        var new_values_hash = JSON.stringify(this.#raw_values);
+        
+        this.#values = undefined;
+        this.#is_indeterminate = undefined;
+        this.#has_defaults = undefined;
+        this.#is_default = undefined;
+        this.#is_changed = undefined;
+        this.#valid = undefined;
 
-        if (this.#last_values_hash === new_values_hash) return false;
+        var changed = this.#last_values_hash !== new_values_hash;
         this.#last_values_hash = new_values_hash;
 
-        return true;
+        return changed;
     }
 
     __data_update() {
-        if ("value" in this.settings) {
-            this.set_value(this.get_setting("value"));
-            return;
+        if (this.name || "data" in this.settings) {
+            var datas = this.datas;
+            let datas_hash = JSON.stringify(datas);
+            if (this.#last_datas_hash !== datas_hash)  {
+                this.#last_datas_hash = datas_hash;
+                this.set_values(datas);
+            }
         }
-
-        this.#value_context = new ValueContext(this, this.raw_values);
-
-        if (!this.has_datas) return;
-        
-        var datas = this.datas;
-        let datas_hash = JSON.stringify(datas);
-        let new_values;
-        if (this.#last_datas_hash !== datas_hash)  {
-            new_values = datas;
-        }
-        this.#last_datas_hash = datas_hash;
-        if (new_values) this.set_values(new_values);
     }
 
-    __update_context() {
-        
-        super.__update_context();
+    __before_update() {
+        super.__before_update();
 
-        this.#context = new PropertyContext(this);
+        this.#items = undefined;
+        this.#datas = undefined;
+        this.#defaults = undefined;
+        this.#path = undefined;
 
         this.__data_update();
     }

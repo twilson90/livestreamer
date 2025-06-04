@@ -7,11 +7,15 @@ import * as uuid from "uuid";
 import is_image from "is-image";
 import { execa } from "execa";
 import pidtree from "pidtree";
+import { Agent } from 'undici'
 import { glob, Glob } from "glob";
 import {noop} from "../utils/noop.js";
 import {pathify} from "../utils/pathify.js";
+import { fileURLToPath } from "url";
 
 export * from "../utils/exports.js";
+
+const speed_window = 16;
 
 /** @import { Path } from "glob"; */
 
@@ -407,4 +411,135 @@ export function url_exists(url) {
     if (typeof url !== "string") url = url.toString();
     if (url.match(/^file:/)) return fs.exists(pathify(url));
     return fetch(url, { method: 'head' }).then((res)=>!String(res.status).match(/^4\d\d$/)).catch(()=>false);
+}
+
+/** @param {string} url @param {RequestInit} options */
+export function fetchWithoutSSL(url, options) {
+    const httpsAgent = new Agent({
+        connect: {
+            rejectUnauthorized: false
+        }
+    })
+    return fetch(url, {
+        ...options,
+        dispatcher: httpsAgent
+    });
+}
+
+/** @param {Response} response */
+export async function* stream_response(response) {
+    const reader = response.body.getReader();
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+                if (done) break;
+            yield value;
+        }
+    } finally {
+        reader.releaseLock();
+    }
+}
+
+var default_opts = {
+    chunkSize: 1024 * 1024 * 8, // 5MB range requests
+    progressInterval: 1024 * 64, // 64KB progress updates
+    /** @type {(progress: {downloaded: number, total: number, percent: number, chunk: number, speed: number}) => void} */
+    onProgress: ()=>{},
+    /** @type {AbortSignal} */
+    signal: null
+}
+
+/** @param {string} url @param {string} filePath @param {typeof default_opts} opts */
+export async function download_url_to_file(url, filePath, opts) {
+    let fileSize = 0;
+    let downloadedBytes = 0;
+    let progressBytes = 0;
+    let lastProgressUpdate = 0;
+    var startTime = Date.now();
+    opts = {
+        ...default_opts,
+        ...opts
+    }
+    let {signal} = opts;
+
+    // Check existing file to resume download
+    try {
+        const stats = fs.statSync(filePath);
+        downloadedBytes = stats.size;
+    } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+    }
+
+    // Get file info
+    const headRes = await fetchWithoutSSL(url, { method: 'HEAD', signal });
+    if (!headRes.ok) throw new Error(`HEAD request failed: ${headRes.status}`);
+    
+    fileSize = parseInt(headRes.headers.get('content-length'));
+    const acceptRanges = headRes.headers.get('accept-ranges') === 'bytes';
+    
+    if (!acceptRanges) {
+        console.warn('Server does not support byte ranges - cannot resume downloads');
+        downloadedBytes = 0;
+    }
+
+    const fileHandle = await fs.promises.open(filePath, downloadedBytes > 0 ? 'r+' : 'w');
+    
+    try {
+        while (downloadedBytes < fileSize) {
+            let endByte = Math.min(downloadedBytes + opts.chunkSize - 1, fileSize - 1);
+            if (opts.chunkSize <= 0) endByte = fileSize - 1;
+            
+            const res = await fetchWithoutSSL(url, {
+                headers: {
+                    'Range': `bytes=${downloadedBytes}-${endByte}`
+                },
+                signal
+            });
+
+            if (res.status !== 206 && res.status !== 200) {
+                throw new Error(`Unexpected status: ${res.status}`);
+            }
+
+            // var speed_samples = [0];
+            // var lastTime = Date.now();
+
+            // Process the stream in chunks
+            for await (const chunk of stream_response(res)) {
+                const now = Date.now();
+                // const chunkTime = now - lastTime;
+                await fileHandle.write(chunk, 0, chunk.length, downloadedBytes);
+                downloadedBytes += chunk.length;
+                progressBytes += chunk.length;
+                let speed = progressBytes / ((now - startTime) / 1000);
+                
+                // speed_samples[speed_samples.length-1] += chunk.length / (chunkTime / 1000);
+
+                if ((downloadedBytes - lastProgressUpdate >= opts.progressInterval) || (downloadedBytes === fileSize)) {
+                    // let speed = average(speed_samples);
+                    // speed_samples.push(0);
+                    // if (speed_samples.length > speed_window) speed_samples.shift();
+                    opts.onProgress({
+                        downloaded: downloadedBytes,
+                        total: fileSize,
+                        percent: downloadedBytes / fileSize,
+                        chunk: chunk.length,
+                        speed
+                    });
+                    lastProgressUpdate = downloadedBytes;
+                }
+            }
+
+            if (downloadedBytes >= fileSize) break;
+        }
+    } finally {
+        await fileHandle.close();
+    }
+    
+    return { fileSize, downloadedBytes };
+}
+
+export function get_node_modules_dir(module) {
+    var f = fileURLToPath(module ? import.meta.resolve(module) : import.meta.url);
+    while(path.basename(f) != "node_modules" || path.basename(f) == f) f = path.dirname(f);
+    return f;
 }

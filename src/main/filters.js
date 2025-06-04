@@ -82,7 +82,7 @@ export const filters = {
     equalizer,
     flanger,
     framestep,
-    gblur,
+    // gblur, // this has issues, causes crashes with some videos.
     hflip,
     huesaturation,
     lagfun,

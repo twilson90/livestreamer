@@ -1,6 +1,7 @@
 import fs from "fs-extra";
 import path from "node:path";
-import {globals, utils, DataNodeID, DataNodeID$, AccessControl} from "./exports.js";
+import {globals} from "./exports.js";
+import {utils, DataNodeID, DataNodeID$, AccessControl} from "../core/exports.js";
 /** @import { StreamTarget } from './exports.js' */
 
 // stream_targets

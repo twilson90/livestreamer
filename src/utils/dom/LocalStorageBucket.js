@@ -2,6 +2,14 @@ import { debounce } from "../debounce.js";
 import EventEmitter from "../EventEmitter.js";
 import { json_copy } from "../json_copy.js";
 
+
+/** 
+ * @typedef {{
+ *   change: [{name:string, old_value:any, new_value:any}]
+ * }} LocalStorageBucketEvents 
+ */
+
+/** @extends {EventEmitter<LocalStorageBucketEvents>} */
 export class LocalStorageBucket extends EventEmitter {
     get data() { return { ...this.#defaults, ...this.#data }; }
     get keys() { return Object.keys(this.data); }

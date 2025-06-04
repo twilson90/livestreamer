@@ -1,7 +1,8 @@
 import fs from "fs-extra";
 import path from "node:path";
-import {globals, utils, SessionTypes, FFMPEGWrapper, AccessControl, MediaProps, Download, Session, InternalSessionProps, Session$, History, History$, DEFAULT_PROBE_MEDIA_OPTS, MPVLoadFileError} from "./exports.js";
-/** @import {MediaInfo, Session$, MainApp$, ProbeMediaOpts, PlaylistItemProps, LoadFileOpts} from "./exports.js" */
+import {globals, SessionTypes, MediaProps, Download, Session, InternalSessionProps, PlaylistItemProps, PlaylistItemPropsProps, Session$, DEFAULT_PROBE_MEDIA_OPTS} from "./exports.js";
+import {utils, FFMPEGWrapper, MPVLoadFileError, History, History$, AccessControl} from "../core/exports.js";
+/** @import {MediaInfo, Session$, ProbeMediaOpts, LoadFileOpts} from "./exports.js" */
 
 const video_exts = ["3g2","3gp","aaf","asf","avchd","avi","drc","flv","gif","m2v","m4p","m4v","mkv","mng","mov","mp2","mp4","mpe","mpeg","mpg","mpv","mxf","nsv","ogg","ogv","qt","rm","rmvb","roq","svi","vob","webm","wmv","yuv"];
 
@@ -45,7 +46,7 @@ export class PlaylistItem$ {
     index = 0;
     track_index = 0;
     filename = "";
-    /** @type {Record<keyof typeof PlaylistItemProps.props, any>} */
+    /** @type {typeof PlaylistItemPropsProps} */
     props = {};
 }
 
@@ -69,8 +70,8 @@ export class InternalSession extends Session {
     #flat_playlist = [];
     /** @type {Map<PlaylistItem$, number>} */
     #flat_playlist_index_map = new Map();
-    /** @type {Map<number, PlaylistItem$>} */
-    #flat_playlist_index_lookup = new Map();
+    /** @type {Map<PlaylistItem$, number>} */
+    #flat_playlist_playable_index_map = new Map();
     #next_parsed_playlist_item;
 
     get saves_dir() { return path.join(globals.app.curr_saves_dir, this.id); }
@@ -85,13 +86,12 @@ export class InternalSession extends Session {
 
     /** @param {string} id @param {string} name */
     constructor(id, name) {
-        super(SessionTypes.INTERNAL, new InternalSession$(), utils.get_defaults(InternalSessionProps), id, name);
+        super(SessionTypes.INTERNAL, new InternalSession$(id), utils.get_defaults(InternalSessionProps));
+
+        this.$.name = name;
         
         /** @type {Record<PropertyKey,string[]>} */
         var playlist_assoc_files_map = {};
-
-        this.playlist_history = new History(utils.Observer.resolve(this.$.playlist));
-        this.$.playlist_history = this.playlist_history.$;
         
         fs.mkdirSync(this.saves_dir, {recursive:true});
         fs.mkdirSync(this.files_dir, {recursive:true});
@@ -141,8 +141,15 @@ export class InternalSession extends Session {
         this.#all_files_iterator = utils.infinite_iterator(()=>utils.iterate_keys(this.#media_refs));
     }
 
+    reset() {
+        super.reset();
+
+        this.playlist_history = new History(utils.Observer.resolve(this.$.playlist));
+        this.$.playlist_history = this.playlist_history.$;
+    }
+
     async move_autosave_dir() {
-        await fs.rename(this.saves_dir, path.join(globals.app.old_saves_dir, this.id)).catch(utils.noop);
+        await fs.rename(this.saves_dir, path.join(globals.app.old_saves_dir, this.id));
     }
 
     /** @param {string[]} filenames */
@@ -182,7 +189,7 @@ export class InternalSession extends Session {
         }
         return globals.app.get_media_info(filename, opts).then((data)=>{
             if (filename) {
-                if (!opts.silent) {
+                if (!opts.silent && this.$.media_info[filename]) {
                     delete this.$.media_info[filename].processing;
                 }
                 if (data && this.#media_refs[filename]) {
@@ -208,14 +215,15 @@ export class InternalSession extends Session {
     }
 
     /** updates all indices and rebuilds the flat playlist */
-    async #playlist_update() {
-        var seen = new Set();
-        var grouped = utils.group_by(Object.values(this.$.playlist), item=>item.parent_id);
+    #playlist_update() {
+        var playlist = this.$.playlist;
+        var grouped = utils.group_by(Object.values(playlist), item=>item.parent_id);
         
         /** @type {Record<PropertyKey, PlaylistItem$[][]>} */
         var playlist_map = {"0":[[]]};
         for (var [parent_id, items] of grouped) {
-            var parent = this.$.playlist[parent_id];
+            if (items.length == 0) continue;
+            var parent = playlist[parent_id];
             var is_multi_track = parent_id == "0" ? false : parent.props.playlist_mode == 2;
             var track_map = utils.group_by(items, item=>is_multi_track ? item.track_index : 0);
             for (let items of track_map.values()) {
@@ -230,30 +238,41 @@ export class InternalSession extends Session {
                     tracks.push(track_map.get(i) || []);
                 }
             } else {
-                tracks.push(track_map.get(0) || []);
+                tracks.push([...track_map.values()].flat())
             }
             playlist_map[parent_id] = tracks;
         }
         this.#playlist_map = playlist_map;
-        
-        var process = function* (parent_id) {
-            if (seen.has(parent_id)) return;
-            seen.add(parent_id); // protection against infinite loops.
-            var tracks = playlist_map[parent_id];
+
+        var flat_playlist = [];
+        var flat_playlist_playable = [];
+        var seen = new Set();
+        var process = (id, playable=true)=> {
+            if (seen.has(id)) return;
+            seen.add(id); // protection against infinite loops.
+            var item = playlist[id];
+            var tracks = playlist_map[id];
+            var is_playlist = !!tracks;
+            var is_merged = !!(item && item.props.playlist_mode);
+            var playable_children = is_playlist && !is_merged;
+            if (playable && !playable_children) {
+                flat_playlist_playable.push(item);
+            }
             if (tracks) {
                 for (var track of tracks) {
-                    for (var item of track) {
-                        yield item;
-                        if (!item.props.playlist_mode) {
-                            yield* process(item.id);
-                        }
+                    for (var c of track) {
+                        flat_playlist.push(c);
+                        process(c.id, playable && playable_children);
                     }
                 }
             }
         }
-        this.#flat_playlist = [...process("0")];
-        this.#flat_playlist_index_map = new Map(this.#flat_playlist.map((c,i)=>[c, i]));
-        this.#flat_playlist_index_lookup = new Map(this.#flat_playlist.map((c,i)=>[i, c]));
+
+        process("0");
+        
+        this.#flat_playlist = flat_playlist;
+        this.#flat_playlist_index_map = new Map(flat_playlist.map((c,i)=>[c, i]));
+        this.#flat_playlist_playable_index_map = new Map(flat_playlist_playable.map((c,i)=>[c, i]));
         
         this.#next_parsed_playlist_item = null;
     }
@@ -273,7 +292,7 @@ export class InternalSession extends Session {
         if (this.#ticks % 5 == 0) {
             if (this.clients.length) {
                 var filename = this.#all_files_iterator.next().value;
-                if (filename) this.update_media_info(filename, {force:false, silent:true});
+                if (filename) this.update_media_info(filename, {silent:true});
             }
             if (this.is_running) {
                 if (this.player.duration && this.player.time_pos >= this.player.duration - 60) {
@@ -287,42 +306,48 @@ export class InternalSession extends Session {
 
     prepare_next_playlist_item() {
         if (this.#next_parsed_playlist_item) return;
-        var next = this.get_playlist_next_item(this.$.playlist_id);
+        var next = this.get_playlist_adjacent_item(this.$.playlist_id);
         this.#next_parsed_playlist_item = this.player.parse_item(next);
     }
 
+    /** @param {string[]} ids */
     async download_and_replace(ids) {
-        if (!Array.isArray(ids)) ids = [ids];
-        var playlist_ids = [];
-        
-        ids = ids.map(id=>{
-            var playlist = [...this.iterate_playlist_items(id)];
-            if (playlist.length) playlist_ids.push(id);
-            return playlist.length ? playlist.map(item=>item.id) : id;
-        }).flat();
-        
-        for (var id of playlist_ids) {
-            var filename = this.$.playlist[id].filename;
-            var mi = (await this.update_media_info(filename)) || {};
-            this.$.playlist[id].filename = "livestreamer://playlist";
-            if (mi.name) this.$.playlist[id].props["name"] = mi.name;
-        }
-        
+        var _this = this;
+        /** @return {AsyncGenerator<Download, void>} */
+        var process = async function*(id) {
+            var item = _this.$.playlist[id];
+            var filename = item.filename;
+            var mi = (await _this.update_media_info(filename)) || {};
+            if (mi.name || mi.filename) item.props.label = mi.name || mi.filename;
+            if (_this.is_item_playlist(id)) {
+                item.filename = "livestreamer://playlist";
+                var children = [..._this.iterate_playlist_items(id)];
+                for (var c of children) {
+                    yield* await process(c.id);
+                }
+                return;
+            }
+            if (!utils.urlify(filename).protocol.match(/^https?:$/)) {
+                return;
+            }
+            yield new Download(id, _this);
+        };
+
         for (let id of ids) {
-            var filename = (this.$.playlist[id] || {}).filename;
-            if (!utils.urlify(filename).protocol.match(/^https?:$/)) continue;
-            var download = new Download(id, this);
-            download.on("error", (msg)=>this.logger.error(msg));
-            download.on("info", (msg)=>this.logger.info(msg));
-            var filename = await download.start().catch((e)=>{
-                if (!e) this.logger.warn(`Download '${filename}}' was cancelled.`);
-                else if (e.message && e.message.startsWith("Command failed with exit code 1")) this.logger.warn(`Download '${filename}}' was cancelled.`)
-                else if (e.stderr) this.logger.error(e.stderr);
-                else this.logger.error(e);
-            });
-            if (filename) {
-                var item = this.$.playlist[id];
-                if (item) item.filename = filename;
+            for await (let download of process(id)) {
+                download.on("error", (msg)=>this.logger.error(msg));
+                download.on("info", (msg)=>this.logger.info(msg));
+                await download.start()
+                    .then((new_filename)=>{
+                        if (download.item) download.item.filename = new_filename;
+                    })
+                    .catch((e)=>{
+                        if (download.destroyed) return; // aka cancelled.
+                        if (e) this.logger.warn(`Download failed: ${e.stderr || e}`);
+                    })
+                    .finally(()=>{
+                        download.destroy();
+                    })
             }
         }
     }
@@ -331,7 +356,11 @@ export class InternalSession extends Session {
         if (!Array.isArray(ids)) ids = [ids];
         for (var id of ids) {
             var download = globals.app.downloads[id];
-            if (download) download.cancel();
+            if (download) download.destroy();
+            if (this.is_item_playlist(id)) {
+                var children = [...this.iterate_playlist_items(id)];
+                await this.cancel_download(children.map(c=>c.id));
+            }
         }
     }
 
@@ -375,7 +404,7 @@ export class InternalSession extends Session {
         if (!item.index) item.index = -1;
         if (!item.track_index) item.track_index = 0;
         item.props = utils.json_copy({
-            ...utils.get_defaults(InternalSessionProps.playlist.__enumerable__.props),
+            ...utils.get_defaults(PlaylistItemPropsProps),
             ...this.$.player_default_override,
             ...item.props,
         });
@@ -384,14 +413,12 @@ export class InternalSession extends Session {
 
     /** @returns {Generator<PlaylistItem$, void>} */
     *iterate_playlist_items(parent_id, track_index, recursive=false) {
-        var tracks = this.#playlist_map[parent_id];
+        var tracks = this.get_playlist_tracks(parent_id);
         if (typeof track_index == "number") tracks = tracks.filter((t,i)=>i == track_index);
-        if (tracks) {
-            for (var track of tracks) {
-                for (var item of track) {
-                    yield item;
-                    if (recursive) yield* this.iterate_playlist_items(item.id, null, true);
-                }
+        for (var track of tracks) {
+            for (var item of track) {
+                yield item;
+                if (recursive) yield* this.iterate_playlist_items(item.id, null, true);
             }
         }
     }
@@ -400,18 +427,25 @@ export class InternalSession extends Session {
         return !this.iterate_playlist_items(id).next().done;
     }
 
-    get_playlist_parents(id) {
+    /** @returns {Generator<PlaylistItem$, void>} */
+    *iterate_playlist_parents(id) {
         var item = this.$.playlist[id];
-        var parents = [];
-        while(item) {
+        while(true) {
             item = this.$.playlist[item.parent_id];
-            if (item) parents.push(item);
+            if (!item) return;
+            yield item;
         }
-        return parents;
     }
 
-    get_playlist_next_item(id) {
-        return this.#flat_playlist_index_lookup.get(this.#flat_playlist_index_map.get(this.$.playlist[id])+1);
+    get_playlist_adjacent_item(id, direction=1) {
+        var item = this.$.playlist[id];
+        var i = this.#flat_playlist_index_map.get(item)+direction;
+        for (; i < this.#flat_playlist.length; i+=direction) {
+            item = this.#flat_playlist[i];
+            if (this.#flat_playlist_playable_index_map.has(item)) {
+                return item;
+            }
+        }
     }
 
     /** @param {PlaylistOptions} opts */
@@ -448,7 +482,7 @@ export class InternalSession extends Session {
             // `scale=trunc(ih*dar/2)*2:trunc(ih/2)*2`,
             `scale=${ow}:${oh}`,
             `setsar=1/1`,
-            `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(path.resolve(globals.app.resources_dir, "Arial.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`,
+            `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(path.resolve(globals.app.resources_dir, "fonts", "RobotoMono-Regular.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`,
         ];
         /** @type {({pts:number, rect:utils.Rectangle})[]} */
         var rects = [];
@@ -602,8 +636,17 @@ export class InternalSession extends Session {
         let {register_history} = opts ?? {};
         if (register_history != false) this.playlist_history.push(`Playlist Removed ${ids.length} items`);
         if (!Array.isArray(ids)) ids = [ids];
+
+        var curr_index = this.#flat_playlist_index_map.get(this.$.playlist[this.$.playlist_id])
+        var next_items = this.#flat_playlist.slice(curr_index);
+
         for (var id of ids) this.#playlist_remove(id);
         this.#playlist_update();
+
+        if (this.is_running) {
+            var next_item = next_items.find(i=>i.id in this.$.playlist);
+            this.playlist_play(next_item ? next_item.id : null);
+        }
     }
 
     #playlist_update_item(id, changes, opts) {
@@ -618,9 +661,7 @@ export class InternalSession extends Session {
         else Object.assign(item.props, props);
         fix_playlist_item(item, this.$.playlist);
         if (this.is_running && this.$.playlist_id == id) {
-            for (var k in item.props) {
-                this.player.set_property(k, item.props[k]);
-            }
+            this.#update_player_properties();
         }
     }
 
@@ -786,8 +827,8 @@ export class InternalSession extends Session {
         }
     }
 
-    async reload_current_item() {
-        return this.playlist_play(this.$.playlist_id, { start: this.$.time_pos, pause: this.player.is_paused });
+    async reload(remember_time_pos=false) {
+        return this.playlist_play(this.$.playlist_id, { start: remember_time_pos ? this.$.time_pos : 0, pause: this.player.is_paused });
     }
 
     /** @param {string} id @param {LoadFileOpts} opts */
@@ -809,10 +850,10 @@ export class InternalSession extends Session {
             return;
         }
         if (this.is_item_playlist(id) && !item.props.playlist_mode) {
-            item = this.get_playlist_next_item(id);
+            item = this.get_playlist_adjacent_item(id);
         }
         if (item.filename === "livestreamer://exit") {
-            item = this.get_playlist_next_item(item.parent_id);
+            item = this.get_playlist_adjacent_item(item.parent_id);
         }
 
         let macro = item.filename === "livestreamer://macro" && item.props.function;
@@ -826,27 +867,26 @@ export class InternalSession extends Session {
             return await this.stop_stream();
         }
 
-        this.$.playlist_id = id;
+        this.$.playlist_id = item.id;
         var t0 = Date.now();
 
         await this.player.loadfile(item, opts)
             .then((success)=>{
-                // this.logger.debug(`loadfile ${item.filename} took ${Date.now()-t0}ms`);
+                var d = Date.now()-t0;
+                if (d > 1000) this.logger.warn(`loadfile '${item.filename}' took ${d}ms`);
             })
             .catch(e=>{
-                if (e instanceof MPVLoadFileError && e.name == "overridden") {
-                    this.logger.warn("loadfile was overridden.");
-                }else {
-                    this.logger.warn("loadfile failed:", e);
-                    // this is fired immediately after 'end-file', and apparently before on_load_fail hook is called, so our next item is immediately overridden internally with null://eof
-                    // what a complete fucking mess.
-                    return this.playlist_next();
+                this.logger.warn("loadfile failed:", e);
+                // if loadfile was overridden, we don't want to play the next item, we can assume it's just been called and triggered the override.
+                if (e instanceof MPVLoadFileError && e.name == "override") {
+                    return;
                 }
+                return this.playlist_next();
             });
     }
 
     playlist_next() {
-        var item = this.get_playlist_next_item(this.$.playlist_id);
+        var item = this.get_playlist_adjacent_item(this.$.playlist_id);
         return this.playlist_play(item ? item.id : null);
     }
 
@@ -870,6 +910,16 @@ export class InternalSession extends Session {
     async set_player_default_override(name, value) {
         if (!(name in MediaProps)) return;
         this.$.player_default_override[name] = value;
+        if (this.is_running) {
+            this.#update_player_properties();
+        }
+    }
+
+    #update_player_properties() {
+        var item = this.get_current_playlist_item() || {props:{}};
+        for (var name in PlaylistItemPropsProps) {
+            this.player.set_property(name, item.props[name] ?? this.$.player_default_override[name] ?? PlaylistItemPropsProps[name].__default__);
+        }
     }
 
     /** @param {number|{volume_target: number, volume_speed: number}} opts */
@@ -882,8 +932,12 @@ export class InternalSession extends Session {
         }
     }
 
+    update_stream_settings(data) {
+        utils.merge(this.$.stream_settings, data, {delete_nulls:true});
+    }
+
     handover(session) {
-        this.stream.attach(session, false);
+        this.stream.attach(session); // , false
     }
 }
 
@@ -922,6 +976,7 @@ function fix_circular_playlist_items($, warn) {
 /** @param {InternalSession$} $ */
 function fix_session($, warn) {
     $ = utils.json_copy($);
+    delete $.id;
     $.access_control = new AccessControl($.access_control);
     var items = Object.values($.playlist);
     $.playlist = {};

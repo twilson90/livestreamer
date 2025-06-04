@@ -1,6 +1,6 @@
 import {WindowCommunicator} from "../../utils/dom/WindowCommunicator.js";
-import "./extra-style.scss";
 import {mime_ext_map} from "../../utils/mime_ext_map.js";
+import "./extra-style.scss";
 
 export class FileManagerWebApp {
 	constructor() {
@@ -13,11 +13,75 @@ export class FileManagerWebApp {
 		try { opts = JSON.parse(params.get("opts")); } catch {}
 		if (!opts) opts = {};
 		var hash = window.location.hash.slice(5);
-		window.history.replaceState({}, "", "/"+window.location.hash);
+		if (!is_iframe) window.history.replaceState({}, "", "/"+window.location.hash);
 		console.log(opts);
 		var id = opts ? opts.id : null;
+		console.log("id:", id)
 		// var key = params.get("key");
 		// var parent_window = window.opener || window.parent;
+		
+		var original_rename = elFinder.prototype.commands.rename;
+		elFinder.prototype.commands.copy = function() {
+			original_rename.apply(this, arguments);
+			var old_getstate = this.getstate;
+			this.getstate = function(select) {
+				var sel = this.files(select);
+				if (sel.some(f=>f.isroot)) return 0;
+				return old_getstate.call(this, [select]);
+			};
+		};
+		
+		elFinder.prototype.commands.quit = function() {
+			this.exec = function() {
+				messenger.request(window.parent, "exit", {id});
+			};
+			this.getstate = function(select) {
+				return 0;
+			};
+		}
+		elFinder.prototype.commands.quit.prototype = { forceLoad: true };
+		elFinder.prototype.i18.en.messages['cmdquit'] = 'Quit';
+
+		elFinder.prototype.commands.downloadtree = function() {
+			this.exec = function(hashes) {
+				var dfds = hashes.map(hash=>{
+					return this.request({
+						data : {cmd : 'listtree', targets : [hash]},
+						notify : {type : 'listtree', cnt : hashes.length, hideCnt : hashes.length==1, msg : `Traversing file tree...`},
+						cancel : true,
+						preventDefault : true,
+					})
+				});
+				return $.when(...dfds).done((...datas)=>{
+					var lines = [];
+					for (var i = 0; i < datas.length; i++) {
+						for (var id of datas[i].ids) {
+							lines.push(id);
+						}
+						if (i < datas.length-1) lines.push("-".repeat(64));
+					}
+					/* for (var data of datas) {
+						const process = (node, parent=undefined, i=0, depth=-1)=>{
+							lines.push("│  ".repeat(Math.max(depth,0)) + (parent ? (((i == parent.children.length-1) ? "└" : "├") + "─ ") : "") + node.name + (node.isdir?"/":""));
+							if (node.children) node.children.forEach((n,i)=>process(n, node, i, depth+1));
+						};
+						data.trees.forEach(tree=>process(tree));
+						lines.push("-".repeat(64));
+					} */
+					
+					var text = lines.join(`\r\n`)
+					var filename = `${hashes.map(h=>fm.file(h).name).join(", ")}.txt`;
+					var file = new File([text], filename, {type:"text/plain;charset=utf-8"});
+					saveAs(file);
+				});
+			};
+			this.getstate = function(hashes) {
+				var files = this.files(hashes);
+				return (files.length && files.every(f=>f.mime==="directory")) ? 0 : -1;
+			};
+		}
+		elFinder.prototype.commands.downloadtree.prototype = { forceLoad: true };
+		elFinder.prototype.i18.en.messages['cmddownloadtree'] = 'Download tree listing';
 
 		var defaultOpts = {
 			url : "./api",
@@ -29,7 +93,7 @@ export class FileManagerWebApp {
 				},
 				toolbar:[
 					['home'],
-					// ['netmount'],
+					['netmount'],
 					['back', 'reload', 'forward'],
 					['mkdir', 'mkfile', 'upload'],
 					['open', 'download', 'info', 'quicklook'],
@@ -57,11 +121,11 @@ export class FileManagerWebApp {
 			},
 			contextmenu : {
 				// navbarfolder menu
-				navbar : ['open', '|', 'copy', 'cut', 'paste', 'duplicate', '|', 'rm', '|', 'rename', 'info', 'downloadtree'],
+				navbar : ['open', '|', 'copy', 'cut', 'paste', 'duplicate', '|', 'rm', '|', 'rename', 'info', 'downloadtree', '|', 'netunmount'],
 				// current directory menu
-				cwd    : ['reload', 'back', '|', 'upload', 'mkdir', 'mkfile', 'paste', '|', 'sort', '|', 'info', 'downloadtree'],
+				cwd    : ['reload', 'back', '|', 'upload', 'mkdir', 'mkfile', 'paste', '|', 'sort', '|', 'info', 'downloadtree', '|', 'netunmount'],
 				// current directory file menu
-				files  : ['open', 'quicklook', '|', 'download', '|', 'copy', 'cut', 'paste', 'duplicate', '|', 'rm', '|', 'edit', 'rename', '|', 'archive', 'extract', '|', 'info', 'downloadtree']
+				files  : ['open', 'quicklook', '|', 'download', '|', 'copy', 'cut', 'paste', 'duplicate', '|', 'rm', '|', 'edit', 'rename', '|', 'archive', 'extract', '|', 'info', 'downloadtree', '|', 'netunmount']
 			},
 			// These name are 'size', 'aliasfor', 'path', 'link', 'dim', 'modify', 'perms', 'locked', 'owner', 'group', 'perm' and your custom info items label
 			hideItems : ['aliasfor'],
@@ -103,49 +167,8 @@ export class FileManagerWebApp {
 				}
 			},
 			// bootCalback calls at before elFinder boot up 
-			bootCallback : function(_fm, extraObj) {
-				var fm = _fm;
-				fm.commands.downloadtree = function() {
-					this.exec = function(hashes) {
-						var dfds = hashes.map(hash=>{
-							return fm.request({
-								data : {cmd : 'listtree', targets : [hash]},
-								notify : {type : 'listtree', cnt : hashes.length, hideCnt : hashes.length==1, msg : `Traversing file tree...`},
-								cancel : true,
-								preventDefault : true,
-							})
-						});
-						return $.when(...dfds).done((...datas)=>{
-							var lines = [];
-							for (var i = 0; i < datas.length; i++) {
-								for (var id of datas[i].ids) {
-									lines.push(id);
-								}
-								if (i < datas.length-1) lines.push("-".repeat(64));
-							}
-							/* for (var data of datas) {
-								const process = (node, parent=undefined, i=0, depth=-1)=>{
-									lines.push("│  ".repeat(Math.max(depth,0)) + (parent ? (((i == parent.children.length-1) ? "└" : "├") + "─ ") : "") + node.name + (node.isdir?"/":""));
-									if (node.children) node.children.forEach((n,i)=>process(n, node, i, depth+1));
-								};
-								data.trees.forEach(tree=>process(tree));
-								lines.push("-".repeat(64));
-							} */
-							
-							var text = lines.join(`\r\n`)
-							var filename = `${hashes.map(h=>fm.file(h).name).join(", ")}.txt`;
-							var file = new File([text], filename, {type:"text/plain;charset=utf-8"});
-							saveAs(file);
-						});
-					};
-					this.getstate = function(hashes) {
-						var files = this.files(hashes);
-						return (files.length && files.every(f=>f.mime==="directory")) ? 0 : -1;
-					};
-				}
-				fm.commands.downloadtree.prototype = { forceLoad: true };
-				fm.i18.en.messages['cmddownloadtree'] = 'Download tree listing';
-
+			bootCallback : function(fm, extraObj) {
+				var elem = fm.getUI()[0];
 				fm.resources.blink = function(elm, mode) {
 					var acts = {
 						slowonce : function(){elm.hide().delay(250).fadeIn(750).delay(500).fadeOut(3500);},
@@ -157,20 +180,34 @@ export class FileManagerWebApp {
 					func();
 				}
 
-				var quit_button = $(`<button title="Quit"><i class="fas fa-sign-out-alt"></i></button>`)[0];
-				quit_button.addEventListener("click", ()=>{
-					window.close();
-				});
+				var quit_button = $(`<button class="quit" title="Quit"><i class="fas fa-xmark"></i></button>`)[0];
+				quit_button.onclick = ()=>{
+					messenger.request(window.parent, "exit", {id});
+				};
+
+				var toolbar_observer;
+
 				/* any bind functions etc. */
 				fm.bind('open sync select toolbarpref', function() {
-					var elem = fm.getUI()[0];
 					elem.classList.remove("elfinder-touch");
 					elem.classList.remove("elfinder-mobile");
 				});
+				var add_quit_button = ()=>{
+					if (!is_iframe) return;
+					if (quit_button.parentElement) return;
+					var toolbar = elem.querySelector(".elfinder-toolbar");
+					if (toolbar) toolbar.prepend(quit_button);
+				}
 				
 				// for example set document.title dynamically.
 				var title = document.title;
 				var last_cwd;
+				
+				var toolbar_observer = new MutationObserver((mutations)=>{
+					add_quit_button();
+				}).observe(elem, {childList: true, subtree: true});
+				add_quit_button();
+				
 				fm.bind('open', function() {
 					var path = '', cwd = fm.cwd();
 					if (!last_cwd) last_cwd = cwd;
@@ -220,18 +257,25 @@ export class FileManagerWebApp {
 				return false;
 			}
 		}
+
+		var messenger = new WindowCommunicator();
 		if (opts.getFileCallback === true) {
-			var messenger = new WindowCommunicator();
 			opts.getFileCallback = (files)=>{
 				if (!Array.isArray(files)) files = [files];
 				messenger.request(window.parent, "files", {files, id})
 			};
 		}
 		opts = $.extend(true, defaultOpts, opts);
+		console.log(opts);
 		if (opts.getFileCallback) {
 			opts.contextmenu.files.unshift('getfile', '|');
 			opts.uiOptions.toolbar.push(['getfile']);
 		}
+
+		if (is_iframe) {
+			// opts.uiOptions.toolbar.push(['quit']);
+		}
+		
 		$('#elfinder').elfinder(opts);
 	}
 }

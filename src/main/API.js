@@ -1,6 +1,7 @@
 import {program, Command} from "commander";
 import fs from "fs-extra";
-import {globals, utils} from "./exports.js";
+import {globals} from "./exports.js";
+import {utils} from "../core/exports.js";
 
 class CommandHack extends Command {
     #o = 0;

@@ -17,6 +17,7 @@ export default new Filter({
 			__description__: "Set factor to amplify difference.",
 			__default__: 2,
 			__min__: 0,
+			__step__: 1,
 			__max__: 65535
 		},
 		threshold: {
@@ -24,6 +25,7 @@ export default new Filter({
 			__description__: "Set threshold for difference amplification. Any difference greater or equal to this value will not alter source pixel.",
 			__default__: 10,
 			__min__: 0,
+			__step__: 1,
 			__max__: 65535
 		},
 		tolerance: {
@@ -31,6 +33,7 @@ export default new Filter({
 			__description__: "Set tolerance for difference amplification. Any difference lower to this value will not alter source pixel.",
 			__default__: 0,
 			__min__: 0,
+			__step__: 1,
 			__max__: 65535
 		},
 		low: {
@@ -38,6 +41,7 @@ export default new Filter({
 			__description__: "Set lower limit for changing source pixel. This option controls maximum possible value that will decrease source pixel value.",
 			__default__: 65535,
 			__min__: 0,
+			__step__: 1,
 			__max__: 65535
 		},
 		high: {
@@ -45,7 +49,8 @@ export default new Filter({
 			__description__: "Set high limit for changing source pixel. This option controls maximum possible value that will increase source pixel value.",
 			__default__: 65535,
 			__min__: 0,
-			__max__: 65535
+			__max__: 65535,
+			__step__: 1,
 		},
 	},
 	apply(ctx, $) {

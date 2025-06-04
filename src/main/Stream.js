@@ -2,11 +2,14 @@ import fs from "fs-extra";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import * as ebml from 'ts-ebml';
-import {globals, utils, constants, FFMPEGWrapper, Logger, SessionTypes, StreamTarget, SessionPlayer, StopStartStateMachine, StopStartStateMachine$, ClientUpdater, SessionPlayer$} from "./exports.js";
-/** @import { Session, InternalSession, ExternalSession, Session$, MainClient } from './exports.js' */
+import {globals, SessionTypes, StreamTarget, SessionPlayer, SessionPlayer$} from "./exports.js";
+import {utils, constants, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, ClientUpdater} from "../core/exports.js";
+/** @import { Session, InternalSession, ExternalSession, Session$ } from './exports.js' */
 
 const WARNING_MPV_LOG_SIZE = 1 * 1024 * 1024 * 1024;
 const MAX_MPV_LOG_SIZE = 8 * 1024 * 1024 * 1024;
+const MAX_METRICS_SAMPLES = 1000;
+const LOW_METRIC_SAMPLE_RATE = 50;
 
 export class Stream$ extends StopStartStateMachine$ {
     targets = [];
@@ -15,12 +18,14 @@ export class Stream$ extends StopStartStateMachine$ {
     stream_targets = {};
     bitrate = 0;
     scheduled = false;
-    is_encode = false;
+    is_encoding = false;
     fix_discontinuities = true;
     internal_path = "";
     /** @type {string | undefined} */
     title;
     player = new SessionPlayer$();
+    buffer_duration = 5;
+    fps = 0;
 }
 
 /**
@@ -41,7 +46,7 @@ export class Stream extends StopStartStateMachine {
     get is_test() { return !!this.$.test; }
     get title() { return this.$.title; }
     get is_running() { return this.$.state === constants.State.STARTED; }
-    get fps() { return isNaN(+this.$.frame_rate) ? 30 : +this.$.frame_rate; }
+    get fps() { return isNaN(+this.$.fps) ? 30 : +this.$.fps; }
 
     get_target_opts(target_id) {
         return {
@@ -61,6 +66,8 @@ export class Stream extends StopStartStateMachine {
     keys = {};
     #ticks = 0;
     #tick_interval;
+    /** @type {Record<PropertyKey,utils.IncrementalAverage>} */
+    #metrics_averages = {};
 
     /** @param {Session} session */
     constructor(session) {
@@ -70,7 +77,12 @@ export class Stream extends StopStartStateMachine {
         this.logger = new Logger("stream");
         this.logger.on("log", (log)=>(this.session||session).logger.log(log))
         
-        this.client_updater = new ClientUpdater(this.observer, ["streams", this.id]);
+        this.client_updater = new ClientUpdater(this.observer, ["streams", this.id], {
+            filter: (c)=>{
+                if (c.type === "delete" && c.path[0] === "metrics") return false;
+                return true;
+            }
+        });
         var onsubscribe = (client)=>this.client_updater.subscribe(client);
         var onunsubscribe = (client)=>this.client_updater.unsubscribe(client);
         this.on("attach", (session)=>{
@@ -93,7 +105,6 @@ export class Stream extends StopStartStateMachine {
 
         this.logger.info(`Starting stream...`);
         this.$.scheduled = !!this.session.$.schedule_start_time;
-        this.$.is_encode = this.is_encoding;
 
         if (this.is_test) {
             if (globals.app.conf["main.test_stream_low_settings"]) {
@@ -105,11 +116,23 @@ export class Stream extends StopStartStateMachine {
             }
             this.$.targets = [];
         }
+        this.$.is_encoding = this.is_encoding;
 
         this.$.title = this.$.title || this.session.name; // this.session.$.default_stream_title || 
         this.$.metrics = {};
         this.$.stream_targets = {};
         this.$.bitrate = 0;
+
+        
+
+        /* {
+            for (let i = 0; i < 3; i++) {
+                for (var j = 0; j < 60*60*7; j++) {
+                    this.register_metric(`${i}:speed`, j*1000, utils.random(0.7, 1.3));
+                }
+            }
+            this.disable_register_metric = true;
+        } */
         
         let error;
         let keyframes_per_second = 2.0;
@@ -294,6 +317,13 @@ export class Stream extends StopStartStateMachine {
                 // -----------------------------
                 "--stream-buffer-size=4k",
                 "--interpolation=no",
+                `--video-sync=display-resample`,
+                // "--interpolation-threshold=-1",
+                `--tscale=box`,
+                `--tscale-window=sphinx`,
+                `--tscale-clamp=0.0`,
+                `--tscale-param1=0.1`,
+                `--tscale-radius=0.95`,
                 "--force-window=yes",
                 // "--ytdl=no",
                 `--ytdl-format=${globals.app.conf["core.ytdl_format"]}`,
@@ -339,6 +369,8 @@ export class Stream extends StopStartStateMachine {
                     `--o=-`,
                     "--ofopts-add=strict=+experimental",
                     "--ofopts-add=fflags=+genpts+autobsf",
+                    // "--ofopts-add=fflags=+discardcorrupt+genpts+igndts+autobsf",
+                    // "--demuxer-lavf-analyzeduration=0.1",
                     // "--ofopts-add=fflags=+nobuffer+fastseek+flush_packets+genpts+autobsf",
                     // `--demuxer-lavf-o-add=avoid_negative_ts=make_zero`,
                     // `--demuxer-lavf-o-add=copyts`,
@@ -450,12 +482,6 @@ export class Stream extends StopStartStateMachine {
                     `--profile=gpu-hq`,
                     `--deband=no`,
                     `--blend-subtitles=yes`,
-                    `--video-sync=display-resample`,
-                    `--tscale=box`,
-                    `--tscale-window=sphinx`,
-                    `--tscale-clamp=0.0`,
-                    `--tscale-param1=0.1`,
-                    `--tscale-radius=0.95`,
                     `--osd-level=1`,
                     `--term-osd=force`,
                 );
@@ -467,10 +493,10 @@ export class Stream extends StopStartStateMachine {
                 if (this.ffmpeg && this.player) {
                     if (this.is_realtime) {
                         // Create a custom stream transform to enforce real-time pacing
-                        this.realtime_handler = new RealtimeHandler(this.$.buffer_duration * 1000);
-                        this.player.mpv.process.stdout.pipe(this.realtime_handler.stream).pipe(this.ffmpeg.process.stdin);
+                        this.realtime_handler = new RealtimeHandler(this);
+                        this.player.mpv.process.stdout.pipe(this.realtime_handler.realtime_stream).pipe(this.ffmpeg.process.stdin);
                         this.player.mpv.on("before-quit", ()=>{
-                            this.player.mpv.process.stdout.unpipe(this.realtime_handler.stream).unpipe(this.ffmpeg.process.stdin);
+                            this.player.mpv.process.stdout.unpipe(this.realtime_handler.realtime_stream).unpipe(this.ffmpeg.process.stdin);
                         })
                     } else {
                         this.player.mpv.process.stdout.pipe(this.ffmpeg.process.stdin);
@@ -580,18 +606,30 @@ export class Stream extends StopStartStateMachine {
         
         this.emit("stopped");
         
-        this.logger.info(`Stream stopped, total duration was ${utils.ms_to_timespan_str(Math.round(Date.now()-this.$.start_time))}`);
+        this.logger.info(`Stream stopped, total duration was ${utils.ms_to_timespan_str(Math.round(Date.now()-this.$.start_ts))}`);
         
         return super.onstop();
     }
 
     register_metric(key, x, y) {
-        var d = this.$.metrics[key] = this.$.metrics[key] ?? {min:0,max:0,data:{}};
-        d.data[d.max++] = [x, y];
+        // if (this.disable_register_metric) return;
+        if (!this.#metrics_averages[key]) this.#metrics_averages[key] = new utils.IncrementalAverage();
+        this.#metrics_averages[key].push(y);
+        var d = this.$.metrics[key] = this.$.metrics[key] ?? {min:0,max:0,high:{},low:[]};
+        var k = d.max++;
+        d.high[k] = [x, y];
+        if (d.max % LOW_METRIC_SAMPLE_RATE == 0) {
+            d.low.push([x, this.#metrics_averages[key].average]);
+            this.#metrics_averages[key].clear();
+        }
+        if (k > MAX_METRICS_SAMPLES) {
+            delete d.high[d.min];
+            d.min++;
+        }
     }
     
     /** @param {Session<Session$>} session */
-    attach(session) {
+    attach(session, detach=true) {
         session = (typeof session === "string") ? globals.app.sessions[session] : session;
         let last_session = this.session;
         if (session && session.stream && session.stream.state !== constants.State.STOPPED) {
@@ -603,7 +641,7 @@ export class Stream extends StopStartStateMachine {
             return;
         }
 
-        if (last_session) {
+        if (detach && last_session) {
             last_session.$.stream_id = null;
             this.emit("detach", last_session);
         }
@@ -621,10 +659,7 @@ export class Stream extends StopStartStateMachine {
     }
 
     pause(pause) {
-        if (this.realtime_handler) {
-            if (pause) this.realtime_handler.pause();
-            else this.realtime_handler.resume();
-        }
+        if (this.realtime_handler) this.realtime_handler.pause(pause);
         this.player.set_property("pause", pause);
     }
     
@@ -660,28 +695,33 @@ class RealtimeHandler {
     #timer = new utils.StopWatch();
     #pts = 0;
     pts_offset = 0;
+    /** @type {Stream} */
+    #stream;
     get pts() { return this.#pts + this.pts_offset; }
-    constructor(buffer_duration) {
+    /** @param {Stream} stream */
+    constructor(stream) {
+        this.#stream = stream;
         var decoder = new ebml.Decoder();
         var reader = new ebml.Reader();
         this.#timer.start();
 
         var push = (chunk, callback)=>{
-            this.stream.push(chunk);
+            this.realtime_stream.push(chunk);
             const elements = decoder.decode(chunk);
             for (var e of elements) reader.read(e);
             const nanosec = reader.duration * reader.timestampScale;
-            this.#pts = nanosec / 1000 / 1000;
+            this.#pts = nanosec / 1000 / 1000 / 1000;
             reader.cues.length = 0; // dump this it builds up quickly consuming memory and doesnt appear to affect pts
             // console.log(this.#pts);
             callback();
         }
 
-        this.stream = new PassThrough({
+        this.realtime_stream = new PassThrough({
             transform: (chunk, encoding, callback)=>{
-                const time_diff = this.pts - this.#timer.elapsed;
+                var buffer_duration = Math.min(this.#stream.$.buffer_duration, 60);
+                const time_diff = this.pts - (this.#timer.elapsed/1000);
                 if (time_diff > buffer_duration) {
-                    const delay = time_diff - buffer_duration;
+                    const delay = (time_diff - buffer_duration) * 1000;
                     setTimeout(()=>push(chunk, callback), delay);
                 } else {
                     push(chunk, callback);
@@ -689,69 +729,9 @@ class RealtimeHandler {
             }
         });
     }
-    pause() {
-        this.#timer.pause();
-    }
-    resume() {
-        this.#timer.resume();
-    }
-}
-
-class _RealtimeStream extends PassThrough {
-    constructor(target_bps, buffer_size) {
-        super();
-        this.start_time = Date.now();
-        this.buffer_size = buffer_size;
-        this.target_Bps = target_bps / 8; // Convert to bytes/second
-        this.bytes_sent = 0;
-        this.decoder = new ebml.Decoder();
-        this.decoder2 = new ebml.Reader();
-        this.pts = 0;
-    }
-    _transform(chunk, encoding, callback) {
-        const now = Date.now();
-        const elapsed = (now - this.start_time) / 1000; // in seconds
-        const target_bytes = Math.floor(this.target_Bps * elapsed);
-        
-        // Calculate how many bytes we should have sent by now
-        const bytes_to_hold = this.bytes_sent - target_bytes;
-        
-        if (bytes_to_hold >= this.buffer_size) {
-            // We're too far ahead - delay sending this chunk
-            const delay = Math.floor((bytes_to_hold - this.buffer_size) / this.target_Bps * 1000);
-            setTimeout(()=>this._push(chunk, callback), delay);
-        } else {
-            // We're within buffer limits - send immediately
-            this._push(chunk, callback);
-        }
-    }
-    _transform(chunk, encoding, callback) {
-        const now = Date.now();
-        const elapsed = (now - this.start_time) / 1000; // in seconds
-        const target_bytes = Math.floor(this.target_Bps * elapsed);
-        
-        // Calculate how many bytes we should have sent by now
-        const bytes_to_hold = this.bytes_sent - target_bytes;
-        
-        if (bytes_to_hold >= this.buffer_size) {
-            // We're too far ahead - delay sending this chunk
-            const delay = Math.floor((bytes_to_hold - this.buffer_size) / this.target_Bps * 1000);
-            setTimeout(()=>this._push(chunk, callback), delay);
-        } else {
-            // We're within buffer limits - send immediately
-            this._push(chunk, callback);
-        }
-    }
-    _push(chunk, callback) {
-        this.push(chunk);
-        const ebmlElms = this.decoder.decode(chunk);
-        for (var e of ebmlElms) {
-            this.decoder2.read(e);
-            console.log(this.decoder2.duration);
-        }
-
-        this.bytes_sent += chunk.length;
-        callback();
+    pause(pause) {
+        if (pause) this.#timer.pause();
+        else this.#timer.resume();
     }
 }
 

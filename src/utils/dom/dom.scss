@@ -16,9 +16,13 @@
     --os-track-border-radius: 10px;
     --os-handle-interactive-area-offset: 2px;
     --os-handle-border-radius: 10px;
-    --os-handle-bg: rgba(255, 255, 255, 0.3);
-    --os-handle-bg-hover: rgba(255, 255, 255, 0.45);
-    --os-handle-bg-active: rgba(255, 255, 255, 0.6);
+}
+[data-darkmode=true] {
+    .os-scrollbar {
+        --os-handle-bg: rgba(255, 255, 255, 0.44);
+        --os-handle-bg-hover: rgba(255, 255, 255, 0.55);
+        --os-handle-bg-active: rgba(255, 255, 255, 0.66);
+    }
 }
 
 .list-menu {
@@ -26,6 +30,15 @@
 	flex-direction: column;
 	padding: 0;
     margin:0;
+	&:empty {
+		&:after {
+			content: "No items";
+			text-align: center;
+			color: #888;
+			font-size: 12px;
+			padding: 6px;
+		}
+	}
 	&>* {
 		display: flex;
 		margin: 0;
@@ -48,7 +61,7 @@
 				&:hover{
 					background: rgba(123, 185, 255, 0.2);
 				}
-				&:active{
+				&:active, &:focus {
 					background: rgba(123, 185, 255, 0.6);
 				}
 			}

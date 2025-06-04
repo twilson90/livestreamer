@@ -109,6 +109,11 @@ export class PropertyGroup extends Property {
     get raw_values() { return get_props(this, "raw_values"); }
     get values() { return get_props(this, "values"); }
     get defaults() { return get_props(this, "defaults"); }
+    get is_default() { return this.properties.every(p=>p.is_default); }
+    get is_changed() { return this.properties.some(p=>p.is_changed); }
+    get has_defaults() { return this.properties.some(p=>p.has_defaults); }
+    get is_indeterminate() { return this.properties.some(p=>p.is_indeterminate); }
+    get is_valid() { return this.properties.every(p=>p.is_valid); }
     // get datas() { return get_props(this, "datas"); }
 }
 

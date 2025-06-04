@@ -12,13 +12,18 @@ program.command("start").action(()=>api.start());
 program.command("package").action(()=>api.package());
 program.command("make").action(()=>api.make());
 
+program.command("generate_google_drive_offline_refresh_token")
+    .description("Generate a Google Drive offline refresh token")
+    .option(`--client_id <string>`, "Client ID")
+    .option(`--client_secret <string>`, "Client Secret")
+    .action(({client_id, client_secret})=>api.generate_google_drive_offline_refresh_token({client_id, client_secret}));
+
 program.parse();
 
 async function build() {
     var opts = {...program.opts()};
     var configs = await api.generate_configs(opts);
     for (var c of configs) {
-        // c.build.watch = watch;
         await vite.build(c);
     }
 }

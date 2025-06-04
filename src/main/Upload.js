@@ -1,6 +1,7 @@
 import fs from "fs-extra";
 import path from "node:path";
-import {globals, utils, DataNodeID, DataNodeID$} from "./exports.js";
+import {globals} from "./exports.js";
+import {utils, DataNodeID, DataNodeID$} from "../core/exports.js";
 
 const log_interval = 1 * 1000;
 
@@ -25,6 +26,8 @@ export class Upload extends DataNodeID {
     #last_bytes;
     #speed_pointer=0;
     #speed_check_interval_id;
+    /** @type {Set<import("http").IncomingMessage>} */
+    requests = new Set();
 
     get finished() { return this.$.bytes >= this.$.total; }
     get bytes() { return this.$.bytes; }
@@ -44,7 +47,7 @@ export class Upload extends DataNodeID {
     }
 
     constructor(id, dest_path, filesize, mtime=0) {
-        super(id, new Upload());
+        super(id, new Upload$());
 
         this.$.bytes = 0;
         this.$.total = filesize;
@@ -93,8 +96,23 @@ export class Upload extends DataNodeID {
         })();
     }
 
-    /** @param {import("stream").Readable} stream */
-    add_chunk(stream, start) {
+    /** @param {import("http").IncomingMessage} req @param {import("stream").Readable} stream */
+    add_chunk(req, stream, start) {
+
+        this.requests.add(req);
+        
+        req.on('close', () => {
+            this.requests.delete(req);
+            if (!req.complete) {
+                this.cancel_timeout_id = setTimeout(()=>{
+                    globals.app.logger.info(`Upload chunk cancelled by request closure: ${this.unique_dest_path}`);
+                    this.cancel();
+                }, 5000);
+            }
+        });
+
+        clearTimeout(this.cancel_timeout_id);
+
         var writestream = fs.createWriteStream(this.unique_dest_path, {start, flags: "r+"}); // stat?"r+":"w"
         var p = start;
         this.streams.add(writestream);
@@ -161,6 +179,9 @@ export class Upload extends DataNodeID {
         this.$.status = Upload.Status.CANCELLED;
         for (var s of this.streams) {
             s.close();
+        }
+        for (var req of [...this.requests]) {
+            req.destroy();
         }
         globals.app.logger.info(`Upload cancelled by user: ${this.unique_dest_path}`);
         this.destroy();

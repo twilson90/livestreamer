@@ -1,111 +1,114 @@
 import * as reflect from "./reflect.js";
+import { EventEmitter } from "./EventEmitter.js";
 
 export const Null$ = Symbol("Null$");
 export const Proxy$Target = Symbol("Proxy$Target");
 
-/**
- * @typedef {{
- *  get:(key:PropertyKey,value:any)=>any
- *  set:(key:PropertyKey,value:any)=>void
- *  deleteProperty:(key:PropertyKey,value:any)=>boolean
- * }} Proxy$Options
- */
-
-export class Proxy$ {
-    /** @param {Proxy$Options} opts @returns {Proxy$} */
+/** @typedef {{set: (target: any, prop: PropertyKey, value: any) => boolean, get: (target: any, prop: PropertyKey) => any, deleteProperty: (target: any, prop: PropertyKey) => boolean}} Proxy$HandlerOpts */
+export class Proxy$Handler extends EventEmitter {
+    /** @type {Proxy$HandlerOpts} */
+    #opts;
+    /** @param {Proxy$HandlerOpts} opts */
     constructor(opts) {
-        if (!opts) opts = {};
-        var proxy = new Proxy(this, {
-            get(target, prop) {
-                if (prop === Proxy$Target) return target;
-                if (opts.get) return opts.get(prop, target[prop]);
-                var value = Reflect.get(target, prop, proxy);
-                return value;
-            },
-            set(target, prop, value) {
-                var curr = target[prop];
-                if (opts.set) value = opts.set(prop, value);
-                if (typeof value === "object" && value !== null && typeof curr === "object" && curr !== null) {
-                    var proto = Object.getPrototypeOf(curr);
-                    var new_ob = new (proto.constructor)();
-                    if (new_ob.__proxy__) new_ob = new_ob.__proxy__;
-                    value = Object.assign(new_ob, value);
-                }
-                Reflect.set(target, prop, value, proxy);
-                return true;
-            },
-            deleteProperty(target, prop) {
-                if (prop in target) {
-                    if (!opts.deleteProperty || opts.deleteProperty(prop, target[prop]) !== false) {
-                        delete target[prop];
-                    }
-                }
-                return true;
-            }
-        });
-        Object.defineProperty(this, `__proxy__`, {
-            value: proxy
-        });
+        super();
+        this.#opts = {...opts};
+    }
+
+    get(target, prop) {
+        if (prop === Proxy$Target) return target;
+        if (this.#opts.get) return this.#opts.get(target, prop);
+        var value = Reflect.get(target, prop);
+        if (value instanceof Proxy$) {
+            value = (value[Proxy$Target] ?? value).__proxy__;
+        }
+        this.emit("get", target, prop, value);
+        return value;
+    }
+    
+    set(target, prop, value) {
+        var curr = target[prop];
+        if (this.#opts.set) return this.#opts.set(target, prop, value);
+        if (typeof value === "object" && value !== null && typeof curr === "object" && curr !== null) {
+            var proto = Object.getPrototypeOf(curr);
+            var new_ob = new (proto.constructor)();
+            if (new_ob instanceof Proxy$) new_ob = new_ob.__proxy__;
+            value = Object.assign(new_ob, value);
+        }
+        this.emit("set", target, prop, value); // important that we do this before setting.
+        Reflect.set(target, prop, value);
+        return true;
+    }
+    deleteProperty(target, prop) {
+        if (this.#opts.deleteProperty) return this.#opts.deleteProperty(target, prop);
+        Reflect.deleteProperty(target, prop);
+        this.emit("delete", target, prop);
+        return true;
     }
 }
 
-/**
- * @template T
- * @typedef {{
- *  deleteProperty:(prop:PropertyKey,value:T)=>boolean
- * }} Collection$Options
- */
-
-/** @template T */
-export class Collection$ {
-    /** @param {() => T} generator @param {Collection$Options<T>} opts */
-    constructor(generator, opts) {
-        if (!opts) opts = {};
-        var null_item;
-        var proxy = new Proxy(this, {
-            get(target, prop) {
-                if (prop === Proxy$Target) return target;
-                if (prop === Null$) {
-                    if (!null_item) null_item = generator();
-                    return null_item.__proxy__;
-                };
-                var item = Reflect.get(target, prop, proxy);
-                return item ? item.__proxy__ : null;
-            },
-            set(target, prop, value) {
-                if (prop === Null$) return false;
-                delete proxy[prop]; // trigger deleteProperty
-                var new_item = generator();
-                for (var k in value) new_item.__proxy__[k] = value[k];
-                target[prop] = new_item.__proxy__;
-                return true;
-            },
-            deleteProperty(target, prop) {
-                if (prop === Null$) return false;
-                if (prop in target) {
-                    if (!opts.deleteProperty || opts.deleteProperty(prop, target[prop]) !== false) {
-                        delete target[prop];
-                    }
-                }
-                return true;
-            },
-            /* ownKeys(target) {
-                return Reflect.ownKeys(target).filter(prop=>prop !== Null$);
-            } */
-        });
-        Object.defineProperty(this, `__proxy__`, {
-            value: proxy
-        });
+export class Collection$Handler extends Proxy$Handler {
+    /** @type {() => T} */
+    #generator;
+    /** @type {T} */
+    #null_item;
+    constructor(generator) {
+        super();
+        this.#generator = generator;
     }
-
-    /** @template T @param {() => T} generator @param {Collection$Options} opts @returns {Record<PropertyKey,T>} */
-    static create(generator, opts){
-        return (new class extends Collection$ {
-            constructor() {
-                super(generator, opts);
-            }
-        }).__proxy__;
+    get(target, prop) {
+        if (prop === Null$) {
+            if (!this.#null_item) this.#null_item = this.#generator();
+            if (this.#null_item instanceof Proxy$) this.#null_item = this.#null_item.__proxy__;
+            return this.#null_item;
+        }
+        return super.get(target, prop);
     }
+    set(target, prop, value) {
+        if (prop === Null$) return false;
+        if (this.#generator) target[prop] = this.#generator();
+        return super.set(target, prop, value);
+    }
+    deleteProperty(target, prop) {
+        if (prop === Null$) return false;
+        return super.deleteProperty(target, prop);
+    }
+}
+
+export class Proxy$ {
+    /** @type {this} */
+    #proxy;
+    /** @type {Proxy$Handler} */
+    #proxy_handler;
+    /** @param {Proxy$Handler} handler */
+    constructor(handler) {
+        if (!handler) handler = new Proxy$Handler();
+        this.#proxy_handler = handler;
+        this.#proxy = new Proxy(this, handler);
+    }
+    get __proxy__() {
+        return this.#proxy;
+    }
+    get __proxy_handler__() {
+        return this.#proxy_handler;
+    }
+}
+
+// /** @template T @param {Proxy$Handler} handler @returns {Record<PropertyKey,T>} */
+// export function Object$(handler) {
+//     return (new class extends Proxy$ {
+//         constructor() {
+//             super(handler);
+//         }
+//     }).__proxy__;
+// }
+
+/** @template T @param {() => T} generator @returns {Record<PropertyKey,T>} */
+export function Collection$(generator) {
+    return (new class extends Proxy$ {
+        constructor() {
+            super(new Collection$Handler(generator));
+        }
+    }).__proxy__;
 }
 
 export class ProxyID$ extends Proxy$ {
@@ -113,6 +116,7 @@ export class ProxyID$ extends Proxy$ {
     get _is_null() { return !this.id; }
 }
 
+/** @param {Proxy$} $ @param {Object} data */
 export function apply$($, data) {
     if (data.init) {
         let [path, d] = data.init;
@@ -122,11 +126,14 @@ export function apply$($, data) {
     }
     if (data.changes) {
         for (var [type, path, value] of data.changes) {
-            if (type == "delete") {
-                reflect.deleteProperty($.__proxy__, path);
-            } else {
-                reflect.set($.__proxy__, path, value);
-            }
+            // there are some cases when the target does not exist because we've already deleted it in the frontend for immediate feedback... this is a bit dodgy though.
+            try {
+                if (type == "delete") {
+                    reflect.deleteProperty($.__proxy__, path);
+                } else {
+                    reflect.set($.__proxy__, path, value);
+                }
+            } catch {}
         }
     }
 }

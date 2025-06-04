@@ -6,7 +6,7 @@ export default new Filter({
 	description: `Apply color adjustments using curves.`,
 	
 	props: {
-		presets: {
+		preset: {
 			__name__: "Preset",
 			__description__: "Select one of the available color presets.",
 			__default__: "none",
@@ -27,7 +27,7 @@ export default new Filter({
 	},
 	apply(ctx, $) {
 		let v1 = ctx.id("v");
-		ctx.stack.push(`[${ctx.vid}]colortemperature=temperature=${$.temperature}:mix=${$.mix}:pl=${$.pl}[${v1}]`);
+		ctx.stack.push(`[${ctx.vid}]curves=preset=${$.preset}[${v1}]`);
 		ctx.vid = v1;
 	}
 });

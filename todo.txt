@@ -124,3 +124,40 @@
 [ ] dont think the livestream is realtime, avg indicates seems to be up and down an awful lot.
     Or the speed graph is not reliable in the way it picks data points to display.
     decoder looks ok but transcode does not.
+[x] playist history broken again
+[ ] playlist item elem style: --duration: 5693; --start: undefined; --end: undefined;
+[ ] Proxy$ bollocks NIGHTMARE, just scrap the lot and use wrapper functions
+[ ] MainWebApp in electron, everything else in node. How would that work with bundler?
+
+[x] in gui mode, media player shows black box, shouldnt show anything at all.
+[x] media settings 'current' after changing properties in menu, not reflected here because it's using the context item on load without the new props...
+[x] Pre-Filters not applied until next item loaded
+[ ] framestep (pre-filter) and gaussianblur (post-filter) causes immediate end.
+[ ] ftp playing
+[ ] stdin_listener core not parsing args, errors.
+[ ] live chat scroll jumps when typing. fucking infuriating.
+[~] after a bunch of loops 21/9 video caused massive pts/dts desync and crashed. after crash it started a new live when it should have resumed the old I think.
+[x] 7 hr stream metrics > 2.5 mb, viewing in the graph lagged the browser to hell. No reason to have more than 1 hour of data.
+[x] darkmode override in live settings
+[x] ftp files not working playlist items
+[x] info modal not one line, looks bad
+[x] __data_update weirdness, temp fixed it, but whole thing needs a rethink.
+[~] Stream Configuration target(s) not updating, again __data_update mess up overriding changes
+    when are live data updates even needed?
+        - stream settings
+        - ...?
+    create new props:
+        initial_values
+        live_values
+    get rid of concept of 'paths' and strip back importance of 'name', propertygroup should just be a ui thing, get values & set_values on propertygroup is weird, not extending property.
+    do away with context and valuecontext, just use private vars.
+
+    update:
+        - 'data' actually works well, it only changes the value if data is different.
+[x] check if interpolation necessary when set to auto, check if video framerate is divisible by stream framerate.
+[ ] live stream ui config more options cabtv / show all media player settings in live video settings.
+
+[ ] stopping live stream immediately 'OFFLINE' not VOD, VK.com becomes auto preference.
+[ ] should all file paths / uris be relative to a volume?
+[ ] live sticky not transitioning, aso appearing when not wanted (after sending message).
+[ ] travolta no title on 404 page

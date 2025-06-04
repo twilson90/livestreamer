@@ -1,9 +1,10 @@
-import {DataNodeID, DataNodeID$, constants, globals} from "./exports.js";
+import {DataNodeID, DataNodeID$, constants, globals, utils} from "./exports.js";
 
 export class StopStartStateMachine$ extends DataNodeID$ {
     restart = 0;
     state = constants.State.STOPPED;
-    start_time = 0;
+    start_ts = 0;
+    stop_ts = 0;
     stop_reason = "";
 }
 
@@ -11,10 +12,12 @@ export class StopStartStateMachine$ extends DataNodeID$ {
 export class StopStartStateMachine extends DataNodeID {
     
     #restart_interval;
+    #stop_promise;
+    #start_promise;
 
     get state() { return this.$.state; }
     get is_started() { return this.$.state === constants.State.STARTED; }
-    get time_running() { return Date.now() - this.$.start_time } // in ms
+    get time_running() { return Date.now() - this.$.start_ts; } // in ms
 
     /** @param {string} id @param {T} $ */
     constructor(id, $) {
@@ -34,29 +37,36 @@ export class StopStartStateMachine extends DataNodeID {
         }, 1000);
     }
 
-    async start(...args) {
-        if (this.state === constants.State.STARTING) return;
-        if (this.state === constants.State.STARTED) return;
+    start(...args) {
         clearInterval(this.#restart_interval);
-        this.$.start_time = Date.now();
-        this.$.state = constants.State.STARTING;
-        if (await this.onstart(...args)) {
-            this.$.state = constants.State.STARTED;
-        } else {
-            this.$.state = constants.State.STOPPED;
+        if (this.state !== constants.State.STARTING && this.state !== constants.State.STARTED) {
+            this.$.state = constants.State.STARTING;
+            this.$.start_ts = Date.now();
+            this.#start_promise = (async ()=>{
+                if (await this.onstart(...args)) {
+                    this.$.state = constants.State.STARTED;
+                } else {
+                    this.$.state = constants.State.STOPPED;
+                }
+            })();
         }
+        return this.#start_promise;
     }
 
     async stop(reason) {
         clearInterval(this.#restart_interval);
         this.$.restart = 0;
-        if (this.state === constants.State.STOPPING) return;
-        if (this.state === constants.State.STOPPED) return;
-        this.$.state = constants.State.STOPPING;
-        this.$.stop_reason = reason || "unknown";
-        if (await this.onstop()) {
-            this.$.state = constants.State.STOPPED;
+        if (this.state !== constants.State.STOPPING && this.state !== constants.State.STOPPED) {
+            this.$.state = constants.State.STOPPING;
+            this.#stop_promise = (async ()=>{
+                this.$.stop_reason = reason || "unknown";
+                this.$.stop_ts = Date.now();
+                if (await this.onstop()) {
+                    this.$.state = constants.State.STOPPED;
+                }
+            })();
         }
+        return this.#stop_promise;
     }
     
     async restart() {

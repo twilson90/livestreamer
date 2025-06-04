@@ -12,6 +12,7 @@ import { toggle_class } from "../toggle_class.js";
 import { all_equal } from "../../all_equal.js";
 import { $ } from "../render_html.js";
 import { remove_attribute } from "../remove_attribute.js";
+import { toggle_display } from "../toggle_display.js";
 
 import { UI, Button } from "./ui.js";
 import { Tooltip } from "./Tooltip.js";
@@ -86,11 +87,18 @@ export class InputProperty extends Property {
         super({
             "contents": contents,
             "setup": ()=>{
-                var inputs_selector = `.fake-input,input,select,textarea`;
+                var inputs_selector = `.fake-input,input,select,textarea,[contenteditable=true]`;
                 var inputs = [...this.inner_el.children].map(e=>{
                     if (e.matches(inputs_selector)) return [e];
                     return [...e.querySelectorAll(inputs_selector)];
                 }).flat();
+                var type = "text";
+                if (inputs.length) {
+                    if (inputs[0].nodeName === "INPUT") type = inputs[0].type;
+                    else if (inputs[0].nodeName === "SELECT") type = "select";
+                    else if (inputs[0].nodeName === "TEXTAREA") type = "textarea";
+                }
+                this.elem.dataset.input_type = type;
                 return inputs;
             },
             // "event":(e)=>e.type === "change",
@@ -107,7 +115,12 @@ export class InputProperty extends Property {
         
         if (this.settings.label) {
             this.header_el = $(`<div class="property-header"></div>`)[0];
-            this.label = new UI(`<label>&nbsp;</label>`);
+            this.label = new UI(`<label>&nbsp;</label>`, {
+                /* click:(e)=>{
+                    e.preventDefault();
+                    this.input.focus();
+                } */
+            });
             set_attribute(this.label.elem, "for", this.name_id);
             this.header_el.append(this.label);
             this.append(this.header_el);
@@ -155,34 +168,40 @@ export class InputProperty extends Property {
         var inputs = this.get_setting("setup") || [];
         if (!Array.isArray(inputs)) inputs = [inputs];
         inputs.forEach((input, i)=>{
-            if (input.matches(".fake-input")) {
+            if (input.matches(".fake-input") || input.matches("[contenteditable=true]")) {
                 input.tabIndex = "-1"
             }
             set_attribute(input, "id", this.name_id);
+            var input_value_on_focus;
             var update_value = (trigger)=>{
                 if (input.type === "color" && !trigger) return;
-                var value = get_value(input);
-                value = this.apply_input_modifiers(value);
-                if (this.is_numeric) {
-                    if (isNaN(value)) value = 0;
-                }
-                this.set_value(value, {trigger});
+                // with fake inputs `get_value` will return undefined
+                // we check if the value is the same as the one on focus, ignore if identical.
+                var value = this.apply_input_modifiers(get_value(input));
+                if (this.is_numeric && isNaN(value)) value = 0;
+                return this.set_value(value, {trigger});
             }
             input.addEventListener("change", (e)=>update_value(true));
             input.addEventListener("input", (e)=>update_value(false));
             input.addEventListener("focus", (e)=>{
                 this.focus_promise = new Promise(resolve=>{
                     this.#is_focussed = true;
+                    input_value_on_focus = get_value(input);
                     var on_blur = (e)=>{
                         if (document.activeElement === input) return;
+                        var input_value_on_blur = get_value(input);
                         this.#is_focussed = false;
                         this.focus_promise = null;
                         input.removeEventListener("blur", on_blur);
                         this.get_setting("blur", [input]);
                         this.emit("blur", input);
-                        this.update_next_frame();
-                        resolve();
-                    }
+                        var result = false;
+                        if (input_value_on_blur !== input_value_on_focus) {
+                            result = update_value(true);
+                        }
+                        resolve(result);
+                        // this.update_next_frame();
+                    };
                     input.addEventListener("blur", on_blur);
                 });
                 this.get_setting("focus", [input]);
@@ -239,7 +258,7 @@ export class InputProperty extends Property {
         if (this.get_setting("copy")) {
             var copy_hide_timeout;
             var copy_tippy;
-            this.copy_button = new Button(`<button><i class="fas fa-copy"></i></button>`, {
+            this.copy_button = new Button(`<button class="copy"><i class="fas fa-copy"></i></button>`, {
                 "click":(e)=>{
                     e.preventDefault();
                     this.input.select();
@@ -259,7 +278,7 @@ export class InputProperty extends Property {
                 },
                 "title": "Copy",
             });
-            this.outer_el.append(this.copy_button);
+            this.buttons_el.append(this.copy_button);
 
             for (let input of this.inputs) {
                 input.addEventListener("mousedown", (e)=>{
@@ -270,7 +289,7 @@ export class InputProperty extends Property {
         }
         
         if (this.settings.reset !== false) {
-            this.reset_button = new Button(`<button><i class="fas fa-undo"></i></button>`, {
+            this.reset_button = new Button(`<button class="reset"><i class="fas fa-undo"></i></button>`, {
                 "click":()=>this.reset(),
                 "title": "Reset",
                 "hidden": ()=>!this.get_setting("reset"),
@@ -282,9 +301,12 @@ export class InputProperty extends Property {
     }
 
     step(dir) {
-        var step = this.get_setting("step", this.item);
+        var step = +this.get_setting("step", this.item);
         this.#force_update_inputs = true;
-        return this.set_values(Math.round((this.value + (step*dir))/step)*step, {trigger:"change"});
+        let str = step.toString();
+        const decimals = (str.includes("e-")) ? +str.split("e-")[1] : (str.split('.')[1] || '').length;
+        const factor = 10 ** decimals;
+        return this.set_values(Math.round((this.value + (step*dir))*factor)/factor, {trigger:"change"});
     }
 
     apply_input_modifiers(value, input) {
@@ -293,7 +315,7 @@ export class InputProperty extends Property {
         }
         return value;
     }
-
+    
     apply_output_modifiers(value, input) {
         for (var m of this.output_modifiers) {
             value = m.apply(this, [value, input]);
@@ -319,8 +341,8 @@ export class InputProperty extends Property {
             
         toggle_class(this.elem, "vertical", !!this.get_setting("vertical"))
         toggle_class(this.elem, "is-null", values[0] == null);
-        toggle_class(this.elem, "not-default", this.has_defaults && !is_default); // !is_focused && 
-        toggle_class(this.elem, "changed", this.has_datas && is_changed); // !is_focused && 
+        toggle_class(this.elem, "not-default", this.has_defaults && !is_default); // !is_focussed && 
+        toggle_class(this.elem, "changed", this.has_datas && is_changed); // !is_focussed && 
 
         if (width != null) {
             this.elem.style.setProperty("--ui-property-min-width", typeof width == "number" ? `${width}px` : width);
@@ -345,9 +367,9 @@ export class InputProperty extends Property {
             }
         }
 
-        // var is_focused = dom.has_focus(this.inner_el, true, true);
-        // var is_focused = this.inputs.some(input=>dom.has_focus(input, false, true));
-        // var is_focused = dom.has_focus(this.input_wrapper_el, false, true);
+        // var is_focussed = dom.has_focus(this.inner_el, true, true);
+        // var is_focussed = this.inputs.some(input=>dom.has_focus(input, false, true));
+        // var is_focussed = dom.has_focus(this.input_wrapper_el, false, true);
         
         if (this.label) {
             set_inner_html(this.label.elem, this.get_setting("label"));
@@ -355,7 +377,7 @@ export class InputProperty extends Property {
 
         if (this.tooltip) {
             let info = this.get_setting("info");
-            toggle_class(this.info_elem, "d-none", !info);
+            toggle_display(this.info_elem, !!info);
             if (typeof info === "string") info = info.replace(/\n/g, "<br>");
             this.tooltip.set_content(info);
         }
@@ -381,7 +403,7 @@ export class InputProperty extends Property {
                     if (is_indeterminate) value = "#ffffff";
                     else if (!value) value = "#000000";
                 }
-                if (input.matches(".fake-input")) {
+                if (input.matches(".fake-input") || input.matches("[contenteditable=true]")) {
                     set_inner_html(input, value);
                 } else if (typeof input.value !== "undefined") {
                     set_value(input, value);
@@ -443,7 +465,10 @@ export class InputProperty extends Property {
     }
 
     async __data_update() {
-        if (this.focus_promise) await this.focus_promise;
+        if (this.focus_promise) {
+             // if resolves true then the property has just changed, so we don't need to update the inputs on the data.
+            if (await this.focus_promise) return;
+        }
         super.__data_update();
     }
 

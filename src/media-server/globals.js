@@ -1,5 +1,6 @@
 /** @import { MediaServerApp } from './exports.js' */
-export default {
+export const globals = {
     /** @type {MediaServerApp} */
     app: undefined
 }
+export default globals;

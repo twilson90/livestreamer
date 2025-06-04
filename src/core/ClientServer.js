@@ -75,6 +75,15 @@ export class ClientServer extends events.EventEmitter {
             });
         });
     }
+
+    async get_client_info(ip_hash) {
+        var filename = path.join(this.clients_dir, `${ip_hash}.json`);
+        var lines = (await fs.exists(filename)) ? (await utils.read_last_lines(filename, 512, "utf8")) : [];
+        return Object.fromEntries(lines.map((line)=>{
+            var data = JSON.parse(line.trim());
+            return [data.id, data];
+        }));
+    }
 }
 
 export default ClientServer;

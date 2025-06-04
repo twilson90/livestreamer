@@ -4,7 +4,8 @@ import multer from "multer";
 import fs from "fs-extra";
 import crypto from "node:crypto";
 import bodyParser from "body-parser";
-import {utils, errors, constants, globals, Volume} from "./exports.js";
+import {errors, globals, Volume, drivers} from "./exports.js";
+import {utils, constants} from "../core/exports.js";
 /** @import { Driver } from './exports.js' */
 
 const dirname = import.meta.dirname;
@@ -15,8 +16,6 @@ export class ElFinder {
 	requests = {};
 	/** @type {Object.<string,Volume>} */
 	volumes = {};
-	/** @type {Object.<string,typeof Driver>} */
-	drivers = {};
 	config;
 	/** @type {Object.<string,string[]>} */
 	uploads = {}
@@ -27,6 +26,7 @@ export class ElFinder {
 	constructor(express, config) {
 		this.commands = new Set(['abort','archive','callback','chmod','dim','duplicate','editor','extract','file','get','info','ls','mkdir','mkfile','netmount','open','parents','paste','put','rename','resize','rm','search','size','subdirs','tmb','tree','upload','url','zipdl']);
 		this.elfinder_dir = path.join(globals.app.appdata_dir, "elfinder");
+		this.netmounts_dir = path.join(this.elfinder_dir, "netmounts");
 		this.uploads_dir = path.join(this.elfinder_dir, 'uploads');
 		this.thumbnails_dir = path.join(this.elfinder_dir, 'tmb');
 		this.tmp_dir = path.join(this.elfinder_dir, 'tmp');
@@ -78,16 +78,14 @@ export class ElFinder {
 			var volume = check_volume(req, res);
 			if (volume) {
 				await volume.driver(null, async (driver)=>{
-					// var target = volume.isPathBased ? upath.join(volume.root, req.params[0]) : req.params[0];
 					var target = req.params[0];
-					if (volume.isPathBased) target = "/"+target;
 					var stat = await driver.stat(target);
 					if (!stat) {
 						res.status(404).send("File not found.");
 						return;
 					}
 					res.status(200);
-					await driver.fetch(target, res);
+					await driver.fetch(target, req, res);
 				});
 			}
 		});
@@ -100,14 +98,15 @@ export class ElFinder {
 		await fs.emptyDir(this.uploads_dir);
 		await fs.mkdir(this.tmp_dir, {recursive:true});
 		await fs.emptyDir(this.tmp_dir);
-		var drivers = await fs.readdir(`${dirname}/drivers`);
-		for (var d of drivers) {
-			var name = path.basename(d, ".js");
-			this.drivers[name] = (await import(`./drivers/${name}.js`)).default;
-		}
+		await fs.mkdir(this.netmounts_dir, {recursive:true});
 
 		for (var v of this.config.volumes) {
 			new Volume(this, v).register();
+		}
+
+		for (var netkey of await fs.readdir(this.netmounts_dir)) {
+			var config = JSON.parse(await fs.readFile(path.join(this.netmounts_dir, netkey), "utf8"));
+			new Volume(this, config).register();
 		}
 
 		this.tmpvolume = new Volume(this, {
@@ -141,11 +140,11 @@ export class ElFinder {
 		var task;
 		if (cmd) {
 			if (this.commands.has(cmd)) {
-				if (this[cmd]) {
-					task = Promise.resolve(this[cmd].apply(this, [opts, res]));
+				if (this.api[cmd]) {
+					task = Promise.resolve(this.api[cmd].apply(this, [opts, req, res]));
 				} else if (volume) {
-					if (volume[cmd]) {
-						task = Promise.resolve(volume[cmd].apply(volume, [opts, res]));
+					if (volume.api[cmd]) {
+						task = Promise.resolve(volume.api[cmd].apply(volume, [opts, req, res]));
 					} else {
 						console.error(`'${cmd}' is not implemented by volume driver`);
 					}
@@ -165,6 +164,8 @@ export class ElFinder {
 				var error;
 				if (e instanceof errors.AbortException) {
 					error = "Aborted";
+				} else if (e instanceof errors.NotImplementedException) {
+					error = "Not implemented";
 				} else if (e instanceof Error) {
 					console.error(e.stack);
 					if (e.message.includes("dest already exists") || e.message.includes("file already exists")) error = "File already exists in destination.";
@@ -187,13 +188,6 @@ export class ElFinder {
 
 	/** @param {Volume} volume */
 	hash(volume, id="") {
-		/* if (volume.isPathBased) {
-			var relid = upath.relative(volume.root, id);
-			if (id.startsWith("../")) {
-				console.error(`Root ID mismatch ${volume.root} <==> ${id}`);
-			}
-			id = relid;
-		} */
 		var idhash = Buffer.from(id).toString('base64')
 			.replace(/=+$/g, '')
 			.replace(/\+/g, '-')
@@ -244,124 +238,152 @@ export class ElFinder {
 		return await copytree(srcid, dstid);
 	}
 
-	// ----------------------------------------------------------------------------
-
-	/**
-	 * @param {object} opts
-	 * @param {*} opts.id Required
-	 * @param {express.Response} res
-	 */
-	abort(opts, res) {
-		var req = this.requests[opts.id];
-		if (req) {
-			req.emit("abort");
-			req.destroy();
-		}
-		return {error: 0};
-	}
-
-	/** 
-	 * @param {object} opts
-	 * @param opts.node {*} Required
-	 * @param opts.json {*}
-	 * @param opts.bind {*}
-	 * @param opts.done {*}
-	 * @param {express.Response} res
-	 */
-	callback(opts, res) {
-		if (!opts.node) throw new errors.ErrCmdParams();
-        if (opts.done || !this.config.callbackWindowURL) {
-			var html = callback_template
-				.replace("[[node]]", JSON.stringify(opts.node))
-				.replace("[[bind]]", JSON.stringify(opts.bind))
-				.replace("[[json]]", JSON.stringify(opts.json));
-			res.header('Content-Type', 'text/html; charset=utf-8');
-			res.header('Content-Length', html.length);
-			res.header('Cache-Control', 'private');
-			res.header('Pragma', 'no-cache');
-			res.end(html);
-        } else {
-			var url = new URL(this.config.callbackWindowURL);
-			url.searchParams.append("node", node);
-			url.searchParams.append("json", json);
-			url.searchParams.append("bind", bind);
-			url.searchParams.append("done", 1);
-			res.header('Location', url.toString());
-			res.end();
-        }
-	}
-
-	/** 
-	 * @param {object} opts
-	 * @param {*} opts.name Required 
-	 * @param {*} opts.method Required 
-	 * @param {*} opts.args
-	 */
-	async editor(opts) {
-		if (!opts.name) throw new errors.ErrCmdParams();
-		if (!opts.method) throw new errors.ErrCmdParams();
-        var names = opts.name;
-		if (!Array.isArray(names)) names = [names];
-		var res = {};
-		for (var c of names) {
-			var clazz;
-			try {
-				clazz = (await import(`./editors/${c}.js`)).default;
-			} catch (e) {}
-			if (clazz) {
-				var editor = new clazz(this, opts.args);
-				res[c] = editor.enabled();
-				if (editor.isAllowedMethod(opts.method) && typeof editor[opts.method] === "function") {
-					return editor.apply(editor[opts.method], [])();
-				}
-			} else {
-				res[c] = 0;
+	api = {
+		/**
+		 * @param {object} opts
+		 * @param {*} opts.id Required
+		 * @param {express.Request} req
+		 * @param {express.Response} res
+		 */
+		abort: (opts, req, res)=>{
+			var req = this.requests[opts.id];
+			if (req) {
+				req.emit("abort");
+				req.destroy();
 			}
-		}
-		return res;
-	}
+			return {error: 0};
+		},
+	
+		/** 
+		 * @param {object} opts
+		 * @param opts.node {*} Required
+		 * @param opts.json {*}
+		 * @param opts.bind {*}
+		 * @param opts.done {*}
+		 * @param {express.Request} req
+		 * @param {express.Response} res
+		 */
+		callback: (opts, req, res)=>{
+			if (!opts.node) throw new errors.ErrCmdParams();
+			if (opts.done || !this.config.callbackWindowURL) {
+				var html = callback_template
+					.replace("[[node]]", JSON.stringify(opts.node))
+					.replace("[[bind]]", JSON.stringify(opts.bind))
+					.replace("[[json]]", JSON.stringify(opts.json));
+				res.header('Content-Type', 'text/html; charset=utf-8');
+				res.header('Content-Length', html.length);
+				res.header('Cache-Control', 'private');
+				res.header('Pragma', 'no-cache');
+				res.end(html);
+			} else {
+				var url = new URL(this.config.callbackWindowURL);
+				url.searchParams.append("node", node);
+				url.searchParams.append("json", json);
+				url.searchParams.append("bind", bind);
+				url.searchParams.append("done", 1);
+				res.header('Location', url.toString());
+				res.end();
+			}
+		},
+	
+		/** 
+		 * @param {object} opts
+		 * @param {*} opts.name Required 
+		 * @param {*} opts.method Required 
+		 * @param {*} opts.args
+		 * @param {express.Request} req
+		 * @param {express.Response} res
+		 */
+		editor: async (opts, req, res)=>{
+			if (!opts.name) throw new errors.ErrCmdParams();
+			if (!opts.method) throw new errors.ErrCmdParams();
+			var names = opts.name;
+			if (!Array.isArray(names)) names = [names];
+			var res = {};
+			for (var c of names) {
+				var clazz;
+				try {
+					clazz = (await import(`./editors/${c}.js`)).default;
+				} catch (e) {}
+				if (clazz) {
+					var editor = new clazz(this, opts.args);
+					res[c] = editor.enabled();
+					if (editor.isAllowedMethod(opts.method) && typeof editor[opts.method] === "function") {
+						return editor.apply(editor[opts.method], [])();
+					}
+				} else {
+					res[c] = 0;
+				}
+			}
+			return res;
+		},
+	
+		/** 
+		 * @param {object} opts 
+		 * @param {string} opts.protocol Required 
+		 * @param {string} opts.host Required 
+		 * @param {string} opts.path 
+		 * @param {string} opts.port 
+		 * @param {string} opts.user 
+		 * @param {string} opts.pass
+		 * @param {string} opts.alias
+		 * @param {*} opts.options
+		 * @param {express.Request} req
+		 * @param {express.Response} res
+		 */
+		netmount: async (opts, req, res) => {
+			if (!opts.protocol) throw new errors.ErrCmdParams();
+			if (!opts.host) throw new errors.ErrCmdParams();
+			var protocol = opts.protocol;
+			var config = opts.options || {};
+			if (protocol === 'netunmount') {
+				let netkey = opts.user;
+				if (netkey.match(/^v.+\_.+$/)) netkey = netkey.slice(1, -1);
+				let id = `v${netkey}_`
+				let volume = this.volumes[id];
+				if (volume) {
+					await fs.rm(path.join(this.netmounts_dir, netkey));
+					volume.unregister();
+					return volume.driver(null, async (driver)=>{
+						return { removed: [{ 'hash': driver.hash("/") }] };
+					});
+				} else {
+					throw ["errNetMount", opts.host, "Not NetMount driver."]
+				}
+			}
+			if (opts.path) {
+				config.root = opts.path
+			}
+			
+			var c = {...opts};
+			delete c.reqid;
+			delete c.options;
+			delete c.protocol;
+			delete c.path;
+			config = Object.assign(config, c);
 
-	/** 
-	 * @param {object} opts 
-	 * @param {*} opts.protocol Required 
-	 * @param {*} opts.host Required 
-	 * @param {*} opts.path 
-	 * @param {*} opts.port 
-	 * @param {*} opts.user 
-	 * @param {*} opts.pass
-	 * @param {*} opts.alias
-	 * @param {*} opts.options
-	 */
-	async netmount(opts) {
-		if (!opts.protocol) throw new errors.ErrCmdParams();
-		if (!opts.host) throw new errors.ErrCmdParams();
-        var protocol = opts.protocol;
-		var config = opts.options || {};
-		delete opts.options;
-		delete opts.protocol;
-        if (protocol === 'netunmount') {
-			var volume = this.volumes[opts.user];
-			return volume.unmount();
-        }
-		if (opts.path) {
-			config.root = opts.path
-			delete opts.path;
+			var driver = Object.entries(drivers).filter(([name, driver])=>driver.net_protocol === protocol).map(([name, driver])=>name)[0];
+			config.driver = driver;
+			config.name = `${opts.user}@${opts.host}`;
+	
+			if (!driver) {
+				throw ["errNetMount", opts.host, "Not NetMount driver."]
+			}
+			var netkey = utils.md5(JSON.stringify(config));
+			var id = `v${netkey}_`;
+			if (this.volumes[id]) {
+				throw ["errNetMount", opts.host, "Already mounted."]
+			}
+			config.id = id;
+			config.netkey = netkey;
+			await fs.writeFile(path.join(this.netmounts_dir, netkey), JSON.stringify(config), "utf8");
+			var netvolume = new Volume(this, config);
+			netvolume.register();
+	
+			return netvolume.driver(null, async (driver)=>{
+				return { added: [await driver.file("/")] };
+			});
 		}
-
-		config = Object.assign(config, opts);
-        var driver = Object.values(this.drivers).find(d=>d.net_protocol === protocol);
-		config.driver = driver;
-
-		if (!driver) {
-            throw ["errNetMount", opts.host, "Not NetMount driver."]
-		}
-		var id = "v"+crypto.createHash("md5").update(JSON.stringify(config)).digest("hex")+"_";
-		if (this.volumes[id]) {
-            throw ["errNetMount", opts.host, "Already mounted."]
-		}
-		config.id = id;
-		var netvolume = new Volume(this, config);
-		await netvolume.mount();
 	}
 }
 

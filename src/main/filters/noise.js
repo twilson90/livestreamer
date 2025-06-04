@@ -22,13 +22,12 @@ export default new Filter({
 		all_flags: {
 			__name__: "Flags",
 			__description__: "Set flags for all components.",
-			__default__: "",
+			__default__: "t+u",
 			__options__: [
-				["", "None"],
 				["a", "Averaged temporal noise (smoother)"],
 				["p", "Mix with pattern"],
 				["t", "Temporal noise"],
-				["u", "Uniform noise"]
+				["u", "Uniform noise"],
 				["t+u", "Temporal + Uniform noise"],
 			]
 		}

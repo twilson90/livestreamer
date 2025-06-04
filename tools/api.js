@@ -9,14 +9,15 @@ import { viteStaticCopy } from "vite-plugin-static-copy";
 import esmShim from '@rollup/plugin-esm-shim';
 import { api as forge_api } from "@electron-forge/core";
 import finder from "find-package-json";
-import replace from "@rollup/plugin-replace";
+import open from "open";
+
+// import replace from "@rollup/plugin-replace";
 export const dirname = import.meta.dirname;
 
 export const forge_config_path = path.resolve(dirname, "forge.config.cjs");
 export const src = path.resolve(dirname, "../src");
-export const node_version = process.versions.node.split(".")[0];
-export const target = `node${node_version}`;
-export const format = "cjs";
+export const target = `node22`;
+export const format = "esm";
 const platforms = ["linux", "win32"];
 
 export function normalizePath(...args) {
@@ -81,20 +82,35 @@ export class API {
             entry: path.resolve(src, "index.js"),
             root: src,
             plugins: [],
+            /** @type {vite.Plugin[]} */
+            vite_plugins: [],
             production: false,
             platform: "windows",
+            copy: [],
             ...opts,
         };
         let pkg = { ...finder(src).next().value };
         
         const dist = this.dist;
-        // const format = "es";
         
         let roots = [src, opts.root].filter(src=>src);
         roots = [...new Set(roots.map(p=>path.resolve(p)))];
 
         let user_pkg = finder(opts.root).next().value;
-        let combine_packages = (user_pkg.__path !== pkg.__path);
+        // let combine_packages = (user_pkg.__path !== pkg.__path);
+        
+        let external = [
+            'vite',
+            'electron',
+            /^electron\/.+/,
+            "pm2",
+            "sharp",
+            "ws",
+            // "bufferutil",
+            // "utf-8-validate",
+            ...builtinModules.flatMap(m => [m, `node:${m}`]),
+            ...opts.external,
+        ];
 
         // Object.assign(pkg.devDependencies, user_pkg.devDependencies);
         pkg.type = format.match(/^(cjs|commonjs)$/i) ? "commonjs" : "module";
@@ -106,34 +122,19 @@ export class API {
         var minify = (opts.production) ? true : false;
         var sourcemap = (opts.production) ? false : 'inline';
 
-        let input = [
-            "core/exports.js",
-            "main/index.js",
-            "media-server/index.js",
-            "file-manager/index.js",
-        ]
-
-        input = [...new Set([
-            ...input.map(p=>path.resolve(src,p)),
-            opts.entry,
+        // relative to src
+        let input = {
+            "index": opts.entry,
+            "core/index": "./core/index.js",
+            "media-server/index": "./media-server/index.js",
+            "file-manager/index": "./file-manager/index.js",
+            "main/index": "./main/index.js",
             ...opts.input,
-        ])].filter(p=>p);
+        };
+        input = Object.fromEntries(Object.entries(input).map(([k,p])=>[k, path.resolve(src, p)]));
 
         /** @type {vite.AliasOptions} */
         let alias = [];
-        if (combine_packages) {
-            for (let k in user_pkg.dependencies) {
-                if (k === "livestreamer") continue;
-                if (!(k in pkg.dependencies)) {
-                    pkg.dependencies[k] = user_pkg.dependencies[k];
-                }
-                let p = path.resolve(dirname, "../node_modules", k);
-                if (user_pkg.dependencies[k] == pkg.dependencies[k] && fs.existsSync(p)) {
-                    // removes duplicates, assumes dependencies are the same version, may lead to breaks so be careful!
-                    alias.push({ find:k, replacement:p });
-                }
-            }
-        }
 
         let configs = [];
         let platform = opts.platform.match(/^win/i) ? "windows" : "linux";
@@ -143,49 +144,16 @@ export class API {
         if (opts.production) {
             define["process.env.PRODUCTION"] = "1";
         }
+        
         let node_config = defineConfig({
+            configFile: false,
             plugins: [
-                /* {
-                    renderDynamicImport(options) {
-                        if (options.format === "cjs") {
-                            if (options.targetModuleId == normalizePath("src/electron/index.js")) {
-                                return {left:"require(", right:")"}
-                            }
-                        }
-                    }
-                }, */
-                
-                // {
-                //     /* renderDynamicImport(options) {
-                //         if (options.format === "cjs" && options.targetModuleId == normalizePath(src, "electron/index.js")) {
-                //             return {left:"require(", right:")"}
-                //         }
-                //     }, */
-                //     // transform(code, id) {
-                //     //     if (format === "cjs" && id === normalizePath(src, "index.js")) {
-                //     //         code = code.replace(/await\s+import\s*\((.+)\)/g, "import(")
-                //     //         return { code, map: null };
-                //     //     }
-                //     // },
-                //     // renderChunk(code, chunk, opts, meta) {
-                //     //     if (chunk.moduleIds.includes(normalizePath(src, "index.js"))) {
-                //     //         code = code.replace(`await import`, "require")
-                //     //     }
-                //     //     return { code, map: null };
-                //     // }
-                //     transform(code, id) {
-                //         if (format === "cjs" && id === normalizePath(src, "index.js")) {
-                //             code = code.replace(/await\s+import\s*\((.+)\)/g, "require($1); import($1)");
-                //             return { code, map: null };
-                //         }
-                //     },
-                // },
-                importMetaPlugin(),
+                ...(format.match(/^(cjs|commonjs)$/i) ? [importMetaPlugin()] : []),
                 esmShim(),
                 viteStaticCopy({
                     targets: [
                         {
-                            src: [normalizePath(src, "resources"), platforms.filter(p=>p!=platform).map(p=>`!**/${p}`)],
+                            src: [normalizePath(src, "resources"), ...platforms.filter(p=>p!=platform).map(p=>`!**/${p}`)],
                             dest: path.resolve(dist)
                         },
                         {
@@ -204,6 +172,7 @@ export class API {
                             src: [normalizePath(src, 'file-manager/assets')],
                             dest: path.resolve(dist, 'file-manager')
                         },
+                        ...opts.copy,
                     ]
                 }),
                 {
@@ -211,16 +180,18 @@ export class API {
                         let dist_package_path = path.resolve(dist, "package.json");
                         let main = glob.sync("index.*", {cwd: dist})[0];
                         let new_pkg = { ...pkg, main };
-                        // delete new_pkg.dependencies;
-                        // delete new_pkg.__path;
+                        delete new_pkg.devDependencies;
+                        delete new_pkg.__path;
+                        new_pkg.dependencies = Object.fromEntries(Object.entries(pkg.dependencies).filter(([k,v])=>external.includes(k)));
+                        delete new_pkg.scripts;
                         await fs.writeFile(dist_package_path, JSON.stringify(new_pkg, null, "  "), "utf8");
                         // await fs.rm(glob.sync("dist/bundle.*"));
                     },
-                }
+                },
+                ...opts.vite_plugins
             ],
             define,
             resolve: {
-                browserField: false,
                 mainFields: ['module', 'jsnext:main', 'jsnext'],
                 conditions: ['node'],
                 alias: [
@@ -228,6 +199,11 @@ export class API {
                     ...alias,
                 ]
             },
+            
+            /* esbuild: {
+                minifyIdentifiers: false,
+                keepNames: true,
+            }, */
             build: {
                 assetsDir: 'chunks',
                 reportCompressedSize: false,
@@ -236,7 +212,7 @@ export class API {
                     include: [/node_modules/],
                     transformMixedEsModules: true,
                 },
-                modulePreload: false,
+                // modulePreload: false,
                 target,
                 ssr: true,
                 sourcemap,
@@ -251,50 +227,21 @@ export class API {
                     output: {
                         dir: dist,
                         format: format,
-                        chunkFileNames: `[name].js`,
-                        // exports: "named", // disables warning // but fucks up config files
-                        entryFileNames(chunkInfo) {
-                            // var {isEntry, isDynamicEntry, isImplicitEntry} = chunkInfo;
-                            // console.log(chunkInfo.name, {isEntry, isDynamicEntry, isImplicitEntry})
-                            var parts = chunkInfo.name.split("/");
-                            var name = chunkInfo.name;
-                            if (parts[0] !== "_virtual") {
-                                if (chunkInfo.name.includes("node_modules")) {
-                                    name = parts.slice(parts.findIndex(p=>p==="node_modules")).join("/")
-                                } else {
-                                    // what is this about again?
-                                    var rels = roots.map(r=>path.relative(r, chunkInfo.facadeModuleId)).sort((a,b)=>a.length-b.length);
-                                    name = rels[0].replace(/\.[^.]+$/, "");
-                                }
-                            }
-                            return `${name}.js`;
-                        },
-                        preserveModules: true,
-                        // preserveModulesRoot: config.root,
+                        chunkFileNames: `chunks/[name]-[hash].js`,
+                        exports: "named", // disables warning
                     },
-                    external: [
-                        'vite',
-                        'electron',
-                        /^electron\/.+/,
-                        "pm2",
-                        "bufferutil",
-                        "utf-8-validate",
-                        ...builtinModules.flatMap(m => [m, `node:${m}`]),
-                        ...opts.external,
-                    ],
+                    external,
                 }
             },
             ssr: {
                 noExternal: true,
-                // optimizeDeps: deps,
-                // noExternal: deps,
-                // noExternal: glob.sync("*", {cwd:"node_modules"}),
             }
         });
         configs.push(node_config);
 
         var preload = path.join(src, "electron", "preload.cjs");
         let preload_config = defineConfig({
+            configFile: false,
             build: {
                 minify,
                 target,
@@ -327,8 +274,16 @@ export class API {
             let pages = glob.sync(`**/*.html`, {cwd: dir, absolute:true});
             let root_dir = path.resolve(path.dirname(indexes[0]));
             let web_config = defineConfig({
+                configFile: false,
+                css: {
+                    preprocessorOptions: {
+                        scss: {
+                            api: 'modern-compiler' // or "modern"
+                        }
+                    }
+                },
                 plugins: opts.plugins??[],
-                base: `/${name}/`,
+                // base: `/${name}/`,
                 root: root_dir,
                 build: {
                     minify,
@@ -342,9 +297,6 @@ export class API {
                 }
             });
             configs.push(web_config);
-        }
-        for (var c of configs) {
-            c.configFile = false;
         }
         return configs;
     }
@@ -373,6 +325,42 @@ export class API {
             outDir: this.out,
             interactive: true,
         })
+    }
+
+    async generate_google_drive_offline_refresh_token({client_id, client_secret}) {
+        if (!client_id || !client_secret) {
+            throw new Error("Client ID and Client Secret are required");
+        }
+        var http = await import("node:http");
+        var Drive = await import("@googleapis/drive");
+        var redirect_uri = "http://localhost:3000";
+        var client = new Drive.auth.OAuth2(client_id, client_secret, redirect_uri);
+
+        var url = client.generateAuthUrl({
+            access_type: "offline",
+            scope: ["https://www.googleapis.com/auth/drive"],
+            client_id,
+            response_type: "code",
+            redirect_uri,
+        })
+
+        open(url);
+
+        var code = await new Promise(resolve=>{
+            http.createServer((req, res)=>{
+                if (req.url.includes("code")) {
+                    var url = new URL(req.url, "http://localhost");
+                    var code = url.searchParams.get("code");
+                    res.writeHead(200, { "Content-Type": "text/plain" });
+                    res.end(code);
+                    resolve(code);
+                }
+            }).listen(3000);
+        });
+        var token = await client.getToken(code);
+        console.log("Your refresh token is:");
+        console.log(token.tokens.refresh_token);
+        process.exit(0);
     }
 }
 

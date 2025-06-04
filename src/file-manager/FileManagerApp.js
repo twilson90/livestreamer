@@ -1,14 +1,15 @@
 import express from "express";
 import path from "node:path";
 import compression from "compression";
-import {WebServer, ElFinderEx, globals, CoreFork} from "./exports.js";
+import {ElFinderEx, globals} from "./exports.js";
+import {CoreFork, WebServer} from "../core/exports.js";
 
 const dirname = import.meta.dirname;
 
 /** @extends {CoreFork<FileManagerApp$>} */
 export class FileManagerApp extends CoreFork {
     constructor() {
-        super("file-manager");
+        super("file-manager", {});
         globals.app = this;
     }
 
@@ -20,8 +21,6 @@ export class FileManagerApp extends CoreFork {
             auth: true,
             allow_unauthorised: false,
         });
-
-        this.ipc.respond("volumes", ()=>Object.fromEntries(Object.entries(this.elFinder.volumes).map(([k,v])=>[k,v.config])));
         
         exp.use(compression({threshold:0}));
         
@@ -31,7 +30,9 @@ export class FileManagerApp extends CoreFork {
                 ...this.conf["file-manager.volumes"]
             ],
         });
-        this.elFinder.ready;
+        await this.elFinder.ready;
+
+        this.ipc.respond("volumes", ()=>Object.fromEntries(Object.entries(this.elFinder.volumes).map(([k,v])=>[k,v.config])));
 
         exp.use("/", await this.serve({
             root: path.resolve(dirname, `public_html`)
@@ -39,6 +40,7 @@ export class FileManagerApp extends CoreFork {
     }
     async destroy(){
         await this.web.destroy();
+        return super.destroy();
     }
 }
 

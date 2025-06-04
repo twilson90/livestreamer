@@ -2,6 +2,10 @@ import {utils, DataNode, DataNode$} from "./exports.js";
 
 export class DataNodeID$ extends DataNode$ {
     id = "";
+    constructor(id) {
+        super();
+        this.id = id || utils.uuid4();
+    }
 }
 
 /** @template {DataNodeID$} T @template Events @extends {DataNode<T, Events>} */

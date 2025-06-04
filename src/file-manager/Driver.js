@@ -9,7 +9,8 @@ import unzipper from "unzip-stream";
 import events from "node:events";
 import upath from "upath";
 import { Writable, Readable, Stream } from "node:stream";
-import {utils, errors, constants, globals, FileManagerCache, Volume} from "./exports.js";
+import { utils, errors, globals, FileManagerCache, Volume } from "./exports.js";
+import { constants, StreamRangeServer } from "../core/exports.js";
 
 const THUMBNAIL_SIZE = 48;
 const MAX_MEDIA_CHUNK = 1024 * 1000 * 4; // 4 MB
@@ -18,6 +19,9 @@ const MAX_MEDIA_CHUNK = 1024 * 1000 * 4; // 4 MB
 /** @typedef {string} ID */
 
 export class Driver extends events.EventEmitter {
+    static net_protocol = "";
+    static separator = "/";
+
 	initialized = false;
 
 	get elfinder() { return this.volume.elfinder; }
@@ -26,8 +30,6 @@ export class Driver extends events.EventEmitter {
 	register_stream(stream) {
 		this.on("abort", ()=>stream.destroy("abort"));
 	}
-
-	static net_protocol;
 
 	/** @param {Volume} volume */
 	constructor(volume, taskid) {
@@ -42,7 +44,7 @@ export class Driver extends events.EventEmitter {
 		if (req) {
 			req.on("abort", ()=>{
 				this.aborted = true;
-				this.abort();
+				this.emit("abort");
 			});
 		}
 		if (this.volume.config.debug) {
@@ -79,10 +81,6 @@ export class Driver extends events.EventEmitter {
 		return this.__destroy();
 	}
 
-	config() {
-		return this.__config(this.volume.config);
-	}
-
 	options() {
 		return this.__options();
 	}
@@ -91,52 +89,54 @@ export class Driver extends events.EventEmitter {
 	async file(id) {
 		var stat = await this.stat(id);
 		if (!stat) return;
-		var data = {
-			name: stat.name,
-			size: stat.size,
-			mime: stat.mime,
-			ts: stat.ts
-		};
-		if (!this.volume.isPathBased) {
-			data.id = id;
-		}
-		data.hash = this.hash(id);
-		data.volumeid = this.volume.id;
-		if (!data.mime) {
-			data.mime = "application/binary";
-		} else if (data.mime.indexOf("image/") == 0) {
-			data.tmb = await this.tmb(id, false);
-		}
-		// if is root
-		var isroot = id == "/";
-		if (isroot) {
-			data.options = await this.options();
-			data.phash = "";
-		} else {
-			data.phash = this.hash(stat.parent);
-		}
-		var permissions = (typeof this.volume.config.permissions === "function") ? await this.volume.config.permissions(p) : this.volume.config.permissions;
-		// this makes no sense!
-		// data.read = true
-		// data.write = true
-		// data.locked = false;
-		data.read = !!(permissions.read && stat.readable !== false);
-		data.write = !!(permissions.write && stat.writable !== false);
-		data.locked = !!(permissions.locked && (stat.parent && (await this.stat(stat.parent)).writable === false));
-		if (isroot) {
-			data.dirs = 1;
-		} else if (data.mime === constants.DIRECTORY) { //  && this.volume.config.subdirs
-			// data.dirs = 1;
+		var name = stat.name;
+		var size = stat.size;
+		var mime = stat.mime || "application/binary";
+		var ts = stat.ts;
+		var hash = this.hash(id);
+		var volumeid = this.volume.id;
+		var tmb = (mime.indexOf("image/") == 0) ?await this.tmb(id, false) : "";
+		var isroot = this.isroot(id);
+		var options = isroot ? await this.options() : null;
+		var phash = isroot ? "" : this.hash(stat.parent);
+		var isroot = isroot ? 1 : undefined;
+		var dirs = isroot ? 1 : undefined;
+		if (!isroot && mime === constants.DIRECTORY) {
+			// dirs = 1;
 			var items = await this.readdir(id);
 			for (var sid of items) {
 				if (((await this.stat(sid))||{}).mime === constants.DIRECTORY) {
-					data.dirs = 1;
+					dirs = 1;
 					break;
 				}
 			}
 		}
-		if (this.__uri) data.uri = this.__uri(id);
-		return data;
+		var permissions = (typeof this.volume.config.permissions === "function") ? await this.volume.config.permissions(p) : this.volume.config.permissions;
+		var read = !!(permissions.read && stat.readable !== false);
+		var write = !!(permissions.write && stat.writable !== false);
+		var locked = !!(permissions.locked && (stat.parent && (await this.stat(stat.parent)).writable === false));
+		var uri = this.__uri(id);
+		var netkey = this.volume.config.netkey || "";
+
+		return {
+			id,
+			name,
+			size,
+			mime,
+			ts,
+			hash,
+			volumeid,
+			tmb,
+			options,
+			phash,
+			isroot,
+			dirs,
+			read,
+			write,
+			locked,
+			uri,
+			netkey,
+		}
 	}
 
 	/** @param {ID} id */
@@ -153,43 +153,17 @@ export class Driver extends events.EventEmitter {
 		return this.elfinder.hash(this.volume, id);
 	}
 
-	/** @param {ID} src @param {express.Response} res @returns {string} ID */
-	fetch(src, res) {
-		return new Promise(async (resolve,reject)=>{
-			var stat = await this.stat(src);
-			res.setHeader("Content-Type", stat.mime);
-			res.setHeader("Accept-Ranges", "bytes");
-			res.setHeader("Connection", "Keep-Alive");
-			// res.req.headers["cache-control"]
-			var readopts;
-			if (res.req.headers.range) {
-				const parts = res.req.headers.range.replace(/bytes=/, "").split("-");
-				var start = parseInt(parts[0], 10);
-				var end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
-				var chunk = (end-start) + 1;
-				if (stat.mime.match(/^(audio|video)\//)) {
-					// limit delivery of stream to chunks because it's probably in a video/audio player interface...
-					chunk = Math.min(MAX_MEDIA_CHUNK, chunk);
-					end = start + chunk - 1;
-				}
-				res.status(206);
-				res.setHeader("Content-Range", `bytes ${start}-${end}/${stat.size}`);
-				// res.setHeader("Content-Length", chunk); // this results in multiple 'Parse Error: Expected HTTP/' errors, not necessary I guess!
-				readopts = {start, end: end+1};
-			} else {
-				res.setHeader("Content-Length", stat.size);
-			}
-			var readable = await this.read(src, readopts);
-			readable.on('end', ()=>res.end());
-			readable.on("error", (err)=>reject(err));
-			readable.on("close", ()=>{
-				resolve()
-			});
-			readable.pipe(res);
-		});
+	isroot(id) {
+		return id === "/" ||this.abspath(id) == this.volume.root;
 	}
 
-	/** @param {ID} dirid @param {string} origname @param {string} suffix @returns {string} ID */
+	/** @param {ID} src @param {express.Request} req @param {express.Response} res */
+	async fetch(src, req, res) {
+		var stat = await this.stat(src);
+		new StreamRangeServer(({start,end})=>this.read(src, {start, end}), {size: stat.size, type: stat.mime}).handleRequest(req, res);
+	}
+
+	/** @param {ID} dirid @param {string} origname @param {string} suffix */
 	async unique(dirid, origname, suffix) {
 		if (!suffix || suffix === "~") suffix = " - Copy"
 		var names = (await Promise.all((await this.readdir(dirid)).map(f=>this.stat(f)))).map(s=>s.name);
@@ -233,7 +207,7 @@ export class Driver extends events.EventEmitter {
 		return all;
 	}
 
-	/** @param {ID[]} ids @returns {string} */
+	/** @param {ID[]} ids */
 	async archivetmp(ids) {
 		var tmpdst = path.join(this.elfinder.tmp_dir, uuid.v4()+".zip");
 		const writable = fs.createWriteStream(tmpdst);
@@ -264,7 +238,7 @@ export class Driver extends events.EventEmitter {
 		return tmpdst;
 	}
 
-	/** @param {ID[]} ids @param {ID} dir @param {string} name @returns {string} */
+	/** @param {ID[]} ids @param {ID} dir @param {string} name */
 	async archive(ids, dir, name) {
 		var tmp = await this.archivetmp(ids);
 		var dstid = await this.write(dir, name, this.register_stream(fs.createReadStream(tmp)));
@@ -272,7 +246,7 @@ export class Driver extends events.EventEmitter {
 		return dstid;
 	}
 
-	/** @param {ID} dstid @returns {string} */
+	/** @param {ID} dstid */
 	async extracttmp(archiveid) {
 		var tmpdst = path.join(this.elfinder.tmp_dir, uuid.v4());
 		await fs.mkdir(tmpdst)
@@ -282,7 +256,7 @@ export class Driver extends events.EventEmitter {
 			this.register_stream(unzipperstream);
 			archivestream.pipe(unzipperstream).on("close", ()=>resolve());
 		});
-		return tmpdst
+		return tmpdst;
 	}
 
 	/** @param {ID} dstid @returns {ID[]} */
@@ -330,18 +304,6 @@ export class Driver extends events.EventEmitter {
 	/** @param {string} tmpfile @param {ID} dstdir @param {string} filename */
 	async upload(tmpfile, dstdir, filename) {
 		return this.__upload(tmpfile, dstdir, filename);
-	}
-
-	mount() {
-		return true;
-	}
-
-	unmount() {
-		return true;
-	}
-
-	abort() {
-		this.emit("abort");
 	}
 
 	// -------------------------------------------------------------
@@ -431,13 +393,10 @@ export class Driver extends events.EventEmitter {
 	// -------------------------------------------------------------
 
 	/** @returns {Promise<void>} */
-	async __init() { throw new errors.NotImplementedException; }
+	async __init() {}
 
 	/** @returns {Promise<void>} */
-	async __config() { throw new errors.NotImplementedException; }
-
-	/** @returns {Promise<void>} */
-	async __destroy() { throw new errors.NotImplementedException; }
+	async __destroy() {}
 
 	/** @param {ID} id @returns {Promise<string>} */
 	async __uri(id) { throw new errors.NotImplementedException; }
@@ -479,8 +438,10 @@ export class Driver extends events.EventEmitter {
 	async __upload(tmpfile, dstdir, filename) { throw new errors.NotImplementedException; }
 
 	/** @param {ID} id @returns {ID} */
-	__abspath(id) { return this.id + this.volume.config.separator + id; }
-	/** @param {ID} id @returns {Promise<ID>} */
+	__abspath(id) {
+		return id;
+	}
+	/** @param {ID} id */
 	__options() {
 		var base = globals.app.get_urls().url;
 		return {
@@ -500,7 +461,8 @@ export class Driver extends events.EventEmitter {
 			uiCmdMap: [],
 			url: new URL(`/api/file/${this.volume.id}/`, base).toString(),
 			tmbUrl: new URL(`/api/tmb/${this.volume.id}/`, base).toString(),
-			// tmbUrl: upath.join("api/tmb")+"/",
+			netkey: this.volume.config.netkey || "",
+			csscls: this.volume.config.netkey ? "elfinder-navbar-root-network" : "",
 		}
 	}
 }

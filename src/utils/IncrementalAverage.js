@@ -5,10 +5,14 @@ export class IncrementalAverage {
     get count() { return this.#count; }
     get average() { return this.#average; }
 
-    add_values(...values) {
+    push(...values) {
         const total = sum(values);
         const len = values.length;
         this.#average = (this.#average * this.#count + total) / (this.#count + len);
         this.#count += len;
+    }
+    clear() {
+        this.#average = 0;
+        this.#count = 0;
     }
 }

@@ -34,10 +34,10 @@ export class EventEmitter {
         else this.#events[event].clear();
     }
     
-    emit(event, e) {
+    emit(event, ...args) {
         if (!this.#events[event]) return;
-        for (var l of [...this.#events[event]]) {
-            var res = l.apply(this, [e]);
+        for (var listener of [...this.#events[event]]) {
+            var res = listener.apply(this, args);
             if (res === false) return false;
         }
     }
@@ -51,9 +51,9 @@ export class EventEmitter {
     } */
     
     once(event, listener) {
-        var listener_wrapped = (e)=>{
+        var listener_wrapped = (...args)=>{
             this.removeListener(event, listener_wrapped);
-            listener.apply(this, [e]);
+            listener.apply(this, args);
         };
         this.on(event, listener_wrapped);
     }

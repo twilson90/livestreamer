@@ -1,5 +1,5 @@
 /** @param {number} value @param {string} unit */
-export function format_bytes_short(value, unit = "k") {
+export function format_bits(value, unit = "k") {
 	unit = unit.toLowerCase();
 	if (unit.startsWith("b")) return String(Math.floor(value * 8)) + "b";
 	if (unit.startsWith("k")) return String(Math.floor(value / 1000 * 8)) + "kb";
@@ -7,4 +7,4 @@ export function format_bytes_short(value, unit = "k") {
 	if (unit.startsWith("g")) return String(Math.floor(value / 1000 / 1000 / 1000 * 8)) + "gb";
 }
 
-export default format_bytes_short;
+export default format_bits;

@@ -1,6 +1,7 @@
 import { noop } from "../noop.js";
 import { $ } from "./render_html.js";
 import { add_class } from "./add_class.js";
+import { toggle_display } from "./toggle_display.js";
 
 /** @returns {HTMLElement} */
 export function create_menu(items, opts = {}) {
@@ -36,6 +37,7 @@ export function create_menu(items, opts = {}) {
             var description = get("description_or_label");
             var t = (href) ? "a" : "div";
             elem = $(`<${t} class="item"></${t}>`)[0];
+            elem.style.justifyContent = get("align") || "flex-start";
 
             elem.title = [...new Set([label, description])].filter(s => s).join(" | ");
             if (href) {
@@ -58,7 +60,7 @@ export function create_menu(items, opts = {}) {
                     opts.click();
                 });
             }
-            if (visible === false) add_class(elem, "d-none");
+            if (visible === false) toggle_display(elem, false);
             get("render");
         }
         list.appendChild(elem);

@@ -15,6 +15,7 @@ export function get_auto_background_mode(item, media_info) {
 				var external_albumart = media_info.external_files.filter(f=>f.type === "video");
 				if (external_albumart.length) return "external";
 			}
+			if (!video_streams.length) return "default";
 		}
 	}
 	return null;
@@ -29,8 +30,16 @@ export function get_stream_by_id(id, streams, type) {
 
 /** @template T @param {T[]} streams @param {string} type */
 export function get_default_stream(streams, type) {
-	if (type) streams = streams.filter(s=>s.type == type);
+	streams = [...streams];
+	if (type) streams = streams.filter(s=>!s || !s.type || s.type == type);
 	var index_map = new Map();
 	streams.forEach((s,i)=>index_map.set(s,i));
-	return sort([...streams], s=>+s.forced, s=>+s.default, s=>-index_map.get(s)).pop();
+	streams.sort((a,b)=>{
+		var af = a ? +a.forced : 0;
+		var bf = b ? +b.forced : 0;
+		var ad = a ? +a.default : 0;
+		var bd = b ? +b.default : 0;
+		return (bd - ad) || (bf - af) || (index_map.get(a) - index_map.get(b));
+	});
+	return streams.shift();
 }
