@@ -71,7 +71,6 @@
 [ ] crop detect fancybox make modalpropertycontainer with padding and title
 [ ] crop detect spat out 1 frame?
 [ ] recently destroyed sessions
-[ ] constrain subs to 4:3 or the original file aspect ratio
 [x] live media not getting deleted
 [ ] change filename of file, playlist not updating to show red X, unless make a copy
 [x] when itme is playing, modify prompted for saving changes when nothing changed first time.
@@ -82,14 +81,14 @@
         [2426.421][e][ffmpeg] NULL: missing picture in access unit with size 193
     and never recovered.
 [ ] mediaplayer on setting clip repeats the chapter text is 1 step behind, and the seekbar isnt rebuilt.
-[ ] seeking a file video background and subtitles:
+[x] seeking a file video background and subtitles:
     [mpv] EDL: source file '/home/delete/web/cabtv.co.uk/livestreamer/.files/OTH/Solar System playlist.srt' has unknown duration.
 [x] crop input filter is off.
 [x] Apply changes prompt to modals that need require confirmation.
 [ ] chat data-pause too frequent, on mobile fullscreen it pauses for no reason.
-[ ] mini buttons under chat too packed, no wrap.
+[x] mini buttons under chat too packed, no wrap.
 [?] playlist undo messes up media infos
-[ ] fade to next item button
+[x] fade to next item button
 [x] numeric textbox focused still jittering with server feedback when holding down up or down
 [x] intertitles scaling with video size, should be fixed.
 [ ] detected_crops_cache is bollocks, screenshots not being loaded on start.
@@ -106,10 +105,10 @@
 [x] fix observers so it creates an additional entry for clears, instead of the weird ass 'RESET_f123sd1' shit
 [x] streams should be subscribable like sessions. maybe. figure out better method for subscribing.
 [x] pop out player no buttons.
-[ ] playlist undo weirdness when removed filters while playing. applies old filters without changing playlist item props. huh? Maybe some references are surviving?
-[ ] random error when editing filter to do with playlist history
-[ ] rtmp streams wait for buffer and then time-pos updates to 4 seconds in, gets to end of detected duration and then fixes. weird. mpv issue!
-[ ] yt-dlp make tmp files go to appdata tmp folder
+[-] playlist undo weirdness when removed filters while playing. applies old filters without changing playlist item props. huh? Maybe some references are surviving?
+[-] random error when editing filter to do with playlist history
+[-] rtmp streams wait for buffer and then time-pos updates to 4 seconds in, gets to end of detected duration and then fixes. weird. mpv issue!
+[x] yt-dlp make tmp files go to appdata tmp folder
 [ ] file manager open in new window insecure and blocked, windowcommunicator times out.
 [x] current_playing_item may have properties that have been updated but not present in the playing item (before reload), affects seekbar chapters and other seekbar things. also see get _current_duration()
     need to handle parsedplaylistitem$ as a special case
@@ -127,15 +126,14 @@
 [x] playist history broken again
 [ ] playlist item elem style: --duration: 5693; --start: undefined; --end: undefined;
 [ ] Proxy$ bollocks NIGHTMARE, just scrap the lot and use wrapper functions
-[ ] MainWebApp in electron, everything else in node. How would that work with bundler?
-
+[~] MainWebApp in electron, everything else in node. How would that work with bundler?
 [x] in gui mode, media player shows black box, shouldnt show anything at all.
 [x] media settings 'current' after changing properties in menu, not reflected here because it's using the context item on load without the new props...
 [x] Pre-Filters not applied until next item loaded
-[ ] framestep (pre-filter) and gaussianblur (post-filter) causes immediate end.
-[ ] ftp playing
+[-] framestep (pre-filter) and gaussianblur (post-filter) causes immediate end.
+[x] ftp playing
 [ ] stdin_listener core not parsing args, errors.
-[ ] live chat scroll jumps when typing. fucking infuriating.
+[~] live chat scroll jumps when typing. fucking infuriating.
 [~] after a bunch of loops 21/9 video caused massive pts/dts desync and crashed. after crash it started a new live when it should have resumed the old I think.
 [x] 7 hr stream metrics > 2.5 mb, viewing in the graph lagged the browser to hell. No reason to have more than 1 hour of data.
 [x] darkmode override in live settings
@@ -158,6 +156,53 @@
 [ ] live stream ui config more options cabtv / show all media player settings in live video settings.
 
 [ ] stopping live stream immediately 'OFFLINE' not VOD, VK.com becomes auto preference.
-[ ] should all file paths / uris be relative to a volume?
-[ ] live sticky not transitioning, aso appearing when not wanted (after sending message).
-[ ] travolta no title on 404 page
+[ ] should all file paths / uris in playlist items be relative to a volume?
+[x] live sticky not transitioning, aso appearing when not wanted (after sending message).
+[x] travolta no title on 404 page
+[-] convert cabtv static functions into namespace functions.
+[x] try to simplify image downsizing
+[ ] test all enpoints for livestreamer, also move email notifications to php.
+[x] onesignal not working on test site, why?
+[x] figure out a neat way to allow go live streams to include the current stream, ([default], [current], [ID=...]) go_live indeterminate / stream_url stuff.
+    probe server for latest go live without stream url, then update it with stream url.
+    what happens if user creates new go live while stream running?
+    consider If user edits go live... So if latest go live is empty, glom onto it and fill with url. if user creates a new blank go live, glom onto that and forget the other. FIFO.
+[ ] have another look at crop transition for video player. why is it so jank?
+[~] [w][core] Proxy error 'main': socket hang up on startup sometimes... appears to be an http thing with livestreamer interface. (just vite, ignore)
+[x] linked to go live, livestream is last in list of active livestreams on /live. wtf totally flipped.
+[ ] constrain subs to 4:3 or the original file aspect ratio
+[ ] open_file_manager_in_new_window not working, disabled for now.  
+[ ] go live link in banner not working, does nothing on live page, fuck all!
+[x] pods fucked up! all needs redoing
+[x] show banner_image missing, also need to consider this when doing a cleanup.
+[ ] /live livestreams are untitled, need to fix.
+[ ] metrics panel plot point after min weirdness (back and forth), reload fixes it
+[ ] slight issue with glomming go_live with no streams to latest stream, when stream is stopped and another is started
+[ ] livestream map hold references if 0 on scan delete. delete livestream if live no longer exists.
+
+[ ] test /live and media-player/player.html start button on iOS https://app.eu-central-1.saucelabs.com/live/mobile/dataCenters/EU/devices/iPhone_15_free
+[ ] wp_rest_username and password use these to post.
+
+[x] logged in as root. livestream_ids is none
+[x] figure out why shows dont have gutenberg editor, post on pods forum.
+[x] never saw grimword user approval, MAKE MORE OBVIOUS! BIG RED BANNER
+[?] sheepy smaller screen chat was
+[ ] probably go back to using mutationobserver and assigning UI on add, instead of traversing the document everytime root updates.
+
+[ ] ERROR: [youtube+oauth2] always happening twice, and whenever the app starts (not a problem)
+[ ] fs.R_OK is deprecated, use fs.constants.R_OK instead
+
+[ ] `url.parse()` behavior is not standardized and prone to errors
+[ ] new playlist uploads present with red x icon shortly before starting.
+[ ] turned off audio notifications, had to reload for it to switch
+[ ] live page mobile shit
+    focus on chat text field still occasionally (rarely) causes chat scroll to jump
+    videojs is fucking bullshit, the UI is SO atrocious.
+    Obscured popup menus.
+    Tapping reveals ui for like a split second.
+    Too many UI items push buttons off screen
+    live page disable sticky header on mobile
+[ ] running time, stream title and controls should be ontop of the stream, show on hover
+[ ] when logged out, sign in button popup should show a modal / popup with login form / register link.
+[ ] toggle debug mode / change, probably see if I can generate some 'stats for nerds' nonsense.
+[x] audio notifications volume slider.

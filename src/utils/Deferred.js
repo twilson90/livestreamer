@@ -20,9 +20,13 @@ export class Deferred {
     }
 
     constructor() {
-        this.#promise = new Promise((res, rej) => {
-            this.#resolve = res;
-            this.#reject = rej;
+        this.reset();
+    }
+
+    reset() {
+        this.#promise = new Promise((resolve, reject) => {
+            this.#resolve = resolve;
+            this.#reject = reject;
         });
     }
 }

@@ -22,6 +22,7 @@ export class DropdownMenu extends EventEmitter {
     /** @type {TippyInstance} */
     tippy;
     #onclick;
+    #triggers = [];
     // #blocking_timeout;
     // #blocking = false;
     /** @param {typeof default_opts} opts */
@@ -33,32 +34,46 @@ export class DropdownMenu extends EventEmitter {
         };
 
         if (this.opts.target && this.opts.trigger) {
-            this.opts.target.addEventListener(this.opts.trigger, (e)=>{
-                // if (this.#blocking) return;
-                this.trigger_event = e;
-                this.toggle();
-                e.preventDefault();
-            }, {capture: true});
+            this.#triggers = this.opts.trigger.split(/\s+/).map(t=>t.trim());
+            for (let trigger of this.#triggers) {
+                this.opts.target.addEventListener(trigger, (e)=>{
+                    // if (this.#blocking) return;
+                    this.toggle(e);
+                    e.preventDefault();
+                }, {capture: true});
+            }
         }
     }
 
-    toggle(show) {
-        if (show === undefined) show = !this.showing;
-        if (show === this.showing) return;
-        this.showing = show;
+
+    /** @param {boolean | Event} e @param {typeof default_opts} opts */
+    toggle(e, opts) {
+        let trigger_event;
+        var old_showing = this.showing;
+        if (e instanceof Event) {
+            trigger_event = e;
+            this.showing = !this.showing;
+        } else if (e === undefined) this.showing = !this.showing;
+        else this.showing = !!e;
+        if (old_showing === this.showing) return;
+
+        opts = {
+            ...this.opts,
+            ...opts,
+        };
 
         if (!this.showing) {
-            this.tippy.hide();
+            if (this.tippy) this.tippy.hide();
             return;
         }
-        if (this.opts.items) {
-            var items = typeof this.opts.items === "function" ? this.opts.items(this.trigger_event) : this.opts.items;
+        if (opts.items) {
+            var items = typeof opts.items === "function" ? opts.items(trigger_event) : opts.items;
             this.el = create_menu(items, {
                 click: ()=>this.toggle(false),
-                params: this.opts.params,
+                params: opts.params,
             });
-        } else if (this.opts.content) {
-            var content = typeof this.opts.content === "function" ? this.opts.content(this.trigger_event) : this.opts.content;
+        } else if (opts.content) {
+            var content = typeof opts.content === "function" ? opts.content(trigger_event) : opts.content;
             if (typeof content === "string") content = $(content)[0];
             this.el = content;
         }
@@ -69,25 +84,25 @@ export class DropdownMenu extends EventEmitter {
             interactive: true,
             hideOnClick: false,
             arrow: false,
-            appendTo: this.opts.parent,
+            appendTo: opts.parent,
             theme: "list",
             offset: [0, 5],
             content: this.el,
-            ...this.opts.tippy_opts,
+            ...opts.tippy_opts,
         };
         var position;
-        if (this.opts.position) {
-            if (this.opts.position === "trigger") {
-                if (this.trigger_event) {
+        if (opts.position) {
+            if (opts.position === "trigger") {
+                if (trigger_event) {
                     position = {
-                        x: this.trigger_event.clientX,
-                        y: this.trigger_event.clientY,
+                        x: trigger_event.clientX,
+                        y: trigger_event.clientY,
                     };
                 }
-            } else if (typeof this.opts.position === "function") {
-                position = this.opts.position(this.trigger_event);
+            } else if (typeof opts.position === "function") {
+                position = opts.position(trigger_event);
             } else {
-                position = this.opts.position;
+                position = opts.position;
             }
         }
         if (position) {
@@ -104,15 +119,16 @@ export class DropdownMenu extends EventEmitter {
                 }),
             });
         }
+        
         if (this.tippy) {
             this.tippy.destroy();
             this.tippy = null;
         }
 
-        if (show) {
+        if (this.showing) {
             document.body.addEventListener("mousedown", this.#onclick = (e)=>{
                 if (this.el.contains(e.target)) return;
-                if (this.opts.target && this.opts.target.contains(e.target)) return;
+                if (opts.target && opts.target.contains(e.target)) return;
                 this.toggle(false);
                 /* this.#blocking = true;
                 clearTimeout(this.#blocking_timeout);
@@ -124,7 +140,7 @@ export class DropdownMenu extends EventEmitter {
             }, {capture: true});
         }
 
-        this.tippy = tippy(this.opts.target || document.body, {
+        this.tippy = tippy(opts.target || document.body, {
             ...tippy_opts,
             onShow: ()=>{
                 this.emit("show");
@@ -137,6 +153,7 @@ export class DropdownMenu extends EventEmitter {
         });
         this.tippy.show();
     }
+
     destroy() {
         document.body.removeEventListener("click", this.#onclick);
         this.tippy.destroy();

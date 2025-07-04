@@ -42,7 +42,8 @@ export function create_menu(items, opts = {}) {
             elem.title = [...new Set([label, description])].filter(s => s).join(" | ");
             if (href) {
                 elem.href = href;
-                elem.target = "_blank";
+                var target = get("target");
+                if (target) elem.target = target;
             }
 
             if (icon) elem.append(...$(`<span class="icon">${icon}</span>`));

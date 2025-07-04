@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const acompressor = new Filter({
 	name: "acompressor",
 	descriptive_name: "Compressor",
 	type: "audio",
@@ -90,3 +90,4 @@ export default new Filter({
 		ctx.aid = a1;
 	}
 });
+export default acompressor;

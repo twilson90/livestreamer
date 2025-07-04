@@ -20,9 +20,18 @@ import Cookies from "cookies";
 import minimist from "minimist";
 import pidusage from "pidusage";
 import { createRequire } from 'node:module';
+import * as resources from "./resources.js";
+
+let os_username = os.userInfo().username || "admin";
+let default_auth_data = {
+    user_id: 0,
+    username: os_username,
+    email: `${os_username}@localhost`,
+    is_admin: true,
+}
 
 const moduleTimestamps = new Map();
-function require_fresh(modulePath) {
+function require_no_cache(modulePath) {
     const require = createRequire(import.meta.url);
     const resolvedPath = require.resolve(modulePath);
     const stat = fs.statSync(resolvedPath);
@@ -35,8 +44,6 @@ function require_fresh(modulePath) {
     return require(resolvedPath);
 }
 
-
-
 /** @import {IncomingMessage, ServerResponse} from "node:http" */
 
 /** @typedef {typeof import("../config.default.js").default} Conf */
@@ -45,8 +52,8 @@ const dirname = import.meta.dirname;
 const filename = import.meta.filename;
 const root = path.dirname(dirname);
 const js_exts = [`js`,`ts`,`cjs`,`mjs`,`cts`,`mts`];
+const js_exts_str = js_exts.join(",");
 const portable_file = fs.existsSync("portable");
-let conf_loads = 0;
 
 /** @template T @extends {DataNode<T>} */
 export class Core extends DataNode {
@@ -54,25 +61,26 @@ export class Core extends DataNode {
     #logger;
     #name = "";
     #appdata_dir = "";
+    #bin_dir = "";
     #tmp_dir = "";
     #logs_dir = "";
     #cache_dir = "";
     #clients_dir = "";
     #files_dir = "";
+    #uids_dir = "";
     #saves_dir = "";
     #targets_dir = "";
     #screenshots_dir = "";
-    #resources_dir = "";
-    #mpv_lua_dir = "";
     /** @type {Conf} */
     #conf = {};
-    #exitting = false;
+    #exiting = false;
     
     get name() { return this.#name; }
     get logger() { return this.#logger; }
-    get appspace() { return process.env.LIVESTREAMER_APPSPACE || "livestreamer"; }
-    get portable() { return !!(process.env.LIVESTREAMER_PORTABLE || portable_file); }
-    get debug() { return !!process.env.LIVESTREAMER_DEBUG; }
+    get appspace() { return (process.env.LIVESTREAMER_APPSPACE ?? this.conf["core.appspace"] ?? "livestreamer"); }
+    get portable() { return !!(process.env.LIVESTREAMER_PORTABLE ?? this.conf["core.portable"] ?? portable_file); }
+    get debug() { return !!(process.env.LIVESTREAMER_DEBUG ?? this.conf["core.debug"]); }
+    get auth() { return !!(process.env.LIVESTREAMER_AUTH ?? this.conf["core.auth"]); }
     
     get use_pm2() { return !!("pm_id" in process.env || this.conf["core.pm2"]); }
     get hostname() { return this.conf["core.hostname"] || os.hostname(); }
@@ -81,64 +89,64 @@ export class Core extends DataNode {
     get ffmpeg_path() { return this.conf["core.ffmpeg_path"] || "ffmpeg"; }
     get cwd() { return process.cwd(); }
     get appdata_dir() { return this.#appdata_dir; }
+    get bin_dir() { return this.#bin_dir; }
     get tmp_dir() { return this.#tmp_dir; }
     get logs_dir() { return this.#logs_dir; }
     get cache_dir() { return this.#cache_dir; }
     get clients_dir() { return this.#clients_dir; }
     get files_dir() { return this.#files_dir; }
+    get uids_dir() { return this.#uids_dir; }
     get saves_dir() { return this.#saves_dir; }
     get targets_dir() { return this.#targets_dir; }
     get screenshots_dir() { return this.#screenshots_dir; }
-    get resources_dir() { return this.#resources_dir; }
-    get mpv_lua_dir() { return this.#mpv_lua_dir; }
     get conf() { return this.#conf; }
+    get resources() { return resources; }
     
     /** @param {string} name @param {T} $ */
     constructor(name, $) {
         super($);
+        this.#name = name;
 
         globalThis.app = this;
         globals.app = this;
-        this.#name = name;
 
         this.#logger = new Logger(this.#name, {stdout:true, file:true, prefix:this.#name});
         this.#logger.console_adapter();
 
-        var on_exit = (code=0)=>this.exit(code);
-        process.on('beforeExit', on_exit);
-        process.on('SIGINT', on_exit);
-        process.on('SIGTERM', on_exit);
+        process.on('beforeExit', (code)=>this.exit(code));
+        process.on('SIGINT', ()=>this.exit(0));
+        process.on('SIGTERM', ()=>this.exit(0));
         process.on('message', async (msg)=>{
-            if (msg == 'shutdown') await on_exit();
+            if (msg == 'shutdown') await this.exit(0);
         });
     }
 
     __init() {
         var appdata_dir;
         if (this.portable) {
-            appdata_dir = "appdata";
+            appdata_dir = path.resolve(this.cwd, "appdata");
         } else {
             appdata_dir = path.join((utils.is_windows() ? process.env.PROGRAMDATA : "/var/opt"), this.appspace);
         }
         this.#appdata_dir = path.resolve(appdata_dir);
+        this.#bin_dir = path.resolve(appdata_dir, "bin");
         this.#tmp_dir = path.resolve(appdata_dir, "tmp");
         this.#logs_dir = path.resolve(appdata_dir, "logs");
         this.#cache_dir = path.resolve(appdata_dir, "cache");
         this.#clients_dir = path.resolve(appdata_dir, "clients");
         this.#files_dir = path.resolve(appdata_dir, "files");
+        this.#uids_dir = path.resolve(appdata_dir, "uids");
         this.#saves_dir = path.resolve(appdata_dir, "saves");
         this.#targets_dir = path.resolve(appdata_dir, "targets");
         this.#screenshots_dir = path.resolve(this.cache_dir, "screenshots");
-        this.#resources_dir = path.resolve((process.versions.electron && process.env.BUILD) ? process.resourcesPath : path.join(root, "resources"));
-        let bin_dirs = [path.join(this.#resources_dir, "bin"), path.join(this.#resources_dir, process.platform, "bin")];
-        this.#mpv_lua_dir = path.resolve(this.#resources_dir, "mpv_lua");
-        process.env.PATH = [...new Set([...bin_dirs, ...process.env.PATH.split(path.delimiter)].filter(p=>p))].join(path.delimiter);
 
-        if (!this.debug) {
-            process.on('unhandledRejection', (e)=>{
-                this.logger.error(`Unhandled Rejection:`, e);
-            });
-        }
+        process.env.PATH = [...new Set([this.bin_dir, ...process.env.PATH.split(path.delimiter)])].join(path.delimiter);
+
+        process.on('unhandledRejection', (e)=>{
+            if (this.debug) throw e;
+            if (!e instanceof Error) e = new Error(e);
+            this.logger.error(`Unhandled Rejection:`, e.stack);
+        });
     }
 
     get_socket_path(sock_name) {
@@ -183,8 +191,8 @@ export class Core extends DataNode {
     }
 
     async exit(code=0) {
-        if (this.#exitting) return;
-        this.#exitting = true;
+        if (this.#exiting) return;
+        this.#exiting = true;
         await this.destroy();
         process.exit(code);
     }
@@ -217,12 +225,16 @@ export class CoreMaster extends Core {
     #processes = {};
 
     get ipc() { return this.#ipc; }
-    get auth() { return this.#opts.auth; }
     get ready() { return this.#ready; }
+    get auth() { return !!(this.#opts.auth ?? super.auth); }
     
     /** @param {MasterOpts} opts */
     constructor(opts) {
         super("core");
+        this.#ready = this.#init(opts);
+    }
+    
+    async #init(opts) {
         
         program
             .name('Live Streamer')
@@ -233,36 +245,45 @@ export class CoreMaster extends Core {
             .argument(`[script]`, "(Internal) Script path to module")
             .option(`-m --modules [string...]`, "Module paths", [])
             .option(`-c --configs [string...]`, "Config paths", [])
-            .option(`-d --debug`, "Debug")
-            .option(`--pm2`, "Use PM2")
 
         program.parse();
         
         this.#opts = Object.assign({}, program.opts(), opts);
 
         if (this.#opts.cwd) process.chdir(this.#opts.cwd);
-        
-        // a neat idea but doesn't work in practise.
-        // {
-        //     let pkg, pkg_hash;
-        //     try { pkg = fs.readFileSync(path.join(this.cwd, "package.json"), "utf8"); } catch (e) {}
-        //     try { pkg_hash = fs.readFileSync(path.join(this.cwd, "last_package"), "utf8"); } catch (e) {}
-        //     if (pkg_hash != pkg) {
-        //         fs.writeFileSync(path.join(this.cwd, "last_package"), pkg);
-        //         console.log("Packages changed, installing dependencies...");
-        //         child_process.execSync("npm install --omit=dev", { stdio: "inherit" });
-        //         console.log("Packages installed.");
-        //     }
-        // }
+
+        // ----------------------------------
+
+        if (process.env.LIVESTREAMER_CONF_PATH) this.#conf_paths.push(process.env.LIVESTREAMER_CONF_PATH);
+
+        if (this.#opts.configs) {
+            this.#conf_paths.push(...this.#opts.configs);
+        }
+        this.#conf_paths.push(...await glob("config.*"));
+        let conf_watcher = chokidar.watch([...this.#conf_paths], {awaitWriteFinish:true});
+        conf_watcher.on("change", async()=>{
+            console.info("Conf was updated.");
+            await this.#load_confs();
+        });
+        await this.#load_confs();
+
+        process.env.LIVESTREAMER_APPSPACE = this.appspace;
+        process.env.LIVESTREAMER_AUTH = this.auth ? "1" : "";
+        process.env.LIVESTREAMER_DEBUG = this.debug ? "1" : "";
+        process.env.LIVESTREAMER_PORTABLE = this.portable ? "1" : "";
+
+        // ----------------------------------
 
         this.__init();
         
         fs.mkdirSync(this.appdata_dir, { recursive: true });
+        fs.mkdirSync(this.bin_dir, { recursive: true });
         fs.mkdirSync(this.tmp_dir, { recursive: true });
         fs.mkdirSync(this.logs_dir, { recursive: true });
         fs.mkdirSync(this.cache_dir, { recursive: true });
         fs.mkdirSync(this.clients_dir, { recursive:true });
         fs.mkdirSync(this.files_dir, { recursive:true });
+        fs.mkdirSync(this.uids_dir, { recursive:true });
         fs.mkdirSync(this.saves_dir, { recursive:true });
         fs.mkdirSync(this.targets_dir, { recursive:true });
         fs.mkdirSync(this.screenshots_dir, { recursive:true });
@@ -301,7 +322,10 @@ export class CoreMaster extends Core {
             }
         });
         this.#ipc.respond("sysinfo", ()=>this.#sysinfo());
-        this.#ipc.respond("authorise", (...args)=>this.auth(...args));
+        this.#ipc.respond("authorise", (...args)=>{
+            if (!this.#opts.auth) return null;
+            return Promise.resolve(this.#opts.auth(...args)).catch(utils.noop);
+        });
         this.#ipc.respond("electron-data", ()=>({
             appdata_dir: this.appdata_dir,
             conf: this.conf,
@@ -311,32 +335,13 @@ export class CoreMaster extends Core {
         this.#ipc.respond("module_restart", (...args)=>this.module_restart(...args));
         this.#ipc.respond("module_start", (...args)=>this.module_start(...args));
         this.#ipc.respond("module_stop", (...args)=>this.module_stop(...args));
-
-        this.#ready = this.#init();
-    }
-    
-    async #init() {
         
         let modules = this.#opts.modules.flatMap(p=>p.split(path.delimiter));
         let resolved_modules = [...new Set(modules.map(p=>resolve_module(p)))].filter(p=>p);
-
-        if (this.auth) process.env.LIVESTREAMER_AUTH = 1;
-        if (this.portable) process.env.LIVESTREAMER_PORTABLE = 1;
         
-        this.modules = Object.fromEntries(resolved_modules.map(p=>[path.basename(path.dirname(p)), p]))
-        
-        if (process.env.LIVESTREAMER_CONF_PATH) this.#conf_paths.push(process.env.LIVESTREAMER_CONF_PATH);
+        this.modules = Object.fromEntries(resolved_modules.map(p=>[path.basename(path.dirname(p)), p]));
 
-        if (this.#opts.configs) {
-            this.#conf_paths.push(...this.#opts.configs);
-        }
-        this.#conf_paths.push(...await glob("config.*"));
-        let conf_watcher = chokidar.watch([...this.#conf_paths], {awaitWriteFinish:true});
-        conf_watcher.on("change", async()=>{
-            console.info("Conf was updated.");
-            await this.#load_conf();
-        });
-        await this.#load_conf();
+        // -----------------------------------------
 
         var stdin_listener = readline.createInterface(process.stdin);
         stdin_listener.on("line", (line)=>{
@@ -428,7 +433,6 @@ export class CoreMaster extends Core {
                 "args": args,
                 "node_args": node_args,
                 "windowsHide": true,
-
                 "max_restarts": 5,
                 "autorestart": true,
                 "restart_delay": 5000,
@@ -539,7 +543,7 @@ export class CoreMaster extends Core {
                     return;
                 }
                 if (req.url == "/favicon.ico") {
-                    let f = path.join(this.resources_dir, "icon.ico");
+                    let f = resources.get_path("icon.ico");
                     res.writeHead(200, { 'Content-Type': "image/x-icon" });
                     res.end(await fs.readFile(f));
                     return;
@@ -598,23 +602,25 @@ export class CoreMaster extends Core {
         this.#ipc.emit("compress_logs");
     }
 
-    async #load_conf() {
-        utils.clear(this.conf);
-        Object.assign(this.conf, config_default);
+    async #load_confs() {
+        var new_conf = utils.json_copy(config_default);
         for (let conf_path of this.#conf_paths) {
             if (!(await fs.exists(conf_path))) {
-                console.error(`conf file '${conf_path}' does not exist.`)
+                console.error(`Conf file '${conf_path}' does not exist.`)
             }
-            let conf_json = require_fresh(path.resolve(conf_path));
-            console.info(`conf file '${conf_path}' successfully loaded.`);
+            let conf_json = require_no_cache(path.resolve(conf_path));
+            console.info(`Conf file '${conf_path}' successfully loaded.`);
             for (var k in conf_json) {
-                this.conf[k] = conf_json[k];
+                new_conf[k] = conf_json[k];
             }
         }
         if (this.#opts.config) {
-            Object.assign(this.conf, this.#opts.config);
+            Object.assign(new_conf, this.#opts.config);
         }
-        this.#ipc.emit("conf", this.conf);
+
+        utils.clear(this.conf);
+        Object.assign(this.conf, new_conf);
+        if (this.#ipc) this.#ipc.emit("conf", this.conf);
     }
 
     async #sysinfo() {
@@ -677,33 +683,19 @@ export class CoreMaster extends Core {
     }
 }
 
-class Module extends utils.Deferred {
-    #proc;
-    get pid() { return this.#proc.pid; }
-    constructor(proc) {
-        super();
-        this.#proc = proc;
-    }
-    async kill() {
-        process.kill(this.pid, "SIGINT");
-        return this.promise;
-    }
-}
-
 /** @template [T=any] @extends {Core<T>} */
 export class CoreFork extends Core {
     #ready;
     /** @type {IPCFork} */
     #ipc;
-    #auth_cache = new utils.Cache(30 * 1000);
+    #auth_cache = new utils.SimpleCache(30 * 1000);
     /** @type {Record<PropertyKey, string>} */
     #modules = {};
     #title = "";
     #description = "";
-
+    
     get ready() { return this.#ready; }
     get ipc() { return this.#ipc; }
-    get auth() { return !!process.env.LIVESTREAMER_AUTH; }
     get modules() { return this.#modules; }
     get module_id() { return Object.keys(this.#modules).indexOf(this.name); }
     get title() { return this.#title; }
@@ -721,7 +713,6 @@ export class CoreFork extends Core {
         var core = await this.#ipc.request("core", "core", null, 0);
 
         process.chdir(core.cwd);
-        process.env.LIVESTREAMER_APPSPACE = core.appspace;
         process.env.LIVESTREAMER_AUTH = core.auth ? "1" : "";
         process.env.LIVESTREAMER_DEBUG = core.debug ? "1" : "";
         process.env.LIVESTREAMER_PORTABLE = core.portable ? "1" : "";
@@ -791,7 +782,7 @@ export class CoreFork extends Core {
             /** @type {import("vite").UserConfig} */
             var config = {
                 configFile: false,
-                base: `/${this.name}/`,
+                base: `./`,
                 root,
                 // outDir: path.resolve(this.tmp_dir, "web", utils.md5(dir)),
                 server: {
@@ -843,15 +834,19 @@ export class CoreFork extends Core {
         }
     }
 
+    generate_uid(uid_key) {
+        var id = 0;
+        try {
+            id = +fs.readFileSync(path.join(this.uids_dir, uid_key), "utf8");
+        } catch (e) {}
+        id = String(++id);
+        fs.writeFileSync(path.join(this.uids_dir, uid_key), id);
+        return id;
+    }
+
     /** @param {IncomingMessage} req @param {string} key @param {ServerResponse} res */
     async authorise(req, key, res) {
-        let name = os.userInfo().username || "admin";
-        let data = {
-            user_id: 0,
-            username: name,
-            email: `${name}@localhost`,
-            is_admin: true,
-        };
+        let data = {...default_auth_data};
 
         if (this.auth) {
 
@@ -860,25 +855,25 @@ export class CoreFork extends Core {
             let basic_auth_res = basic_auth(req);
             let url = new URL(`http://localhost${req.url}`);
             
-            let user_pass = url.searchParams.get(key) || cookies.get(key);
-            if (user_pass) user_pass = decodeURIComponent(user_pass);
-            if (basic_auth_res) user_pass = [basic_auth_res.name, basic_auth_res.pass].join(":");
+            let user_pass = (basic_auth_res && [basic_auth_res.name, basic_auth_res.pass].join(":")) || req.headers[key] || (url.searchParams.has(key) && url.searchParams.get(key)) || cookies.get(key);
             
-            if (user_pass) {
-                [username, password] = user_pass.split(":");
-            } else {
-                return;
-            }
+            if (!user_pass) return;
+
+            [username, password] = user_pass.split(":");
             
             var cache_key = `${username}:${password}`;
+
             if (!this.#auth_cache.has(cache_key)) {
-                this.#auth_cache.set(cache_key, this.#ipc.request("core", "authorise", [username, password]));
+                let auth = this.#ipc.request("core", "authorise", [username, password]).catch(utils.noop);
+                this.#auth_cache.set(cache_key, auth);
             }
+            
             let user = await this.#auth_cache.get(cache_key);
 
             if (!user) return;
 
             if (res) {
+                res.setHeader(key, user.hash);
                 cookies.set(key, user.hash, {
                     httpOnly: false,
                     expires: new Date(Date.now()+(1000*60*60*24*365)),
@@ -894,6 +889,8 @@ export class CoreFork extends Core {
     async unauthorise(req, key, res) {
         if (this.auth) {
             var cookies = new Cookies(req, res);
+            this.#auth_cache.delete(key);
+            if (res) res.removeHeader(key);
             cookies.set(key, '', {
                 httpOnly:false,
                 expires: new Date(0)
@@ -910,8 +907,7 @@ export class CoreFork extends Core {
     
 function resolve_module(m) {
     if (!fs.existsSync(m)) m = path.join(root, m);
-    var js_exts_str = js_exts.join(",");
-    if (fs.statSync(m).isDirectory()) return glob.sync(`${m}/index.{${js_exts_str}}`, {absolute:true})[0];
+    if (fs.statSync(m).isDirectory()) return glob.sync(`index*.{${js_exts_str}}`, {cwd: m, absolute:true}).sort()[0];
     else if (minimatch(path.basename(m), `*.{${js_exts_str}}`)) return path.resolve(m);
     console.warn(`Could not resolve module '${m}'`);
 }

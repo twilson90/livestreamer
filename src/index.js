@@ -1,7 +1,4 @@
-import {start} from "./exports.js";
-
-// const dirname = import.meta.dirname;
-// cwd: dirname,
+import {start} from "./core/exports.js";
 
 start({
     modules: [

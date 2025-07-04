@@ -1,5 +1,5 @@
 /** @template K @template V */
-export class Cache {
+export class SimpleCache {
 	/** @type {Map<K, {value:V, timeout:NodeJS.Timeout}>} */
 	#cache = new Map();
 	#expires = 0;
@@ -27,9 +27,11 @@ export class Cache {
 		this.#cache.set(key, {value, timeout});
 	}
 	delete(key) {
+		if (!this.#cache.has(key)) return false;
 		var {timeout} = this.#cache.get(key);
 		clearTimeout(timeout);
 		this.#cache.delete(key);
+		return true;
 	}
 	clear() {
 		for (var [key, {timeout}] of [...this.#cache]) {

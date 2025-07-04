@@ -1,7 +1,7 @@
-/** @param {Iterable<number>} iterable */
-export function average(...iterable) {
+/** @param {...number} values */
+export function average(...values) {
 	var total = 0, n = 0;
-	for (var num of iterable) {
+	for (var num of values) {
 		total += num;
 		n++;
 	}

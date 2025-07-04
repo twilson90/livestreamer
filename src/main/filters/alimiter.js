@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const alimiter = new Filter({
 	name: "alimiter",
 	descriptive_name: "Limiter",
 	type: "audio",
@@ -60,3 +60,4 @@ export default new Filter({
         ctx.aid = a1;
     }
 });
+export default alimiter;

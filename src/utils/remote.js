@@ -35,13 +35,16 @@ export class Proxy$Handler extends EventEmitter {
             value = Object.assign(new_ob, value);
         }
         this.emit("set", target, prop, value); // important that we do this before setting.
+        this.emit("change", target, prop);
         Reflect.set(target, prop, value);
         return true;
     }
     deleteProperty(target, prop) {
+        // var old_value = target[prop];
         if (this.#opts.deleteProperty) return this.#opts.deleteProperty(target, prop);
         Reflect.deleteProperty(target, prop);
         this.emit("delete", target, prop);
+        this.emit("change", target, prop);
         return true;
     }
 }
@@ -53,7 +56,7 @@ export class Collection$Handler extends Proxy$Handler {
     #null_item;
     constructor(generator) {
         super();
-        this.#generator = generator;
+        this.#generator = generator ?? (()=>new Proxy$());
     }
     get(target, prop) {
         if (prop === Null$) {

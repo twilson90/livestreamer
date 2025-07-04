@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const colorcontrast = new Filter({
 	name: "colorcontrast", 
 	descriptive_name: "Color Contrast",
 	type: "video",
@@ -61,3 +61,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default colorcontrast;

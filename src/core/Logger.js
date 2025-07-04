@@ -130,8 +130,9 @@ export class Logger extends events.EventEmitter {
 		if (!this.#settings.stdout || !log.level) return;
 		var message_str = log.toString();
 		if (log.level === Logger.WARN) warn(message_str);
-		else if (log.level === Logger.ERROR) error(message_str);
-		else if (log.level === Logger.DEBUG) debug(message_str);
+		else if (log.level === Logger.ERROR) {
+			error(message_str);
+		} else if (log.level === Logger.DEBUG) debug(message_str);
 		else info(message_str);
 	}
 	

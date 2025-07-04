@@ -54,7 +54,7 @@ export const SessionProps = {
         },
     },
     access_control: {
-        __custom__:true,
+        __custom__: true,
         __default__: { "*": { "access":"allow" } },
     },
 }

@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const elbg = new Filter({
 	name: "elbg",
 	descriptive_name: "ELBG Posterize",
 	type: "video",
@@ -43,3 +43,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default elbg;

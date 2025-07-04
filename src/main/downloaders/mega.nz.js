@@ -11,6 +11,9 @@ export default async function(url, req, res) {
         if (file.children.length) {
             file = file.children.find(c=>c.downloadId[0] == file.downloadId && c.downloadId[1] == file.loadedFile);
         }
+        if (!file) {
+            return;
+        }
         var size = file.size;
         var type = mime.getType(file.name);
         new StreamRangeServer(({start,end})=>file.download({start, end}), {size, type}).handleRequest(req, res);

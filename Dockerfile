@@ -11,7 +11,7 @@ RUN npm -v
 RUN node -v
 RUN dpkg --configure -a
 
-RUN npm i pm2 -g
+RUN npm i pm2@6.0.8 -g
 RUN npm i sharp ws pm2
 RUN apt-get install -y nethogs
 

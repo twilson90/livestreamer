@@ -33,6 +33,7 @@ export class MPVWrapper extends events.EventEmitter {
     /** @type {net.Socket} */
     #socket;
     #socket_path = "";
+    #version;
     options;
     args;
     logger;
@@ -42,6 +43,8 @@ export class MPVWrapper extends events.EventEmitter {
     get quitting() { return this.#quitting; }
     get cwd() { return path.resolve(this.options.cwd); }
     get load_id() { return this.#load_id; }
+    /** @returns {[number, number, number]} */
+    get version() { return this.#version; }
 
     constructor(options) {
         super();
@@ -69,7 +72,7 @@ export class MPVWrapper extends events.EventEmitter {
             // "--msg-level=all=trace,ipc=v"
         ];
         args.push(`--input-ipc-server=${this.#socket_path}`);
-        var is_piped = args.find(a=>a.match(/^--o=(-|pipe:)/));
+        var is_piped = !!args.find(a=>a.match(/^--o=(-|pipe:)/));
         this.args = args;
         this.#message_id = 0;
         this.#observed_id = 0;
@@ -123,7 +126,10 @@ export class MPVWrapper extends events.EventEmitter {
             await this.observe_property(o).catch((e)=>this.logger.error(e));
             await this.get_property(o).then(v=>this.#observed_props[o] = v).catch(utils.noop);
         }
-        
+
+        var version = await this.get_property('mpv-version');
+        this.#version = version ? version.split("mpv ")[1].split(".").slice(0, 3).map(s=>parseInt(s.match(/\d+/)[0])) : [0,0,0];
+
         return true;
     }
 
@@ -221,6 +227,7 @@ export class MPVWrapper extends events.EventEmitter {
                     }
                 }
             });
+            // this.version = await this.command("get_version");
             this.logger.info("MPV IPC successfully binded");
             resolve(true);
         });
@@ -338,10 +345,18 @@ export class MPVWrapper extends events.EventEmitter {
         });
     }
 
-    async loadfile(source, flags = "replace", index = -1, options = {}) {
-        var params = [source, flags];
-        if (index != null) params.push(index);
-        if (options) params.push(options);
+    // need to figurte out if mpv is version 0.38 or later, then we can add index as 3rd  param.
+    async loadfile(source, flags = "replace", index = -1, options = null) { // 
+        var params = [source, flags]; //, options
+        options = options || {};
+        if (this.#version[0] == 0 && this.#version[1] < 38) {
+            params.push(options);
+            if (index > -1) {
+                this.logger.warn("mpv version 0.38 or later is required for index as 3rd param");
+            }
+        } else {
+            params.push(index, options);
+        }
         var prom = this.command("loadfile", ...params);
         var item;
         if (flags === "replace" || (flags === "append-play" && this.#observed_props["idle-active"])) {

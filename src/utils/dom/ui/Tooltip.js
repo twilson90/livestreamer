@@ -10,6 +10,7 @@ export class Tooltip {
     static defaults = {
         allowHTML: true,
         zIndex: 99999,
+        theme: "livestreamer",
         appendTo: "parent",
     }
     constructor(elem, content) {

@@ -52,13 +52,6 @@ export function closest(elem, type = UI) {
         if (ui instanceof type) return ui;
     }
 }
-class UIContext {
-    /** @param {UI} parent */
-    constructor(parent, index=0) {
-        this.parent = parent;
-        this.index = +index;
-    }
-}
 
 /** @template {UI} [ThisType=UI] @template Value @typedef {(Value|(this:ThisType)=>Value)} UISetting */
 /**
@@ -77,6 +70,7 @@ class UIContext {
  *   id: UISetting<ThisType,string>,
  *   children: UISetting<ThisType,UI[]>,
  *   content: UISetting<ThisType,string>,
+ *   update_children: UISetting<ThisType,boolean>,
  *   click: (this:ThisType, e:Event)=>void,
  *   click_async: (this:ThisType, e:Event)=>Promise<void>,
  *   render: (this:ThisType, e:Event)=>void,
@@ -109,7 +103,7 @@ export class UI extends EventEmitter {
     #layout_hash;
     #destroyed = false;
     #async_click_promise;
-    #content_override = "";
+    #content_override = null;
     #content_timeout;
     #temp_content_deferred = new DeferredReady();
 
@@ -196,14 +190,13 @@ export class UI extends EventEmitter {
     
     override_content_temporarily(content, timeout) {
         clearTimeout(this.#content_timeout);
-        this.#content_override = content;
-        var content_old = this.elem.innerHTML;
+        this.#content_override = [content, this.#content_override ? this.#content_override[1] : this.elem.innerHTML];
         this.update();
         this.#temp_content_deferred.state = false;
         if (timeout) {
             this.#content_timeout = setTimeout(()=>{
+                this.elem.innerHTML = this.#content_override[1];
                 this.#content_override = null;
-                this.elem.innerHTML = content_old;
                 this.update();
                 this.#temp_content_deferred.state = true;
             }, timeout);
@@ -238,10 +231,12 @@ export class UI extends EventEmitter {
         this.get_setting("update");
         this.emit("update");
         
-        var i = 0;
-        for (var c of this.children) {
-            c.__update(this, i);
-            i++;
+        if (this.get_setting("update_children") !== false) {
+            var i = 0;
+            for (var c of this.children) {
+                c.__update(this, i);
+                i++;
+            }
         }
         
         this.#updating = null;
@@ -270,7 +265,7 @@ export class UI extends EventEmitter {
         if ("flex" in this.#settings) this.elem.style.flex = this.get_setting("flex") || "";
         if ("id" in this.#settings) this.elem.id = this.get_setting("id") || "";
         if ("children" in this.#settings) set_children(this.elem, this.get_setting("children"));
-        if (this.#content_override) set_inner_html(this.elem, this.#content_override);
+        if (this.#content_override) set_inner_html(this.elem, this.#content_override[0]);
         else if ("content" in this.#settings) set_inner_html(this.elem, this.get_setting("content"));
 
         if ("click" in this.#settings) this.elem.onclick = (e) => this.#do_event(e, "click");
@@ -291,8 +286,10 @@ export class UI extends EventEmitter {
         this.get_setting("render");
         this.emit("render");
 
-        for (var c of this.children) {
-            c.__render();
+        if (this.get_setting("update_children") !== false) {
+            for (var c of this.children) {
+                c.__render();
+            }
         }
     }
 
@@ -351,7 +348,7 @@ export class UI extends EventEmitter {
         var process = (parent, layout) => {
             for (var o of layout) {
                 if (Array.isArray(o)) {
-                    let r = new FlexRow({ "hidden": () => r.children.every(c => c.hidden) });
+                    let r = new FlexRow({ hidden(){ return this.children.every(c => c.is_hidden) } });
                     process(r, o);
                     this.append(r);
                 } else if (typeof o === "string" && o.startsWith("-")) {
@@ -380,15 +377,6 @@ export class UI extends EventEmitter {
     }
 }
 
-export class UINoChildren extends UI {
-    constructor(elem, settings) {
-        super(elem, settings);
-    }
-    *iterate_children() {
-        return;
-    }
-}
-
 var old_append = Element.prototype.append;
 var old_prepend = Element.prototype.prepend;
 
@@ -411,6 +399,8 @@ function *handle_els(o) {
  * @template {Box} [ThisType=Box]
  * @typedef {UISettings<ThisType> & {
  *   'header': UISetting<ThisType,string>,
+ *   'collapsible': UISetting<ThisType,boolean>,
+ *   'collapsed': UISetting<ThisType,boolean>,
  * }} BoxSettings 
  */
 
@@ -428,8 +418,20 @@ export class Box extends UI {
             ...settings
         });
         if ("header" in this.settings) {
-            this.append(new Header(this.get_setting("header")));
+            this.header = new Header(`<h5>${this.get_setting("header")}</h5>`);
+            this.append(this.header);
         }
+        if (this.get_setting("collapsible")) {
+            this.elem.classList.add("collapsible");
+            this.header.settings.click = ()=>{
+                this.settings.collapsed = !this.settings.collapsed;
+                this.update();
+            }
+            this.header.elem.style.cursor = "pointer";
+        }
+        this.on("update", ()=>{
+            this.elem.toggleAttribute("data-collapsed", this.get_setting("collapsed"));
+        });
         this.elem.classList.add("box");
     }
 }
@@ -476,7 +478,7 @@ export class Column extends UI {
 export class Header extends UI {
     /** @param {Settings} settings */
     constructor(elem, settings) {
-        super(elem || `<h1></h1>`, settings);
+        super(elem || `<h5></h5>`, settings);
         this.elem.classList.add("header");
         this.elem.style.margin = "0";
     }

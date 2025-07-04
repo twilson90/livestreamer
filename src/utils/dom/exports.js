@@ -12,6 +12,7 @@ export * from "./cycle_select.js";
 export * from "./debounce_next_frame.js";
 export * from "./decode_html_entities.js";
 export * from "./download.js";
+export * from "./create_disable_scrollbars_stylesheet_and_class.js";
 export * from "./DropdownMenu.js";
 export * from "./remove_children.js";
 export * from "./encode_html_entities.js";

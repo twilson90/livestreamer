@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const vflip = new Filter({
 	name: "vflip",
 	descriptive_name: "Vertical Flip",
 	type: "video",
@@ -10,3 +10,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default vflip;

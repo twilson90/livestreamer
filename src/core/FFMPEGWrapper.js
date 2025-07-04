@@ -4,6 +4,24 @@ import readline from "node:readline";
 import child_process from "node:child_process";
 import {globals, utils, Logger} from "./exports.js";
 
+class FFMPEGInfo {
+    frame = 0;
+    fps = 0;
+    q = 0;
+    size = 0;
+    size_str = "";
+    time = 0;
+    bitrate = 0;
+    bitrate_str = "";
+    speed = 0;
+    speed_alt = 0;
+    /** @param {FFMPEGInfo} opts */
+    constructor(opts) {
+        Object.assign(this, opts);
+    }
+}
+
+/** @extends {events.EventEmitter<{info:[FFMPEGInfo]}>} */
 export class FFMPEGWrapper extends events.EventEmitter {
     /** @type {import("child_process").ChildProcessWithoutNullStreams} */
     #process;
@@ -132,7 +150,7 @@ export class FFMPEGWrapper extends events.EventEmitter {
                     }
 
                     let ts = Date.now();
-                    let info = {
+                    let info = new FFMPEGInfo({
                         frame: parseInt(m[1]),
                         fps: parseInt(m[2]),
                         q: parseInt(m[3]),
@@ -143,7 +161,7 @@ export class FFMPEGWrapper extends events.EventEmitter {
                         bitrate_str: m[6],
                         speed: parseFloat(m[7]),
                         speed_alt: 1,
-                    };
+                    });
                     if (last_info) {
                         info.speed_alt = (info.time - last_info.time) / (ts - last_ts);
                     }

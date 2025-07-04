@@ -76,7 +76,7 @@ export class IPCMaster extends IPC {
     #socks = {};
     /** @type {net.Server} */
     #server;
-    /** @type {Record<PropertyKey,Array<{listener:Function,id:number}>>} */
+    /** @type {Record<PropertyKey,Record<PropertyKey,{listener:Function,ids:Set<number>}>>} */
     #listener_map = {};
     #emitter = new events.EventEmitter();
 
@@ -102,17 +102,27 @@ export class IPCMaster extends IPC {
                 } else if (event === "internal:on") {
                     let {name, event, id} = args[0];
                     if (!this.#listener_map[event]) this.#listener_map[event] = {};
-                    var key = JSON.stringify([name, event, id]);
-                    var listener = (data)=>this.emit_to(name, event, data);
-                    this.#listener_map[event][key] = listener;
-                    this.#emitter.on(event, listener);
+                    if (!this.#listener_map[event][name]) {
+                        let listener = (data)=>{
+                            this.emit_to(name, event, data);
+                        };
+                        this.#listener_map[event][name] = { listener, ids: new Set() };
+                        this.#emitter.on(event, listener);
+                    }
+                    this.#listener_map[event][name].ids.add(id);
                 } else if (event === "internal:off") {
                     let {name, event, id} = args[0];
-                    if (!this.#listener_map[event]) this.#listener_map[event] = {};
-                    var key = JSON.stringify([name, event, id]);
-                    var listener = this.#listener_map[event][key];
-                    delete this.#listener_map[event][key];
-                    this.#emitter.off(event, listener);
+                    if (this.#listener_map[event] && this.#listener_map[event][name]) {
+                        let {listener, ids} = this.#listener_map[event][name];
+                        ids.delete(id);
+                        if (ids.size === 0) {
+                            this.#emitter.off(event, listener);
+                            delete this.#listener_map[event][name];
+                        }
+                        if (Object.keys(this.#listener_map[event]).length === 0) {
+                            delete this.#listener_map[event];
+                        }
+                    }
                 } else if (event === "internal:emit_to") {
                     let {name, event, args:_args} = args[0];
                     this.emit_to(name, event, ..._args);

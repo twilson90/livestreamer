@@ -6,6 +6,8 @@ export class ReconnectingWebSocket extends EventEmitter {
     #rid = 0;
     #requests = {};
 
+    get is_open() { return this.ws?.readyState === WebSocket.OPEN; }
+
     constructor(options = {}) {
         super();
         this.options = {

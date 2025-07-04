@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const tremolo = new Filter({
 	name: "tremolo",
 	descriptive_name: "Tremolo",
 	type: "audio",
@@ -27,3 +27,4 @@ export default new Filter({
         ctx.aid = a1;
 	}
 });
+export default tremolo;

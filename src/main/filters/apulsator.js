@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const apulsator = new Filter({
 	name: "apulsator",
 	descriptive_name: "Pulsator",
 	type: "audio",
@@ -88,3 +88,4 @@ export default new Filter({
         ctx.aid = a1;
 	}
 });
+export default apulsator;

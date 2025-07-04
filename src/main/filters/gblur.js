@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const gblur = new Filter({
 	name: "gblur",
 	descriptive_name: "Gaussian Blur",
 	type: "video", 
@@ -26,3 +26,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default gblur;

@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const adynamicsmooth = new Filter({
 	name: "adynamicsmooth",
 	descriptive_name: "Dynamic Smooth",
 	type: "audio",
@@ -27,3 +27,4 @@ export default new Filter({
         ctx.aid = a1;
     }
 });
+export default adynamicsmooth;

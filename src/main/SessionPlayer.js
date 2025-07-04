@@ -11,7 +11,7 @@ import { get_default_stream, get_stream_by_id, get_auto_background_mode } from "
 /** @typedef {MediaInfoStream & {id:number, type_id:number, secondary:boolean}} MediaInfoStreamEx */
 /** @typedef {{type:MediaInfoStreamType, start:number, end:number, duration:number, offset:number, loops:number, secondary:boolean, name:string}} RegisterFileOpts */
 /** @typedef {RegisterFileOpts & {filename:string, original_filename:string, streams:MediaInfoStreamEx[], type:MediaInfoStreamType}} RegisterFileResult */
-/** @typedef {{reload_props:boolean,pause:boolean,start:number}} LoadFileOpts */
+/** @typedef {{reload_props:boolean,pause:boolean,start:number,fade_in:number}} LoadFileOpts */
 
 // const FORCE_NEXT_ITEM_TIMEOUT = 5 * 1000;
 const FORCE_NEXT_ITEM_TIMEOUT = Number.MAX_SAFE_INTEGER;
@@ -39,7 +39,7 @@ const LOCAL_MPV_OPTIONS = {
     "end": 1,
     "interpolation": 1,
     "deinterlace": 1,
-    "video-aspect-override": 1,
+    // "video-aspect-override": 1,
     "audio-delay": 1,
     "sub-delay": 1,
     "sub-scale": 1,
@@ -55,12 +55,6 @@ const LOCAL_MPV_OPTIONS = {
     "pause": 1,
 }
 
-const STREAM_VOLUME_NORMALIZATION_CONFIGS = {
-    "dynaudnorm1": `dynaudnorm=f=500:p=0.9:m=8.0:g=7`,
-    "dynaudnorm2": `dynaudnorm=f=250:p=0.9:m=8.0:g=5`,
-    "loudnorm": `loudnorm=dual_mono=true`
-};    
-
 export class SessionPlayer$ extends DataNode$ {
     item = {};
     seeking = false;
@@ -73,6 +67,57 @@ export class SessionPlayer$ extends DataNode$ {
     playback_speed = 1;
     current_fps = 0;
     props = {};
+}
+
+const ytdl_cache = new utils.SimpleCache(1000 * 60 * 60);
+const mpv_info_cache = {};
+
+async function __get_mpv_info() {
+    /** @type {Record<string,boolean>} */
+    var allowed_args = {};
+    /** @type {Record<string,boolean>} */
+    var allowed_props = {};
+    /** @type {Record<string,boolean>} */
+    var allowed_filters = {};
+    var get_options = async()=>{
+        var str = (await utils.execa(globals.app.mpv_path, ["--list-options"])).stdout;
+        for (let line of str.split("\n")) {
+            let m = line.trim().match(/^--([^=\s]+)(?:\s+(.+))?$/);
+            if (m) {
+                allowed_args[m[1]] = true;
+                allowed_props[m[1]] = true;
+                if (m[2] && m[2].startsWith("Flag")) {
+                    allowed_args["no-"+m[1]] = true;
+                }
+            }
+        }
+    }
+    var get_filters = async(type)=>{
+        var str = (await utils.execa(globals.app.mpv_path, [`--${type}=help`])).stdout;
+        var list = [...str.matchAll(/^  ([^\s]+)/gm)].map(m=>m[1]);
+        for (let filter of list) {
+            allowed_filters[filter] = true;
+        }
+    }
+    await Promise.all([
+        get_options(),
+        get_filters("vf"),
+        get_filters("af"),
+    ]);
+    return {
+        allowed_args,
+        allowed_props,
+        allowed_filters,
+    };
+}
+/** @typedef {Awaited<ReturnType<typeof __get_mpv_info>>} MpvInfo */
+/** @returns {MpvInfo} */
+async function get_mpv_info() {
+    var version_str = (await utils.execa(globals.app.mpv_path, ["--version"])).stdout;
+    if (!mpv_info_cache[version_str]) {
+        mpv_info_cache[version_str] = __get_mpv_info()
+    }
+    return mpv_info_cache[version_str];
 }
 
 /** @typedef {Awaited<ReturnType<SessionPlayer["parse_item"]>>} ParsedItem */
@@ -88,11 +133,13 @@ export class SessionPlayer extends DataNode {
     #last_seek_time = 0;
     /** @type {Stream} */
     #stream;
-    #ytdl_cache = new utils.Cache(1000 * 60 * 60);
-    #allowed_mpv_args = {};
-    #allowed_mpv_props = {};
     #width = 0;
     #height = 0;
+    #pts = 0;
+    // #fade_out_pts = 0;
+    #fading = false;
+    /** @type {MpvInfo} */
+    #mpv_info;
 
     /** @type {ParsedItem} */
     parsed_item = {};
@@ -132,27 +179,12 @@ export class SessionPlayer extends DataNode {
         });
 
         this.#stream.$.player = this.$;
-
-        this.ready = this.#calc_allowed_mpv_args();
-    }
-
-    async #calc_allowed_mpv_args() {
-        var proc = await utils.execa(globals.app.mpv_path, ["--list-options"]);
-        let temp_mpv_out = proc.stdout;
-        for (let line of temp_mpv_out.split("\n")) {
-            let m = line.trim().match(/^--([^=\s]+)(?:\s+(.+))?$/);
-            if (m) {
-                this.#allowed_mpv_args[m[1]] = true;
-                this.#allowed_mpv_props[m[1]] = true;
-                if (m[2] && m[2].startsWith("Flag")) {
-                    this.#allowed_mpv_args["no-"+m[1]] = true;
-                }
-            }
-        }
     }
 
     async start(args) {
 
+        this.#mpv_info = await get_mpv_info();
+        
         let mpv_args = [];
         for (var arg of args) {
             if (!arg) continue;
@@ -162,7 +194,7 @@ export class SessionPlayer extends DataNode {
                 continue;
             }
             let prop = m[1]
-            if (this.#allowed_mpv_args[prop]) mpv_args.push(arg);
+            if (this.#mpv_info.allowed_args[prop]) mpv_args.push(arg);
             else this.logger.error("Bad mpv arg:", prop);
         }
 
@@ -194,6 +226,8 @@ export class SessionPlayer extends DataNode {
             ["aid"]: null,
             ["vid"]: null,
             ["sid"]: null,
+            ["af"]: [],
+            ["vf"]: [],
             // if false actually means source is live (e.g. youtube live-stream)
             ["seekable"]: null,
             ["demuxer-via-network"]: false,
@@ -242,10 +276,10 @@ export class SessionPlayer extends DataNode {
             this.$.seeking = false;
         });
         var last_load_id, last_time_pos=0;
-        var pts = 0;
 
         this.#mpv.on("property-change", async (e)=>{
             let {name, data} = e;
+            this.#props[name] = data;
             /* if (name === "path" && data == "null://eof") {
                 this.next();
             } */
@@ -253,24 +287,29 @@ export class SessionPlayer extends DataNode {
                 if (this.#props.loop_file) {
                     this.reload();
                 } else {
-                    this.next();
+                    this.debounced_next();
                 }
             }
             if (!(name in IGNORE_MPV_REALTIME_CHANGES)) {
                 this.$.props[name] = data;
             }
             if (name === "time-pos") {
-                if (this.#mpv.load_id == last_load_id && this.$.loaded && !this.$.internal_seeking) {
+                if (this.$.loaded && !this.$.internal_seeking) {
                     var delta = Math.max(0, (data - last_time_pos) || 0);
                     if (Math.abs(delta) > 5) {
                         this.logger.warn(`pts jumped ${delta}`);
+                    } else {
+                        this.#pts += delta;
                     }
-                    pts += delta;
+                    /* if (this.#fade_out_pts && this.#pts > this.#fade_out_pts) {
+                        this.#fade_out_pts = null;
+                        
+                        process.nextTick(()=>this.next({fade_in:this.session.$.fade_in_speed}));
+                    } */
                 }
                 last_time_pos = data;
             }
             last_load_id = this.#mpv.load_id;
-            this.#props[name] = data;
         });
 
         /* this.#mpv.on("end-file", (e)=>{
@@ -295,12 +334,11 @@ export class SessionPlayer extends DataNode {
             let ts = Date.now();
 
             {
-                let diff_pts = (pts - last_pts) * 1000;
+                let diff_pts = (this.#pts - last_pts) * 1000;
                 let diff_ts = ts - last_speed_check;
                 let speed = Math.max(0, (diff_pts / diff_ts) || 0);
                 this.$.playback_speed = speed;
-                this.emit("speed", speed);
-                last_pts = pts;
+                last_pts = this.#pts;
                 last_speed_check = ts;
             }
             
@@ -352,18 +390,23 @@ export class SessionPlayer extends DataNode {
     async loadfile(item, opts) {
         this.$.preloaded = false;
         this.$.loaded = false;
+        // this.#fade_out_pts = null;
         
         opts = {
             pause: false,
             start: 0,
             reload_props: true,
+            fade_in: this.#fading ? this.session.$.fade_in_speed : 0,
             ...opts,
         };
+        this.#fading = false;
+
         let start = +(opts.start||0);
         let on_load_commands = [];
 
-        let props = item && item.props;
+        let props = utils.json_copy(item && item.props);
         if (!opts.reload_props) props = utils.json_copy(this.#props);
+        if (opts.fade_in) props.fade_in = opts.fade_in;
         let parsed_item = this.parsed_item = await this.parse_item({...item, props});
         let {duration, is_unknown_duration} = parsed_item;
         parsed_item.loops = opts.loops;
@@ -532,14 +575,14 @@ export class SessionPlayer extends DataNode {
         if (is_image) {
             // let title = `Image (${path.basename(filename)})`;
             filename = await get_image_as_video(filename, this.#width, this.#height, background_color);
-            map.register_stream({type:"video", codec:"h264", duration:NULL_STREAM_DURATION, fps:1}, true);
+            map.register_stream({type:"video", codec:"h264", duration:NULL_STREAM_DURATION, fps:1, title:path.basename(filename)}, true);
             media_duration = NULL_STREAM_DURATION;
         }
         
         let is_rtmp = !!filename.match(/^rtmps?:/);
         if (is_rtmp) {
-            map.register_stream({type:"video"}, true);
-            map.register_stream({type:"audio"}, true);
+            map.register_stream({type:"video", title:"RTMP Video"}, true);
+            map.register_stream({type:"audio", title:"RTMP Audio"}, true);
         }
 
         if (media_info.ytdl && (!is_root || is_clipped)) {
@@ -646,8 +689,10 @@ export class SessionPlayer extends DataNode {
                             // add padding to track if necessary
                             let tmp = await this.parse_item(null, {duration: pad_duration, media_type: track.type, offset, root});
                             if (tmp.duration) {
+                                // track.entries.push(new MPVEDLEntry("C:\\Users\\hedge\\Downloads\\na.wav", {length: "60.000"}));
+                                // if (tmp.edl) track.entries.push(...tmp.edl.entries);
                                 track.entries.push(new MPVEDLEntry(tmp.parsed_filename, {
-                                    length: (pad_duration).toFixed(3)
+                                    length: pad_duration.toFixed(3)
                                 }));
                             }
                         }
@@ -747,6 +792,20 @@ export class SessionPlayer extends DataNode {
                 await add_file(props.subtitle_file, "subtitle");
             }
 
+        } else {
+            fade_in = utils.round_precise(fade_in || 0, 3);
+            if (fade_in>0) {
+                if (needs_video) root.fades.push(["v", "in", offset, fade_in])
+                if (needs_audio) root.fades.push(["a", "in", offset, fade_in])
+            }
+    
+            if (duration) {
+                fade_out = utils.round_precise(fade_out || 0, 3);
+                if (fade_out>0) {
+                    if (needs_video) root.fades.push(["v", "out", offset + duration - fade_out, fade_out])
+                    if (needs_audio) root.fades.push(["a", "out", offset + duration - fade_out, fade_out])
+                }
+            }
         }
         
         if (is_clipped) {
@@ -759,28 +818,14 @@ export class SessionPlayer extends DataNode {
             edl = new MPVEDL(MPVEDL.repeat(edl ? edl.toString() : filename, repeat_opts));
         }
         // }
-
-        fade_in = utils.round_precise(fade_in || 0, 3);
-        if (fade_in>0) {
-            if (needs_video) root.fades.push(["v", "in", offset, fade_in])
-            if (needs_audio) root.fades.push(["a", "in", offset, fade_in])
-        }
-
-        if (duration) {
-            fade_out = utils.round_precise(fade_out || 0, 3);
-            if (fade_out>0) {
-                if (needs_video) root.fades.push(["v", "out", offset + duration - fade_out, fade_out])
-                if (needs_audio) root.fades.push(["a", "out", offset + duration - fade_out, fade_out])
-            }
-        }
         
         if (edl) {
             duration = edl.duration;
             filename = edl.toString();
             map = new StreamMap();
-            if (!media_type || media_type == "video") map.register_stream({type:"video"}, true);
-            if (!media_type || media_type == "audio") map.register_stream({type:"audio"}, true);
-            if (media_type == "subtitle") map.register_stream({type:"subtitle"}, true);
+            if (!media_type || media_type == "video") map.register_stream({type:"video", title:"EDL Video"}, true);
+            if (!media_type || media_type == "audio") map.register_stream({type:"audio", title:"EDL Audio"}, true);
+            if (media_type == "subtitle") map.register_stream({type:"subtitle", title:"EDL Subtitle"}, true);
         }
 
         if (fix_low_fps_duration) duration--;
@@ -810,6 +855,15 @@ export class SessionPlayer extends DataNode {
             map,
         };
     }
+
+    async fade_out_in() {
+        this.mpv.set_property("file-local-options/end", String(this.#props["time-pos"] + this.session.$.fade_out_speed + 0.5));
+        this.#fading = { time: this.#props["time-pos"] };
+        this.rebuild_filters();
+        // if (this.#fade_out_pts) return;
+        // this.#fade_out_pts = this.#pts + this.session.$.fade_out_speed + 0.5;
+        // this.lua_message("fade_out", [this.session.$.fade_out_speed]);
+    }
     
     async set_property(key, value) {
         var hash = JSON.stringify(value);
@@ -825,7 +879,7 @@ export class SessionPlayer extends DataNode {
                 mpv_value = String(value);
                 break;
             case "aspect_ratio":
-                mpv_key = "video-aspect-override";
+                this.#update_aspect_ratio();
                 break;
             case "audio_delay":
                 if (!this.is_encoding) mpv_key = "audio-delay";
@@ -879,12 +933,33 @@ export class SessionPlayer extends DataNode {
         if (mpv_key in LOCAL_MPV_OPTIONS) {
             mpv_key = `file-local-options/${mpv_key}`;
         }
-        if (this.#allowed_mpv_props[mpv_opt]) {
+        if (mpv_opt in this.#mpv_info.allowed_props) {
             if (this.$.preloaded) {
                 return this.#mpv.set_property(mpv_key, mpv_value);
             } else {
                 this.#mpv_load_props[mpv_key] = mpv_value;
             }
+        }
+    }
+    #update_aspect_ratio() {
+        let aspect_ratio = this.#props.aspect_ratio;
+        if (this.#mpv.version[0] == 0 && this.#mpv.version[1] < 40) {
+            if (aspect_ratio == "auto") {
+                this.set_property("video-aspect-override", -1);
+            } else {
+                this.set_property("video-aspect-override", String(aspect_ratio));
+            }
+        } else {
+            if (aspect_ratio == "auto") {
+                this.set_property("video-aspect-override", 0);
+                this.set_property("video-aspect-method", "container");
+            } else {
+                this.set_property("video-aspect-override", aspect_ratio);
+                this.set_property("video-aspect-method", "ignore");
+            }
+        }
+        if (this.$.preloaded) {
+            this.seek(); // weird quirk / bug, seek() is required to apply the aspect ratio change when encoding apparently. Didn't used to but now it does.
         }
     }
 
@@ -894,6 +969,8 @@ export class SessionPlayer extends DataNode {
 
     seek(t) {
         if (!this.parsed_item.internal_seekable) return;
+        if (t === undefined) t = this.#props["time-pos"];
+        if (t === undefined) return;
         this.#last_seek_time = t;
         this.$.seeking = true;
         this.update_time_pos();
@@ -989,9 +1066,17 @@ export class SessionPlayer extends DataNode {
             color: this.parsed_item.background_color,
         });
 
+        let is_filter_allowed = (filter)=>{
+            var name = String(filter).match(/\w+/i)[0];
+            var allowed = name in this.#mpv_info.allowed_filters;
+            if (!allowed) this.logger.warn(`Filter '${name}' not allowed.`);
+            return allowed;
+        }
+
         // -----------------------------------------
 
         let pre_vf_graph = [];
+        let pre_af_graph = [];
         // let fps = +(this.props.force_fps || this.stream.fps);
 
         {
@@ -1036,99 +1121,115 @@ export class SessionPlayer extends DataNode {
             }
         }
 
-        {
+        
+
+        let audio_stream = get_stream_by_id(this.#props.aid, this.parsed_item.map.audio.streams);
+        let has_2_channels = audio_stream ? audio_stream.channels >= 2 : false;
+
+        let pan;
+        let ac = this.#props.audio_channels;
+        if (has_2_channels && ac == "mix") {
+            pan = "pan=stereo|c0=.5*c0+.5*c1|c1=.5*c0+.5*c1";
+        } else if (has_2_channels && ac == "left") {
+            pan = "pan=stereo|c0=c0|c1=c0";
+        } else if (has_2_channels && ac == "right") {
+            pan = "pan=stereo|c0=c1|c1=c1";
+        } else {
+            pan = "pan=stereo|FL<1.0*FL+0.707*FC+0.707*BL|FR<1.0*FR+0.707*FC+0.707*BR";
+        }
+        if (pan) {
+            pre_af_graph.push(pan);
+        }
+
+        if (this.is_encoding && this.#props.audio_delay) {
+            pre_af_graph.push(`asetpts=PTS+${this.#props.audio_delay}/TB`);
+        }
+
+        pre_af_graph.push(`aresample=async=1`);
+
+        pre_af_graph = pre_af_graph.filter(is_filter_allowed);
+        pre_vf_graph = pre_vf_graph.filter(is_filter_allowed);
+
+        if (pre_vf_graph.length) {
             let pre_vf = ctx.id("pre_vf");
             ctx.stack.push(`[${ctx.vid}]${pre_vf_graph.join(",")}[${pre_vf}]`);
             ctx.vid = pre_vf;
         }
 
-        ctx.apply([...this.#props.pre_filters, ...this.#props.filters]);
+        if (pre_af_graph.length) {
+            let pre_af = ctx.id("pre_af");
+            ctx.stack.push(`[${ctx.aid}]${pre_af_graph.join(",")}[${pre_af}]`);
+            ctx.aid = pre_af;
+        }
+
+        var props_pre_filters = this.#props.pre_filters.filter(f=>is_filter_allowed(f.name));
+        var props_filters = this.#props.filters.filter(f=>is_filter_allowed(f.name));
+        ctx.apply([...props_pre_filters, ...props_filters]);
 
         // -----------------------------------------
 
+        var make_lavfi_filter = (graph) => ({
+            name: "lavfi",
+            enabled: true,
+            params: { graph }
+        });
 
         let vf_graph = [];
         let af_graph = [];
-       
-        // {
-        //     let left = utils.clamp(Math.abs(this.props.crop[0] || 0));
-        //     let top = utils.clamp(Math.abs(this.props.crop[1] || 0));
-        //     let right = utils.clamp(Math.abs(this.props.crop[2] || 0));
-        //     let bottom = utils.clamp(Math.abs(this.props.crop[3] || 0));
-        //     if (left || right || top || bottom) {
-        //         vf_graph.push(
-        //             `crop=w=iw*dar*${Math.abs(1-right-left)}:h=ih*${Math.abs(1-bottom-top)}:x=iw*dar*${left}:y=ih*${top}`
-        //         );
-        //     }
-        // }
 
-        let audio_stream = get_stream_by_id(this.#props.aid, this.parsed_item.map.audio.streams);
-        let has_2_channels = audio_stream ? audio_stream.channels >= 2 : false;
-
-        let ac = this.#props.audio_channels;
-        if (has_2_channels && ac == "mix") {
-            af_graph.push(
-                "pan=stereo|c0=.5*c0+.5*c1|c1=.5*c0+.5*c1"
-            );
-        } else if (has_2_channels && ac == "left") {
-            af_graph.push(
-                "pan=stereo|c0=c0|c1=c0"
-            );
-        } else if (has_2_channels && ac == "right") {
-            af_graph.push(
-                "pan=stereo|c0=c1|c1=c1"
-            ); // if mono this may break as c1 does not exist?
-        } else {
-            af_graph.push(
-                `pan=stereo|FL<1.0*FL+0.707*FC+0.707*BL|FR<1.0*FR+0.707*FC+0.707*BR`,
-            );
+		const STREAM_VOLUME_NORMALIZATION_CONFIGS = {
+			"dynaudnorm1": `dynaudnorm=f=500:p=0.9:m=8.0:g=7`,
+			"dynaudnorm2": `dynaudnorm=f=250:p=0.9:m=8.0:g=5`,
+			"loudnorm": `loudnorm=dual_mono=true`
+		};
+        let normalization_method = this.#props.volume_normalization;
+        let normalization_filter = STREAM_VOLUME_NORMALIZATION_CONFIGS[normalization_method];
+        if (normalization_filter) {
+            af_graph.push(normalization_filter);
         }
 
-        if (this.is_encoding && this.#props.audio_delay) {
-            af_graph.push(
-                `asetpts=PTS+${this.#props.audio_delay}/TB`,
-            );
-        }
+        vf_graph.push(`pad=width=${w}:height=${h}:x=(ow-iw)/2:y=(oh-ih)/2:color=${this.parsed_item.background_color}`);
 
-        af_graph.push(
-            `aresample=async=1`
-        );
+        vf_graph.push(`format=yuv420p`);
 
-        var pad_filter = `pad=width=${w}:height=${h}:x=(ow-iw)/2:y=(oh-ih)/2:color=${this.parsed_item.background_color}`;
-
-        vf_graph.push(
-            pad_filter,
-            `format=yuv420p`
-        );
+        let vfades = [];
+        let afades = [];
         
-        if (this.duration) {
-            for (let [type, dir, offset, dur] of this.parsed_item.fades) {
-                offset = Math.max(0, offset);
-                let is_final_out = dir == "out" && Math.abs((offset + dur) - this.duration) < 0.25;
-                let edur = is_final_out ? dur + 1 : dur;
-                if (dir == "out") offset -= 0.25;
-                offset = Math.max(0, offset);
-                if (type.startsWith("v")) {
-                    vf_graph.push(`fade=enable='between(t\\,${offset},${offset+edur})':t=${dir}:st=${offset}:d=${dur}`);
-                } else if (type.startsWith("a")) {
-                    af_graph.push(`afade=enable='between(t\\,${offset},${offset+edur})':t=${dir}:st=${offset}:d=${dur}`);
-                }
+        if (this.parsed_item.props.fade_in) {
+            vfades.push(`fade=t=in:st=0:d=${this.parsed_item.props.fade_in}`);
+            afades.push(`afade=t=in:st=0:d=${this.parsed_item.props.fade_in}`);
+        }
+        for (let [type, dir, offset, dur] of this.parsed_item.fades) {
+            offset = Math.max(0, offset);
+            if (dir == "out") offset -= 0.25;
+            offset = Math.max(0, offset);
+            if (type.startsWith("v")) {
+                vfades.push(`fade=enable='between(t\\,${offset},${offset+dur})':t=${dir}:st=${offset}:d=${dur}`);
+            } else if (type.startsWith("a")) {
+                afades.push(`afade=enable='between(t\\,${offset},${offset+dur})':t=${dir}:st=${offset}:d=${dur}`);
             }
+        }
+        if (this.#fading) {
+            vfades.push(`fade=t=out:st=${this.#fading.time+0.25}:d=${this.session.$.fade_out_speed}`);
+            afades.push(`afade=t=out:st=${this.#fading.time+0.25}:d=${this.session.$.fade_out_speed}`);
+        } else if (this.parsed_item.props.fade_out && this.duration) {
+            vfades.push(`fade=t=out:st=${this.duration-this.parsed_item.props.fade_out-0.25}:d=${this.parsed_item.props.fade_out}`);
+            afades.push(`afade=t=out:st=${this.duration-this.parsed_item.props.fade_out-0.25}:d=${this.parsed_item.props.fade_out}`);
+        }
+
+        for (let fade of vfades) {
+            vf_graph.push(fade);
+        }
+        for (let fade of afades) {
+            af_graph.push(fade);
         }
 
         if (this.stream.is_test) {
-            vf_graph.push(
-                `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(path.resolve(globals.app.resources_dir,"fonts", "RobotoMono-Regular.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`,
-            );
+            let font_path = globals.app.resources.get_path("fonts/RobotoMono-Regular.ttf");
+            vf_graph.push(`drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(font_path)}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`);
         }
 
-        let norm_method = this.#props.volume_normalization;
-        let norm_filter_option = STREAM_VOLUME_NORMALIZATION_CONFIGS[norm_method];
-        if (norm_filter_option) {
-            af_graph.push(norm_filter_option);
-        }
-
-        if (vf_graph.length) {
+        /* if (vf_graph.length) {
             let vf = ctx.id("vf");
             ctx.stack.push(`[${ctx.vid}]${vf_graph.join(",")}[${vf}]`);
             ctx.vid = vf;
@@ -1138,10 +1239,19 @@ export class SessionPlayer extends DataNode {
             let af = ctx.id("af");
             ctx.stack.push(`[${ctx.aid}]${af_graph.join(",")}[${af}]`);
             ctx.aid = af;
-        }
+        } */
+
+        // -----------------------------------------
+
+        // important to dynaudnorm not in lavfi-complex, this is applied last after all other filters.
+        // also it mucks up EDLs if used in lavfi-complex and there is an audio format change between segments.
+
+        // let vf = [...(this.#props.vf||[])];
     
         let lavfi_complex_str = ctx.toString();
         this.set_property("lavfi-complex", lavfi_complex_str);
+        this.set_property("af", af_graph.filter(is_filter_allowed).map(make_lavfi_filter));
+        this.set_property("vf", vf_graph.filter(is_filter_allowed).map(make_lavfi_filter));
         this.set_property("deinterlace", deinterlace); // apparently doesnt need a filter to work in encoding mode
         this.set_property("interpolation", interpolation);
     }
@@ -1154,14 +1264,16 @@ export class SessionPlayer extends DataNode {
     debounced_rebuild_filters = utils.debounce(()=>this.rebuild_filters(), 10);
     debounced_update_volume = utils.debounce(()=>this.update_volume(), 10);
 
-    next() {
-        return this.session.playlist_next();
+    next(opts) {
+        return this.session.playlist_next(opts);
     }
+    
+    debounced_next = utils.debounce(()=>this.next(), 0);
 
     /** @param {string} url @returns {Promise<string>} */
     async youtube_url_to_edl(url) {
-        if (!this.#ytdl_cache.has(url)) this.#ytdl_cache.set(url, globals.app.youtube_url_to_edl(url));
-        return this.#ytdl_cache.get(url);
+        if (!ytdl_cache.has(url)) ytdl_cache.set(url, globals.app.youtube_url_to_edl(url));
+        return ytdl_cache.get(url);
     }
 }
 
@@ -1229,15 +1341,16 @@ class StreamCollection {
 }
 
 async function get_null_audio() {
-    var filename = `na`;
+    var filename = `na.mp3`;
     if (!CACHE.get(filename)) {
         CACHE.set(filename, (async ()=>{
             var output_path = path.resolve(globals.app.tmp_dir, filename);
             await utils.execa(globals.app.ffmpeg_path, [
                 "-f", "lavfi",
-                "-i", "anullsrc,aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo",
-                "-c:a", "flac",
-                "-f", "flac",
+                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                // "-i", "aevalsrc=0.000001*random(0):c=stereo:s=44100", // thought random noise might prevent pausing, probably didnt.
+                "-ar", "44100",
+                "-c:a", "mp3", // needs to be mp3 to prevent those weird pauses, no idea why. flac, wav, aac didnt work.
                 "-t", `${NULL_STREAM_DURATION}`,
                 `-y`,
                 output_path
@@ -1249,7 +1362,7 @@ async function get_null_audio() {
 }
 
 async function get_ass_subtitle(ass) {
-    var filename = utils.md5(ass);
+    var filename = `${utils.md5(ass)}.ass`;
     if (!CACHE.get(filename)) {
         CACHE.set(filename, (async ()=>{
             var output_path = path.resolve(globals.app.tmp_dir, filename);
@@ -1267,7 +1380,7 @@ async function get_null_subtitle() {
 /** @param {number} color */
 async function get_color_as_video(w, h, color) {
     var color_str = Color(color || 0x000000).hex();
-    var filename = `${color_str}-${w}x${h}`;
+    var filename = `${color_str}-${w}x${h}.mkv`;
     if (!CACHE.get(filename)) {
         CACHE.set(filename, (async ()=>{
             var output_path = path.resolve(globals.app.tmp_dir, filename);

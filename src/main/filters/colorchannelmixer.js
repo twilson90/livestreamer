@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const colorchannelmixer = new Filter({
 	name: "colorchannelmixer",
 	descriptive_name: "Color Channel Mixer",
 	type: "video",
@@ -113,3 +113,4 @@ This filter modifies a color channel by adding the values associated to the othe
 		ctx.vid = v1;
 	}
 });
+export default colorchannelmixer;

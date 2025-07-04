@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const vignette = new Filter({
     name: "vignette",
     descriptive_name: "Vignette",
     type: "video",
@@ -70,3 +70,5 @@ export default new Filter({
         ctx.vid = v1;
     }
 });
+
+export default vignette;

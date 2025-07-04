@@ -20,7 +20,15 @@ class FiltersProperty {
 export const MediaProps = {
     // __default__: {},
     aspect_ratio: {
-        __default__: -1,
+        __default__: "auto",
+        __options__: [
+            ["auto", "Auto"],
+            ["4:3", "4:3"],
+            ["16:9", "16:9"],
+            ["21:9", "21:9"],
+            ["1:1", "1:1"],
+            ["9:16", "9:16"]
+        ],
     },
     loop_file: {
         __default__: false,
@@ -264,8 +272,22 @@ export const InternalSessionProps = {
         __max__: 200,
     },
     volume_speed: {
-        __default__: 50,
-        __options__: [[0, "Immediate"], [12.5, "Very Slow"], [25.0, "Slow"], [50.0, "Medium"], [100.0, "Fast"], [200.0, "Very Fast"]],
+        __default__: 2,
+        __min__: 0,
+        __max__: 20,
+        __step__: 0.1,
+    },
+    fade_out_speed: {
+        __default__: 2,
+        __min__: 0,
+        __max__: 20,
+        __step__: 0.1,
+    },
+    fade_in_speed: {
+        __default__: 2,
+        __min__: 0,
+        __max__: 20,
+        __step__: 0.1,
     },
     time_pos: {
         __default__: 0,

@@ -3,6 +3,7 @@ import * as dom from "../../../utils/dom/exports.js";
 import {$} from '../../../jquery-global.js';
 import Hls from "hls.js";
 import videojs from "video.js/core.es.js";
+
 import "video.js/dist/video-js.css";
 import "../../../utils/dom/dom.scss";
 import './style.scss';
@@ -12,16 +13,20 @@ class Crop {
     x1 = 1;
     y0 = 0;
     y1 = 1;
+    name = "";
     get w() { return this.x1 - this.x0; }
     get h() { return this.y1 - this.y0; }
     get area() { return this.w * this.h; }
     get valid() { return this.w > 0.5 && this.h > 0.5; }
-    constructor(o) {
-        if (arguments.length == 2) {
-            var [w,h] = [...arguments];
-            this.x1 = w;
-            this.y1 = h;
-        } else if (o) {
+    constructor(o, name) {
+        this.name = name;
+        if (Array.isArray(o)) {
+            let [w,h] = o;
+            this.x0 = (1-w)/2;
+            this.x1 = 1-(1-w)/2;
+            this.y0 = (1-h)/2;
+            this.y1 = 1-(1-h)/2;
+        } else if (typeof o === "object" && o !== null) {
             var {x0,x1,y0,y1} = o;
             this.x0 = x0;
             this.x1 = x1;
@@ -33,9 +38,6 @@ class Crop {
     difference(b) {
         var a = this;
         return Math.abs(b.x0-a.x0) + Math.abs(b.y0-a.y0) + Math.abs(b.x1-a.x1) + Math.abs(b.y1-a.y1);
-    }
-    static from(w,h) {
-        return new Crop({x0:(1-w)/2, x1:1-(1-w)/2, y0:(1-h)/2, y1:1-(1-h)/2});
     }
 }
 
@@ -52,11 +54,11 @@ var time_display_modes = [
 ];
 
 var crops = [
-    Crop.from(1, 1),             // 16:9
-    Crop.from(1/(4/3), 1),       // 16:9 -> 4:3
-    Crop.from(1, (16/9)/(21/9)), // 21:9 -> 16:9
-    Crop.from(1/(4/3), 1/(4/3)), // 16:9 -> 4:3 -> 16:9
-];
+    new Crop([1, 1], "Original"),                  // 16:9
+    new Crop([1/(4/3), 1], "4:3"),             // 16:9 -> 4:3
+    new Crop([1, (16/9)/(21/9)], "21:9"),      // 21:9 -> 16:9
+    new Crop([1/(4/3), 1/(4/3)], "4:3 -> 16:9"), // 16:9 -> 4:3 -> 16:9
+]
 
 var crop_modes = [
     {
@@ -279,7 +281,7 @@ class VideoPlayer {
             await this.crop_detect.update();
         }
         if (crop_mode.value == "auto") {
-            crop = this.crop_detect.region_standardized;
+            crop = this.crop_detect.nearest_crop;
         }
         apply_crop(this.video_el, crop);
 
@@ -294,9 +296,11 @@ class VideoPlayer {
                 this.crop_detect.canvas.remove();
             }
         }
-        this.crop_detect.draw_rect(this.crop_detect.region_standardized, "red", 1, [2,2]);
+        this.crop_detect.draw_rect(this.crop_detect.nearest_crop, "red", 1, [2,2]);
         this.crop_detect.draw_rect(this.crop_detect.region, "yellow", 1, [2,2]);
         this.crop_detect.draw_rect(crop, "green", 1);
+
+        
     }
     
     get_preferred_level() {
@@ -463,6 +467,7 @@ class VideoPlayer {
         class CropToggle extends Button {
             constructor(player, options) {
                 super(player, options);
+                app.player.crop_button = this;
                 this.icon = document.createElement("div");
                 this.icon.classList.add("icon");
                 this.el_.prepend(this.icon);
@@ -480,7 +485,13 @@ class VideoPlayer {
                 if (d) {
                     this.icon.innerHTML = d.icon;
                     this.icon.dataset.ratio = d.icon;
-                    this.controlText(`${d.label}`);
+                    var ctext = d.label;
+                    if (d.value === "auto" && app.player.crop_detect.nearest_crop) {
+                        if (app.player.crop_detect.nearest_crop.name) {
+                            ctext += ` (${app.player.crop_detect.nearest_crop.name})`;
+                        }
+                    }
+                    this.controlText(ctext);
                 }
             }
             buildCSSClass() {
@@ -529,7 +540,7 @@ class VideoPlayer {
         });
 
         this.player = videojs(this.video_el, {
-            // autoplay: true,
+            autoplay,
             // muted: true, 
             // volume:0,
             // fluid: true,
@@ -735,14 +746,14 @@ class VideoPlayer {
             };
         }
 
-        this.player.ready(()=>{
+        /* this.player.ready(()=>{
             if (autoplay) {
                 new Promise((resolve,reject)=>{
                     this.player.play().then(resolve);
                     setTimeout(()=>reject("Autoplay was disallowed."), 2000);
                 }).catch((e)=>console.error(e))
             }
-        });
+        }); */
         this.player.on("error", console.error);
         this.player.on("pause",()=>app.update());
         var was_seeking = false;
@@ -816,7 +827,7 @@ class CropDetect {
     /** @type {Crop[]} */
     buffer = [];
     region = new Crop();
-    region_standardized = new Crop();
+    nearest_crop = new Crop();
     #ready;
     get ready() { return this.#ready; }
     get vw() { return this.video_el.videoWidth; }
@@ -885,9 +896,11 @@ class CropDetect {
         if (!r.valid) return;
 
         this.push_region(r);
-        this.region_standardized = [...crops].sort((a,b)=>{
+        
+        this.nearest_crop = [...crops].sort((a,b)=>{
             return a.difference(this.region) - b.difference(this.region);
         })[0];
+        if (app.player.crop_button) app.player.crop_button.update();
     }
     /** @param {Region} r */
     push_region(r) {
@@ -940,7 +953,7 @@ function apply_crop(videoElement, crop) {
     const windowAspect = window.innerWidth / window.innerHeight;
 
     container.style.position = 'relative';
-    container.style.overflow = 'hidden';
+    // container.style.overflow = 'hidden';
     videoElement.style.position = 'absolute';
     videoElement.style.objectFit = 'cover';
 
@@ -949,8 +962,8 @@ function apply_crop(videoElement, crop) {
     videoElement.style.left = `50%`;
     videoElement.style.top = `50%`;
     videoElement.style.transform = 'translate(-50%, -50%)';
-    videoElement.style.transition = 'all 0.2s ease-in-out';
-    videoElement.style.transitionProperty = "width, height";
+    // videoElement.style.transition = 'all 0.2s ease-in-out';
+    // videoElement.style.transitionProperty = "width, height";
     
     if (windowAspect > cropAspect) {
         container.style.width = `${cropAspect * 100 / windowAspect}%`;
@@ -960,43 +973,6 @@ function apply_crop(videoElement, crop) {
         container.style.height = `${windowAspect * 100 / cropAspect}%`;
     }
     
-}
-
-
-/** @param {HTMLVideoElement} videoElement @param {Crop} crop */
-function applyvideocrop(videoElement, crop) {
-    const videoAspect = videoElement.videoWidth / videoElement.videoHeight;
-    const cropWidth = crop.x1 - crop.x0;
-    const cropHeight = crop.y1 - crop.y0;
-    const cropAspect = (cropWidth * videoElement.videoWidth) / (cropHeight * videoElement.videoHeight);
-    
-    // Apply CSS to video element
-    videoElement.style.position = 'absolute';
-    videoElement.style.objectFit = 'cover';
-    
-    // Calculate scale and position
-    const scaleX = 1 / cropWidth;
-    const scaleY = 1 / cropHeight;
-    
-    // Apply transform to "crop" the video
-    videoElement.style.transform = `scale(${scaleX}, ${scaleY}) translate(${-crop.x0 * 100}%, ${-crop.y0 * 100}%)`;
-    videoElement.style.transformOrigin = 'top left';
-    
-    // Adjust container to maintain aspect ratio
-    const container = videoElement.parentElement;
-    container.style.aspectRatio = cropAspect;
-  
-    const windowAspect = window.innerWidth / window.innerHeight;
-
-    if (windowAspect > cropAspect) {
-        // Window is wider than video - fit to height
-        container.style.width = `${cropAspect * 100 / windowAspect}%`;
-        container.style.height = '100%';
-    } else {
-        // Window is taller than video - fit to width
-        container.style.width = '100%';
-        container.style.height = `${windowAspect * 100 / cropAspect}%`;
-    }
 }
 
 export default MediaServerVideoPlayerWebApp;

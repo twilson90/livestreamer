@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const earwax = new Filter({
 	name: "earwax",
 	descriptive_name: "Earwax",
 	type: "audio",
@@ -12,3 +12,4 @@ export default new Filter({
         ctx.aid = a1;
 	}
 });
+export default earwax;

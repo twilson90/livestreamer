@@ -9,7 +9,7 @@ export default async function (url, req, res) {
     var m;
     // https://1drv.ms/v/c/af15b118f3719717/EeU3K9JzSSxIqclcpBCqeTUBEcDmN-qrT0r3WuocJ5F6hw?e=jeDoyS
     if (m = url.match(/^https?:\/\/1drv\.ms\//)) {
-        var response = await utils.fetchWithoutSSL(url, {
+        var response = await fetch(url, {
             method: "HEAD",
             redirect: "follow",
         });

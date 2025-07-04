@@ -3,7 +3,7 @@ import { split_datetime } from "../../split_datetime.js";
 import { has_focus } from "../has_focus.js";
 import { $ } from "../render_html.js";
 import { InputProperty } from "./InputProperty.js";
-import { UI } from "./ui.js";
+import { UI, Button } from "./ui.js";
 import { toggle_class } from "../toggle_class.js";
 /** @import {InputPropertySettings} from "./exports.js" */
 
@@ -33,6 +33,15 @@ export class DateTimeProperty extends InputProperty {
             ...settings,
             setup: false
         });
+
+        var now_button = new Button(`<button><i class="far fa-clock"></i></button>`, {
+            title: "Set to current date and time",
+            "click": ()=>{
+                var min = 1000 * 60;
+                this.set_value(Math.floor(+new Date() / min) * min, { trigger: true });
+            }
+        });
+        this.buttons_el.prepend(now_button);
 
         this.validators.push((value)=>{
             if (!this.get_setting("datetime.after_now")) return true;

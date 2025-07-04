@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const adelay = new Filter({
 	name: "adelay",
 	descriptive_name: "Delay",
 	type: "audio",
@@ -19,3 +19,4 @@ export default new Filter({
         ctx.aid = a1;
     }
 });
+export default adelay;

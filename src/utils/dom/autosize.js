@@ -21,7 +21,7 @@ export function autosize(elem, min_rows = 3) {
     }
     elem.style.overflow = "hidden";
     elem.style.height = "auto";
-    var h = Math.max(18 * min_rows, elem.scrollHeight) + heightOffset;
+    var h = elem.scrollHeight;
     if (h) elem.style.height = `${h}px`;
 
     // if (nearest_scrollable) {

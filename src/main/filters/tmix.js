@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const tmix = new Filter({
 	name: "tmix",
 	descriptive_name: "Temporal Mix",
 	type: "video",
@@ -54,3 +54,5 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+
+export default tmix;

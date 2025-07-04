@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const colorlevels = new Filter({
 	name: "colorlevels",
 	descriptive_name: "Color Levels",
 	type: "video",
@@ -129,3 +129,5 @@ Output levels allows manual selection of a constrained output level range.`,
 		ctx.vid = v1;
 	}
 });
+
+export default colorlevels;

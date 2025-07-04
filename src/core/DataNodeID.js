@@ -1,10 +1,11 @@
-import {utils, DataNode, DataNode$} from "./exports.js";
+import fs from "fs-extra";
+import path from "node:path";
+import {utils, DataNode, DataNode$, globals} from "./exports.js";
 
 export class DataNodeID$ extends DataNode$ {
     id = "";
-    constructor(id) {
+    constructor() {
         super();
-        this.id = id || utils.uuid4();
     }
 }
 
@@ -15,9 +16,9 @@ export class DataNodeID extends DataNode {
 
     /** @param {string} id @param {T} $ */
     constructor(id, $) {
-        if (id) id = String(id);
-        else id = utils.uuid4();
         super($);
+        if (id) id = String(id);
+        else id = utils.uuidb64();
         this.$.id = id;
     }
 

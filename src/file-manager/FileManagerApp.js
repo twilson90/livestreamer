@@ -26,7 +26,11 @@ export class FileManagerApp extends CoreFork {
         
         this.elFinder = new ElFinderEx(exp, {
             volumes: [
-                this.files_dir,
+                {
+                    "name": "Files",
+                    "driver": "LocalFileSystem",
+                    "root": this.files_dir,
+                },
                 ...this.conf["file-manager.volumes"]
             ],
         });

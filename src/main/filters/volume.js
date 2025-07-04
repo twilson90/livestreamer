@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const volume = new Filter({
 	name: "volume",
 	descriptive_name: "Volume",
 	type: "audio",
@@ -19,3 +19,4 @@ export default new Filter({
 		ctx.aid = a1;
 	}
 })
+export default volume;

@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const lagfun = new Filter({
 	name: "lagfun",
 	descriptive_name: "Lag Light",
 	type: "video",
@@ -25,3 +25,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default lagfun;

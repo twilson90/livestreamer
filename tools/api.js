@@ -15,10 +15,21 @@ import open from "open";
 export const dirname = import.meta.dirname;
 
 export const forge_config_path = path.resolve(dirname, "forge.config.cjs");
-export const src = path.resolve(dirname, "../src");
+export const root = path.dirname(dirname);
+export const src = path.resolve(root, "src");
 export const target = `node22`;
 export const format = "esm";
-const platforms = ["linux", "win32"];
+export const platforms = ["linux", "win32"];
+export const js_exts = [`js`,`ts`,`cjs`,`mjs`,`cts`,`mts`];
+export const js_exts_str = js_exts.join(",");
+
+export function get_index_file(src, dir) {
+    var p = glob.sync(`${dir.replace(/\\/g, "/")}/index*.{${js_exts_str}}`, {absolute:true, cwd:src}).sort()[0];
+    var dirname = path.basename(dir);
+    var ext = path.extname(p);
+    var name = path.basename(p, ext);
+    return { [dirname+"/"+name]: p };
+}
 
 export function normalizePath(...args) {
     return path.resolve(...args).replace(/\\/g, "/");
@@ -87,6 +98,7 @@ export class API {
             production: false,
             platform: "windows",
             copy: [],
+            define: {},
             ...opts,
         };
         let pkg = { ...finder(src).next().value };
@@ -120,15 +132,16 @@ export class API {
         delete pkg.bin;
         
         var minify = (opts.production) ? true : false;
-        var sourcemap = (opts.production) ? false : 'inline';
+        // var sourcemap = (opts.production) ? false : 'inline';
+        var sourcemap = 'inline';
 
         // relative to src
         let input = {
             "index": opts.entry,
-            "core/index": "./core/index.js",
-            "media-server/index": "./media-server/index.js",
-            "file-manager/index": "./file-manager/index.js",
-            "main/index": "./main/index.js",
+            ...get_index_file(src, `core`),
+            ...get_index_file(src, `media-server`),
+            ...get_index_file(src, `file-manager`),
+            ...get_index_file(src, `main`),
             ...opts.input,
         };
         input = Object.fromEntries(Object.entries(input).map(([k,p])=>[k, path.resolve(src, p)]));
@@ -153,24 +166,12 @@ export class API {
                 viteStaticCopy({
                     targets: [
                         {
-                            src: [normalizePath(src, "resources"), ...platforms.filter(p=>p!=platform).map(p=>`!**/${p}`)],
+                            src: [normalizePath(root, "resources"), ...platforms.filter(p=>p!=platform).map(p=>`!**/${p}`)],
                             dest: path.resolve(dist)
                         },
                         {
-                            src: [normalizePath(src, 'pm2.config.cjs')],
+                            src: [normalizePath(root, "pm2.config.cjs")],
                             dest: path.resolve(dist)
-                        },
-                        {
-                            src: [normalizePath(src, 'media-server/assets')],
-                            dest: path.resolve(dist, 'media-server')
-                        },
-                        {
-                            src: [normalizePath(src, 'main/assets')],
-                            dest: path.resolve(dist, 'main')
-                        },
-                        {
-                            src: [normalizePath(src, 'file-manager/assets')],
-                            dest: path.resolve(dist, 'file-manager')
                         },
                         ...opts.copy,
                     ]
@@ -195,7 +196,7 @@ export class API {
                 mainFields: ['module', 'jsnext:main', 'jsnext'],
                 conditions: ['node'],
                 alias: [
-                    { find: "livestreamer", replacement: path.resolve(src, "core/exports.js") },
+                    // { find: /^livestreamer(\/|$)/, replacement: path.resolve(path.dirname(src), "$1") },
                     ...alias,
                 ]
             },
@@ -227,7 +228,7 @@ export class API {
                     output: {
                         dir: dist,
                         format: format,
-                        chunkFileNames: `chunks/[name]-[hash].js`,
+                        chunkFileNames: `chunks/[hash].js`,
                         exports: "named", // disables warning
                     },
                     external,
@@ -239,6 +240,44 @@ export class API {
         });
         configs.push(node_config);
 
+        for (let name of ["media-server", "file-manager", "main"]) {
+            let dir = path.resolve(src, name, "public_html");
+            let indexes = glob.sync(`**/index.html`, {cwd: dir, absolute:true});
+            for (let index of indexes) {
+                let root_dir = path.resolve(path.dirname(index));
+                // var rel = path.relative(dir, root_dir);
+                let pages = glob.sync(`*.html`, {cwd: root_dir, absolute:true});
+                let web_config = defineConfig({
+                    configFile: false,
+                    css: {
+                        preprocessorOptions: {
+                            scss: {
+                                api: 'modern-compiler', // or "modern"
+                                quietDeps: true,
+                            }
+                        }
+                    },
+                    plugins: opts.plugins??[],
+                    base: `./`,
+                    root: root_dir,
+                    build: {
+                        minify,
+                        rollupOptions: {
+                            input: pages
+                        },
+                        target: "es2015",
+                        emptyOutDir: true,
+                        outDir: path.resolve(dist, path.relative(src, root_dir)),
+                        sourcemap: true
+                    }
+                });
+                configs.push(web_config);
+            }
+        }
+        return configs;
+    }
+
+    /* async electron_config() {
         var preload = path.join(src, "electron", "preload.cjs");
         let preload_config = defineConfig({
             configFile: false,
@@ -266,40 +305,8 @@ export class API {
                 }
             }
         });
-        configs.push(preload_config);
-
-        for (let name of ["media-server", "file-manager", "main"]) {
-            let dir = path.resolve(src, name, "public_html");
-            let indexes = glob.sync(`**/index.html`, {cwd: dir, absolute:true});
-            let pages = glob.sync(`**/*.html`, {cwd: dir, absolute:true});
-            let root_dir = path.resolve(path.dirname(indexes[0]));
-            let web_config = defineConfig({
-                configFile: false,
-                css: {
-                    preprocessorOptions: {
-                        scss: {
-                            api: 'modern-compiler' // or "modern"
-                        }
-                    }
-                },
-                plugins: opts.plugins??[],
-                // base: `/${name}/`,
-                root: root_dir,
-                build: {
-                    minify,
-                    rollupOptions: {
-                        input: pages
-                    },
-                    target: "es2015",
-                    emptyOutDir: true,
-                    outDir: path.resolve(dist, path.relative(src, dir)),
-                    sourcemap: true
-                }
-            });
-            configs.push(web_config);
-        }
-        return configs;
-    }
+        return preload_config;
+    } */
 
     async start() {
         await this.config_electron_forge();

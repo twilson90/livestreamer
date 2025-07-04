@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const asoftclip = new Filter({
 	name: "asoftclip",
 	descriptive_name: "Soft Clip",
 	type: "audio",
@@ -56,3 +56,4 @@ export default new Filter({
         ctx.aid = a1;
     }
 });
+export default asoftclip;

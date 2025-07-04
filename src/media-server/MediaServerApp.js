@@ -106,7 +106,7 @@ const APPNAMES = new Set([
     "live", // local encoding server
     "external", "livestream", // external
     "private", "session", // session playlist items
-    "internal", // internal
+    "internal", // internal session
 ]);
 export class MediaServerApp extends CoreFork {
     /** @type {Record<PropertyKey,Live>} */
@@ -186,6 +186,10 @@ export class MediaServerApp extends CoreFork {
         this.ipc.respond("live", (id)=>{
             return this.lives[id] ? this.lives[id].$ : null;
         });
+        this.ipc.respond("destroy_live", async (id)=>{
+            var live = this.get_live(id);
+            if (live) await live.destroy();
+        });
 
         this.ipc.on("main.stream-target.stopped", async ({id, reason})=>{
             var live = this.get_live(id);
@@ -201,7 +205,7 @@ export class MediaServerApp extends CoreFork {
             }
         });
 
-        var live_dirs = await glob("*", {cwd: this.live_dir});
+        var live_dirs = await glob("*/", {cwd: this.live_dir});
         for (let id of live_dirs) {
             let live = new Live(id);
             if (!await live.load()) {
@@ -289,13 +293,13 @@ export class MediaServerApp extends CoreFork {
         }));
         exp.use("/media", this.media_router);
         exp.use('/logo', (req, res, next)=>{
-            if (!this.conf["media-server.logo"]) return next();
-            var fp = path.resolve(this.conf["media-server.logo"]);
+            if (!this.conf["media-server.logo_path"]) return next();
+            var fp = path.resolve(this.conf["media-server.logo_path"]);
             express.static(fp)(req, res, next);
         });
         exp.use('/conf', (req, res)=>{
             res.json({
-                logo_url: this.conf["media-server.logo_url"]
+                logo_url: this.conf["media-server.site_url"]
             });
         });
         exp.use("/", await this.serve({
@@ -463,10 +467,14 @@ export class Live$ extends StopStartStateMachine$ {
     use_hevc = false;
     use_hardware = false;
     outputs = [];
+    origin = "";
+    title = "";
+    url = "";
     is_vod = false;
     is_live = false;
     ts = Date.now();
     duration = 0;
+    size = 0;
 }
 
 /** @extends {StopStartStateMachine<Live$>} */
@@ -533,9 +541,11 @@ export class Live extends StopStartStateMachine {
             this.$.duration = now - this.$.start_ts;
         } else {
             if (!this.$.ended && now > (this.$.ts + AUTO_END_LIVE_TIMEOUT)) {
+                this.logger.warn(`LIVE [${this.id}] was not ended manually, ending automatically...`);
                 await this.end();
             }
             if (now > (this.$.ts + (globals.app.conf["media-server.media_expire_time"] * 1000))) {
+                this.logger.warn(`LIVE [${this.id}] has expired, destroying...`);
                 await this.destroy();
             }
         }
@@ -630,7 +640,7 @@ export class Live extends StopStartStateMachine {
             // `-stream_loop`, `-1`,
         );
         ffmpeg_args.push(
-            `-re`,
+            // `-re`, // if enabled, whenever there is speedup live stream will be way behind.
             // `-noautoscale`,
             "-i", `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${this.session.publishStreamPath}`,
             `-ar`, `44100`,
@@ -657,8 +667,11 @@ export class Live extends StopStartStateMachine {
         if (this.$.use_hardware) {
             ffmpeg_args.push(
                 // "-r", "30",
-                `-no-scenecut`, `1`,
-                `-rc`, `cbr_hq`,
+                
+                // `-no-scenecut`, `1`, // these no longer work
+                // `-rc`, `cbr_hq`,     // these no longer work
+
+
                 // `-rc`, `constqp`,
                 // `-bf`, `2`, // 2 is default
                 `-forced-idr`, `1`,
@@ -747,6 +760,7 @@ export class Live extends StopStartStateMachine {
             `-y`, `%v/stream.m3u8`
         );
 
+        this.logger.debug(ffmpeg_args);
         this.logger.info(`ffmpeg command:\n ffmpeg ${ffmpeg_args.join(" ")}`);
 
         for (var l of Object.values(this.levels)) {
@@ -764,7 +778,7 @@ export class Live extends StopStartStateMachine {
             this.stop();
         });
 
-        globals.app.ipc.emit("media-server.live-publish", this.id);
+        globals.app.ipc.emit("media-server.live-publish", this.$);
 
         return super.onstart();
     }
@@ -866,6 +880,7 @@ export class LiveLevel extends events.EventEmitter {
     #ended = false;
     #started = false;
     #interval;
+    #update_deferred = new utils.Deferred();
 
     /** @param {Live} live @param {Config} config */
     constructor(live, config) {
@@ -955,6 +970,9 @@ export class LiveLevel extends events.EventEmitter {
             await this.#append(`#EXT-X-DISCONTINUITY\n`);
         }
         await this.#append(`#EXTINF:${segment.duration.toFixed(6)},\n${segment.uri}\n`);
+        fs.stat(path.join(this.dir, segment.uri)).then((s)=>{
+            this.live.$.size += s.size;
+        });
         this.emit("new_segment", segment);
     }
 
@@ -962,6 +980,9 @@ export class LiveLevel extends events.EventEmitter {
         await fs.appendFile(this.filename, str, "utf8");
         this.live.emit("update");
         this.emit("update");
+        this.#update_deferred.resolve();
+        this.#update_deferred.reset();
+
     }
     #render_header(media_sequence) {
         var str = `#EXTM3U\n`;
@@ -1002,8 +1023,11 @@ export class LiveLevel extends events.EventEmitter {
         var _HLS_skip = req.query._HLS_skip || false;
         var ts = Date.now();
         while (!this.#segments[_HLS_msn] && !this.#stopped) {
-            await new Promise(r=>this.once("update", r));
-            if (Date.now() > ts + FETCH_TIMEOUT) throw new Error("This is taking ages.");
+            await this.#update_deferred.promise;
+            if (Date.now() > ts + FETCH_TIMEOUT) {
+                console.warn("This is taking ages, aborting fetch.");
+                break;
+            }
         }
         res.header("content-type", "application/vnd.apple.mpegurl");
         res.send(this.#render(_HLS_msn, _HLS_skip));

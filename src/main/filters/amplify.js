@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const amplify = new Filter({
 	name: "amplify",
 	descriptive_name: "Amplify Differences",
 	type: "video",
@@ -59,3 +59,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default amplify;

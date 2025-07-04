@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const rubberband = new Filter({
 	name: "rubberband",
 	descriptive_name: "Rubberband",
 	type: "audio",
@@ -74,3 +74,4 @@ export default new Filter({
 		ctx.aid = a1;
 	}
 });
+export default rubberband;

@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const colorbalance = new Filter({
 	name: "colorbalance",
 	descriptive_name: "Color Balance",
 	type: "video",
@@ -82,3 +82,4 @@ A positive adjustment value shifts the balance towards the primary color, a nega
 		ctx.vid = v1;
 	}
 });
+export default colorbalance;

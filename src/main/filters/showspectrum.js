@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const showspectrum = new Filter({
 	name: "showspectrum",
 	descriptive_name: "Visualize Audio Spectrum",
 	type: "video",
@@ -150,3 +150,4 @@ export default new Filter({
 		ctx.aid = a2;
 	}
 });
+export default showspectrum;

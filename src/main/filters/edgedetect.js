@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const edgedetect = new Filter({
 	name: "edgedetect",
 	descriptive_name: "Edge Detect",
 	type: "video",
@@ -53,3 +53,5 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+
+export default edgedetect;

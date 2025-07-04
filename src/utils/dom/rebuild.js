@@ -21,16 +21,18 @@ export function rebuild(container, items, opts) {
         ...new default_opts,
         ...opts
     }
-    var orig_elems = new Map([...container.querySelectorAll(opts.selector)].map(e=>[e.dataset.id, e]));
-    var leftovers = new Set(orig_elems.values());
+    var curr_children = [...container.querySelectorAll(opts.selector)];
+    var id_map = Object.fromEntries(curr_children.map(e=>[e.dataset.id, e]));
+    var index_map = new Map(curr_children.map((e,i)=>[i, e]));
+    var leftovers = new Set(Object.values(id_map));
     for (var i = 0; i < items.length; i++) {
         var item = items[i];
         var id = opts.id_callback ? opts.id_callback.apply(item, [item]) : item.id;
-        var orig_elem = orig_elems.get(id);
+        var orig_elem = id_map[id];
         var elem = opts.add(item, orig_elem, i) || orig_elem;
         elem.dataset.id = id;
         if (opts.auto_insert) {
-            if (elem.parentElement != container || get_index(elem) != i) {
+            if (elem.parentElement != container || index_map.get(elem) != i) {
                 insert_at(container, elem, i);
             }
         }

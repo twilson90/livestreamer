@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const equalizer = new Filter({
 	name: "equalizer",
 	descriptive_name: "Equalizer",
 	type: "audio",
@@ -58,3 +58,4 @@ export default new Filter({
 		ctx.aid = a1;
 	}
 });
+export default equalizer;

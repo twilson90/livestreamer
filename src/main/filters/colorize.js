@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const colorize = new Filter({
 	name: "colorize",
 	descriptive_name: "Colorize",
 	type: "video",
@@ -40,3 +40,5 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+
+export default colorize;

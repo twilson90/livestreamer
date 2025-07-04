@@ -15,7 +15,7 @@ import {globals, Logger, utils} from "./exports.js";
  */
 
 /**
- * @template { Client } T
+ * @template { Client<any> } T
  * @extends {events.EventEmitter<Events<T>>}
  */
 export class ClientServer extends events.EventEmitter {
@@ -23,10 +23,10 @@ export class ClientServer extends events.EventEmitter {
     clients = {};
 
     /** @param {WebSocket.Server} wss  @param {new () => T} ClientClass */
-    constructor(id, wss, ClientClass) {
+    constructor(name, wss, ClientClass) {
         super();
-        this.id = id;
-        this.clients_dir = path.join(globals.app.clients_dir, id);
+        this.name = name;
+        this.clients_dir = path.join(globals.app.clients_dir, name);
         this.logger = new Logger(`client-server`);
         this.logger.on("log", (log)=>{
             globals.app.logger.log(log)
@@ -38,7 +38,7 @@ export class ClientServer extends events.EventEmitter {
 
         this.wss.on("connection", (ws, request)=>{
             var alive = true;
-            var client = new this.ClientClass();
+            var client = new this.ClientClass(globals.app.generate_uid(`client-${name}`));
             client.init(this, ws, request);
 
             var heartbeat_interval = setInterval(()=>{

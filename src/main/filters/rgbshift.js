@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const rgbshift = new Filter({
 	name: "rgbshift",
 	descriptive_name: "RGB Shift",
 	type: "video",
@@ -60,3 +60,5 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+
+export default rgbshift;

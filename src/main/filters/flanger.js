@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const flanger = new Filter({
 	name: "flanger",
 	descriptive_name: "Flanger",
 	type: "audio",
@@ -67,3 +67,4 @@ export default new Filter({
         ctx.aid = a1;
 	}
 });
+export default flanger;

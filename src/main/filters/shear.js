@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const shear = new Filter({
 	name: "shear",
 	descriptive_name: "Shear",
 	type: "video",
@@ -38,3 +38,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default shear;

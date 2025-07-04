@@ -1,4 +1,4 @@
-import { filters } from "./filters.js";
+import filters from "./filters/exports.js";
 
 export class FilterContext {
 	#id_map = {};

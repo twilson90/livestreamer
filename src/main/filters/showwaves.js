@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const showwaves = new Filter({
 	name: "showwaves",
 	descriptive_name: "Visualize Audio Waves",
 	type: "video",
@@ -42,6 +42,11 @@ export default new Filter({
 			__default__: 0.5,
 			__min__: 0,
 			__max__: 1,
+		},
+		normalize: {
+			__name__: "Normalize",
+			__description__: `Normalize the audio spectrum.`,
+			__default__: true,
 		}
 	},
 	apply(ctx, $) {
@@ -54,7 +59,7 @@ export default new Filter({
 		let wf1 = ctx.id("wf");
 		ctx.stack.push(
 			`[${ctx.aid}]asplit[${a1}][${a2}]`,
-			`[${a1}]aformat=channel_layouts=mono,dynaudnorm,showwaves=mode=${$.mode}:size=${w}x${h}:colors=${$.color}@${$.alpha}:rate=${ctx.fps}:draw=full,scale=${ctx.width}:${ctx.height}:force_original_aspect_ratio=decrease[${wf1}]`,
+			`[${a1}]aformat=channel_layouts=mono${$.normalize?",loudnorm=I=-5:TP=-0.5:LRA=1":""},showwaves=mode=${$.mode}:size=${w}x${h}:colors=${$.color}@${$.alpha}:rate=${ctx.fps}:draw=full,scale=${ctx.width}:${ctx.height}:force_original_aspect_ratio=decrease[${wf1}]`,
 		);
 		// if ($.overlay) {
 		ctx.vid = ctx.overlay(ctx.vid, wf1);
@@ -64,3 +69,4 @@ export default new Filter({
 		ctx.aid = a2;
 	}
 });
+export default showwaves;

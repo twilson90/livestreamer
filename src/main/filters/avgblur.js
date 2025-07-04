@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const avgblur = new Filter({
 	name: "avgblur",
 	descriptive_name: "Average Blur",
 	type: "video",
@@ -23,3 +23,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default avgblur;

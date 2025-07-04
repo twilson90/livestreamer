@@ -59,7 +59,7 @@
             "request": "launch",
             "runtimeExecutable": "pm2",
             "runtimeArgs": [
-                "start", "src/pm2.config.cjs",
+                "start", "pm2.config.cjs",
             ],
             "skipFiles": [
                 "<node_internals>/**"

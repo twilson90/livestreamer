@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const scroll = new Filter({
 	name: "scroll",
 	descriptive_name: "Scroll",
 	type: "video",
@@ -40,3 +40,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default scroll;

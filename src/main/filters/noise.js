@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const noise = new Filter({
 	name: "noise",
 	descriptive_name: "Noise",
 	type: "video",
@@ -38,3 +38,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default noise;

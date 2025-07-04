@@ -1,6 +1,5 @@
 import * as utils from "../../utils/exports.js";
 import * as dom from "../../utils/dom/exports.js";
-import { OverlayScrollbars } from "../../utils/dom/exports.js";
 import * as ui from "../../utils/dom/ui/exports.js";
 import { jQuery, $ } from '../../jquery-global.js';
 import 'jquery-ui/dist/jquery-ui.js';
@@ -14,13 +13,14 @@ import zoomPlugin from 'chartjs-plugin-zoom';
 import Hammer from 'hammerjs';
 import Sortable, {MultiDrag} from 'sortablejs';
 import Color from 'color';
-import { ResponsiveSortable, CancelSortPlugin, RememberScrollPositionsPlugin } from './ResponsiveSortable.js';
 import { terminalCodesToHtml } from "terminal-codes-to-html";
 import * as constants from "../../core/constants.js" ;
 import { get_default_stream, get_auto_background_mode } from "../shared.js";
-import { filters } from "../filters.js";
+import filters from "../filters/exports.js";
 import { InternalSessionProps, PlaylistItemProps, PlaylistItemPropsProps, SessionProps } from "../InternalSessionProps.js";
 
+import { ResponsiveSortable, CancelSortPlugin, RememberScrollPositionsPlugin } from './ResponsiveSortable.js';
+const {OverlayScrollbars} = dom;
 
 import "overlayscrollbars/overlayscrollbars.css";
 import "../../utils/dom/dom.scss";
@@ -631,7 +631,7 @@ function get_file_manager_url(opts) {
 async function open_file_manager(options) {
     // console.log(options);
     options = {
-        "new_window" : app.settings.get("open_file_manager_in_new_window"),
+        // "new_window" : app.settings.get("open_file_manager_in_new_window"),
         ...default_file_manager_options,
         ...options
     };
@@ -911,8 +911,8 @@ export class Media {
         this.playback_speed = running ? stream.player.playback_speed : 1;
         this.time_pos = session.time_pos;
         this.paused = running ? !!(stream.player.props.pause || stream.player.props["paused-for-cache"]) : false;
-        this.duration = running ? stream.player.duration : session._current_playlist_item_evaluated._duration;
-        this.chapters = loaded ? session._current_playlist_item_evaluated._userdata.chapters : EMPTY_CHAPTERS;
+        this.duration = running ? stream.player.duration : session._current_playlist_item._duration;
+        this.chapters = loaded ? session._current_playlist_item._userdata.chapters : EMPTY_CHAPTERS;
         this.seekable = loaded ? (this.duration != 0 && seekable) : false;
         this.status = running ? (loaded ? "Playing" : "Loading") : "Pending";
         this.ranges = session._current_seekable_ranges;
@@ -1093,6 +1093,7 @@ export class Stream$ extends utils.remote.ProxyID$ {
     restart = 0;
     player = new SessionPlayer$();
     fps = 0;
+    buffer_duration = 0;
     
     get _is_only_gui() {
         return !!(Object.keys(this.targets).length == 1 && this.targets.includes("gui"));
@@ -1156,16 +1157,51 @@ export class AccessControl$ extends utils.remote.Proxy$ {
         this._edit(username, null);
     }
 
+    get _self_has_ownership() {
+        return this._owners.length == 0 || this._has_ownership();
+    }
+
+    get _self_requires_password() {
+        return this._requires_password(app.$._client.user.username);
+    }
     
-    get _self_is_owner() { return this._has_ownership(app.$._client.user.username); }
-    get _self_has_ownership() { return this._self_is_owner || app.$._client.user.is_admin || this._owners.length == 0; }
-    get _self_requires_password() { return this._requires_password(app.$._client.user.username); }
-    get _self_has_access() { return this._has_access(app.$._client.user.username, app.passwords.get(app.$._session.id)); }
-    _requires_password(username) { return !this._has_ownership(username) && !!(this.__proxy__["*"] || EMPTY_OBJECT).password; }
-    _has_ownership(username) { return (this.__proxy__[username] || EMPTY_OBJECT).access === "owner"; }
+    get _self_has_access() {
+        return this._has_access(app.$._client.user.username, app.passwords.get(app.$._session.id));
+    }
+
+    _requires_password(username) {
+        if (this._has_ownership(username)) return false;
+        let user = this.__proxy__[username];
+        if (user && user.password) return true;
+        let global = this.__proxy__["*"];
+        if (global && global.password) return true;
+        return false;
+    }
+    _has_ownership(username, ignore_admin=false) {
+        if (!username) username = app.$._client.user.username;
+        if (!ignore_admin && app.$._client.user.is_admin) return true;
+        let user = this.__proxy__[username];
+        if (user) {
+            if (user.access === "owner") return true;
+        }
+        let global = this.__proxy__["*"];
+        if (global) {
+            if (global.access === "owner") return true;
+        }
+        return false;
+    }
     _has_access(username, password) {
-        if (this.__proxy__[username] && (this.__proxy__[username].access === "allow" || this._has_ownership(username))) return true;
-        if (this.__proxy__["*"] && this.__proxy__["*"].access === "allow" && (!this.__proxy__["*"].password || this.__proxy__["*"].password == password)) return true;
+        if (this._has_ownership(username)) return true;
+        let user = this.__proxy__[username];
+        if (user) {
+            if (user.password && user.password !== password) return false;
+            if (user.access === "allow") return true;
+        }
+        let global = this.__proxy__["*"];
+        if (global) {
+            if (global.password && global.password !== password) return false;
+            if (global.access === "allow") return true;
+        }
         return false;
     }
     _claim() {
@@ -1202,7 +1238,8 @@ export class Session$ extends utils.remote.ProxyID$ {
     name = "";
     background_mode = "";
     volume_target = 100;
-    volume_speed = 0;
+    volume_speed = 2;
+    fade_out_speed = 2;
     stream_id = "";
     files_dir = "";
     /** @type {Record<string,PlaylistInfo$>} */
@@ -1253,23 +1290,6 @@ export class Session$ extends utils.remote.ProxyID$ {
     get _current_playlist_item() {
         return this.playlist[this.playlist_id] || this.playlist[utils.remote.Null$];
     }
-    /** @returns {PlaylistItem$|ParsedPlaylistItem$} */
-    get _current_playlist_item_evaluated() {
-        var stream = this._stream;
-        if (stream._is_running) {
-            var item = stream.player.item;
-            if (item && item.id) {
-                if (!item.__evaluated__) {
-                    Object.defineProperty(item, "__evaluated__", {
-                        value: new ParsedPlaylistItem$(item),
-                        enumerable: false,
-                    });
-                }
-                return item.__evaluated__;
-            }
-        }
-        return this._current_playlist_item;
-    }
     get _is_running() {
         return this._stream._is_running;
     }
@@ -1279,7 +1299,7 @@ export class Session$ extends utils.remote.ProxyID$ {
         return [];
     }
     _get_current_chapters_at_time(t) {
-        return this._current_playlist_item_evaluated._userdata.chapters.filter(c=>t>=c.start && t<c.end);
+        return this._current_playlist_item._userdata.chapters.filter(c=>t>=c.start && t<c.end);
     }
     _get_current_chapter_at_time(t) {
         return this._get_current_chapters_at_time(t).pop();
@@ -1323,8 +1343,8 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
     track_index = 0;
     props = {};
     /** @type {PlaylistItem$[]} In very specific case, playlist item can embed children */
-    children;
-    session_id = "";
+    _embedded_children;
+    _session_id = "";
 
     #private = new PlaylistItemPrivate$();
     get _private() { return this.#private; }
@@ -1332,7 +1352,7 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
     /** @param {any} data */
     constructor(data) {
         super();
-        this.__proxy_handler__.on("set", (target, prop, value)=>{
+        this.__proxy_handler__.on("change", (target, prop, value)=>{
             if (this._is_connected) {
                 this._clear_userdata();
                 if (prop == "parent_id") {
@@ -1351,11 +1371,11 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
             }
         });
         if (data) Object.assign(this, data);
-        if (this.children) this.children = this.children.map(c=>new PlaylistItem$(c));
+        if (this._embedded_children) this._embedded_children = this._embedded_children.map(c=>new PlaylistItem$(c));
     }
     /** @returns {Session$} */
     get _session() {
-        return app.$.sessions[this.session_id] || this._private.session || app.$.sessions[utils.remote.Null$];
+        return app.$.sessions[this._session_id] || this._private.session || app.$.sessions[utils.remote.Null$];
     }
     /** @returns {PlaylistItemUserData$} */
     get _userdata() {
@@ -1447,7 +1467,7 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
     get _children() {
         if (!this.id) return [];
         if (!this._private.children) {
-            var children = this.children || Object.values(this._session.playlist).filter(i=>this.id == i.parent_id);
+            var children = this._embedded_children || Object.values(this._session.playlist).filter(i=>this.id == i.parent_id);
             children.sort((a,b)=>(a.track_index-b.track_index) || (a.index-b.index));
             this._private.children = children;
         }
@@ -1556,6 +1576,20 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
     get _elfinder_hash() {
         return app.uri_to_elfinder_hash(this._uri);
     }
+    /** @param {PlaylistItem$[]} selection */
+    _get_nearest_not_in_selection(selection) {
+        let selection_set = new Set(selection);
+        let next = this;
+        while(next && selection_set.has(next)) {
+            next = next._get_adjacent_sibling(1);
+        }
+        if (next) return next;
+        let prev = this;
+        while(prev && selection_set.has(prev)) {
+            prev = prev._get_adjacent_sibling(-1);
+        }
+        if (prev) return prev;
+    }
     _get_adjacent_sibling(a=1) {
         a = a>0?1:-1;
         var parent = this._parent;
@@ -1638,8 +1672,8 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
     /** @returns {this | {children: PlaylistItem$[]}} */
     _copy(include_children=false) {
         var data = utils.json_copy(this);
-        if (include_children) data.children = this._children.map(c=>c._copy(true));
-        data.session_id = this._session.id;
+        if (include_children) data._embedded_children = this._children.map(c=>c._copy(true));
+        data._session_id = this._session.id;
         return new PlaylistItem$(data);
     }
     _clear_userdata() {
@@ -2194,338 +2228,8 @@ export class JSONContainer extends ui.UI {
 
 // -----------------------------------------------------------
 
-/**
- * @template ItemType
- * @template {Modal<ItemType>} [ThisType=Modal<ItemType>]
- * @typedef {ui.UISettings<ThisType> & {
-*  "modal.title": ui.UISetting<ThisType, string>,
-*  "modal.title_overflow": ui.UISetting<ThisType, boolean>,
-*  "modal.hide_on_click_outside": ui.UISetting<ThisType, boolean>,
-*  "modal.footer": ui.UISetting<ThisType, boolean>,
-*  "modal.header": ui.UISetting<ThisType, boolean>,
-*  "modal.width": ui.UISetting<ThisType, number|string>,
-*  "modal.items": ui.UISetting<ThisType, ItemType[]>,
-*  "modal.blocking": ui.UISetting<ThisType, boolean>,
-*  "modal.close": ui.UISetting<ThisType, boolean>,
-*  "modal.hide": (this: ThisType) => void,
-*  "modal.show": (this: ThisType) => void,
-* }} ModalSettings
-*/
-
-/** 
- * @typedef {ui.UIEvents & {
- *   show: [],
- *   hide: []
- * }} ModalEvents 
- */
-
-/**
-* @template ItemType
-* @template {ModalSettings<ItemType,Modal>} [Settings=ModalSettings<ItemType,Modal>]
-* @template {ModalEvents} [Events=ModalEvents]
-* @extends {ui.UI<Settings,Events>}
-*/
-export class Modal extends ui.UI {
-    get showing() { return !!this.fb; }
-    get modal_title() { return this.get_setting("modal.title"); }
-    get changes() { return this.props.changes; }
-    get item() { return this.props.items[0]; }
-    /** @type {ItemType[]} */
-    get items() { return this.props.items; }
-    /** @template T @param {new() => T} type @returns {T[]} */
-    static get (type) {
-        return [...Modal.showing].filter(m=>m instanceof type);
-    }
-
-    /** @type {ui.PropertyGroup<ItemType>} */
-    props;
-
-    #showing_promise;
-    #showing_resolve;
-    #on_key_down;
-
-    /** @type {Set<Modal>} */
-    static showing = new Set();
-    /** @type {Set<Modal>} */
-    static instances = new Set();
-
-    get is_showing() { return !!this.#showing_promise; }
-
-    /** @param {Settings} settings */
-    constructor(settings) {
-        
-        var elem = $(`<div class="modal-container"></div>`)[0];
-        settings = {
-            "modal.hide_on_click_outside": true,
-            "modal.title": "",
-            "modal.title_overflow": false,
-            "modal.header": true,
-            "modal.footer": true,
-            "modal.width": undefined,
-            "modal.items": [undefined],
-            "modal.return_value": (r)=>r,
-            "modal.blocking": true,
-            "modal.close": false,
-            ...settings
-        };
-
-        super(elem, settings);
-
-        // Modal.instances.add(this);
-        
-        this.header = new ui.UI(null, {
-            class: "modal-header",
-            hidden: !this.get_setting("modal.header"),
-        });
-        this.content = new ui.UI(null, {
-            class: "modal-content",
-        });
-        this.footer = new ui.UI({
-            class: "modal-footer",
-            hidden: !this.get_setting("modal.footer"),
-        });
-
-        this.close_button = new ui.Button(`<button class="modal-close"><i class="fas fa-times"></i></button>`, {
-            click: ()=>this.hide(),
-            hidden: !this.get_setting("modal.close"),
-        });
-
-        this.modal_elem = $(`<div class="modal"></div>`)[0];
-        this.modal_elem.append(this.header, this.content, this.footer, this.close_button);
-
-        this.props = new ui.PropertyGroup({
-            "items": ()=>this.get_setting("modal.items"),
-            "show_changed": true,
-            "show_not_default": true,
-        });
-        this.content.append(this.props);
-        
-        var prevent_click = false;
-        this.modal_elem.onmousedown = (e)=>{
-            document.addEventListener("mouseup", (e)=>{
-                if (!this.modal_elem.contains(e.target)) prevent_click = true;
-            }, {once:true});
-        }
-        this.elem.onclick = (e)=>{
-            if (this.modal_elem.contains(e.target)) return;
-            if (!this.get_setting("modal.hide_on_click_outside")) return;
-            if (prevent_click) {
-                prevent_click = false;
-                return;
-            }
-            this.hide();
-        }
-
-        /* if (this.get_setting("modal.close")) {
-            this.footer.append(new ui.Button(`<button class="close">Close</button>`, {
-                "click":()=>this.hide()
-            }));
-        } */
-        
-        this.props.on("change", ()=>{
-            this.update();
-        });
-        
-        this.on("render", ()=>{
-            var width = this.get_setting("modal.width");
-            var min_width = this.get_setting("modal.min-width");
-            var max_width = this.get_setting("modal.max-width");
-            dom.update_style_properties(this.elem, {
-                "--modal-width": typeof width === "number" ? `${width}px` : width,
-                "--modal-min-width": typeof min_width === "number" ? `${min_width}px` : min_width,
-                "--modal-max-width": typeof max_width === "number" ? `${max_width}px` : max_width,
-            });
-            dom.set_inner_html(this.header.elem, this.get_setting("modal.title"));
-            dom.toggle_class(this.header.elem, "overflow", this.get_setting("modal.title_overflow"));
-        });
-
-        this.on("destroy", ()=>{
-            // Modal.instances.delete(this);
-        });
-
-        app.emit("modal-create", this);
-    }
-
-    async load() {}
-
-    /** @param {ItemType[]} items */
-    async show() {
-        if (!this.#showing_promise) {
-            app.emit("modal-show", this);
-
-            app.elem.append(this.elem);
-            dom.force_reflow(this.elem);
-            this.elem.classList.add("showing");
-
-            this.#showing_promise = new Promise(resolve=>{
-                this.#showing_resolve = resolve;
-            }).finally(()=>this.#showing_promise = null);
-            if (this.get_setting("modal.blocking")) app.blocking_updates.add(this.#showing_promise);
-            Modal.showing.add(this);
-            
-            this.emit("before-load");
-
-            if ("modal.load" in this.settings) {
-
-                var loader = new Loader({
-                    "loader.background": "transparent",
-                });
-                loader.elem.onclick = ()=>this.hide();
-                this.elem.append(loader.elem);
-                await this.get_setting("modal.load");
-                loader.elem.remove();
-                // await utils.timeout(1000000);
-            }
-            
-            this.emit("before-show");
-            
-            this.elem.append(this.modal_elem);
-            dom.force_reflow(this.elem);
-            this.elem.classList.add("modal-showing");
-
-            /* this.fb.on("closing",()=>{
-                this.fb = null;
-                app.modals.delete(this);
-                this.#showing_resolve();
-                this.emit("hide");
-            }); */
-
-            this.update();
-            
-            this.emit("show");
-
-            this.#on_key_down = (e)=>{
-                if (e.key === "Escape") {
-                    var modal = [...Modal.showing].pop();
-                    if (modal === this) {
-                        modal.escape();
-                        return false;
-                    }
-                }
-            };
-            window.addEventListener("keydown", this.#on_key_down);
-        }
-
-        return this.#showing_promise.then((result)=>{
-            return this.get_setting("modal.return_value", result);
-        })
-    }
-
-    escape() {
-        this.hide();
-    }
-
-    hide() {
-        if (!this.#showing_promise) return;
-        Modal.showing.delete(this);
-        window.removeEventListener("keydown", this.#on_key_down);
-        this.emit("hide");
-        this.elem.classList.remove("showing");
-        setTimeout(()=>{
-            this.elem.remove();
-        }, 300);
-        this.#showing_resolve();
-    }
-}
-
-/**
- * @template ItemType
- * @typedef {ModalSettings<ItemType> & {
-*  "modal.auto_apply": ui.UISetting<EditModal, boolean>,
-*  "modal.allow_invalid": ui.UISetting<EditModal,boolean>,
-*  "modal.apply": function(),
-* }} EditModalSettings
-*/
-
-/** @template ItemType @extends {Modal<ItemType,EditModalSettings<ItemType>>} */
-export class EditModal extends Modal {
-    #applied = false;
-    #cancelled = false;
-
-    /** @param {EditModalSettings<ItemType>} settings */
-    constructor(settings) {
-        super({
-            "modal.hide_on_click_outside": ()=>this.get_setting("modal.auto_apply"),
-            "modal.auto_apply": true,
-            "modal.allow_invalid": false,
-            "modal.ok": `OK`,
-            "modal.cancel": "Cancel",
-            ...settings,
-        });
-        this.on("before-show", ()=>{
-            this.#cancelled = false;
-            this.#applied = false;
-        });
-        this.on("hide", ()=>{
-            if (this.get_setting("modal.auto_apply") && !this.#cancelled) {
-                console.log("APPLY");
-                this.apply();
-            }
-        });
-
-        var get_button_content = (t, def)=>{
-            var res = this.get_setting(t);
-            if (typeof res === "boolean") return def;
-            return res;
-        }
-        
-        this.ok_button = new ui.Button(`<button>Save</button>`, {
-            "content":()=>get_button_content("modal.ok", "OK"),
-            "hidden": ()=>!this.get_setting("modal.ok"),
-            "disabled":()=>!this.get_setting("modal.allow_invalid") && !this.props.is_valid,
-            "click":()=>this.apply(),
-        })
-        this.cancel_button = new ui.Button(`<button>Cancel</button>`, {
-            "content":()=>get_button_content("modal.cancel", "Cancel"),
-            "hidden": ()=>!this.get_setting("modal.cancel"),
-            "click":()=>this.cancel()
-        })
-        this.footer.append(this.ok_button, this.cancel_button);
-    }
-    apply() {
-        if (this.#applied) return;
-        this.#applied = true;
-        this.get_setting("modal.apply");
-        this.emit("apply");
-        this.hide();
-    }
-    cancel() {
-        if (this.#cancelled) return;
-        this.#cancelled = true;
-        this.hide();
-    }
-    async show() {
-        var result = await super.show();
-        if (this.#cancelled) return;
-        return result;
-    }
-    hide() {
-        if (!this.get_setting("modal.allow_invalid") && !this.props.is_valid && !this.#cancelled) return;
-        super.hide();
-    }
-
-    escape() {
-        this.cancel();
-    }
-}
-
-export class PromptModal extends EditModal {
-    constructor(message, defaultValue="") {
-        var modal = new Modal({
-            "modal.title": title,
-            "modal.return_value": ()=>input.value,
-        });
-        this.props.append(`<div>${message}</div>`);
-        input = new ui.InputProperty(`<input type="text"></input>`, {
-            "reset": false,
-            "default": defaultValue,
-        });
-        this.props.append(input);
-    }
-}
-
 /** @extends {EditModal<ExpandedTargetsProperty>} */
-export class TargetConfigMenu extends EditModal {
+export class TargetConfigMenu extends ui.EditModal {
     get _target() { return app.$.targets[this._target_id]; }
     
     /** @param {string} target_id @param {ExpandedTargetsProperty} prop */
@@ -2672,7 +2376,7 @@ export class GUITargetConfigMenu extends TargetConfigMenu {
         this.props.append(osc);
     }
 }
-export class UserConfigurationSettings extends EditModal {
+export class UserConfigurationSettings extends ui.EditModal {
     constructor() {
         super({
             "modal.title": "Client Configuration",
@@ -2687,7 +2391,7 @@ export class UserConfigurationSettings extends EditModal {
         var groups = utils.group_by(Object.entries(app.settings_prop_defs), ([k,v])=>v.__group__);
         var group_keys = Object.keys(app.settings_groups);
         group_keys.forEach((k,i)=>{
-            var box = new ui.Box({header:`<p>${app.settings_groups[k].title}</p>`});
+            var box = new ui.Box({header:app.settings_groups[k].title});
             var row = box.append(new ui.FlexRow());
             for (var [name, def] of groups.get(k)) {
                 var prop_settings = {
@@ -2737,19 +2441,18 @@ export class UserConfigurationSettings extends EditModal {
             "click": async ()=>{
                 Cookies.remove("livestreamer_auth");
                 var request = new XMLHttpRequest();
-                request.addEventListener("loadend", ()=>window.location.reload());
-                request.open("get", "/logout", false, "false", "false");
+                request.onloadend = ()=>window.location.reload();
+                request.open("get", "/unauthorise", false, "false", "false");
                 request.send();
             }
         });
         this.footer.append(logout_button);
     }
 }
-export class KeyboardShortcutsMenu extends Modal {
+export class KeyboardShortcutsMenu extends ui.Modal {
     constructor() {
         super({
             "modal.title": "Controls",
-            "modal.close": true,
         });
         var sections = {
             "General": [
@@ -2783,12 +2486,11 @@ export class KeyboardShortcutsMenu extends Modal {
     }
 }
 
-export class FileSystemInfoMenu extends Modal {
+export class FileSystemInfoMenu extends ui.Modal {
     constructor() {
         super({
             "modal.title": "Local File System Tree",
             "modal.width": "80%",
-            "modal.close": true,
         });
         var uid = 0;
         var nodes = [];
@@ -3085,12 +2787,11 @@ class Process extends ui.Column {
     }
 }
 
-export class SystemManagerMenu extends Modal {
+export class SystemManagerMenu extends ui.Modal {
     constructor() {
         super({
             "modal.title": "System Manager",
             "modal.blocking": false,
-            "modal.close": true,
         });
         var uptime = this.props.append(new ui.UI(null, {
             "update":()=>{
@@ -3147,12 +2848,174 @@ export class SystemManagerMenu extends Modal {
     }
 }
 
+/** @typedef {import("../../media-server/exports.js").Live$} Live$ */
+class LiveUI extends ui.Box {
+    /** @param {Live$} live */
+    constructor(live) {
+        super({
+            header: `Live #${live.id}`,
+            collapsible: true,
+            collapsed: true
+        });
+        this.elem.classList.add("live-ui");
+        var ts = Date.now();
+        var inner = $(`<div class="inner"></div>`)[0];
+        this.append(inner);
+        var stats = $(`<div class="stats"></div>`)[0];
+        inner.append(stats);
+        var destroyed = false;
+        var destroy_button = new ui.Button(`<button>Destroy Live</button>`, {
+            "click": ()=>{
+                if (window.confirm("Are you sure you want to destroy this live?")) {
+                    app.request("destroy_live", [live.id]).then(()=>{
+                        destroyed = true;
+                        this.update();
+                    });
+                }
+            }
+        });
+        inner.append(destroy_button);
+
+        this.on("update", ()=>{
+            var is_ended = (live.state == "stopped");
+            var props = {
+                "Is Live": live.is_live ? "Yes" : "No",
+                "Started": new Date(live.start_ts).toLocaleString(),
+                "Ended": is_ended ? new Date(live.stop_ts).toLocaleString() : "",
+                "Stop Reason": is_ended ? live.stop_reason : "",
+                "Duration": utils.ms_to_human_readable_str(live.duration),
+                "Segment Duration": utils.ms_to_human_readable_str(live.segment_duration * 1000),
+                "Segments": `${live.segment || 0}`,
+                "Last Active": live.ts ? new Date(live.ts).toLocaleString() : "",
+                "Expires In": live.ts ? utils.ms_to_human_readable_str(live.ts + (app.$.conf["media_expire_time"]*1000) - ts) : "",
+                "Size on Disk": utils.format_bytes(live.size),
+                "Link": `<a href="${live.url}" target="_blank">${live.url}</a>`,
+            };
+            if (destroyed) {
+                dom.set_inner_html(inner, `<p>Destroyed</p>`);
+            } else {
+                dom.set_inner_html(stats, Object.entries(props).filter(([k,v])=>v).map(([k,v])=>`<p><span><b>${k}</b>:</span><span>${v}</span></p>`).join(""));
+            }
+        });
+    }
+}
+
+/* {
+    "id": "15",
+    "restart": 0,
+    "state": "stopped",
+    "start_ts": 1751119550815,
+    "stop_ts": 1751119558436,
+    "paused": false,
+    "stop_reason": "unknown",
+    "hls_list_size": 10,
+    "hls_max_duration": 7200,
+    "segment_duration": 2,
+    "segment": 3,
+    "use_hevc": false,
+    "use_hardware": true,
+    "outputs": [
+        {
+            "name": "240p",
+            "resolution": 240,
+            "video_bitrate": "300k",
+            "audio_bitrate": "64k"
+        },
+        {
+            "name": "360p",
+            "resolution": 360,
+            "video_bitrate": "600k",
+            "audio_bitrate": "128k"
+        },
+        {
+            "name": "480p",
+            "resolution": 480,
+            "video_bitrate": "1200k",
+            "audio_bitrate": "128k"
+        },
+        {
+            "name": "720p",
+            "resolution": 720,
+            "video_bitrate": "2000k",
+            "audio_bitrate": "160k"
+        }
+    ],
+    "origin": "/internal/d722e422-724c-4337-8656-474292623cb0",
+    "title": "test",
+    "url": "https://media-server.dev-local.cabtv.co.uk:8121/player/index.html?id=15",
+    "is_vod": true,
+    "is_live": false,
+    "ts": 1751119558190,
+    "duration": 7375,
+    "thumbnail_url": "https://media-server.dev-local.cabtv.co.uk:8121/media/live/15/thumbnails/000.ts.webp",
+    "ended": true
+} */
+export class LiveManagerMenu extends ui.Modal {
+    constructor() {
+        super({
+            "modal.title": "Live Manager",
+            "modal.blocking": false,
+            "modal.load": ()=>{
+                refresh();
+            }
+        });
+
+        /** @type {Live$[]} */
+        var lives = [];
+        var refresh = async ()=>{
+            lives = await app.request("get_lives");
+            this.update();
+        };
+        var rebuild = ()=>{
+            var filtered = lives.filter(l=>filter.value == "all" || (filter.value == "live" && l.is_live) || (filter.value == "ended" && !l.is_live));
+            var sorted = filtered.sort((a,b)=>sorting.value == "asc" ? a.ts - b.ts : b.ts - a.ts);
+            dom.rebuild(list, sorted, {
+                add: (d, elem, i)=>new LiveUI(d).elem
+            });
+            this.update();
+        };
+
+        var row = new ui.FlexRow();
+        this.props.append(row);
+
+        var filter = new ui.InputProperty(`<select>`, {
+            "label": "Filter",
+            "options": [["all", "All"], ["live", "Live"], ["ended", "Ended"]],
+            "default": "all",
+        });
+
+        var sorting = new ui.InputProperty(`<select>`, {
+            "label": "Sort",
+            "options": [["desc", "Descending"], ["asc", "Ascending"]],
+            "default": "desc",
+        });
+
+        var refresh_button = new ui.Button(`<button>Refresh <i class="fas fa-sync"></i></button>`, {
+            "click_async": refresh
+        });
+        row.append(filter, sorting, refresh_button);
+
+        var list = $(`<div class="live-list"></div>`)[0];
+        this.props.append(list);
+
+        var last_hash = "";
+        this.on("update", ()=>{
+            var hash = JSON.stringify({filter:filter.value, sorting:sorting.value, lives});
+            if (hash != last_hash) {
+                last_hash = hash;
+                rebuild();
+            }
+        });
+    }
+}
+
 /** @extends {Modal<string>} */
-export class FileManagerMenu extends Modal {
+export class FileManagerMenu extends ui.Modal {
     constructor(url) {
         super({
             "modal.title": "",
-            "modal.width":"100%"
+            "modal.width":"100%",
+            "modal.close": false,
         });
         Object.assign(this.elem.style, {
             "height": "100%",
@@ -3174,7 +3037,7 @@ export class FileManagerMenu extends Modal {
 }
 
 
-export class ScheduleGeneratorMenu extends EditModal {
+export class ScheduleGeneratorMenu extends ui.EditModal {
     constructor() {
         super({
             "modal.title": "Schedule Generator",
@@ -3361,7 +3224,7 @@ export class ScheduleGeneratorMenu extends EditModal {
 } */
 
 /** @extends {Modal<PlaylistItem$>} */
-export class SplitMenu extends EditModal {
+export class SplitMenu extends ui.EditModal {
     constructor(items) {
         super({
             "modal.title": ()=>`Split '<span class="overflow">${get_items_title(items)}</span>'`,
@@ -3505,7 +3368,7 @@ export class SplitMenu extends EditModal {
 }
 
 /** @extends {EditModal<PlaylistItem$>} */
-export class CropEditMenu extends EditModal {
+export class CropEditMenu extends ui.EditModal {
     /** @param {ui.MultiInputProperty} crop_property @param {DetectedCrop$} data @param {Rectangle} rect */
     constructor(crop_property, data, index) {
         super({
@@ -3582,7 +3445,7 @@ export class CropEditMenu extends EditModal {
 
 
 /** @extends {Modal<Session$>} */
-export class ScheduleStreamMenu extends EditModal {
+export class ScheduleStreamMenu extends ui.EditModal {
     constructor() {
         super({
             "modal.title": "Schedule Stream Start",
@@ -3590,7 +3453,6 @@ export class ScheduleStreamMenu extends EditModal {
                 app.request("session_update_values", [this.props.raw_value]);
             },
             "modal.items": [app.$._session],
-            "modal.allow_invalid": true,
         });
 
         this.schedule_start_time = new ui.DateTimeProperty({
@@ -3607,12 +3469,20 @@ export class ScheduleStreamMenu extends EditModal {
         })
 
         var row = this.props.append(new ui.FlexRow());
-        row.append(this.schedule_start_time)
+        row.append(this.schedule_start_time);
+
+        var interval = setInterval(()=>{
+            this.update();
+        }, 1000);
+
+        this.on("destroy", ()=>{
+            clearInterval(interval);
+        });
     }
 }
 
 /** @extends {Modal<Session$>} */
-export class SessionConfigurationMenu extends EditModal {
+export class SessionConfigurationMenu extends ui.EditModal {
     constructor() {
         super({
             "modal.title":"Session Configuration",
@@ -3722,7 +3592,7 @@ export class SessionConfigurationMenu extends EditModal {
     }
 }
 
-export class AdminMenu extends EditModal {
+export class AdminMenu extends ui.EditModal {
     constructor() {
         super({
             "modal.title":"Admin",
@@ -3730,7 +3600,7 @@ export class AdminMenu extends EditModal {
     }
 }
 
-export class ChangeLogMenu extends Modal {
+export class ChangeLogMenu extends ui.Modal {
     constructor() {
         var html;
         super({
@@ -3739,25 +3609,23 @@ export class ChangeLogMenu extends Modal {
             "modal.load": async ()=>{
                 html = await (await (fetch("./changes.md"))).text();
             },
-            "modal.close": true,
         });
         this.on("before-show",()=>{
             dom.set_inner_html(this.props.elem, `<div>${html}</div>`);
             Object.assign(this.props.elem.style, {
                 // "font-family": "monospace",
-                "font-size": "1.2em",
+                "font-size": "16px",
             });
             app.settings.set("last_change_log", app.$.change_log.mtime);
         })
     }
 }
 
-export class UploadsDownloadsMenu extends Modal {
+export class UploadsDownloadsMenu extends ui.Modal {
     constructor() {
         super({
             "modal.title":"Uploads / Downloads",
             "modal.width": "70%",
-            "modal.close": true,
         });
         var types = ["uploads", "downloads"];
         this.on("update", ()=>{
@@ -3806,16 +3674,20 @@ export class UploadsDownloadsMenu extends Modal {
     }
 }
 
-export class PlaylistInfoMenu extends Modal {
+export class PlaylistInfoMenu extends ui.Modal {
     /** @param {PlaylistItem$[]} items */
     constructor(items, all_collapsed=false) {
 
         var name;
         var special_keys = ["_media_info", "_info", "_userdata"];
-        var data = items.map(d=>{
-            var a = {...d};
-            for (var k of special_keys) a[k] = d[k];
-            return a;
+        var data = items.map(item=>{
+            var copy = {};
+            for (var k in item) {
+                if (k.startsWith("_")) continue;
+                copy[k] = item[k];
+            }
+            for (var k of special_keys) copy[k] = item[k];
+            return copy;
         })
         if (items.length == 1) {
             name = `'<span class="overflow">${items[0]._get_pretty_name()}</span>'`;
@@ -3825,7 +3697,6 @@ export class PlaylistInfoMenu extends Modal {
         }
         super({
             "modal.title": name,
-            "modal.close": true,
         });
 
         var json = new JSONContainer(data, all_collapsed);
@@ -3841,7 +3712,7 @@ export class PlaylistInfoMenu extends Modal {
     }
 }
 
-export class SetTimePosMenu extends EditModal {
+export class SetTimePosMenu extends ui.EditModal {
     constructor() {
         super({
             "modal.title":"Precise Seek",
@@ -3854,10 +3725,10 @@ export class SetTimePosMenu extends EditModal {
         var chapter_select = new ui.InputProperty(`<select>`, {
             "label": "Chapter",
             "options":()=>{
-                return app.$._session._current_playlist_item_evaluated._userdata.chapters.map((c,i)=>[i, app.chapter_to_string(c, true)])
+                return app.$._session._current_playlist_item._userdata.chapters.map((c,i)=>[i, app.chapter_to_string(c, true)])
             },
             "reset":false,
-            "hidden":()=>app.$._session._current_playlist_item_evaluated._userdata.chapters.length==0,
+            "hidden":()=>app.$._session._current_playlist_item._userdata.chapters.length==0,
         });
         var time_pos = new ui.TimeSpanProperty({
             "label": "Time",
@@ -3872,24 +3743,23 @@ export class SetTimePosMenu extends EditModal {
         })
         chapter_select.on("change",(e)=>{
             if (!e.trigger) return;
-            var c = app.$._session._current_playlist_item_evaluated._userdata.chapters[e.value];
+            var c = app.$._session._current_playlist_item._userdata.chapters[e.value];
             time_pos.set_values(c.start);
         })
         time_pos.set_value(app.$._session.time_pos);
     }
 }
 
-export class SetVolumeSettings extends EditModal {
+export class SetVolumeSettings extends ui.EditModal {
     constructor() {
         super({
             "modal.title":"Precise Volume Adjustment",
             "modal.apply": ()=>{
                 app.media_player.volume.set_value(volume_input.value, {trigger:true});
-                app.media_player.vol_speed.set_value(volume_speed.value, {trigger:true});
+                app.media_player.volume_speed.set_value(volume_speed.value, {trigger:true});
             }
         });
 
-        var row = this.props.append(new ui.FlexRow());
         //<div style="padding:0 5px; border-left: 1px solid #aaa; border-bottom: 1px solid #aaa;">
         var volume_input = new ui.InputProperty(`<input type="number">`, {
             "label": "Volume (%)",
@@ -3899,16 +3769,13 @@ export class SetVolumeSettings extends EditModal {
         volume_input.on("change", (e)=>{
             if (e.trigger) volume_slider.set_value(e.value);
         })
-        row.append(volume_input);
 
-        var volume_speed = new ui.InputProperty(`<select>`, {
+        var volume_speed = new ui.InputProperty(`<input type="number">`, {
             "label": "Volume Transition Speed",
             ...get_prop_attrs(InternalSessionProps.volume_speed),
             "data": app.$._session.volume_speed,
         });
-        row.append(volume_speed);
         
-        var row = this.props.append(new ui.FlexRow());
         var volume_slider = new ui.InputProperty(`<input type="range">`, {
             "label": "Volume (%)", //  style="margin-right:5px"
             "step": 1,
@@ -3922,17 +3789,85 @@ export class SetVolumeSettings extends EditModal {
         volume_slider.on("change", (e)=>{
             volume_input.set_value(e.value, {trigger:false});
         })
-        row.append(volume_slider);
+        this.props.layout = [
+            [volume_input, volume_speed],
+            [volume_slider],
+        ]
     }
 }
 
-export class ExternalSessionConfigurationMenu extends Modal {
+export class FadeOutSettings extends ui.Modal {
+    constructor() {
+        super({
+            "modal.title":"Fade To Next Item",
+        });
+
+        var fade_out_speed = new ui.InputProperty(`<input type="number">`, {
+            "name": "fade_out_speed",
+            "label": "Fade Out Speed",
+            ...get_prop_attrs(InternalSessionProps.fade_out_speed),
+            "data": app.$._session.fade_out_speed,
+        });
+
+        var fade_in_speed = new ui.InputProperty(`<input type="number">`, {
+            "name": "fade_in_speed",
+            "label": "Fade In Speed",
+            ...get_prop_attrs(InternalSessionProps.fade_in_speed),
+            "data": app.$._session.fade_in_speed,
+        });
+
+        var onchange = (e)=>{
+            if (e.trigger) {
+                app.request("update_player_controls", {
+                    [e.name]: e.value
+                });
+            }
+        };
+        fade_out_speed.on("change", onchange);
+        fade_in_speed.on("change", onchange);
+
+        var fade_button = new ui.Button(`<button>Fade To Next Item</button>`, {
+            "click_async": ()=>{
+                var fadeout = fade_out_speed.value;
+                var fadein = fade_in_speed.value;
+                var update_fade_button = (t)=>{
+                    if (t < 0) {
+                        fade_button.settings.content = `Fade To Next Item`;
+                    } else {
+                        var out = t >= fadein;
+                        var s = Math.abs(t - fadein);
+                        fade_button.settings.content = `Fading ${out?"Out":"In"} (${s}s)... <i class="fas fa-spinner fa-pulse"></i>`;
+                    }
+                    fade_button.update();
+                };
+                return new Promise((resolve)=>{
+                    app.request("fade_out_in", [fadeout, fadein]);
+                    var t = fadeout + fadein;
+                    update_fade_button(t);
+                    var int_id = setInterval(()=>{
+                        update_fade_button(--t);
+                        if (t < 0) {
+                            clearInterval(int_id);
+                            resolve();
+                        }
+                    }, 1000);
+                });
+            }
+        });
+
+        this.props.layout = [
+            [fade_out_speed, fade_in_speed],
+            [fade_button],
+        ];
+    }
+}
+
+export class ExternalSessionConfigurationMenu extends ui.Modal {
     /** @param {ui.InputProperty} prop */
     constructor() {
         super({
             "modal.title": "Setup External Session",
             "modal.items": ()=>[app.settings.get("external-session-config")||{}],
-            "modal.close": true,
         });
         
         var row = this.props.append(new ui.FlexRow());
@@ -4023,7 +3958,7 @@ export const TimeLeftMode = {
 }
 
 /** @extends {Modal<Target$>} */
-export class EditTargetMenu extends EditModal {
+export class EditTargetMenu extends ui.EditModal {
     /** @param {Target$} target */
     constructor(target) {
         var is_new = !target.id;
@@ -4117,7 +4052,7 @@ export class EditTargetMenu extends EditModal {
 }
 
 /** @extends {Modal<TargetsProperty>} */
-export class TargetsMenu extends EditModal {
+export class TargetsMenu extends ui.EditModal {
     /** @param {TargetsProperty} prop */
     constructor(prop) {
         super({
@@ -4739,7 +4674,7 @@ export class MediaSeekBar extends SeekBar {
 }
 
 /** @extends {EditModal<Stream$>} */
-export class StreamConfigurationMenu extends EditModal {
+export class StreamConfigurationMenu extends ui.EditModal {
     constructor(){
         super({
             "modal.title": "Stream Configuration",
@@ -4790,7 +4725,7 @@ export class StreamConfigurationMenu extends EditModal {
         this.props.append(buffer_duration);
     }
 }
-export class HandoverSessionMenu extends EditModal {
+export class HandoverSessionMenu extends ui.EditModal {
     constructor(){
         super({
             "modal.title": "Handover Session",
@@ -4812,7 +4747,7 @@ export class HandoverSessionMenu extends EditModal {
     }
 }
 
-export class SavePlaylistMenu extends Modal {
+export class SavePlaylistMenu extends ui.Modal {
     constructor() {
         super({
             "modal.title": ()=>`Save Playlist '<span class="overflow">${playlist_name}</span>'`,
@@ -4929,7 +4864,7 @@ export class SavePlaylistMenu extends Modal {
     }
 }
 
-export class HistoryMenu extends Modal {
+export class HistoryMenu extends ui.Modal {
     history = [];
     constructor() {
         
@@ -4976,8 +4911,6 @@ export class HistoryMenu extends Modal {
         var history = [];
         var load = async ()=>{
             history = await app.request("get_autosave_history");
-    
-            selectable_list.select(null);
             dom.remove_children(table.tBodies[0]);
             
             history.forEach((data)=>{
@@ -4997,7 +4930,6 @@ export class HistoryMenu extends Modal {
             "modal.title": ()=>`History [${history.length}]`,
             "modal.min-width": "900px",
             "modal.load": load,
-            "modal.close": true,
             // "modal.blocking": false,
         });
 
@@ -5016,14 +4948,11 @@ export class HistoryMenu extends Modal {
         });
         info_footer_elem.append(load_button)
         var selectable_list = new SelectableList(tbody);
-        selectable_list.on("selection_change", ()=>{
+        this.on("update", ()=>{
             var i = selectable_list.selected_index;
             var data = history[i];
             dom.remove_children(info_inner);
-
             if (data) {
-                // var diff_type_to_str = ["-", "created", "deleted", "changed"]
-                // ${diff_type_to_str[v[0]]}
                 info_inner.append(`<div><h3>Time</h3><span>${new Date(data.mtime).toLocaleString()}</span></div>`);
                 for (var k of ["curr", "prev"]) {
                     var entries = data[k];
@@ -5043,17 +4972,18 @@ export class HistoryMenu extends Modal {
                         });
                     }
                 }
+            } else {
+                info_inner.append(`<div class="empty">Select a record from the list.</div>`);
             }
-            
-            this.update();
         });
+        selectable_list.on("selection_change", ()=>this.update());
         this.on("destroy", ()=>{
             selectable_list.destroy();
         });
     }
 }
 
-export class PlaylistAddURLMenu extends EditModal {
+export class PlaylistAddURLMenu extends ui.EditModal {
     constructor() {
         super({
             "modal.title": "Add URLs to Playlist",
@@ -5084,7 +5014,7 @@ export class PlaylistAddURLMenu extends EditModal {
 };
 
 /** @extends {Modal<PlaylistItem$>} */
-export class PlaylistItemModifyMenu extends EditModal {
+export class PlaylistItemModifyMenu extends ui.EditModal {
 
     get changes() {
         var exclude = [["props","label"], ["props","color"]];
@@ -5119,12 +5049,11 @@ export class PlaylistItemModifyMenu extends EditModal {
                     app.playlist_update(d);
                 }
             },
-            "modal.allow_invalid": true,
             "modal.items": items,
             "modal.blocking": false,
         });
         
-        /** @type {FileProperty<PlaylistItem>} */
+        /** @type {FileProperty<PlaylistItemUI>} */
         let filename = new FileProperty({
             "name": "filename",
             "label": "Path / URI",
@@ -5168,7 +5097,7 @@ const MediaSettingsMode = {
 
 /** @extends {ui.PropertyGroup<PlaylistItem$>} */
 export class MediaPropertyGroup extends ui.PropertyGroup {
-    /** @param {number} mode @param {boolean} simple @param {FileProperty<PlaylistItem,string>} filename */
+    /** @param {number} mode @param {boolean} simple @param {FileProperty<PlaylistItemUI,string>} filename */
     constructor(mode, simple, filename) {
         super({
             "name": (mode == MediaSettingsMode.all) ? "" : "props",
@@ -5235,6 +5164,13 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             var streams;
             let mi = item._media_info;
             streams = mi ? mi.streams : null;
+            if (item._is_special) {
+                streams = [
+                    {type:"video", title:"Generated Video"},
+                    {type:"audio", title:"Generated Audio"},
+                    {type:"subtitle", title:"Generated Subtitle"},
+                ]
+            }
             /* if (item._is_currently_playing) {
                 streams = app.$._stream.ctx.streams;
             } */
@@ -5270,7 +5206,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
         this.aspect_ratio = new ui.InputProperty(`<select></select>`, {
             "name": "aspect_ratio",
             "label": "Aspect Ratio",
-            "options": [[-1,"Default"],  [1.777778,"16:9"], [1.333333,"4:3"], [2.35,"2.35:1"]],
+            "options": get_options,
             "default": get_default,
         });
 
@@ -6066,9 +6002,10 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                     svg_text.innerHTML = "";
                     lines.forEach((line,i)=>{
                         var tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
-                        tspan.textContent = line;
+                        tspan.innerHTML = (line.trim()) ? line : "&nbsp;";
                         tspan.setAttribute("x", ["0%","50%","100%"][ha]);
                         tspan.setAttribute("dy", i?this.title_size.value:0);
+                        tspan.style.whiteSpace = "pre-wrap";
                         svg_text.append(tspan);
                     });
                     
@@ -6366,7 +6303,7 @@ export class FileProperty extends ui.InputProperty {
     }
 }
 
-export class FilterConfigurationMenu extends EditModal {
+export class FilterConfigurationMenu extends ui.EditModal {
     /** @param {ui.PropertyListItem} list_item */
     constructor(list_item) {
         var is_new = !list_item;
@@ -6526,7 +6463,7 @@ export class FilterConfigurationMenu extends EditModal {
     }
 }
 
-export class EditAccessControlMemberMenu extends EditModal {
+export class EditAccessControlMemberMenu extends ui.EditModal {
     /** @param {AccessControlProperty} prop @param {AccessControlUser} data */
     constructor(prop, data) {
         var is_new = utils.is_empty(data);
@@ -6800,8 +6737,6 @@ export class RangeProperty extends ui.InputProperty {
     };
 } */
 
-
-
 export class Panel extends ui.UI {
     constructor(id, settings) {
         super({
@@ -6887,7 +6822,6 @@ export class StreamSettings extends Panel {
         
         this.stream_props_ui = new ui.Row({
             "class":"stream-properties",
-            "gap": 5,
             "align":"end",
             "hidden": ()=>app.$._session._is_running || app.$._session.type !== SessionTypes.INTERNAL
         })
@@ -7119,6 +7053,7 @@ export class StreamSettings extends Panel {
                     stream_info["Output Path"] = stream["filename_evaluated"] || "-";
                 }
                 stream_info["Frame Rate"] = `${stream["fps"]}`;
+                stream_info["Buffer Duration"] = `${stream["buffer_duration"]} secs`;
             } else {
                 var nms_session = session._get_connected_nms_session_with_appname("livestream", "external");
                 if (nms_session) {
@@ -7149,7 +7084,7 @@ export class StreamSettings extends Panel {
                 stream_info["Internal URL"] = `<a href="${url.toString()}" target="_blank">${url}</a>`;
             }
             if (stream.is_encoding) {
-                stream_info["Bit Rate"] = utils.format_bits(stream.bitrate, "k")+"ps";
+                stream_info["Output Bit Rate"] = utils.format_bits(stream.bitrate, "k")+"ps";
             }
             stream_info["Run Time"] = session._is_running ? utils.ms_to_timespan_str(stream._run_time) : 0;
 
@@ -7315,7 +7250,8 @@ video { width: 100% !important; height: 100% !important; }`;
                 var new_pause = !app.$._session._stream.player.props.pause;
                 app.$._session._stream.player.props.pause = new_pause;
                 app.update();
-                app.request("pause", [new_pause]);
+                if (new_pause) app.request("pause");
+                else app.request("resume");
             },
             "disabled":()=>!app.$._session._is_running,
         });
@@ -7353,6 +7289,16 @@ video { width: 100% !important; height: 100% !important; }`;
             "disabled": ()=>app.media.chapters.length == 0 || app.media.time_pos >= app.media.chapters[app.media.chapters.length-1].start,
             "hidden": ()=>!app.settings.get("show_chapters") || app.media.chapters.length == 0
         });
+
+        this.fade_out_button = new ui.Button(`<button><span style="font-size:10px">FAD</span></button>`, {
+            "title":"Fade To Next",
+            "class":"player-button",
+            "click": (e)=>{
+                // app.request("fade_out");
+                new FadeOutSettings().show();
+            },
+            "disabled":()=>!app.$._session._is_running,
+        });
         this.reload_button = new ui.Button(`<button><i class="fas fa-sync"></i></button>`, {
             "title":"Reload",
             "class":"player-button",
@@ -7360,9 +7306,6 @@ video { width: 100% !important; height: 100% !important; }`;
                 app.request("reload", [true]);
             },
             "disabled":()=>!app.$._session._is_running,
-            "update": function(){
-                // toggle_class(this.elem, "pending", app.$.session.current_playing_item.userdata.pending_changes);
-            }
         });
         this.set_time_button = new ui.Button(`<button><i class="far fa-clock"></i></button>`, {
             "title":"Precise Seek",
@@ -7372,14 +7315,13 @@ video { width: 100% !important; height: 100% !important; }`;
             },
             "disabled":()=>!app.media.seekable,
         });
-
         
         var player_controls_elem = new ui.UI(`<div class="player-button-wrapper"></div>`);
         player_controls_elem.append(this.prev_button, this.prev_chapter_button, this.backward_button, this.toggle_play_pause_button, this.forward_button, this.next_chapter_button, this.next_button);
         player_inline_elem.append(player_controls_elem);
         
         var extra_controls_elem = new ui.UI(`<div class="player-button-wrapper"></div>`);
-        extra_controls_elem.append(this.reload_button, this.set_time_button);
+        extra_controls_elem.append(this.reload_button, this.set_time_button, this.fade_out_button);
         player_inline_elem.append(extra_controls_elem);
         
         var volume_wrapper = new ui.UI(`<div class="player-volume-wrapper"></div>`);
@@ -7393,7 +7335,7 @@ video { width: 100% !important; height: 100% !important; }`;
         });
         this.volume.elem.style.width="100px";
         this.volume.elem.style.minWidth="auto";
-        this.vol_speed = new ui.InputProperty(`<select>`, {
+        this.volume_speed = new ui.InputProperty(`<input type="number">`, {
             "name": "volume_speed",
             "title": "Volume Transition Speed",
             ...get_prop_attrs(InternalSessionProps.volume_speed),
@@ -7401,17 +7343,20 @@ video { width: 100% !important; height: 100% !important; }`;
             "hidden": true,
         });
         /** @param {ui.PropertyChangeEvent} e */
-        var on_volume_prop_change = (e)=>{
+        var on_player_controls_change = (e)=>{
             if (e.trigger) {
-                var v = {volume_target: this.volume.value, volume_speed: this.vol_speed.value};
+                var v = {
+                    volume_target: this.volume.value,
+                    volume_speed: this.volume_speed.value,
+                };
                 Object.assign(app.$._session, v);
                 app.update();
-                app.request("update_volume", [v]);
+                app.request("update_player_controls", [v]);
             }
             this.set_volume_button.update();
         }
-        this.volume.on("change", (e)=>on_volume_prop_change(e));
-        this.vol_speed.on("change", (e)=>on_volume_prop_change(e));
+        this.volume.on("change", (e)=>on_player_controls_change(e));
+        this.volume_speed.on("change", (e)=>on_player_controls_change(e));
         
         this.vol_down_button = new ui.Button(`<button><i class="fas fa-volume-down"></i></button>`, {
             "class":"player-button",
@@ -7447,7 +7392,7 @@ video { width: 100% !important; height: 100% !important; }`;
                 this.volume.set_values(utils.floor_to_factor(this.volume.value+VOLUME_STEP,VOLUME_STEP), {trigger:true});
             }
         })
-        volume_wrapper.append(this.set_volume_button, this.vol_down_button, this.volume, this.vol_up_button /*,this.mute_button */, this.vol_speed);
+        volume_wrapper.append(this.set_volume_button, this.vol_down_button, this.volume, this.vol_up_button /*,this.mute_button */, this.volume_speed);
         
         this.stats_elem = $(`<div class="stats"></div>`)[0];
         media_ui.append(this.stats_elem);
@@ -7526,6 +7471,7 @@ video { width: 100% !important; height: 100% !important; }`;
     }
 
     async refresh_player(force) {
+        var was_muted = this.video_el ? this.video_el.muted : true;
         var session = app.$._session;
         var stream = session._stream;
         var show = !!(session._is_running && stream.is_encoding);
@@ -7562,7 +7508,11 @@ video { width: 100% !important; height: 100% !important; }`;
             this.video_el = this.test_stream_elem.ownerDocument.createElement("video");
             this.video_el.controls = true;
             this.video_el.autoplay = false;
-            this.video_el.muted = true;
+            this.video_el.muted = was_muted;
+            this.video_el.volume = +(localStorage.getItem("livestreamer.media-player-volume") || 1);
+            this.video_el.onvolumechange = (e)=>{
+                localStorage.setItem("livestreamer.media-player-volume", this.video_el.volume);
+            };
             this.video_el.addEventListener('loadedmetadata', (e)=>{
                 // set_style_property(this.test_stream_container_elem, "--aspect-ratio", this.video_el.videoWidth / this.video_el.videoHeight)
             });
@@ -7878,7 +7828,7 @@ export class StreamMetricsPanel extends Panel {
     #res = "";
     #zooming = false;
     #panning = false;
-    #init_view_len = 60*1000
+    #init_view_len = 60
     #last_data_max = 0;
     _updates = 0;
     constructor() {
@@ -7970,9 +7920,9 @@ export class StreamMetricsPanel extends Panel {
         this.canvas.ondblclick = ()=>{
             this.#update_pan(true);
         };
-        var ms_to_timespan = (value)=>{
+        var x_to_timespan = (value)=>{
             value = +value;
-            return utils.ms_to_timespan_str(value, "hh:mm:ss")
+            return utils.ms_to_timespan_str(value*1000, "hh:mm:ss")
         }
         this.chart = new Chart(this.canvas, {
             type: "line",
@@ -7995,7 +7945,7 @@ export class StreamMetricsPanel extends Panel {
                         max: this.#init_view_len,
                         ticks: {
                             // count: 6,
-                            // stepSize: 5*1000,
+                            // stepSize: 5,
                             autoSkip: false,
                             includeBounds: true,
                             // autoSkipPadding
@@ -8003,7 +7953,7 @@ export class StreamMetricsPanel extends Panel {
                             // maxRotation: 0,
                             callback: (value, index, values)=>{
                                 if (index == 0 || index == values.length - 1) return null;
-                                return ms_to_timespan(value);
+                                return x_to_timespan(value);
                             }
                         },
                     },
@@ -8026,7 +7976,7 @@ export class StreamMetricsPanel extends Panel {
                     zoom: {
                         limits: {
                             x: {
-                                minRange: 10*1000
+                                minRange: 10
                             },
                         },
                         pan: {
@@ -8063,7 +8013,7 @@ export class StreamMetricsPanel extends Panel {
                     tooltip: {
                         callbacks: {
                             title: (ctxs)=>{
-                                return ctxs.map(ctx=>ms_to_timespan(ctx.raw.x)).join(", ");
+                                return ctxs.map(ctx=>x_to_timespan(ctx.raw.x)).join(", ");
                             },
                             label: (ctx)=>{
                                 return `${this.#parse_key(ctx.dataset.label)[0]}: ${this.#format_value(ctx.raw.y)}`;
@@ -8092,17 +8042,17 @@ export class StreamMetricsPanel extends Panel {
                             this.update();
                         }
                     },
-                    decimation: {
-                        enabled: true,
-                        algorithm: 'lttb',
-                        samples: 1000
-                    },
                     /* decimation: {
                         enabled: true,
                         algorithm: 'lttb',
-                        samples: 128,
-                        threshold: 128
+                        samples: 1000
                     }, */
+                    decimation: {
+                        enabled: true,
+                        algorithm: 'lttb',
+                        samples: 512,
+                        threshold: 512
+                    },
                 }
             }
         });
@@ -8148,11 +8098,12 @@ export class StreamMetricsPanel extends Panel {
 
         let metrics = app.$._session._stream.metrics;
         let raw_data = Object.fromEntries(Object.entries(metrics).filter(([k,v])=>k.split(":").pop()===this.#mode));
-        var data_hash = JSON.stringify([mode_hash, reinit_hash, Object.entries(raw_data).map(([k,d])=>[k, d.min, d.max])]);
+        var data_hash = JSON.stringify([mode_hash, reinit_hash, Object.entries(raw_data).map(([k,g])=>[k, g[this.#res].min, g[this.#res].max])]);
         if (this._data_hash === data_hash) return;
         this._data_hash = data_hash;
         
-        this.chart.data.datasets = Object.entries(raw_data).map(([key,{min,max,high,low}], i)=>{
+        this.chart.data.datasets = Object.entries(raw_data).map(([key,d], i)=>{
+            let {min,max,data} = d[this.#res];
             let dataset = this.chart.data.datasets.find(d=>d.label==key);
             dataset = dataset ?? {
                 label: key,
@@ -8163,25 +8114,19 @@ export class StreamMetricsPanel extends Panel {
                 fill: false,
                 tension: 0.5,
                 borderJoinStyle: "round",
-                data: []
+                data: [],
+                borderColor: graph_colors[i%graph_colors.length]
+                // tension: this.#res == "high" ? 0.5 : 0;
             };
-            dataset.borderColor = graph_colors[i%graph_colors.length];
+            // min = Math.max(min,+utils.first_key(data));
             let dataset_data = dataset._data ?? dataset.data;
-            var add = ([x,y])=>{
-                let d = {x:x??0, y: y??0};
+            var last_x = dataset_data.length ? dataset_data[dataset_data.length-1].x+1 : min;
+            console.log(key, last_x, max);
+            for (var i=last_x; i<max; i++) {
+                let d = {x:i, y: data[i]};
                 dataset.data.push(d);
                 if (dataset._data) dataset._data.push(d);
             }
-            if (this.#res == "high") {
-                for (var i = Math.max(min, dataset_data.length); i<max; i++) {
-                    add(high[i]);
-                }
-            } else if (this.#res == "low") {
-                for (var i = dataset_data.length; i<low.length; i++) {
-                    add(low[i]);
-                }
-            }
-            // dataset.tension = this.#res == "high" ? 0.5 : 0;
             return dataset;
         });
         this.#update_pan(reset);
@@ -8281,6 +8226,7 @@ export class PlaylistPanel extends Panel {
             "panel.collapsible": false,
             "panel.draggable": ()=>!this.#is_fullscreen,
             "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL,
+            // "update_children": false,
         });
 
         this.clipping = null;
@@ -8384,12 +8330,12 @@ export class PlaylistPanel extends Panel {
                 return text;
             }
             let g = $(`<div class="button-group"></div>`)[0]
-            var undo = new ui.Button(`<button class="mini icon"><i class="fas fa-arrow-left"></i></button>`, {
+            var undo = new ui.Button(`<button class="mini icon"><i class="fas fa-undo"></i></button>`, {
                 "disabled": ()=>!app.$._session.playlist_history._prev,
                 "click": ()=>app.playlist_undo(),
                 "title": ()=>build_title(`Playlist Undo [Ctrl+Z]`, app.$._session.playlist_history._prev),
             });
-            var redo = new ui.Button(`<button class="mini icon"><i class="fas fa-arrow-right"></i></button>`, {
+            var redo = new ui.Button(`<button class="mini icon"><i class="fas fa-redo"></i></button>`, {
                 "disabled": ()=>!app.$._session.playlist_history._next,
                 "click": ()=>app.playlist_redo(),
                 "title": ()=>build_title(`Playlist Redo [Ctrl+Y]`, app.$._session.playlist_history._next),
@@ -9026,6 +8972,7 @@ export class PlaylistPanel extends Panel {
                     this.set_timeline_view([this.clipping.start, this.clipping.end], this.time);
                 }
             }
+
             this.#rebuild_items();
             last_current = this.current;
         });
@@ -9132,14 +9079,14 @@ export class PlaylistPanel extends Panel {
             sortable.orientation = this.orientation;
             var debounced_selection_change = utils.debounce(()=>this.emit("selection_change"), 0);
             sortable.el.addEventListener("select", (evt)=>{
-                this.update();
+                this.update_next_frame();
                 debounced_selection_change();
             });
             sortable.el.addEventListener("unchoose", (e)=>{
-                this.scroll_into_view(e.item)
+                this.scroll_into_view(e.item);
             });
             sortable.el.addEventListener("deselect", (evt)=>{
-                this.update();
+                this.update_next_frame();
                 debounced_selection_change();
             });
             sortable.el.addEventListener("active-change", (e)=>{
@@ -9214,7 +9161,7 @@ export class PlaylistPanel extends Panel {
             var items = current_playlist_tracks[i] || EMPTY_ARRAY;
             dom.rebuild(sortable.el, items, {
                 add: (item, elem, index)=>{
-                    return elem || new PlaylistItem(item.id).elem;
+                    return elem || new PlaylistItemUI(item.id).elem;
                 },
                 remove:(elem)=>{
                     var sortable = ResponsiveSortable.closest(elem);
@@ -9370,7 +9317,7 @@ export class PlaylistPanel extends Panel {
     async clipboard_paste() {
         if (!this.clipboard) return;
         if (this.clipboard.cutting) {
-            var items = this.clipboard.items.map(i=>app.$.sessions[i.session_id].playlist[i.id]).filter(i=>i);
+            var items = this.clipboard.items.map(i=>app.$.sessions[i._session_id].playlist[i.id]).filter(i=>i);
             this.clipboard = null;
             localStorage.removeItem("playlist-clipboard");
             app.playlist_move(items);
@@ -9534,7 +9481,7 @@ export class PlaylistPanel extends Panel {
             var r = this.elem.parentElement.getBoundingClientRect();
             var min_height = 400;
             var max_height = r.bottom - r.top;
-            var padding = 10;
+            var padding = parseFloat(getComputedStyle(app.main_elem).paddingTop);
             var top = Math.max(-r.top + padding, 0);
             var bottom = Math.min(top + r.bottom, top + window.innerHeight - padding) - padding;
             var height = Math.min(bottom - top, window.innerHeight - r.top - padding);
@@ -9687,7 +9634,7 @@ function build_playlist_breadcrumbs(parent_elem, item, show_modify=false, exclud
     }
 }
 
-class PlaylistItem extends ui.UI {
+class PlaylistItemUI extends ui.UI {
     /** @type {ProgressBar} */
     progress;
 
@@ -9733,7 +9680,7 @@ class PlaylistItem extends ui.UI {
             var userdata = item._userdata;
             
             // let num_descendents = item._descendents.length;
-            let root_merged_playlist = item._root_merged_playlist;
+            // let root_merged_playlist = item._root_merged_playlist;
             var is_playlist = item._is_playlist;
             var problems = [];
             let name = userdata.name;
@@ -9875,9 +9822,9 @@ class PlaylistItem extends ui.UI {
                         if (!has_video) icons.push(`<i class="fas fa-music"></i>`);
                         badges["audio"] = default_audio.codec.replace(/^pcm_.+$/, "pcm").split(".")[0];
                     }
-                    if (root_merged_playlist && default_video && default_video.codec == "vc1") {
+                    /* if (root_merged_playlist && default_video && default_video.codec == "vc1") {
                         problems.push({level:2, text: "VC-1 video codec can lead to playback issues within a merged playlist."});
-                    }
+                    } */
                 }
             }
 
@@ -9904,7 +9851,7 @@ class PlaylistItem extends ui.UI {
             }
             
             let d = userdata.duration;
-            let duration_str = d ? utils.seconds_to_timespan_str(d, "h?:mm:ss") : " - ";
+            let duration_str = d ? utils.seconds_to_timespan_str(d, "h?:mm:ss") : "";
 
             dom.set_inner_html(duration_elem, duration_str);
             
@@ -9962,45 +9909,6 @@ class ProgressBar extends ui.UI {
 
 //------------------------------------------------------
 
-
-/**
- * @template {Loader} [ThisType=Loader]
- * @typedef {ui.UISettings<ThisType> & {
- *  "loader.background": ui.UISetting<ThisType, string>,
- *  "loader.color": ui.UISetting<ThisType, string>,
- * }} LoaderSettings
- */
-
-/** 
- * @template {LoaderSettings} [Settings=ui.UISettings<Loader>]
- * @template {ui.UIEvents} [Events=ui.UIEvents]
- * @extends {ui.UI<Settings,Events>}
- */
-export class Loader extends ui.UI {
-    /** @param {Settings} settings */
-    constructor(settings) {
-        settings = {
-            "loader.background": "",
-            "loader.color": "",
-            "loader.message": "Loading...",
-            ...settings,
-        }
-        super(`<div class="loader"></div>`, settings);
-        this.icon_el = $(`<div class="loading-icon"><i></i><i></i><i></i></div>`)[0];
-        this.message_el = $(`<div class="msg"></div>`)[0];
-        this.elem.style.zIndex = 999999999;
-        this.elem.append(this.icon_el, this.message_el);
-        var update = ()=>{
-            this.message_el.innerHTML = this.get_setting("loader.message");
-            this.elem.style.backgroundColor = this.get_setting("loader.background");
-            this.elem.style.color = this.get_setting("loader.color");
-        };
-        this.on("render",()=>{
-            update();
-        })
-        update();
-    }
-}
 
 /** @template {ui.UISettings<Area>} [Settings=ui.UISettings<Area>] */
 /** @template {ui.UIEvents} [Events=ui.UIEvents] */
@@ -10092,6 +10000,7 @@ export class MainWebApp extends utils.EventEmitter {
         /** @type {HTMLElement} */
         this.elem = document.querySelector("#livestreamer");
         ui.Tooltip.defaults.appendTo = document.body;
+        ui.Modal.defaults.root = app.elem;
     
         var main_elem = $(
         `<div class="main">
@@ -10146,7 +10055,7 @@ export class MainWebApp extends utils.EventEmitter {
 
         if (IS_ELECTRON) {
             window.prompt = async (message, default_value)=>{
-                return new PromptModal(message, default_value).show();
+                return new ui.PromptModal(message, default_value).show();
             };
         }
 
@@ -10256,13 +10165,13 @@ export class MainWebApp extends utils.EventEmitter {
                 __default__: "tabs",
                 __options__: [["tabs","Tabs"],["select","Dropdown"]],
             },
-            "open_file_manager_in_new_window": {
+            /* "open_file_manager_in_new_window": {
                 __group__: "misc",
                 __input__: "<select>",
                 __title__: "Open File Manager in New Window",
                 __default__: false,
                 __options__: YES_OR_NO,
-            },
+            }, */
         }
         var settings_defaults = Object.fromEntries(Object.entries(this.settings_prop_defs).map(([k,v])=>[k, v.__default__]));
         
@@ -10280,8 +10189,8 @@ export class MainWebApp extends utils.EventEmitter {
         this.roots.add(this.root);
         this.media = new Media();
         
-        var connection_loader = new Loader({
-            "hidden": ()=>app.ws.ready_state == WebSocket.OPEN,
+        var connection_loader = new ui.Loader({
+            "hidden": ()=>app.ws.is_open,
             update() {
                 var text = {
                     [WebSocket.CONNECTING]: "Connecting...",
@@ -10330,13 +10239,13 @@ export class MainWebApp extends utils.EventEmitter {
         //     }
         // });
         // right_bg.append(admin_button);
-        var config_button = new ui.Button(`<button class="mini icon" title="Client Configuration" id="show-config"><i class="fas fa-user-cog"></i></button>`, {
+        var config_button = new ui.Button(`<button class="icon" title="Client Configuration" id="show-config"><i class="fas fa-user-cog"></i></button>`, {
             click: ()=>{
                 new UserConfigurationSettings().show();
             }
         });
 
-        var help_button = new ui.Button(`<a class="button mini icon" title="Help" id="show-help" href="./help.html" target="_blank"><i class="far fa-question-circle"></i></a>`, {
+        var help_button = new ui.Button(`<a class="button icon" title="Help" id="show-help" href="./help.html" target="_blank"><i class="far fa-question-circle"></i></a>`, {
             click: (e)=>{
                 e.preventDefault();
                 this.toggle_help();
@@ -10346,24 +10255,24 @@ export class MainWebApp extends utils.EventEmitter {
         right_elem.append(right_bg);
 
         var session_controls_bg = new ButtonGroup();
-        var minimize_session_button = new ui.Button(`<button id="minimize-session" class="mini icon" title="Minimize Session"><i class="fas fa-window-minimize"></i></button>`, {
+        var minimize_session_button = new ui.Button(`<button id="minimize-session" class="icon" title="Minimize Session"><i class="fas fa-window-minimize"></i></button>`, {
             click: ()=>{
                 window.location.hash = "";
             }
         });
-        var sign_out_session_button = new ui.Button(`<button id="sign-out-session" class="mini icon" title="Sign out"><i class="fas fa-sign-out-alt"></i></button>`, {
+        var sign_out_session_button = new ui.Button(`<button id="sign-out-session" class="icon" title="Sign out"><i class="fas fa-sign-out-alt"></i></button>`, {
             hidden: ()=>!(this.$._session.access_control._self_has_access && this.$._session.access_control._self_requires_password),
             click: ()=>{
                 this.passwords.unset(this.$._session.id);
             }
         });
-        var config_session_button = new ui.Button(`<button id="config-session" class="mini icon" title="Configure Session"><i class="fas fa-cog"></i></button>`, {
+        var config_session_button = new ui.Button(`<button id="config-session" class="icon" title="Configure Session"><i class="fas fa-cog"></i></button>`, {
             disabled: ()=>!this.$._session._has_access || !this.$._session.access_control._self_has_ownership,
             click: ()=>{
                 new SessionConfigurationMenu().show();
             }
         });
-        var destroy_session_button = new ui.Button(`<button id="destroy-session" class="mini icon" title="Delete Session"><i class="fas fa-trash"></i></button>`, {
+        var destroy_session_button = new ui.Button(`<button id="destroy-session" class="icon" title="Delete Session"><i class="fas fa-trash"></i></button>`, {
             disabled: ()=>!this.$._session.access_control._self_has_ownership,
             click: ()=>{
                 if (confirm(`Are you sure you want to delete Session '${this.$._session.name}'?`)) {
@@ -10377,20 +10286,20 @@ export class MainWebApp extends utils.EventEmitter {
         session_controls_bg.append(minimize_session_button, sign_out_session_button, config_session_button, destroy_session_button);
         this.session_controls_elem.append(session_controls_bg);
 
-        var load_session_button = new ui.Button(`<button id="load-session" class="mini" title="Load">Load</button>`, {
+        var load_session_button = new ui.Button(`<button id="load-session" class="" title="Load">Load</button>`, {
             disabled: ()=>!this.$._session._has_access || !this.$._session.access_control._self_has_ownership,
             click: ()=>{
                 this.load_session();
             }
         });
 
-        var save_session_button = new ui.Button(`<button id="save-session" class="mini" title="Save">Save</button>`, {
+        var save_session_button = new ui.Button(`<button id="save-session" class="" title="Save">Save</button>`, {
             disabled: ()=>!this.$._session._has_access || !this.$._session.access_control._self_has_ownership,
             click: ()=>{
                 this.save_session();
             }
         });
-        var history_session_button = new ui.Button(`<button id="history-session" class="mini" title="History">History</button>`, {
+        var history_session_button = new ui.Button(`<button id="history-session" class="" title="History">History</button>`, {
             disabled: ()=>!this.$._session._has_access || !this.$._session.access_control._self_has_ownership,
             click: ()=>{
                 new HistoryMenu().show();
@@ -10420,6 +10329,7 @@ export class MainWebApp extends utils.EventEmitter {
                 return [["","-",{style:{"display":"none"}}], ...[...this.session_tabs_elem.children].map(e=>e.option_data)];
             },
             "data": ()=>this.$._client.session_id || "",
+            "width": "",
         });
         session_select.on("change", (e)=>{
             if (e.trigger) {
@@ -10479,7 +10389,11 @@ export class MainWebApp extends utils.EventEmitter {
                     }
                     return false;
                 },
+                onStart: ()=>{
+                    document.body.classList.add("dragging-ui");
+                },
                 onEnd: ()=>{
+                    document.body.classList.remove("dragging-ui");
                     this.save_layout()
                 },
                 preventOnFilter: false,
@@ -10539,6 +10453,9 @@ export class MainWebApp extends utils.EventEmitter {
         this.footer_buttons.append(
             new ui.Button(`<button>Configure Targets</button>`, {
                 "click": ()=>new TargetsMenu().show()
+            }),
+            new ui.Button(`<button>Live Manager</button>`, {
+                "click": ()=>new LiveManagerMenu().show()
             }),
             new ui.Button(`<button>System Manager</button>`, {
                 "click": ()=>new SystemManagerMenu().show()
@@ -10623,7 +10540,7 @@ export class MainWebApp extends utils.EventEmitter {
         this.setup_events(this.elem);
         
         window.addEventListener("keydown", this.on_keydown = (e)=>{
-            if (Modal.showing.size) return;
+            if (ui.Modal.showing.size) return;
             if (!isNaN(e.key) && e.ctrlKey) {
                 var sessions = this.sessions_ordered;
                 var i = +e.key-1;
@@ -10736,7 +10653,7 @@ export class MainWebApp extends utils.EventEmitter {
             this.update_next_frame();
         });
         this.ws.on("close", ()=>{
-            for (var m of Modal.showing) m.hide();
+            for (var m of ui.Modal.showing) m.hide();
             this.update_next_frame();
         });
         
@@ -10791,6 +10708,7 @@ export class MainWebApp extends utils.EventEmitter {
         if (this.#updating) return;
         this.#updating = true;
         await this.blocking_updates.ready;
+        await ui.Modal.blocking_updates.ready;
         this.#update();
         this.#updating = false;
     }
@@ -11061,9 +10979,11 @@ export class MainWebApp extends utils.EventEmitter {
         });
         for (var item of new_items) this.$._session.playlist[item.id] = item;
         
-        this.update();
-        this.request("playlist_add", [new_items, {insert_pos, parent_id:parent.id, track_index, register_history}])
-        this.playlist.set_selection(new_items);
+        this.request("playlist_add", [new_items, {insert_pos, parent_id:parent.id, track_index, register_history}]);
+
+        this.update().then(()=>{
+            this.playlist.set_selection(new_items);
+        })
         
         return new_items;
     }
@@ -11078,11 +10998,20 @@ export class MainWebApp extends utils.EventEmitter {
             var ul = item._upload;
             if (ul) app.upload_queue.cancel(ul.id);
         }
+        let new_selection = [];
+        let selection = this.playlist.get_selected_items();
+        if (selection.length) {
+            let next = selection[0]._get_nearest_not_in_selection(selection);
+            if (next) new_selection.push(next);
+        }
         for (var [session_id, group] of utils.group_by(items, i=>i._session.id)) {
             var all_deleted_items = new Set(group.flatMap(i=>[i, ...i._descendents]).reverse()); // important to reverse, 
             for (var item of all_deleted_items) {
                 delete this.$.sessions[session_id].playlist[item.id];
             }
+            this.update().then(()=>{
+                this.playlist.set_selection(new_selection);
+            })
             this.request("playlist_remove", [group.map(i=>i.id), session_id, {register_history}]);
         }
     }
@@ -11247,7 +11176,7 @@ export class MainWebApp extends utils.EventEmitter {
             if (opts.show_loader) {
                 this.$._pending_loader_requests.add(ws_promise);
                 if (!this.request_loader) {
-                    this.request_loader = new Loader({
+                    this.request_loader = new ui.Loader({
                         "hidden": ()=>this.$._pending_loader_requests.size == 0,
                     });
                     this.elem.append(this.request_loader);
@@ -11360,7 +11289,7 @@ export class MainWebApp extends utils.EventEmitter {
                 var has_access = access_control._has_access(this.$._client.user.username, this.passwords.get(item.id));
                 var requires_password = access_control._self_requires_password;
                 var is_active = item.id == session_id;
-                var is_owner = access_control._self_is_owner;
+                var is_owner = access_control._self_has_ownership;
                 var state = item._stream.state;
                 var hash = JSON.stringify([item.id, item.name, item.schedule_start_time, state, is_owner, is_active, has_access, requires_password]);
                 elem.onclick = (e)=>{
@@ -11377,16 +11306,16 @@ export class MainWebApp extends utils.EventEmitter {
                 // toggle_class(elem, "unmovable", !item.movable);
                 var icons = elem.querySelector(".icons");
                 var icons_html = "";
-                var option_data = {text: item.name, value:item.id};
+                var option_data = {text: item.name, value: item.id};
                 if (is_owner) {
                     // icons_html += `<i class="fas fa-user-tie"></i>`;
-                    option_data.text += ` [Owner]`
+                    // option_data.text += ` [Owner]`;
                 } else if (requires_password) {
                     icons_html += `<i class="fas fa-key"></i>`;
-                    option_data.text += ` [Password Protected]`;
+                    option_data.text += ` [Password]`;
                 } else if (!requires_password && !has_access) {
                     icons_html += `<i class="fas fa-lock"></i>`;
-                    option_data.text += ` [Locked]`
+                    option_data.text += ` [Locked]`;
                 }
                 elem.option_data = option_data;
                 dom.toggle_class(elem, "locked", !has_access);
@@ -11419,21 +11348,13 @@ export class MainWebApp extends utils.EventEmitter {
     get user_time_format() { return this.settings.get("time_display_ms") ? "h:mm:ss.SSS" : "h:mm:ss"; }
 
     async load_session() {
-        var files = await open_file_dialog(".json,.csv,.txt");
+        var files = await open_file_dialog({ filter:[".json"] });
         var text = await read_file(files[0]);
-        /* var filename = files[0].name;
-        if (filename.match(/\.txt$/i)) {
-        } else if (filename.match(/\.json$/i)) {
-        } else if (filename.match(/\.csv$/i)) {
-        }
-        if (text.startsWith("//")) {
-            var n = text.indexOf(`\n`);
-            var info = text.slice(0, n);
-            text = text.slice(n);
-        }
-        text = text.trim(); */
         var data;
-        try { data = JSON.parse(text); } catch {}
+        try { data = JSON.parse(text); } catch {
+            window.alert("Invalid livestreamer session file.");
+            return;
+        }
         if (data) {
             this.request("load_session", [data]);
         }

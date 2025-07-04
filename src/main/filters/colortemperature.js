@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const colortemperature = new Filter({
 	name: "colortemperature",
 	descriptive_name: "Color Temperature", 
 	type: "video",
@@ -33,3 +33,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default colortemperature;

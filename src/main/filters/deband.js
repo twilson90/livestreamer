@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const deband = new Filter({
 	name: "deband",
 	descriptive_name: "Deband",
 	type: "video", 
@@ -64,3 +64,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default deband;

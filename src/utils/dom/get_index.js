@@ -1,5 +1,9 @@
 /** @param {Element} element */
 export function get_index(element) {
-    if (!element.parentNode) return -1;
-    return Array.from(element.parentNode.children).indexOf(element);
+    if (element.parentNode) {
+        for (var i = 0; i < element.parentNode.children.length; i++) {
+            if (element.parentNode.children[i] === element) return i;
+        }
+    }
+    return -1;
 }

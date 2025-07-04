@@ -7,12 +7,12 @@ import * as uuid from "uuid";
 import is_image from "is-image";
 import { execa } from "execa";
 import pidtree from "pidtree";
-import { Agent } from 'undici'
+import { Agent, setGlobalDispatcher } from 'undici'
 import { glob, Glob } from "glob";
 import {noop} from "../utils/noop.js";
 import {pathify} from "../utils/pathify.js";
 import { fileURLToPath } from "url";
-
+import { StopWatchBase } from "../utils/StopWatch.js";
 export * from "../utils/exports.js";
 
 const speed_window = 16;
@@ -414,17 +414,12 @@ export function url_exists(url) {
 }
 
 /** @param {string} url @param {RequestInit} options */
-export function fetchWithoutSSL(url, options) {
-    const httpsAgent = new Agent({
-        connect: {
-            rejectUnauthorized: false
-        }
-    })
-    return fetch(url, {
-        ...options,
-        dispatcher: httpsAgent
-    });
-}
+// export function fetch_without_ssl(url, options) {
+//     return fetch(url, {
+//         ...options,
+//         dispatcher: httpsAgent
+//     });
+// }
 
 /** @param {Response} response */
 export async function* stream_response(response) {
@@ -471,7 +466,7 @@ export async function download_url_to_file(url, filePath, opts) {
     }
 
     // Get file info
-    const headRes = await fetchWithoutSSL(url, { method: 'HEAD', signal });
+    const headRes = await fetch(url, { method: 'HEAD', signal });
     if (!headRes.ok) throw new Error(`HEAD request failed: ${headRes.status}`);
     
     fileSize = parseInt(headRes.headers.get('content-length'));
@@ -489,7 +484,7 @@ export async function download_url_to_file(url, filePath, opts) {
             let endByte = Math.min(downloadedBytes + opts.chunkSize - 1, fileSize - 1);
             if (opts.chunkSize <= 0) endByte = fileSize - 1;
             
-            const res = await fetchWithoutSSL(url, {
+            const res = await fetch(url, {
                 headers: {
                     'Range': `bytes=${downloadedBytes}-${endByte}`
                 },
@@ -543,3 +538,14 @@ export function get_node_modules_dir(module) {
     while(path.basename(f) != "node_modules" || path.basename(f) == f) f = path.dirname(f);
     return f;
 }
+
+export class StopWatchHR extends StopWatchBase {
+	__get_now() { return performance.now(); }
+}
+
+// prevents bad SSL being rejected.
+// weird place to put this.
+const httpsAgent = new Agent({
+    connect: { rejectUnauthorized: false }
+});
+setGlobalDispatcher(httpsAgent);

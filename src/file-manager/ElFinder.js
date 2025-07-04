@@ -9,7 +9,6 @@ import {utils, constants} from "../core/exports.js";
 /** @import { Driver } from './exports.js' */
 
 const dirname = import.meta.dirname;
-var callback_template = fs.readFileSync(path.join(dirname, "assets", "callback-template.html"), "utf-8");
 
 export class ElFinder {
 	/** @type {Object.<string,express.Request>} */
@@ -30,6 +29,7 @@ export class ElFinder {
 		this.uploads_dir = path.join(this.elfinder_dir, 'uploads');
 		this.thumbnails_dir = path.join(this.elfinder_dir, 'tmb');
 		this.tmp_dir = path.join(this.elfinder_dir, 'tmp');
+		this.callback_template = fs.readFileSync(globals.app.resources.get_path("callback-template.html"), "utf-8");
 
 		config = {
 			...config,	
@@ -266,7 +266,7 @@ export class ElFinder {
 		callback: (opts, req, res)=>{
 			if (!opts.node) throw new errors.ErrCmdParams();
 			if (opts.done || !this.config.callbackWindowURL) {
-				var html = callback_template
+				var html = this.callback_template
 					.replace("[[node]]", JSON.stringify(opts.node))
 					.replace("[[bind]]", JSON.stringify(opts.bind))
 					.replace("[[json]]", JSON.stringify(opts.json));

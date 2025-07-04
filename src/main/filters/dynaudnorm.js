@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const dynaudnorm = new Filter({
 	name: "dynaudnorm",
 	descriptive_name: "Dynamic Audio Normalizer",
 	type: "audio",
@@ -103,3 +103,4 @@ export default new Filter({
 		ctx.aid = a1;
 	}
 })
+export default dynaudnorm;

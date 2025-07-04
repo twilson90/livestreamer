@@ -202,6 +202,7 @@ export class MainApp extends CoreFork {
             ["test_stream_low_settings"]: this.conf["main.test_stream_low_settings"],
             ["rtmp_port"]: this.conf["media-server.rtmp_port"],
             ["session_order_client"]: this.conf["main.session_order_client"],
+            ["media_expire_time"]: this.conf["media-server.media_expire_time"],
         };
         this.$.hostname = this.hostname;
 
@@ -446,7 +447,7 @@ export class MainApp extends CoreFork {
                 "config": (data, st)=>{
                     return {
                         "output_url": `rtmp://127.0.0.1:${this.conf["media-server.rtmp_port"]}/live/${st.id}`,
-                        "url": `${this.get_urls("media-server").url}/player/?id=${st.id}`,
+                        "url": `${this.get_urls("media-server").url}/player/index.html?id=${st.id}`,
                     }
                 },
 			},
@@ -724,8 +725,9 @@ export class MainApp extends CoreFork {
             let mi;
             let cache_key = utils.md5(JSON.stringify([abspath, MEDIA_INFO_VERSION, stat ? stat.size : 0, stat ? stat.mtimeMs : 0]));
             let cached = this.#media_info_cache.get(cache_key);
+            let use_cache = !!opts.cache;
 
-            if (!opts.force && opts.cache && cached) {
+            if (!opts.force && use_cache && cached) {
                 mi = cached;
             } else {
                 mi: {
@@ -824,6 +826,7 @@ export class MainApp extends CoreFork {
                     if (protocol.match(/^https?:/)) {
                         let raw = await this.ytdl_probe(abspath).catch((e)=>{
                             this.logger.warn("YTDL error:", e);
+                            mi.ytdl_error = String(e).split("\n").pop();
                         });
                         if (raw) {
                             mi.ytdl = true;
@@ -921,7 +924,7 @@ export class MainApp extends CoreFork {
                 if (!opts.silent) {
                     this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
                 }
-                if (mi.exists && opts.cache) this.#media_info_cache.set(cache_key, mi);
+                if (mi.exists && use_cache) this.#media_info_cache.set(cache_key, mi);
             }
             return mi;
         });
@@ -986,7 +989,7 @@ export class MainApp extends CoreFork {
     async edl_probe(uri) {
         var output = await utils.execa(this.mpv_path, [
             ...MPV_LUA_ARGS,
-            `--script=${path.resolve(this.mpv_lua_dir, 'get_media_info.lua')}`,
+            `--script=${this.resources.get_path("mpv_lua/get_media_info.lua")}`,
             uri
         ]);
         var m = output.stdout.match(/^\[get_media_info\] (.+)/);
@@ -999,7 +1002,7 @@ export class MainApp extends CoreFork {
             `--ytdl-format=${this.conf["core.ytdl_format"]}`,
             `--script-opts-append=ytdl_hook-ytdl_path=${this.conf["core.ytdl_path"]}`,
             `--script-opts-append=ytdl_hook-try_ytdl_first=yes`, // important otherwise on_load_fail hook is used
-            `--script=${path.resolve(this.mpv_lua_dir, 'get_stream_open_filename.lua')}`,
+            `--script=${this.resources.get_path("mpv_lua/get_stream_open_filename.lua")}`,
             url
         ]).catch(()=>null);
         if (!output) return;
@@ -1008,6 +1011,14 @@ export class MainApp extends CoreFork {
             var m = line.match(/^\[get_stream_open_filename\] (.+)$/);
             try { return JSON.parse(m[1].trim()); } catch { }
         }
+    }
+
+    get_lives() {
+        return this.ipc.request("media-server", "lives");
+    }
+
+    async destroy_live(id) {
+        await this.ipc.request("media-server", "destroy_live", [id]);
     }
 
     async destroy() {

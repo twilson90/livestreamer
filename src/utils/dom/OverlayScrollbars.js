@@ -47,13 +47,13 @@ export function initializeOverlayScrollbars(element) {
     if (shouldInitialize) {
         if (!element.osInstance) {
             element.osInstance = OverlayScrollbars(element, osOptions);
-            console.log('OverlayScrollbars initialized on:', element);
+            // console.log('OverlayScrollbars initialized on:', element);
         }
     }
     return element.osInstance;
 }
 
-/* document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll([...scrollableClasses, ...scrollableAttributes].join(',')).forEach(initializeOverlayScrollbars);
 });
 
@@ -74,6 +74,6 @@ const observer = new MutationObserver(mutations => {
     });
 });
 
-observer.observe(document.body, { childList: true, subtree: true, attributes: true }); */
+observer.observe(document.body, { childList: true, subtree: true, attributes: true });
 
 export {OverlayScrollbars};

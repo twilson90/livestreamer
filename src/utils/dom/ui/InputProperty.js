@@ -1,5 +1,4 @@
 import tippy from "tippy.js";
-import "tippy.js/dist/tippy.css";
 import { fix_options } from "../fix_options.js";
 import { get_value } from "../get_value.js";
 import { has_focus } from "../has_focus.js";
@@ -105,9 +104,10 @@ export class InputProperty extends Property {
             "placeholder": "",
             "invalid_class": "invalid",
             "disabled": false,
-            "reset": ()=>("default" in this.settings),
+            "reset": ()=>("default" in this.settings && !this.get_setting("copy")),
             "hidden": false,
             "copy":false,
+            "inline": false,
             ...settings
         });
         
@@ -343,6 +343,7 @@ export class InputProperty extends Property {
         toggle_class(this.elem, "is-null", values[0] == null);
         toggle_class(this.elem, "not-default", this.has_defaults && !is_default); // !is_focussed && 
         toggle_class(this.elem, "changed", this.has_datas && is_changed); // !is_focussed && 
+        toggle_class(this.elem, "inline", !!this.get_setting("inline"));
 
         if (width != null) {
             this.elem.style.setProperty("--ui-property-min-width", typeof width == "number" ? `${width}px` : width);

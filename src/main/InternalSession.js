@@ -37,7 +37,9 @@ export class InternalSession$ extends Session$ {
     background_file_start = 0;
     background_file_end = 0;
     volume_target = 100;
-    volume_speed = 50;
+    volume_speed = 2;
+    fade_out_speed = 2;
+    fade_in_speed = 2;
 };
 
 export class PlaylistItem$ {
@@ -86,7 +88,7 @@ export class InternalSession extends Session {
 
     /** @param {string} id @param {string} name */
     constructor(id, name) {
-        super(SessionTypes.INTERNAL, new InternalSession$(id), utils.get_defaults(InternalSessionProps));
+        super(id ?? globals.app.generate_uid("internal-session"), new InternalSession$(), SessionTypes.INTERNAL, utils.get_defaults(InternalSessionProps));
 
         this.$.name = name;
         
@@ -187,19 +189,25 @@ export class InternalSession extends Session {
                 utils.deep_merge(this.$.media_info, {[filename]:{processing:1}});
             }
         }
-        return globals.app.get_media_info(filename, opts).then((data)=>{
-            if (filename) {
-                if (!opts.silent && this.$.media_info[filename]) {
-                    delete this.$.media_info[filename].processing;
+        return globals.app.get_media_info(filename, opts)
+            .then((data)=>{
+                if (data.ytdl_error) {
+                    if (!opts.silent) {
+                        this.logger.warn(data.ytdl_error);
+                    }
                 }
-                if (data && this.#media_refs[filename]) {
-                    if (!this.$.media_info[filename]) this.$.media_info[filename] = {};
-                    var ts = Date.now();
-                    utils.deep_sync(this.$.media_info[filename], {...data, ts});
+                if (filename) {
+                    if (!opts.silent && this.$.media_info[filename]) {
+                        delete this.$.media_info[filename].processing;
+                    }
+                    if (data && this.#media_refs[filename]) {
+                        if (!this.$.media_info[filename]) this.$.media_info[filename] = {};
+                        var ts = Date.now();
+                        utils.deep_sync(this.$.media_info[filename], {...data, ts});
+                    }
                 }
-            }
-            return data;
-        });
+                return data;
+            });
     }
     
     /** @param {string[]} ids */
@@ -279,8 +287,7 @@ export class InternalSession extends Session {
 
     async scheduled_start_stream() {
         this.logger.info(`Scheduled to start streaming now...`);
-        await this.start_stream();
-        this.$.schedule_start_time = null;
+        await this.start_stream({scheduled:true});
     }
 
     async tick() {
@@ -479,10 +486,9 @@ export class InternalSession extends Session {
         await fs.mkdir(dir, {recursive:true});
         var vfs = [
             `cropdetect=limit=24:round=2:reset_count=1:skip=0`,
-            // `scale=trunc(ih*dar/2)*2:trunc(ih/2)*2`,
             `scale=${ow}:${oh}`,
             `setsar=1/1`,
-            `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(path.resolve(globals.app.resources_dir, "fonts", "RobotoMono-Regular.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`,
+            `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(globals.app.resources.get_path("fonts/RobotoMono-Regular.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`,
         ];
         /** @type {({pts:number, rect:utils.Rectangle})[]} */
         var rects = [];
@@ -714,6 +720,10 @@ export class InternalSession extends Session {
     async load($, full=false) { // full aka init (only true when App is loading)
         this.logger.info(`Loading... [full=${full}]`);
         $ = fix_session($, (e)=>this.logger.warn(e));
+        if (!$.playlist) {
+            this.logger.warn("No playlist found, aborting load...");
+            return;
+        }
         var playlist = $.playlist;
         delete $.playlist;
         delete $.id;
@@ -834,15 +844,10 @@ export class InternalSession extends Session {
     /** @param {string} id @param {LoadFileOpts} opts */
     async playlist_play(id, opts) {
         this.#next_parsed_playlist_item = null;
-        
-        opts = {
-            start: 0,
-            pause: false,
-            ...opts,
-        };
 
         let item = fix_playlist_item(this.$.playlist[id]); // fixes nulls or 'fake' items
 
+        opts = {...opts}
         this.$.time_pos = opts.start || 0;
 
         if (!this.is_running) {
@@ -885,9 +890,10 @@ export class InternalSession extends Session {
             });
     }
 
-    playlist_next() {
+    /** @param {LoadFileOpts} opts */
+    playlist_next(opts) {
         var item = this.get_playlist_adjacent_item(this.$.playlist_id);
-        return this.playlist_play(item ? item.id : null);
+        return this.playlist_play(item ? item.id : null, opts);
     }
 
     is_item_playlist(id) {
@@ -921,14 +927,20 @@ export class InternalSession extends Session {
             this.player.set_property(name, item.props[name] ?? this.$.player_default_override[name] ?? PlaylistItemPropsProps[name].__default__);
         }
     }
-
-    /** @param {number|{volume_target: number, volume_speed: number}} opts */
-    update_volume(opts) {
+    /** @param {number|{volume_target: number, volume_speed: number, fade_out_speed: number}} opts */
+    update_player_controls(opts) {
         if (typeof opts === "number") opts = {volume_target: opts};
         if (opts.volume_target !== undefined) this.$.volume_target = opts.volume_target;
         if (opts.volume_speed !== undefined) this.$.volume_speed = opts.volume_speed;
+        if (opts.fade_out_speed !== undefined) this.$.fade_out_speed = opts.fade_out_speed;
         if (this.is_running) {
             this.player.debounced_update_volume();
+        }
+    }
+
+    fade_out_in() {
+        if (this.is_running) {
+            this.player.fade_out_in();
         }
     }
 
@@ -999,6 +1011,18 @@ function fix_playlist_item(item, $) {
     filename = filename || "livestreamer://empty";
     props = props || {};
     utils.remove_nulls(props);
+    utils.rename_property(props, "video_track", "vid_override");
+    utils.rename_property(props, "audio_track", "aid_override");
+    utils.rename_property(props, "subtitle_track", "sid_override");
+    utils.rename_property(props, "background_file", "video_file");
+    utils.rename_property(props, "background_file_start", "video_file_start");
+    utils.rename_property(props, "background_file_end", "video_file_end");
+    utils.rename_property(props, "title_duration", "duration");
+    if (props.title_fade !== undefined) {
+        props.fade_in = props.title_fade;
+        props.fade_out = props.title_fade;
+        delete props.title_fade;
+    }
     parent_id = String(parent_id || "0");
     index = index || 0;
     track_index = track_index || 0;

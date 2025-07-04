@@ -29,8 +29,8 @@ export class Client extends DataNodeID {
     api = {};
 
     /** @param {T} $ */
-    constructor($) {
-        super(null, $);
+    constructor(id, $) {
+        super(id, $);
     }
 
     oninit() { throw new Error("not implemented"); }

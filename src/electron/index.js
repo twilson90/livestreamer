@@ -2,7 +2,7 @@ import squirrel from 'electron-squirrel-startup';
 import electron from "electron";
 import path from "node:path";
 
-import { CoreFork } from "../src/core/index.js";
+import { CoreFork } from "../core/index.js";
 
 const dirname = import.meta.dirname;
 

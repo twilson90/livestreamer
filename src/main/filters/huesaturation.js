@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const huesaturation = new Filter({
 	name: "huesaturation",
 	descriptive_name: "Hue/Saturation",
 	type: "video",
@@ -80,3 +80,5 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+
+export default huesaturation;

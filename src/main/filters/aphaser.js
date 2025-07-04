@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const aphaser = new Filter({
 	name: "aphaser",
 	descriptive_name: "Phaser",
 	type: "audio",
@@ -54,3 +54,4 @@ export default new Filter({
         ctx.aid = a1;
 	}
 });
+export default aphaser;

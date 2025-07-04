@@ -34,6 +34,8 @@ export class WebServer {
     server;
     /** @type {Record<PropertyKey, import("node:net").Socket>} */
     #socks = {};
+    /** @type {Record<PropertyKey, string>} */
+    #auths = {};
     /** @param {http.RequestListener<typeof http.IncomingMessage, typeof http.ServerResponse>} handler @param {typeof default_opts} opts */
     constructor(handler, opts) {
 
@@ -46,33 +48,47 @@ export class WebServer {
         globals.app.logger.info(`Starting HTTP server on socket ${this.socket_path}...`);
         globals.app.logger.info(globals.app.get_urls().http);
         // console.info(globals.app.get_urls(globals.app.name).url);
-        /** @param {http.IncomingMessage} req @param {http.ServerResponse} res */
-        var check_auth = (req, res)=>{
+
+        /** @param {http.IncomingMessage} req @param {http.ServerResponse} res @param {import("node:stream").Duplex} socket */
+        var check_auth = async (req, res, socket)=>{
+            let requires_auth = false;
+            let is_websocket = req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket';
             if (typeof opts.auth === "function") {
-                return opts.auth(req, res)
+                requires_auth = opts.auth(req, res);
+            } else {
+                requires_auth = !!opts.auth;
             }
-            return !!opts.auth;
-        }
-        this.server = http.createServer(http_opts, async (req, res)=>{
-            await globals.app.ready;
-            // accesslog(req, res, undefined, (l)=>core.logger.debug(l));
-            if (check_auth(req, res)) {
+            if (req.url === "/unauthorise") {
+                globals.app.unauthorise(req, opts.auth_key, res);
+                return true;
+            }
+            if (requires_auth) {
                 let auth_res = await globals.app.authorise(req, opts.auth_key, res);
                 if (!opts.allow_unauthorised && !auth_res) {
-                    res.setHeader('WWW-Authenticate', 'Basic realm="Authorized"');
-                    res.statusCode = 401;
-                    res.write('Authorization required');
-                    res.end();
-                    return;
+                    if (is_websocket) {
+                        if (socket) {
+                            socket.write('HTTP/1.1 401 Unauthorized');
+                            socket.destroy();
+                        }
+                        return false;
+                    } else {
+                        res.setHeader('WWW-Authenticate', 'Basic realm="Authorized"');
+                        res.statusCode = 401;
+                        res.write('Authorization required');
+                        res.end();
+                        return false;
+                    }
                 }
                 req.user = auth_res;
             }
-            //if (req.headers.referrer || req.headers.referer) {
-            // var url = new URL(req.headers.referrer || req.headers.referer);
+            return true;
+        }
+        this.server = http.createServer(http_opts, async (req, res)=>{
+            await globals.app.ready;
+            if (!await check_auth(req, res, null)) return;
             var allow_origin = opts.allow_origin;
-            // var allow_origin = [...new Set([`${url.protocol}//${url.hostname}:*`, `${url.protocol}//${core.hostname}:*`])].join(" ");
-            // res.setHeader('Access-Control-Allow-Origin', allow_origin);
             var urls = globals.app.get_urls();
+            
             // res.setHeader('Access-Control-Allow-Origin', "*");
             res.setHeader('Access-Control-Allow-Origin', [urls.http, urls.https].join(" "));
             res.setHeader('Access-Control-Allow-Credentials', true);
@@ -96,16 +112,7 @@ export class WebServer {
         if (opts.ws) {
             this.server.on('upgrade', async (req, socket, head)=>{
                 await globals.app.ready;
-
-                if (check_auth(req)) {
-                    let auth_res = await globals.app.authorise(req, opts.auth_key);
-                    if (!opts.allow_unauthorised && !auth_res) {
-                        socket.write('HTTP/1.1 401 Unauthorized');
-                        socket.destroy();
-                        return;
-                    }
-                    req.user = auth_res;
-                }
+                if (!await check_auth(req, null, socket)) return;
                 this.wss.handleUpgrade(req, socket, head, (socket)=>{
                     this.wss.emit('connection', socket, req);
                 });

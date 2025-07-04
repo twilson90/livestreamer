@@ -7,8 +7,21 @@
   "main": "src/index.js",
   "type": "module",
   "exports": {
-    "./*": "./*",
-    ".": "./src/core/exports.js"
+    ".": "./src/core/exports.js",
+    "./core": "./src/core/exports.js",
+    "./core/*": "./src/core/*",
+    "./main": "./src/main/exports.js",
+    "./main/*": "./src/main/*",
+    "./media-server": "./src/media-server/exports.js",
+    "./media-server/*": "./src/media-server/*",
+    "./file-manager": "./src/file-manager/exports.js",
+    "./file-manager/*": "./src/file-manager/*",
+    "./utils": "./src/utils/exports.js",
+    "./utils/*": "./src/utils/*",
+    "./utils/dom": "./src/utils/dom/exports.js",
+    "./utils/dom/ui": "./src/utils/dom/ui/exports.js",
+    "./tools": "./tools/exports.js",
+    "./tools/*": "./tools/*"
   },
   "scripts": {
     "test": "vitest",
@@ -119,6 +132,6 @@
     "vitest": "^3.1.4"
   },
   "optionalDependencies": {
-    "pm2": "^5.4.2"
+    "pm2": "^6.0.8"
   }
 }

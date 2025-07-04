@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const normalize = new Filter({
 	name: "normalize",
 	descriptive_name: "Normalize",
 	type: "video",
@@ -45,3 +45,5 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+
+export default normalize;

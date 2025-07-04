@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const eq = new Filter({
 	name: "eq",
 	descriptive_name: "Contrast / Brightness / Saturation / Gamma",
 	type: "video",
@@ -68,3 +68,5 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+
+export default eq;

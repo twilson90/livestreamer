@@ -1,6 +1,6 @@
 import { Filter } from "../Filter.js";
 
-export default new Filter({
+export const vibrato = new Filter({
 	name: "vibrato",
 	descriptive_name: "Vibrato",
 	type: "audio",
@@ -27,3 +27,4 @@ export default new Filter({
         ctx.aid = a1;
 	}
 });
+export default vibrato;

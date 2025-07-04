@@ -1,5 +1,6 @@
 export * from "./globals.js";
 export {default as config_default} from "../config.default.js";
+export * as resources from "./resources.js";
 export * as constants from "./constants.js";
 export * as utils from "./utils.js";
 export * from "./DataNode.js";

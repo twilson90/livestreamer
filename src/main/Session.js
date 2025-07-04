@@ -62,12 +62,13 @@ export class Session extends DataNodeID {
     }
 
     /** @param {string} type @param {T} $ @param {any} defaults @param {string} id @param {string} name */
-    constructor(type, $, defaults) {
+    constructor(id, $, type, defaults) {
+
+        super(id, $);
+        
         $.type = type;
         $.index = Object.keys(globals.app.sessions).length;
         $.create_ts = Date.now();
-
-        super($.id, $);
 
         defaults = utils.json_copy(defaults);
         delete defaults.name;
@@ -149,7 +150,7 @@ export class Session extends DataNodeID {
             ...utils.remove_nulls(settings || {}),
         });
         if (await stream.start(settings)) {
-            globals.app.ipc.emit("main.session.stream-started", this.id);
+            globals.app.ipc.emit("main.session.stream-started", {id:this.id, ...settings});
         }
     }
 

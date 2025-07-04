@@ -45,6 +45,7 @@ export class PropertyList extends InputProperty {
             "default": ()=>[],
             "vertical": true,
             "copy_id": ()=>this.id,
+            "list.copy": true,
             ...settings
         });
 
@@ -87,12 +88,14 @@ export class PropertyList extends InputProperty {
                 {
                     icon: `<i class="fas fa-copy"></i>`,
                     label: `Copy`,
+                    hidden: ()=>!this.get_setting("list.copy"),
                     // disabled: ()=>!this.value.length,
                     click: ()=>copy()
                 },
                 {
                     icon: `<i class="fas fa-clipboard"></i>`,
                     label: `Paste`,
+                    hidden: ()=>!this.get_setting("list.copy"),
                     disabled: ()=>!localStorage.getItem(copy_key),
                     click: ()=>paste()
                 }

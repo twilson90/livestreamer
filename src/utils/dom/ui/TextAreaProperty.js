@@ -46,7 +46,7 @@ export class TextAreaProperty extends InputProperty {
             this.input.style["word-break"] = "break-all";
         }
         if (grow) {
-            asc = new AutoSizeController(input_el, rows, false);
+            asc = new AutoSizeController(input_el, rows);
         } else if (rows) {
             this.input.rows = rows;
         }

@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const convolution = new Filter({
 	name: "convolution",
 	descriptive_name: "Convolution", 
 	type: "video",
@@ -37,3 +37,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default convolution;

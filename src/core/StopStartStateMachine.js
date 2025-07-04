@@ -5,6 +5,7 @@ export class StopStartStateMachine$ extends DataNodeID$ {
     state = constants.State.STOPPED;
     start_ts = 0;
     stop_ts = 0;
+    paused = false;
     stop_reason = "";
 }
 
@@ -14,10 +15,13 @@ export class StopStartStateMachine extends DataNodeID {
     #restart_interval;
     #stop_promise;
     #start_promise;
+    #timer = new utils.StopWatchHR();
 
     get state() { return this.$.state; }
     get is_started() { return this.$.state === constants.State.STARTED; }
-    get time_running() { return Date.now() - this.$.start_ts; } // in ms
+    get time_since_start() { return Date.now() - this.$.start_ts; } // in ms
+    get time_running() { return this.#timer.elapsed; } // in ms
+    get is_paused() { return !!this.$.paused; }
 
     /** @param {string} id @param {T} $ */
     constructor(id, $) {
@@ -44,13 +48,31 @@ export class StopStartStateMachine extends DataNodeID {
             this.$.start_ts = Date.now();
             this.#start_promise = (async ()=>{
                 if (await this.onstart(...args)) {
+                    this.#timer.reset();
+                    this.#timer.start();
                     this.$.state = constants.State.STARTED;
+                    return true;
                 } else {
                     this.$.state = constants.State.STOPPED;
+                    return false;
                 }
             })();
         }
         return this.#start_promise;
+    }
+
+    async pause() {
+        if (this.$.paused) return;
+        this.$.paused = true;
+        this.#timer.pause();
+        return this.onpause();
+    }
+
+    async resume() {
+        if (!this.$.paused) return;
+        this.$.paused = false;
+        this.#timer.resume();
+        return this.onresume();
     }
 
     async stop(reason) {
@@ -63,6 +85,9 @@ export class StopStartStateMachine extends DataNodeID {
                 this.$.stop_ts = Date.now();
                 if (await this.onstop()) {
                     this.$.state = constants.State.STOPPED;
+                    return true;
+                } else {
+                    return false;
                 }
             })();
         }
@@ -77,6 +102,10 @@ export class StopStartStateMachine extends DataNodeID {
     onstart(){ return true; }
 
     onstop(){ return true; }
+
+    onpause(){ return true; }
+
+    onresume(){ return true; }
 
     async ondestroy() {
         await this.stop("destroy");

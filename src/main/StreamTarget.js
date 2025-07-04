@@ -17,6 +17,9 @@ export class StreamTarget$ extends StopStartStateMachine$ {
     rtmp_key;
     /** @type {Record<PropertyKey,any>} */
     opts = {};
+    speed = 0;
+    bitrate = 0;
+    key = utils.uuidb64();
 }
 
 /** @extends {StopStartStateMachine<StreamTarget$>} */
@@ -27,7 +30,7 @@ export class StreamTarget extends StopStartStateMachine {
     #mpv;
     /** @param {Stream} stream @param {Target} target */
     constructor(stream, target) {
-        super(null, new StreamTarget$());
+        super(globals.app.generate_uid("stream-target"), new StreamTarget$());
 
         this.logger = new Logger(`stream-target-${target.id}`);
         this.logger.on("log", (log)=>{
@@ -68,6 +71,18 @@ export class StreamTarget extends StopStartStateMachine {
             data.output_url = _url.toString();
         }
         Object.assign(this.$, data);
+
+        let key = this.stream.id;
+        if (this.$.output_url) {
+            let output_url = new URL(this.$.output_url);
+            if (output_url.protocol.match(/^(rtmp|http)s?:/)) {
+                key = (output_url.hostname === "127.0.0.1") ? "localhost" : output_url.hostname;
+            } else {
+                key = output_url.protocol.slice(0,-1);
+            }
+        }
+        if (!this.stream.keys[key]) this.stream.keys[key] = 0;
+        this.$.key = `${key}:${this.stream.keys[key]++}`;
     }
 
     update() {
@@ -97,14 +112,14 @@ export class StreamTarget extends StopStartStateMachine {
                     this._handle_end("mpv");
                 });
             } else {
-                let is_file_output = utils.try_catch(()=>new URL(output_url)).protocol === "file:";
+                let is_file_output = utils.try_catch(()=>new URL(output_url).protocol === "file:");
                 let output = output_url;
                 if (is_file_output) {
                     output = url.fileURLToPath(output_url);
                     fs.mkdirSync(path.dirname(output), {recursive:true});
                 }
                 var ffmpeg_args = [];
-                if (this.stream.is_realtime) ffmpeg_args.push("-re");
+                // if (this.stream.is_realtime) ffmpeg_args.push("-re");
                 ffmpeg_args.push(
                     // `-noautoscale`,
                     "-i", input,
@@ -112,23 +127,12 @@ export class StreamTarget extends StopStartStateMachine {
                     "-f", output_format,
                     output
                 );
-                let key = this.stream.id;
-                if (this.$.output_url) {
-                    let output_url = new URL(this.$.output_url);
-                    if (output_url.protocol.match(/^(rtmp|http)s?:/)) {
-                        key = (output_url.hostname === "127.0.0.1") ? "localhost" : output_url.hostname;
-                    } else {
-                        key = output_url.protocol.slice(0,-1);
-                    }
-                }
-                if (!this.stream.keys[key]) this.stream.keys[key] = 0;
-                key = `${key}:${this.stream.keys[key]++}`;
                 // this.ffmpeg.on("line", console.log);
                 this.#ffmpeg = new FFMPEGWrapper();
                 this.#ffmpeg.on("error", (e)=>this.logger.log(e));
                 this.#ffmpeg.on("info", (info)=>{
-                    this.stream.register_metric(`${key}:speed`, this.stream.time_running, info.speed);
-                    this.stream.register_metric(`${key}:bitrate`, this.stream.time_running, info.bitrate);
+                    this.$.speed = info.speed;
+                    this.$.bitrate = info.bitrate;
                 });
                 /* this.#ffmpeg.logger.on("log",(log)=>{
                     // if (this.target.id === "gui") return;
@@ -141,7 +145,7 @@ export class StreamTarget extends StopStartStateMachine {
                 this.#ffmpeg.start(ffmpeg_args);
             }
         }
-        globals.app.ipc.emit("main.stream-target.started", this.id);
+        globals.app.ipc.emit("main.stream-target.started", this.$);
         
         return super.onstart();
     }

@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const framestep = new Filter({
 	name: "framestep",
 	descriptive_name: "Frame Step",
 	type: "video",
@@ -19,3 +19,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default framestep;

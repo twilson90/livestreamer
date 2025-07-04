@@ -1,5 +1,5 @@
 import { Filter } from "../Filter.js";
-export default new Filter({
+export const deblock = new Filter({
 	name: "deblock",
 	descriptive_name: "Deblock",
 	type: "video",
@@ -73,3 +73,4 @@ export default new Filter({
 		ctx.vid = v1;
 	}
 });
+export default deblock;
