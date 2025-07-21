@@ -117,6 +117,7 @@ export class MPVWrapper extends events.EventEmitter {
 
         var std_info = is_piped ? this.#process.stderr : this.#process.stdout;
         const rl = readline.createInterface(std_info);
+        std_info.on("close", ()=>rl.close());
         rl.on("error", utils.noop);
         rl.on("line", (line)=>{
             this.logger.debug(line.trim());
@@ -211,11 +212,14 @@ export class MPVWrapper extends events.EventEmitter {
             }
             this.#socket.off("error", onerror);
             // ------------
-            this.#socket.on("close", ()=>this.quit());
+            var socket_listener = readline.createInterface(this.#socket);
+            this.#socket.on("close", ()=>{
+                socket_listener.close();
+                this.quit();
+            });
             this.#socket.on("error", (error)=>{
                 this.logger.warn("socket error:", error);
             });
-            var socket_listener = readline.createInterface(this.#socket);
             socket_listener.on("error", (e)=>{
                 if (this.#closed) return;
                 this.logger.error(e);

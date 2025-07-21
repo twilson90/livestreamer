@@ -56,6 +56,7 @@ class IPC {
     /** @protected @param {net.Socket} sock */
     digest_sock_messages(sock, cb) {
         var lines = readline.createInterface(sock);
+        sock.on("close", ()=>lines.close());
         lines.on("error", this._handle_socket_error);
         lines.on("line", (line)=>{
             if (line) {

@@ -879,11 +879,8 @@ export class Volume {
 						result.warning = ["errUploadFile", filename, "errUploadTemp"];
 					} else if (opts.upload && opts.upload[0].match(/^https?\:\/\//)) {
 						var url = opts.upload[0];
-						var r = await axios.get(url, {
-							responseType: 'arraybuffer',
-							httpsAgent: new https.Agent({ rejectUnauthorized: false })
-						});
-						var dstid = await driver.write(dirid, sanitize(url), r.data);
+						var stream = new utils.Downloader(url).stream();
+						var dstid = await driver.write(dirid, sanitize(url), stream);
 						added.push(await driver.file(dstid));
 					} else if (opts.upload && opts.upload[0].match(/^data?\:/)) {
 						var url = opts.upload[0];

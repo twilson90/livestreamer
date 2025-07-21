@@ -1,6 +1,8 @@
 import fs from "fs-extra";
 import path from "node:path";
 import child_process from "node:child_process";
+import stream from "node:stream";
+import events from "node:events";
 import os from "node:os";
 import * as tar from "tar";
 import * as uuid from "uuid";
@@ -102,10 +104,15 @@ export async function is_dir_empty(p) {
     }
 }
 
-export async function reserve_disk_space(filepath, size) {
-    let fd = await fs.open(filepath, "w");
-    await fs.write(fd, "\0", size-1);
-    await fs.close(fd);
+export async function can_write_file(filepath, size) {
+    try {
+        const stats = fs.statfs(path.parse(filepath).root);
+        const free = stats.bsize * stats.bfree;
+        return free >= size;
+    } catch (error) {
+        console.error('Error checking disk space:', error);
+        return false;
+    }
 }
 
 export async function unique_filename(filepath) {
@@ -409,104 +416,6 @@ export async function* stream_response(response) {
     }
 }
 
-var default_opts = {
-    chunkSize: 1024 * 1024 * 8, // 5MB range requests
-    progressInterval: 1024 * 64, // 64KB progress updates
-    /** @type {(progress: {downloaded: number, total: number, percent: number, chunk: number, speed: number}) => void} */
-    onProgress: ()=>{},
-    /** @type {AbortSignal} */
-    signal: null
-}
-
-/** @param {string} url @param {string} filePath @param {typeof default_opts} opts */
-export async function download_url_to_file(url, filePath, opts) {
-    let fileSize = 0;
-    let downloadedBytes = 0;
-    let progressBytes = 0;
-    let lastProgressUpdate = 0;
-    var startTime = Date.now();
-    opts = {
-        ...default_opts,
-        ...opts
-    }
-    let {signal} = opts;
-
-    // Check existing file to resume download
-    try {
-        const stats = fs.statSync(filePath);
-        downloadedBytes = stats.size;
-    } catch (err) {
-        if (err.code !== 'ENOENT') throw err;
-    }
-
-    // Get file info
-    const headRes = await fetch(url, { method: 'HEAD', signal });
-    if (!headRes.ok) throw new Error(`HEAD request failed: ${headRes.status}`);
-    
-    fileSize = parseInt(headRes.headers.get('content-length'));
-    const acceptRanges = headRes.headers.get('accept-ranges') === 'bytes';
-    
-    if (!acceptRanges) {
-        console.warn('Server does not support byte ranges - cannot resume downloads');
-        downloadedBytes = 0;
-    }
-
-    const fileHandle = await fs.promises.open(filePath, downloadedBytes > 0 ? 'r+' : 'w');
-    
-    try {
-        while (downloadedBytes < fileSize) {
-            let endByte = Math.min(downloadedBytes + opts.chunkSize - 1, fileSize - 1);
-            if (opts.chunkSize <= 0) endByte = fileSize - 1;
-            
-            const res = await fetch(url, {
-                headers: {
-                    'Range': `bytes=${downloadedBytes}-${endByte}`
-                },
-                signal
-            });
-
-            if (res.status !== 206 && res.status !== 200) {
-                throw new Error(`Unexpected status: ${res.status}`);
-            }
-
-            // var speed_samples = [0];
-            // var lastTime = Date.now();
-
-            // Process the stream in chunks
-            for await (const chunk of stream_response(res)) {
-                const now = Date.now();
-                // const chunkTime = now - lastTime;
-                await fileHandle.write(chunk, 0, chunk.length, downloadedBytes);
-                downloadedBytes += chunk.length;
-                progressBytes += chunk.length;
-                let speed = progressBytes / ((now - startTime) / 1000);
-                
-                // speed_samples[speed_samples.length-1] += chunk.length / (chunkTime / 1000);
-
-                if ((downloadedBytes - lastProgressUpdate >= opts.progressInterval) || (downloadedBytes === fileSize)) {
-                    // let speed = average(speed_samples);
-                    // speed_samples.push(0);
-                    // if (speed_samples.length > speed_window) speed_samples.shift();
-                    opts.onProgress({
-                        downloaded: downloadedBytes,
-                        total: fileSize,
-                        percent: downloadedBytes / fileSize,
-                        chunk: chunk.length,
-                        speed
-                    });
-                    lastProgressUpdate = downloadedBytes;
-                }
-            }
-
-            if (downloadedBytes >= fileSize) break;
-        }
-    } finally {
-        await fileHandle.close();
-    }
-    
-    return { fileSize, downloadedBytes };
-}
-
 export function get_node_modules_dir(module) {
     var f = fileURLToPath(module ? import.meta.resolve(module) : import.meta.url);
     while(path.basename(f) != "node_modules" || path.basename(f) == f) f = path.dirname(f);
@@ -515,6 +424,147 @@ export function get_node_modules_dir(module) {
 
 export class StopWatchHR extends StopWatchBase {
 	__get_now() { return performance.now(); }
+}
+
+/** @typedef {{downloaded: number, total: number, percent: number, speed: number}} Progress */
+var default_download_opts = {
+    /** @type {number} set to 0 to disable chunking */
+    chunk_size: 1024 * 1024 * 8,
+    /** @type {number} */
+    progress_interval: 1024 * 64,
+    /** @type {AbortController} */
+    controller: null,
+    start: 0,
+    end: 0,
+    /** @type {Agent} */
+    agent: undefined,
+}
+/** @extends {events.EventEmitter<{data:[Buffer], progress:[Progress]}>} */
+export class Downloader extends events.EventEmitter {
+    /** @type {string} */
+    #url;
+    /** @type {typeof default_download_opts} */
+    #opts;
+    /** @type {AbortController} */
+    #controller;
+    #started;
+    /** @param {string} url @param {typeof default_download_opts} opts */
+    constructor(url, opts) {
+        super();
+        this.#url = url;
+        this.#opts = {
+            ...default_download_opts,
+            ...opts
+        }
+        this.#controller = opts.controller ?? new AbortController();
+    }
+
+    async download() {
+        return this.#started = this.#started ?? (async()=>{
+            let downloaded_bytes = 0;
+            let progress_bytes = 0;
+            let last_progress_update = 0;
+            var start_ts = Date.now();
+            var {chunk_size, progress_interval, start, end, agent} = this.#opts;
+
+            chunk_size = Math.max(chunk_size, 0);
+            progress_interval = Math.max(progress_interval, 0);
+            start = Math.max(start, 0);
+            end = Math.max(end, 0);
+        
+            downloaded_bytes = start ?? 0;
+            let accept_ranges;
+            let file_size = 0;
+        
+            if (chunk_size || start || end) {
+                const head_res = await fetch(this.#url, { method: 'HEAD', signal: this.#controller.signal, agent });
+                if (!head_res.ok) throw new Error(`HEAD request failed: ${head_res.status}`);
+                
+                file_size = parseInt(head_res.headers.get('content-length'));
+                accept_ranges = head_res.headers.get('accept-ranges') === 'bytes';
+                
+                if (!accept_ranges) {
+                    console.warn('Server does not support byte ranges - cannot resume downloads');
+                    downloaded_bytes = 0;
+                    chunk_size = 0;
+                    start = 0;
+                    end = null;
+                }
+            }
+            var done = false;
+            
+            while (!done) {
+                let headers = {};
+                if (accept_ranges && file_size) {
+                    let next_end_bytes = [file_size - 1];
+                    if (end) next_end_bytes.push(end - 1);
+                    if (chunk_size) next_end_bytes.push(downloaded_bytes + chunk_size - 1);
+                    let end_byte = Math.min(...next_end_bytes);
+                    headers['Range'] = `bytes=${downloaded_bytes}-${end_byte}`;
+                }
+                const res = await fetch(this.#url, {
+                    headers,
+                    agent,
+                    signal: this.#controller.signal
+                });
+                if (res.status !== 206 && res.status !== 200) {
+                    throw new Error(`Unexpected status: ${res.status}`);
+                }
+
+                // Process the stream in chunks
+                for await (const chunk of stream_response(res)) {
+                    const now = Date.now();
+                    downloaded_bytes += chunk.length;
+                    progress_bytes += chunk.length;
+                    let speed = progress_bytes / ((now - start_ts) / 1000);
+
+                    this.emit('data', chunk);
+                    
+                    if ((downloaded_bytes - last_progress_update >= progress_interval) || (downloaded_bytes === file_size)) {
+                        let p = {
+                            downloaded: downloaded_bytes,
+                            total: file_size,
+                            percent: downloaded_bytes / file_size,
+                            speed
+                        };
+                        this.emit('progress', p);
+                        last_progress_update = downloaded_bytes;
+                    }
+                }
+                done = downloaded_bytes >= file_size;
+            }
+            this.emit("end");
+        })();
+    }
+
+    start() {
+        return this.download();
+    }
+
+    abort() {
+        this.#controller.abort();
+    }
+    
+    stream() {
+        var out = new stream.PassThrough();
+        this.on('data', (chunk)=>out.write(chunk));
+        this.on("end", ()=>new Promise(resolve=>out.end(resolve)));
+        this.start();
+        return out;
+    }
+    
+    /** @param {string} file */
+    async file(file, resume=false) {
+        if (resume) {
+            const exists = await fs.exists(file).catch(noop);
+            const stat = exists ? await fs.stat(file).catch(noop) : null;
+            if (stat) this.#opts.start = stat.size;
+            else resume = false;
+        }
+        var out = fs.createWriteStream(file, {flags: resume ? 'r+' : 'w'});
+        this.stream().pipe(out);
+        return this.start();
+    }
 }
 
 // prevents bad SSL being rejected.

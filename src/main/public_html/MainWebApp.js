@@ -962,11 +962,17 @@ export class Remote$ extends utils.remote.Proxy$ {
     processes = {};
     sysinfo = new class {
         platform = "";
+        memory = {
+            used: 0,
+            free: 0,
+            total: 0,
+        };
         processes = {};
     };
     disk = {
         free: 0,
-        size: 0,
+        used: 0,
+        total: 0,
         is_low: false,
     };
     conf = {};
@@ -1644,7 +1650,7 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
             return this.props.label;
         }
         if (this._is_root) return "[Root]";
-        if (this._is_null) return "[Nothing]";
+        if (!this.filename || this._is_null) return "[Nothing]";
         var mi = this._media_info || EMPTY_OBJECT;
         if (mi.name) return mi.name;
         var filename = this.filename;
@@ -2129,9 +2135,14 @@ export function get_rect_pt_percent(rect, pt) {
     return {x:(pt.x-rect.x)/rect.width, y:(pt.y-rect.y)/rect.height};
 }
 
-class JsonElement {
-    /** @type {Record<PropertyKey,JsonElement>} */
+class JSONElement {
+    /** @type {Record<PropertyKey,JSONElement>} */
     children = {};
+
+    get has_children() {
+        for (var k in this.children) return true;
+        return false;
+    }
 
     constructor(data, key, parent) {
         this.data = data;
@@ -2167,7 +2178,7 @@ class JsonElement {
         if (this.type == "array" || this.type == "object") {
             empty = true;
             for (var k in this.data) {
-                var child = new JsonElement(data[k], is_array ? null : k, this);
+                var child = new JSONElement(data[k], is_array ? null : k, this);
                 this.value_elem.append(child.elem);
                 this.children[k] = child;
                 empty = false;
@@ -2204,7 +2215,12 @@ class JsonElement {
             "word-break": "break-all"
         });
     }
+    toggle() {
+        if (!this.has_children) return;
+        dom.toggle_class(this.elem, "collapsed");
+    }
     collapse(value) {
+        if (!this.has_children) return;
         dom.toggle_class(this.elem, "collapsed", value)
     }
     find(path) {
@@ -2216,11 +2232,11 @@ class JsonElement {
         return c;
     }
 }
-class JsonRoot extends JsonElement {
+class JSONRoot extends JSONElement {
     constructor(data, collapsed_children=false) {
         super(data);
         if (collapsed_children) {
-            for (var c of this.children) {
+            for (var c of Object.values(this.children)) {
                 c.toggle();
             }
         }
@@ -2228,7 +2244,7 @@ class JsonRoot extends JsonElement {
 }
 export class JSONContainer extends ui.UI {
     constructor(data, collapsed_children=false) {
-        var json_root = new JsonRoot(data, collapsed_children);
+        var json_root = new JSONRoot(data, collapsed_children);
         super(json_root.elem);
         this._json_root = json_root;
     }
@@ -2974,14 +2990,14 @@ export class SystemManagerMenu extends ui.Modal {
         }));
         this.props.append(new Bar({
             label: "Disk",
-            value: ()=>(app.$.disk.size-app.$.disk.free),
-            total: ()=>app.$.disk.size,
+            value: ()=>app.$.disk.used,
+            total: ()=>app.$.disk.total,
             format: (x)=>utils.format_bytes(x)
         }));
         this.props.append(new Bar({
             label:"Memory",
-            value: ()=>app.$.sysinfo.memory_total-app.$.sysinfo.memory_free,
-            total: ()=>app.$.sysinfo.memory_total,
+            value: ()=>app.$.sysinfo.memory.total-app.$.sysinfo.memory.free,
+            total: ()=>app.$.sysinfo.memory.total,
             format: (x)=>utils.format_bytes(x)
         }));
         this.props.append(new Bar({
@@ -3794,7 +3810,7 @@ export class UploadsDownloadsMenu extends ui.Modal {
     }
 }
 
-export class PlaylistInfoMenu extends ui.Modal {
+export class PlaylistItemInfoMenu extends ui.Modal {
     /** @param {PlaylistItem$[]} items */
     constructor(items, all_collapsed=false) {
 
@@ -3810,7 +3826,7 @@ export class PlaylistInfoMenu extends ui.Modal {
             return copy;
         })
         if (items.length == 1) {
-            name = `'${items[0]._get_pretty_name()}'`;
+            name = `<i>${items[0]._get_pretty_name()}</i>`;
             data = data[0]
         } else {
             name = `[${items.length} Items]`
@@ -8562,7 +8578,7 @@ export class PlaylistPanel extends Panel {
 
         this.pl_add_url_button.addEventListener("click", async (e)=>{
             var urls = await new PlaylistAddURLMenu().show();
-            if (urls.length) {
+            if (urls && urls.length) {
                 app.playlist_add(urls);
             }
         });
@@ -8582,7 +8598,7 @@ export class PlaylistPanel extends Panel {
                 "icon": `<i class="fas fa-info-circle"></i>`,
                 "visible": (items)=>items.length>0,
                 "click": (items)=>{
-                    new PlaylistInfoMenu(items).show();
+                    new PlaylistItemInfoMenu(items).show();
                 },
                 "shortcut": "I",
             }),
@@ -10863,7 +10879,7 @@ export class MainWebApp extends utils.EventEmitter {
 
         if (this.$.disk.is_low && !disk_warn_shown) {
             disk_warn_shown = true;
-                new Toast(`<span>Disk space is low: ${(this.$.disk.free / this.$.disk.size * 100).toFixed(1)}% remaining, ${utils.format_bytes(this.$.disk.free)} free.</span>`).show();
+                new Toast(`<span>Disk space is low: ${(this.$.disk.free / this.$.disk.total * 100).toFixed(1)}% remaining, ${utils.format_bytes(this.$.disk.free)} free.</span>`).show();
         }
         
         document.body.dataset.playlist_id = this.playlist.id;

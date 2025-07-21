@@ -342,7 +342,7 @@ export class CoreMaster extends Core {
         fs.mkdirSync(this.clients_dir, { recursive:true });
         fs.mkdirSync(this.uids_dir, { recursive:true });
         fs.mkdirSync(this.sockets_dir, { recursive:true });
-        // try { fs.emptyDirSync(this.tmp_dir, { recursive:true }); } catch (e) {}
+        try { fs.emptyDirSync(this.tmp_dir, { recursive:true }); } catch (e) {}
         
         this.#ipc = new IPCMaster(this.name, this.get_socket_path(`ipc`, true));
         
@@ -366,7 +366,8 @@ export class CoreMaster extends Core {
         nethogs.on("error", (e)=>{
             console.error(e.message);
         });
-        
+        nethogs.on("close", ()=>rl.close());
+
         this.#ipc.respond("core", ()=>{
             return {
                 conf: this.conf,
@@ -399,20 +400,6 @@ export class CoreMaster extends Core {
         this.modules = Object.fromEntries(resolved_modules.map(p=>[path.basename(path.dirname(p)), p]));
 
         // -----------------------------------------
-
-        var stdin_listener = readline.createInterface(process.stdin);
-        stdin_listener.on("line", (line)=>{
-            var args = minimist(line.split(" "));
-            if (args[0] == "connect") {
-                
-            }
-            var [proc, ...command] = args;
-            if (proc in this.modules) {
-                this.#ipc.emit_to(proc, "internal:input", {command});
-            } else {
-                console.error(`${proc} is not a module`)
-            }
-        });
         
         await this.#setup_proxies();
         await this.#compress_logs();
@@ -711,9 +698,13 @@ export class CoreMaster extends Core {
             received += p.received;
             sent += p.sent;
         }
+        var memory = {
+            total: os.totalmem(),
+            free: os.freemem(),
+            used: os.totalmem() - os.freemem(),
+        };
         return {
-            memory_total: os.totalmem(),
-            memory_free: os.freemem(),
+            memory,
             uptime: os.uptime(),
             cpu_avg: cpu_avg,
             received,
@@ -818,6 +809,13 @@ export class CoreFork extends Core {
     /** @param {string} name @param {T} $ */
     constructor(name, $) {
         super(name, $);
+
+        var stdin_listener = readline.createInterface(process.stdin);
+        stdin_listener.on("line", (line)=>{
+            var args = stringArgv(line);
+            this.emit("input", args);
+        });
+
         this.#ready = this.#init();
     }
     
@@ -848,12 +846,6 @@ export class CoreFork extends Core {
             utils.clear(this.conf);
             Object.assign(this.conf, conf);
             this.emit("update-conf", this.conf);
-        });
-
-        var stdin_listener = readline.createInterface(process.stdin);
-        stdin_listener.on("line", (line)=>{
-            var args = stringArgv(line);
-            this.emit("input", args);
         });
         
         this.#ipc.on("internal:input", ({command})=>{

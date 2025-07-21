@@ -8,7 +8,6 @@ import compression from "compression";
 import express from "express";
 import bodyParser from "body-parser";
 import multer from "multer";
-import checkDiskSpace from "check-disk-space";
 import Color from "color";
 import stream from "node:stream";
 import {globals, Stream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, downloaders, ass } from "./exports.js";
@@ -56,6 +55,16 @@ var ext_format_map = {
     ".mp4": "mp4",
 };
 var format_ext_map = Object.fromEntries(utils.reverse_map(ext_format_map));
+
+export const DEFAULT_GENERATE_MEDIA_OPTS = {
+    type: "video",
+    background: "#000000",
+    duration: 60,
+    fps: 30,
+    width: 1280,
+    height: 720,
+    filename: ""
+}
 
 /** @typedef {string} Domain */
 /** @typedef {Record<PropertyKey,{access:string, password:string, suspended:boolean}>} AccessControl */
@@ -358,50 +367,53 @@ export class MainApp extends CoreFork {
             const controller = new AbortController();
             var {source} = req.query
             var data = {
-                type: req.query.type || "video", // can be video, audio, subtitle or a delimeter separated list (e.g. video+audio)
-                background: req.query.background || "#000000",
-                duration: +req.query.duration || 60,
-                fps: +req.query.fps || 30,
-                width: +req.query.width || 1280,
-                height: +req.query.height || 720,
-                filename: req.query.filename || ""
+                ...DEFAULT_GENERATE_MEDIA_OPTS,
             };
+            for (var k in req.query) {
+                if (k in DEFAULT_GENERATE_MEDIA_OPTS) data[k] = req.query[k];
+            }
             if (source) {
                 try { Object.assign(data, JSON.parse(source)); } catch (e) { data.filename = source; }
             }
             var {filename} = data;
-            if (filename.match(/^https?:\/\//)) {
-                var local_path = path.join(this.tmp_dir, utils.md5(source));
-                if (!await fs.exists(local_path)) {
-                    try {
-                        await utils.download_url_to_file(source, local_path, { signal: controller.signal });
-                    } catch (e) {
-                        this.logger.warn(`Failed to download '${source}': ${e}`);
-                        res.status(400).send(e.message);
-                        return;
+            if (filename) {
+                if (filename.match(/^https?:\/\//)) {
+                    var local_path = path.join(this.tmp_dir, utils.md5(source));
+                    if (!await fs.exists(local_path)) {
+                        try {
+                            let downloader = new utils.Downloader(source, { controller: controller });
+                            await downloader.file(local_path);
+                        } catch (e) {
+                            this.logger.warn(`Failed to download '${source}': ${e}`);
+                            res.status(400).send(e.message);
+                            return;
+                        }
                     }
+                    filename = local_path;
                 }
-                filename = local_path;
-            }
-            if (!await fs.exists(filename)) {
-                res.status(400).send(`File not found: ${filename}`);
-                return;
+                if (!(await fs.exists(filename))) {
+                    res.status(400).send(`File not found: ${filename}`);
+                    return;
+                }
             }
             let color_str = Color(data.background || 0x000000).hex();
             var hash = utils.md5(JSON.stringify(data));
+
             var media_types = new Set(data.type.split(/[^a-zA-Z0-9]/));
             let [ext, mime] = ["mkv", "video/x-matroska"];
             if (media_types.has("video")) [ext, mime] = ["mkv", "video/x-matroska"];
             else if (media_types.has("audio")) [ext, mime] = ["mp3", "audio/mpeg"];
             else if (media_types.has("subtitle")) [ext, mime] = ["ass", "text/plain"];
             var generated_filename = path.join(this.tmp_dir, `${hash}.${ext}`);
+            var exists = !!(await fs.exists(generated_filename) && (await fs.stat(generated_filename))?.size);
             
             res.status(200);
             res.setHeader("Content-Type", mime);
 
-            if (await fs.exists(generated_filename)) {
+            if (exists) {
                 res.sendFile(generated_filename);
             } else {
+                fs.writeFile(generated_filename, "").catch(utils.noop);
                 var ffmpeg_args = [
                     `-r`, `${data.fps}`
                 ];
@@ -554,6 +566,7 @@ export class MainApp extends CoreFork {
         await this.client_server.ready;
     }
 
+    /** @param {typeof DEFAULT_GENERATE_MEDIA_OPTS} data */
     generate_media_url(data) {
         var url = new URL("/generate/", this.get_urls().url);
         for (var k in data) {
@@ -729,12 +742,17 @@ export class MainApp extends CoreFork {
         if (this.sysinfo_client_updater.has_clients) this.#update_sysinfo();
         if (this.#ticks % 60 === 0) {
             var root = path.parse(process.cwd()).root;
-            var usage = await checkDiskSpace(root);
-            var disk_percent = (usage.free / usage.size);
-            var is_low = disk_percent < this.conf["main.warn_disk_space"];
+            
+            const stats = fs.statfs(root);
+            const total = stats.blocks * stats.bsize;
+            const free = stats.bsize * stats.bfree;
+            const used = stats.bsize * stats.bused;
+            const percent = (used / total) * 100;
+            var is_low = percent < this.conf["main.warn_disk_space"];
             this.$.disk = {
-                "free": usage.free,
-                "size": usage.size,
+                "free": free,
+                "used": used,
+                "total": total,
                 "is_low": is_low,
             }
             if (is_low) {

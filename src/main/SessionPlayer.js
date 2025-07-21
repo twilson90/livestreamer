@@ -182,7 +182,6 @@ export class SessionPlayer extends DataNode {
         this.#height = opts.height;
         this.#mpv = new MPVWrapper({
             ipc: true,
-            cwd: globals.app.tmp_dir_dir,
         });
         this.logger = new Logger("player");
         this.#mpv.logger.on("log", (log)=>{
@@ -553,7 +552,7 @@ export class SessionPlayer extends DataNode {
             let ls_path = new URL(filename).host;
             filename = "null://";
             if (ls_path == "intertitle") {
-                let ass_str = create(undefined, [{
+                let ass_str = ass.create(undefined, [{
                     font: props.title_font || "Arial",
                     size: props.title_size || 20,
                     color: props.title_color || "#ffffff",
@@ -570,9 +569,9 @@ export class SessionPlayer extends DataNode {
                 }], [{
                     start: 0.25 * 1000,
                     end: (Math.max(0, (duration || Number.MAX_SAFE_INTEGER) - 0.5))*1000,
-                    text: ass_fade(props.fade_in || 0, props.fade_out || 0) + (ass_rotate(...(Array.from(props.title_rotation)||[0,0,0]))) + ass_text(props.title_text),
+                    text: ass.fade(props.fade_in || 0, props.fade_out || 0) + (ass.rotate(...(Array.from(props.title_rotation)||[0,0,0]))) + ass.text(props.title_text),
                 }]);
-                filename = await get_ass_subtitle(ass_str);
+                filename = await get_ass_subtitle_as_path(ass_str);
                 map.register_stream({type:"subtitle"}, true);
             } else if (ls_path == "rtmp") {
                 filename = `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}/session/${this.session.$.id}`;
@@ -584,9 +583,24 @@ export class SessionPlayer extends DataNode {
 
         if (is_image) {
             // let title = `Image (${path.basename(filename)})`;
-            filename = await get_image_as_video(filename, this.#width, this.#height, background_color);
-            map.register_stream({type:"video", codec:"h264", duration:NULL_STREAM_DURATION, fps:NULL_STREAM_FPS, title:path.basename(filename)}, true);
+            filename = await globals.app.generate_media_url({
+                type: "video",
+                duration: NULL_STREAM_DURATION,
+                width: this.#width,
+                height: this.#height,
+                background: background_color,
+                fps: NULL_STREAM_FPS,
+                filename,
+            });
+            map.register_stream({
+                type: "video",
+                codec: "h264",
+                duration: NULL_STREAM_DURATION,
+                fps: NULL_STREAM_FPS,
+                title: path.basename(filename)
+            }, true);
             media_duration = NULL_STREAM_DURATION;
+
             if (duration != media_duration) {
                 let edl = new MPVEDL(MPVEDL.repeat(filename, {end:media_duration, duration}));
                 filename = edl.toString();
@@ -629,8 +643,6 @@ export class SessionPlayer extends DataNode {
         // let is_unknown_duration = !duration && (is_empty || is_image || is_rtmp);
         let is_unknown_duration = !duration && !media_info.duration && !is_playlist;
         duration = duration || media_duration;
-        let fix_low_fps_duration = (is_image || is_empty) && !is_unknown_duration && media_type == "video";
-        if (fix_low_fps_duration) duration += 1/NULL_STREAM_FPS;
 
         // this only works for jpg and webp... what's the point?
         /* if (is_image && is_root) {
@@ -713,7 +725,7 @@ export class SessionPlayer extends DataNode {
                     }
                 }
                 if (track.entries.length && track.type) {
-                    if (edl.length) edl.append("!new_stream");
+                    edl.append("!new_stream");
                     edl.append(new MPVEDLEntry("!delay_open", {media_type: track.type}));
                 }
                 edl.append(...track.entries);
@@ -727,6 +739,7 @@ export class SessionPlayer extends DataNode {
             let duration_mismatch = (pad_duration > 0.04);
             if (duration_mismatch || media_type_mismatch) {
                 let edl = new MPVEDL();
+                edl.append("!new_stream");
                 edl.append("!no_chapters");
                 if (media_type) edl.append(new MPVEDLEntry("!delay_open", {media_type}));
                 if (exists) {
@@ -766,7 +779,7 @@ export class SessionPlayer extends DataNode {
                     } else if (t === "video") {
                         null_filename = await globals.app.generate_media_url({
                             type:"video",
-                            duration: NULL_STREAM_DURATION+(1/NULL_STREAM_FPS),
+                            duration: NULL_STREAM_DURATION,
                             width: this.#width,
                             height: this.#height,
                             background: background_color,
@@ -778,7 +791,7 @@ export class SessionPlayer extends DataNode {
                             duration:NULL_STREAM_DURATION
                         });
                     }
-                    if (!is_empty) edl.append("!new_stream");
+                    edl.append(`!track_meta,bytrate=${Math.floor(this.stream.$.video_bitrate/8)}`);
                     edl.append(...MPVEDL.repeat(null_filename, {end:NULL_STREAM_DURATION, duration}));
                 }
                 filename = edl.toString();
@@ -867,7 +880,6 @@ export class SessionPlayer extends DataNode {
             duration = edl.duration;
         }
 
-        if (fix_low_fps_duration) duration--;
         if (is_unknown_duration) duration = 0;
 
         let seekable = !!duration;
@@ -1405,7 +1417,7 @@ class StreamCollection {
     }
 }
 
-async function get_generated_path(filename, generator) {
+async function create_file(filename, generator) {
     var dir = path.resolve(globals.app.tmp_dir, "0");
     await fs.mkdir(dir, { recursive: true });
     var fullpath = path.resolve(dir, filename);
@@ -1417,7 +1429,7 @@ async function get_generated_path(filename, generator) {
 
 async function extract_albumart(media_filename, stream_id, format) {
     var filename = `${utils.md5(media_filename)}-${stream_id}-${format}`;
-    return get_generated_path(filename, async (fullpath)=>{
+    return create_file(filename, async (fullpath)=>{
         await utils.execa(globals.app.ffmpeg_path, [
             `-i`, media_filename,
             `-map`, `0:${stream_id}`,
@@ -1431,9 +1443,9 @@ async function extract_albumart(media_filename, stream_id, format) {
     });
 }
 
-async function get_ass_subtitle(ass_str) {
+async function get_ass_subtitle_as_path(ass_str) {
     var filename = `${utils.md5(ass_str)}.ass`;
-    return get_generated_path(filename, async (output_path)=>{
+    return create_file(filename, async (output_path)=>{
         await globals.app.safe_write_file(output_path, ass_str);
     });
 }

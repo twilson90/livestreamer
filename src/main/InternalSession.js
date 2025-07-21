@@ -325,7 +325,13 @@ export class InternalSession extends Session {
             var item = _this.$.playlist[id];
             var filename = item.filename;
             var mi = (await globals.app.get_media_info(filename)) || {};
-            if (mi.name || mi.filename) item.props.label = mi.name || mi.filename;
+            if (!item.props.label) {
+                if (mi.name) {
+                    item.props.label = mi.name;
+                } else if (mi.filename && path.basename(mi.filename) != path.basename(filename)) {
+                    item.props.label = path.basename(mi.filename);
+                }
+            }
             if (_this.is_item_playlist(id)) {
                 item.filename = "livestreamer://playlist";
                 var children = [..._this.iterate_playlist_items(id)];
@@ -350,7 +356,7 @@ export class InternalSession extends Session {
                     })
                     .catch((e)=>{
                         if (download.destroyed) return; // aka cancelled.
-                        if (e) this.logger.warn(`Download failed: ${e.stderr || e}`);
+                        if (e) this.logger.warn(`Download failed: ${e?.stderr ?? e}`);
                     })
                     .finally(()=>{
                         download.destroy();
@@ -1014,10 +1020,10 @@ function fix_session($, warn) {
 export default InternalSession;
 
 function fix_playlist_item(item, $) {
-    if (typeof item !== "object" || item === null) item = {filename: item ? String(item) : "livestreamer://empty"};
+    if (typeof item !== "object" || item === null) item = {filename: item ? String(item) : ""};
     var {id, filename, props, index, parent_id, track_index} = item;
     id = String(id ?? utils.uuidb64());
-    filename = filename || "livestreamer://empty";
+    filename = filename || "";
     props = props || {};
     utils.remove_nulls(props);
     utils.rename_property(props, "video_track", "vid_override");

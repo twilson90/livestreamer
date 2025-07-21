@@ -79,7 +79,7 @@ export class Upload extends DataNodeID {
             // this should force the file to be written sequentially even if chunks arrive out of order by reserving the space on disk first.
             // await utils.reserve_disk_space(this.unique_dest_path, filesize);
 
-            await fs.writeFile(this.unique_dest_path, "\0");
+            await fs.truncate(this.unique_dest_path, filesize);
 
             this.#last_log = Date.now();
             

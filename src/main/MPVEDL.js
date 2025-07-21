@@ -6,12 +6,12 @@ const delim_map = Object.fromEntries(["\n", ",", "%", "=", ";"].map(c=>[c, Buffe
 export const MAX_EDL_REPEATS = 1024;
 export const EDL_GENERAL_HEADERS = ["new_stream", "no_clip", "delay_open", "mp4_dash", "global_tags", "no_chapters", "track_meta"];
 
-function shorten(filename) {
+/* function shorten(filename) {
     var filepath = utils.pathify(filename);
     if (!filepath) return filename;
     var alt = path.relative(process.cwd(), filepath); // can significantly shorten path
     return (alt.length < filepath.length) ? alt : filepath;
-}
+} */
 
 export class MPVEDLEntry {
     /** @type {string|MPVEDL} */
@@ -36,7 +36,7 @@ export class MPVEDLEntry {
 
     toString() {
         let header = (typeof this.#header === "string") ? this.#header : this.#header.toString();
-        header = (header.startsWith("!")) ? header : MPVEDL.escape_if_necessary(shorten(header.toString()));
+        header = (header.startsWith("!")) ? header : MPVEDL.escape(header.toString());
         let parts = [header];
         for (var k in this.#params) {
             parts.push(`${k}=${MPVEDL.escape_if_necessary(this.#params[k].toString())}`);

@@ -189,6 +189,7 @@ export class FFMPEGWrapper extends events.EventEmitter {
                     last_ts = ts;
                 }
             });
+            this.#process.on("close", ()=>listener.close());
             if (this.opts.info_interval) {
                 this.#info_interval = setInterval(()=>{
                     if (this.#last_info == last_emitted_info) return;

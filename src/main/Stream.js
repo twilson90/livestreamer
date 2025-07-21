@@ -30,6 +30,20 @@ export class Stream$ extends StopStartStateMachine$ {
     player = new SessionPlayer$();
     buffer_duration = 5;
     fps = 0;
+    
+    // Stream settings
+    targets = [];
+    target_opts = {};
+    title = "";
+    fps = 0;
+    use_hardware = 0;
+    experimental_mode = false;
+    resolution = "1280x720";
+    h264_preset = "veryfast";
+    video_bitrate = 5000;
+    audio_bitrate = 160;
+    buffer_duration = 5;
+    test = false;
 }
 
 /**
@@ -413,11 +427,11 @@ export class Stream extends StopStartStateMachine {
                         `--ovcopts-add=level=4`,
                         `--ovcopts-add=b=${this.$.video_bitrate}k`,
                         `--ovcopts-add=maxrate=${this.$.video_bitrate}k`,
-                        // `--ovcopts-add=minrate=${Math.floor(this.$.video_bitrate)}k`,
-                        `--ovcopts-add=bufsize=${Math.floor(this.$.video_bitrate)}k`,
+                        `--ovcopts-add=minrate=${Math.floor(this.$.video_bitrate)}k`,
+                        `--ovcopts-add=bufsize=${Math.floor(this.$.video_bitrate*2)}k`,
                         // `--ovcopts-add=tune=fastdecode`, // this reduces quality to big wet arses
                         // `--ovcopts-add=tune=zerolatency`, // <-- new
-                        // `--ovcopts-add=rc_init_occupancy=${Math.floor(this.$.video_bitrate)}k`,
+                        `--ovcopts-add=rc_init_occupancy=${Math.floor(this.$.video_bitrate)}k`,
                         `--ovcopts-add=strict=+experimental`,
                         // `--ovcopts-add=x264opts=rc-lookahead=0`,
                         // `--ovcopts-add=flags=+low_delay`,
@@ -517,7 +531,8 @@ export class Stream extends StopStartStateMachine {
                     ], {
                         stdio: ["pipe", "pipe", "ignore"]
                     });
-                    const rl = readline.createInterface({input:ffprobe.stdout});
+                    const rl = readline.createInterface(ffprobe.stdout);
+                    ffprobe.stdout.on("close", ()=>rl.close());
                     rl.on("line", (line)=>{
                         try {
                             let data = JSON.parse(line.trim().slice(0,-1));
@@ -600,7 +615,7 @@ export class Stream extends StopStartStateMachine {
                         this.logger.error("ffmpeg stdin error:", e);
                     }); */
                 }
-            })
+            });
 
             let res = await this.player.start(mpv_args);
             if (!res) {
