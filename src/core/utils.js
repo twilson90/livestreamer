@@ -203,32 +203,6 @@ export async function  compress_logs_directory(dir){
     await Promise.all(promises);
     // core.logger.info(`Compression of '${dir}' took ${Date.now()-now}ms.`)
 }
-
-export async function tree_kill(pid, signal) {
-    pid = parseInt(pid);
-    if (Number.isNaN(pid)) {
-        throw new Error("pid must be a number");
-    }
-    if (process.platform === "win32") {
-        return new Promise(resolve=>child_process.exec(`taskkill /pid ${pid} /T /F`, { windowsHide: true }, resolve));
-    }
-    var killed = {};
-    async function kill(pid, signal) {
-        if (killed[pid]) return;
-        killed[pid] = 1;
-        try {
-            process.kill(parseInt(pid), signal);
-        } catch (err) {
-            console.error(err)
-            if (err.code !== 'ESRCH') throw err;
-        }
-    }
-    var tree = await pidtree(pid, {root:true, advanced:true});
-    tree.reverse();
-    for (let {pid} of tree) {
-        await kill(pid, signal);
-    }
-}
   
 export const array_avg = function (arr) {
     if (arr && arr.length >= 1) {

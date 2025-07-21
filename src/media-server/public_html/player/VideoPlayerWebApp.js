@@ -3,10 +3,13 @@ import * as dom from "../../../utils/dom/exports.js";
 import {$} from '../../../jquery-global.js';
 import Hls from "hls.js";
 import videojs from "video.js/core.es.js";
+import ResizeObserver from 'resize-observer-polyfill';
 
 import "video.js/dist/video-js.css";
 import "../../../utils/dom/dom.scss";
 import './style.scss';
+
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
 class Crop {
     x0 = 0;
@@ -62,11 +65,6 @@ var crops = [
 
 var crop_modes = [
     {
-        "label": "Automatic",
-        "icon": `AUTO`,
-        "value": "auto"
-    },
-    {
         "label": "16:9 (Widescreen)",
         "icon": `16:9`,
         "value": 16/9,
@@ -84,6 +82,11 @@ var crop_modes = [
         "value": 21/9,
         "crop": crops[2]
     },
+    {
+        "label": "Automatic",
+        "icon": `AUTO`,
+        "value": "auto"
+    },
 ];
 
 var DEBUG = false;
@@ -93,10 +96,10 @@ const CROP_DETECT_INTERVAL = 1000;
 const VIDEO_UI_UPDATE_INTERVAL = 100;
 const IS_EMBED = window.parent !== window.self;
 
-var settings = new dom.LocalStorageBucket("player", {
+var settings = new dom.LocalStorageBucket("player-v2", {
     time_display_mode: 0,
     volume: 1,
-    crop_mode: crop_modes.findIndex(m=>m.value == "auto"),
+    crop_mode: 0,
 });
 settings.load();
 
@@ -124,7 +127,7 @@ export class MediaServerVideoPlayerWebApp {
         this.play_button = new PlayButton();
         document.body.append(this.play_button.el);
 
-        var menu = new dom.DropdownMenu({
+        /* var menu = new dom.DropdownMenu({
             items: [
                 {
                     label: ()=>`Toggle Debug Mode`,
@@ -138,7 +141,7 @@ export class MediaServerVideoPlayerWebApp {
             trigger: "contextmenu",
             target: document.body,
             position: "trigger"
-        });
+        }); */
         
         setInterval(()=>{
             app.update()
@@ -149,7 +152,11 @@ export class MediaServerVideoPlayerWebApp {
 
     init_player(autoplay) {
         if (this.player) {
-            this.player.play();
+            this.player.play().then(()=>{
+                this.player.update();
+            }).catch(e=>{
+                console.error(e);
+            });
         } else {
             this.player = new VideoPlayer(this.src);
             this.player.init(autoplay);
@@ -177,6 +184,7 @@ class PlayButton {
         this.el = this.el;
         this.update();
     }
+
     update() {
         var paused = false;
         var ended = false;
@@ -238,22 +246,16 @@ class VideoPlayer {
 
         var d = this.get_time_until_live_edge_area(true);
         var behindLiveEdge = this.liveTracker.behindLiveEdge();
-        
+        var is_live = this.liveTracker.isLive();
         var rate = this.player.playbackRate();
-        var new_rate;
-        var at_live_edge = d <= 0 && !behindLiveEdge;
-        // if (rate === -1) {
-        //   new_rate = at_live_edge ? 1.0 : 1.5;
-        // } else {
-        new_rate = at_live_edge ? Math.min(1, rate) : rate;
-        // }
+        var at_live_edge = d <= 0;
+        var new_rate = at_live_edge ? Math.min(1, rate) : rate;
         if (new_rate != rate) {
             this.player.playbackRate(new_rate);
         }
 
-        // console.log("liveTracker.behindLiveEdge()", liveTracker.behindLiveEdge())
         var stl_text;
-        if (this.liveTracker.behindLiveEdge()) {
+        if (behindLiveEdge) {
             // this.is_mobile && 
             if (settings.get("time_display_mode") == 0) {
                 stl_text = "["+this.get_live_time(0, this.player.currentTime())+"]"
@@ -268,7 +270,6 @@ class VideoPlayer {
             this.seekToLive.textEl_.innerHTML = stl_text;
         }
         
-        var is_live = this.liveTracker.isLive();
         if (is_live) this.timeDisplayToggle.show();
         else this.timeDisplayToggle.hide();
     }
@@ -418,10 +419,12 @@ class VideoPlayer {
                 super.update();
                 this.update_selection();
             }
-            update_selection(){
+            update_selection() {
+                var level = app.player.get_preferred_level();
+                var selected_item = this.items.find(i=>i.level == level);
+                if (!selected_item) selected_item = this.items[this.items.length-1];
                 for (var item of this.items) {
-                    var level = app.player.get_preferred_level();
-                    item.selected(item.level === level);
+                    item.selected(selected_item.level === item.level);
                 }
             }
             createItems() {
@@ -499,8 +502,12 @@ class VideoPlayer {
             }
         }
         videojs.registerComponent("cropToggle", CropToggle);
-
+        console.log("debug", import.meta.env.DEV)
         this.hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: true,
+            debug: !!import.meta.env.DEV,
+
             manifestLoadPolicy: {
                 default: {
                     maxTimeToFirstByteMs: Infinity,
@@ -521,13 +528,12 @@ class VideoPlayer {
                     },
                 },
             },
-            maxBufferSize: 2 * 1024 * 1024,
-            maxBufferLength: 5, // minimum guaranteed buffer length
-            maxMaxBufferLength: 15, // max seconds to buffer
+            maxBufferLength: 10, // minimum guaranteed buffer length
+            maxMaxBufferLength: 20, // max seconds to buffer
             liveDurationInfinity: true,
-            // liveSyncDurationCount: 3, // 3 by default, about 6 seconds.
-            // progressive: true, // experimental
+            liveSyncDurationCount: 2, // # of segments to buffer before playing
             lowLatencyMode: false,
+            // progressive: true, // experimental
             // maxLiveSyncPlaybackRate: 1.5,
 
             // -----
@@ -540,8 +546,9 @@ class VideoPlayer {
         });
 
         this.player = videojs(this.video_el, {
-            autoplay,
-            // muted: true, 
+            autoplay: autoplay && !isIOS,
+            playsinline: isIOS,
+            muted: autoplay && isIOS, 
             // volume:0,
             // fluid: true,
             playbackRates: [0.5, 1, 1.25, 1.5, 2], // , -1
@@ -614,7 +621,7 @@ class VideoPlayer {
         this.video_el.parentElement.insertBefore(c2, this.video_el);
         c1.append(this.video_el);
         c2.append(app.play_button.el);
-        c2.style.background = "rgb(10,10,10)";
+        c2.style.background = "black";
         c1.style.background = "black";
 
         // player.on("seeked",(e)=>this.update_play_button(e));
@@ -637,9 +644,9 @@ class VideoPlayer {
         this.hls.attachMedia(this.video_el);
 
         // this.hls.media.srcObject.setLiveSeekableRange(0, 600)
-        // this.hls.on(Hls.Events.ERROR, (...e)=>{
-        //   console.error(e);
-        // })
+        this.hls.on(Hls.Events.ERROR, (...e)=>{
+            console.error(e);
+        })
 
         this.player.on('volumechange', ()=>{
             settings.set("volume", this.player.muted() ? 0 : this.player.volume())
@@ -685,8 +692,8 @@ class VideoPlayer {
         this.seektolive_wrapper_el.append(this.seekToLive.el_);
         var seekToLive_handleClick = this.seekToLive.handleClick;
         this.seekToLive.handleClick = function(e) {
-            seekToLive_handleClick.apply(this, [e]);
-            this.player_.play();
+            _this.seekToLiveEdge();
+            _this.player.play();
         }
         
         if (conf.logo_url) {
@@ -713,10 +720,10 @@ class VideoPlayer {
                 const progress = this.volumeBar.getProgress();
                 this.volumeBar.bar.el().style.width = (progress * 100).toFixed(2) + '%';
             }
-            this.volumeControl.throttledHandleMouseMove = function(e) {
+            /* this.volumeControl.throttledHandleMouseMove = function(e) {
                 console.log(e.clientX, e.clientY)
                 this.volumeControl.handleMouseMove.apply(this, [e]);
-            };
+            }; */
         } else {
             // mobile
             this.volumeControl.el_.style.display = "none";
@@ -781,10 +788,19 @@ class VideoPlayer {
         this.update_ratio();
     }
 
+    seekToLiveEdge() {
+        if (this.hls.media) {
+            const livePosition = this.hls.latencyController.liveSyncPosition;
+            if (livePosition !== null) {
+                this.hls.media.currentTime = livePosition;
+            }
+        }
+    }
+
     get_time_until_live_edge_area(use_latency){
         const liveCurrentTime = utils.try_catch(()=>this.liveTracker.liveCurrentTime(), 0);
         const currentTime = this.player.currentTime();
-        return Math.max(0, Math.abs(liveCurrentTime - currentTime) - (use_latency ? this.hls.targetLatency/2 : 0));
+        return Math.max(0, Math.abs(liveCurrentTime - currentTime) - (use_latency ? this.hls.targetLatency : 0));
     };
 
     get_live_time(mode, time){
@@ -816,7 +832,7 @@ class VideoPlayer {
     }
 
     play() {
-        this.player.play();
+        return this.player.play();
     }
 }
 class CropDetect {
@@ -937,7 +953,7 @@ class CropDetect {
 
     async destroy() {
         await this.#ready;
-        this.canvas.remove();
+        if (this.canvas) this.canvas.remove();
     }
 }
 

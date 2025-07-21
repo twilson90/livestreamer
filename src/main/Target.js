@@ -81,7 +81,7 @@ export class Target extends DataNodeID {
     async save() {
         if (this.locked) return;
         var data = {...this.$};
-        await fs.writeFile(path.resolve(globals.app.targets_dir, this.id), JSON.stringify(data, null, 4));
+        await globals.app.safe_write_file(path.resolve(globals.app.targets_dir, this.id), JSON.stringify(data, null, 4));
     }
 
     async ondestroy() {

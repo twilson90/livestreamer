@@ -4,32 +4,45 @@ import readline from "node:readline";
 import fs from "fs-extra";
 import {utils} from "./exports.js";
 
-/** @typedef {{name:string,pid:number,sock:net.Socket}} Process */
+/** @typedef {{name:string,pid:number,sock:net.Socket}} ProcessDefinition */
 
 const pid = process.pid
 class IPC {
-    /** @type {Record<PropertyKey,Process>} */
+    /** @type {Record<PropertyKey,ProcessDefinition>} */
     #processes = {};
     /** @type {Record<PropertyKey,Function(...args:any):any>} */
     #responses = {};
+    #destroyed = false;
+    #emitter = new events.EventEmitter();
+    /** @type {ProcessDefinition} */
+    #process;
+
+    /** @protected */
+    get emitter() { return this.#emitter; }
     get processes() { return this.#processes; }
-    get name() { return this.process.name; }
+    get process() { return this.#process; }
+    get name() { return this.#process.name; }
 
     constructor(name, socket_path) {
         this.socket_path = socket_path;
-        /** @type {Process} */
-        this.process = {
+        this.#process = {
             name,
             pid,
             sock: null
         };
-        this.processes[name] = this.process;
+        this.#processes[name] = this.#process;
     }
 
-    async destroy() {}
+    get destroyed() { return this.#destroyed; }
+
+    async destroy() {
+        if (this.#destroyed) return;
+        this.#destroyed = true;
+        await this.ondestroy();
+    }
 
     get_process(name) {
-        return this.processes[name];
+        return this.#processes[name];
     }
 
     /** @param {string} request @param {Function(...args:any):any} listener */
@@ -43,6 +56,7 @@ class IPC {
     /** @protected @param {net.Socket} sock */
     digest_sock_messages(sock, cb) {
         var lines = readline.createInterface(sock);
+        lines.on("error", this._handle_socket_error);
         lines.on("line", (line)=>{
             if (line) {
                 var json;
@@ -68,6 +82,13 @@ class IPC {
             }
         });
     }
+
+    _handle_socket_error(e) {
+        if (this.destroyed) return;
+        console.error(e);
+    }
+
+    async ondestroy() {}
 }
 
 export class IPCMaster extends IPC {
@@ -78,14 +99,13 @@ export class IPCMaster extends IPC {
     #server;
     /** @type {Record<PropertyKey,Record<PropertyKey,{listener:Function,ids:Set<number>}>>} */
     #listener_map = {};
-    #emitter = new events.EventEmitter();
 
     constructor(name, socket_path) {
         super(name, socket_path);
         this.#server = net.createServer((sock)=>{
             let sock_id = ++this.#socket_last_id;
             this.#socks[sock_id] = sock;
-            sock.on("error", handle_socket_error);
+            sock.on("error", this._handle_socket_error);
             sock.on("close", ()=>{
                 delete this.#socks[sock_id];
                 var p = Object.values(this.processes).find(p=>p.sock===sock);
@@ -107,7 +127,7 @@ export class IPCMaster extends IPC {
                             this.emit_to(name, event, data);
                         };
                         this.#listener_map[event][name] = { listener, ids: new Set() };
-                        this.#emitter.on(event, listener);
+                        this.emitter.on(event, listener);
                     }
                     this.#listener_map[event][name].ids.add(id);
                 } else if (event === "internal:off") {
@@ -116,7 +136,7 @@ export class IPCMaster extends IPC {
                         let {listener, ids} = this.#listener_map[event][name];
                         ids.delete(id);
                         if (ids.size === 0) {
-                            this.#emitter.off(event, listener);
+                            this.emitter.off(event, listener);
                             delete this.#listener_map[event][name];
                         }
                         if (Object.keys(this.#listener_map[event]).length === 0) {
@@ -127,7 +147,7 @@ export class IPCMaster extends IPC {
                     let {name, event, args:_args} = args[0];
                     this.emit_to(name, event, ..._args);
                 }
-                this.#emitter.emit(event, ...args);
+                this.emitter.emit(event, ...args);
             });
         });
         this.#server.listen(socket_path);
@@ -137,16 +157,16 @@ export class IPCMaster extends IPC {
         }
     }
     on(event, listener) {
-        this.#emitter.on(event, listener);
+        this.emitter.on(event, listener);
     }
     once(event, listener) {
-        this.#emitter.once(event, listener);
+        this.emitter.once(event, listener);
     }
     off(event, listener) {
-        this.#emitter.off(event, listener);
+        this.emitter.off(event, listener);
     }
     emit(event, ...args) {
-        this.#emitter.emit(event, ...args);
+        this.emitter.emit(event, ...args);
         for (var sock of Object.values(this.#socks)) {
             write(sock, event, ...args);
         }
@@ -169,7 +189,7 @@ export class IPCMaster extends IPC {
             });
         });
     }
-    async destroy() {
+    async ondestroy() {
         await new Promise(r=>this.#server.close(r));
         for (var id of Object.keys(this.#socks)) {
             this.#socks[id].destroy();
@@ -184,17 +204,14 @@ const RETRY_INTERVAL = 5000; // 5 seconds between retries
 export class IPCFork extends IPC {
     /** @type {net.Socket} */
     #master_sock;
-    #destroyed = false;
     #ready;
     /** @type {Array<{listener:Function,id:number}>} */
     #listeners = [];
     /** @type {Record<PropertyKey,number>} */
     #listener_id_map = {};
     #rid = 0;
-    #emitter = new events.EventEmitter();
 
     get ready() { return this.#ready; }
-    get destroyed() { return this.#destroyed; }
 
     constructor(name, socket_path) {
         super(name, socket_path);
@@ -208,14 +225,14 @@ export class IPCFork extends IPC {
                 write(this.#master_sock, "internal:register", {process: this.process});
                 resolve(true);
             });
-            this.#master_sock.on("error", handle_socket_error);
+            this.#master_sock.on("error", this._handle_socket_error);
             this.digest_sock_messages(this.#master_sock, ({event, args})=>{
                 if (event === "internal:processes") {
                     let {processes} = args[0];
                     utils.clear(this.processes);
                     Object.assign(this.processes, processes);
                 }
-                this.#emitter.emit(event, ...args);
+                this.emitter.emit(event, ...args);
             });
             this.#master_sock.on("close", ()=>{
                 if (!this.destroyed) this.#handleDisconnect();
@@ -238,13 +255,13 @@ export class IPCFork extends IPC {
     }
 
     async emit(event, ...args) {
-        this.#emitter.emit(event, ...args);
+        this.emitter.emit(event, ...args);
         await this.#ready;
         return write(this.#master_sock, event, ...args);
     }
 
     async on(event, listener) {
-        this.#emitter.on(event, listener);
+        this.emitter.on(event, listener);
         await this.#ready;
         if (!this.#listener_id_map[event]) this.#listener_id_map[event] = 0;
         var id = this.#listener_id_map[event]++;
@@ -253,7 +270,7 @@ export class IPCFork extends IPC {
     }
 
     async off(event, listener) {
-        this.#emitter.off(event, listener);
+        this.emitter.off(event, listener);
         await this.#ready;
         var i = this.#listeners.findIndex((l)=>listener === l.listener);
         if (i >= 0) {
@@ -285,23 +302,16 @@ export class IPCFork extends IPC {
                 if (err) reject(err);
                 else resolve(result);
             }
-            this.#emitter.on(`internal:response:${rid}`, listener);
+            this.emitter.on(`internal:response:${rid}`, listener);
             this.emit_to(pid, "internal:request", { rid, request, args, origin: this.name });
         }).finally(()=>{
-            this.#emitter.off(`internal:response:${rid}`, listener);
+            this.emitter.off(`internal:response:${rid}`, listener);
         });
     }
 
-    destroy() {
-        if (this.#destroyed) return;
-        this.#destroyed = true;
+    ondestroy() {
         this.#master_sock.destroy();
-        // this.emit("destroy");
     }
-}
-
-function handle_socket_error(e) {
-    console.error(e);
 }
 
 /** @param {net.Socket} sock @param {any} packet */

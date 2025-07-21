@@ -3,17 +3,23 @@ import {SessionProps} from "./SessionProps.js";
 export {SessionProps};
 
 class FiltersProperty {
-    __default__ = [];
-    __enumerable__ = {
-        name: {
+    __default__ = {};
+    ["*"] = new class {
+        id = {
             __default__: "",
-        },
-        active: {
-            __default__: true,
-        },
-        props: {
-            __custom__: true,
         }
+        index = {
+            __default__: -1,
+        }
+        name = {
+            __default__: "",
+        };
+        active = {
+            __default__: true,
+        };
+        props = {
+            __custom__: true,
+        };
     }
 }
 
@@ -45,21 +51,31 @@ export const MediaProps = {
     },
     audio_delay: {
         __default__: 0,
+        __step__: 0.05,
     },
     sub_delay: {
         __default__: 0,
+        __step__: 0.05,
     },
     sub_scale: {
         __default__: 1.00,
+        __step__: 0.01,
+        __min__: 0,
+        __max__: 10,
     },
     sub_pos: {
         __default__: 100,
+        __step__: 1,
+        __min__: 0,
+        __max__: 150,
     },
     speed: {
         __default__: 1.00,
+        __step__: 0.05,
     },
     audio_pitch_correction: {
         __default__: true,
+        __options__: [[false, "Off"], [true, "On"]],
     },
     deinterlace_mode: {
         __default__: "auto",
@@ -67,6 +83,7 @@ export const MediaProps = {
     },
     audio_channels: {
         __default__: "stereo",
+        __options__: [["left", "Left → Mono"],["right", "Right → Mono"],["mix", "L + R → Mono"],["stereo", "Stereo"]],
     },
     volume_normalization: {
         __default__: "dynaudnorm1",
@@ -84,14 +101,47 @@ export const MediaProps = {
     }, */
     volume_multiplier: {
         __default__: 1,
+        __step__: 0.05,
+        __min__: 0,
+        __max__: 2,
     },
     interpolation_mode: {
-        __default__: "auto",
+        __default__: false,
         __options__: [["auto", "Auto"], [false, "Off"], [true, "On"]],
     },
     auto_interpolation_rate: {
         __default__: 0,
         __options__: [["auto","Auto"], 23.976, 24, 25, 29.97, 30, 50, 60],
+    },
+    brightness: {
+        __default__: 0,
+        __min__: -100,
+        __max__: 100,
+        __step__: 1,
+    },
+    contrast: {
+        __default__: 0,
+        __min__: -100,
+        __max__: 100,
+        __step__: 1,
+    },
+    saturation: {
+        __default__: 0,
+        __min__: -100,
+        __max__: 100,
+        __step__: 1,
+    },
+    gamma: {
+        __default__: 0,
+        __min__: -100,
+        __max__: 100,
+        __step__: 1,
+    },
+    hue: {
+        __default__: 0,
+        __min__: -100,
+        __max__: 100,
+        __step__: 1,
     },
 };
 
@@ -105,18 +155,25 @@ export const PlaylistItemPropsProps = {
     },
     clip_loops: {
         __default__: 1,
+        __min__: 0,
+        __step__: 0.1,
     },
     clip_offset: {
         __default__: 0,
+        __step__: 1,
     },
     /* clip_duration: {
         __default__: null,
     }, */
     fade_in: {
         __default__: 0,
+        __step__: 0.1,
+        __min__: 0,
     },
     fade_out: {
         __default__: 0,
+        __step__: 0.1,
+        __min__: 0,
     },
     background_mode: {
         __default__: "auto",
@@ -130,9 +187,11 @@ export const PlaylistItemPropsProps = {
     },
     video_file_start: {
         __default__: null,
+        __min__: 0,
     },
     video_file_end: {
         __default__: null,
+        __min__: 0,
     },
     subtitle_file: {
         __default__: "",
@@ -145,12 +204,16 @@ export const PlaylistItemPropsProps = {
     },
     duration: {
         __default__: 0,
+        __min__: 0,
     },
     title_text: {
         __default__: "",
     },
     title_size: {
         __default__: 50,
+        __min__: 10,
+        __step__: 1,
+        __max__: 500,
     },
     title_font: {
         __default__: "Arial",
@@ -169,27 +232,39 @@ export const PlaylistItemPropsProps = {
     },
     title_spacing: {
         __default__: 0,
+        __step__: 1,
+        __min__: -50,
+        __max__: 50,
     },
     title_outline_thickness: {
         __default__: 0,
+        __min__: 0,
+        __max__: 50,
+        __step__: 0.5,
     },
     title_outline_color: {
         __default__: "#000000",
     },
     title_shadow_depth: {
         __default__: 0,
+        __step__: 0.5,
+        __min__: 0,
+        __max__: 50,
     },
     title_shadow_color: {
         __default__: "#000000",
     },
     title_underline: {
         __default__: false,
+        __options__: [[false, "Off"], [true, "On"]],
     },
     title_rotation: {
         __default__: [0,0,0],
     },
     title_margin: {
         __default__: 10,
+        __min__: 0,
+        __max__: 100,
     },
     function: {
         __default__: "",
@@ -204,9 +279,11 @@ export const PlaylistItemPropsProps = {
     },
     playlist_end_on_shortest_track: {
         __default__: false,
+        __options__: [[false, "Off"], [true, "On"]],
     },
     playlist_revert_to_video_track_audio: {
         __default__: false,
+        __options__: [[false, "Off"], [true, "On"]],
     },
     // --------
     label: {
@@ -258,9 +335,11 @@ export const InternalSessionProps = {
     },
     background_file_start: {
         __default__: null,
+        __min__: 0,
     },
     background_file_end: {
         __default__: null,
+        __min__: 0,
     },
     files_dir: {
         __default__: "",
@@ -291,13 +370,16 @@ export const InternalSessionProps = {
     },
     time_pos: {
         __default__: 0,
+        __min__: 0,
     },
     player_default_override: {
+        __delete_defaults__: true,
+        __delete_nulls__: true,
         ...MediaProps
     },
     playlist: {
         __default__: {},
-        __enumerable__: {
+        ["*"]: {
             ...PlaylistItemProps
         }
     }

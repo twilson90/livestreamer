@@ -324,7 +324,7 @@ export class InternalSession extends Session {
         var process = async function*(id) {
             var item = _this.$.playlist[id];
             var filename = item.filename;
-            var mi = (await _this.update_media_info(filename)) || {};
+            var mi = (await globals.app.get_media_info(filename)) || {};
             if (mi.name || mi.filename) item.props.label = mi.name || mi.filename;
             if (_this.is_item_playlist(id)) {
                 item.filename = "livestreamer://playlist";
@@ -465,7 +465,7 @@ export class InternalSession extends Session {
         if (!item) return;
         
         var filename = item.filename;
-        var mi = await this.update_media_info(filename) || {};
+        var mi = await globals.app.get_media_info(filename) || {};
         if (utils.urlify(filename).protocol !== "file:") return;
         var v_stream = mi.streams.find(c=>c.type==="video");
         if (!v_stream) return;
@@ -515,7 +515,7 @@ export class InternalSession extends Session {
             `-f`, "image2",
             // "-max_muxing_queue_size", "9999",
             "-vf", vfs.join(","),
-            "-vsync", "0",
+            "-fps_mode", "passthrough",
             "-vframes", String(n+2),
             "-y",
             `%d.jpg`,
@@ -548,46 +548,47 @@ export class InternalSession extends Session {
         return item;
     }
 
-    async #playlist_add_children(item) {
-        var {id} = item;
-        var filename = item.filename;
-        var mi = (await this.update_media_info(filename)) || {};
+    // this can be very bad for large youtube playlists, which can contain thousands of items.
+    // async #playlist_add_children(item) {
+    //     var {id} = item;
+    //     var filename = item.filename;
+    //     var mi = (await globals.app.get_media_info(filename)) || {};
 
-        // if playlist is already full of items, ignore.
-        if (!mi.playlist || this.has_playlist_items(id)) return;
+    //     // if playlist is already full of items, ignore.
+    //     if (!mi.playlist || this.has_playlist_items(id)) return;
 
-        // handles mediainfo playlists
-        var index = 0;
-        var all = new Set([...mi.playlist]);
-        for (let filename of mi.playlist) {
-            if (typeof filename !== "string") continue;
-            all.delete(filename);
-            this.#playlist_add({filename, index:index++, parent_id:id})
-        }
-        if (all.size) {
-            var add_children = (items, new_parent_id)=>{
-                items.sort((a,b)=>a.index-b.index);
-                for (var item of items) {
-                    all.delete(item);
-                    item.index = index++;
-                    item.parent_id = new_parent_id;
-                    var new_item = this.#playlist_add(item);
-                    var children = [];
-                    if (item.id) children.push(...[...all].filter(f=>f.parent_id == item.id));
-                    if (item.children) children.push(...item.children); // for json playlists with children variable tree-like structure.
-                    if (children.length) {
-                        add_children(children, new_item.id);
-                    }
-                }
-            }
-            add_children([...all].filter(f=>!f.parent_id || f.parent_id == "0"), id);
-            // add any leftovers if there was a fuck up:
-            if (all.size) {
-                this.logger.warn(`Leftover playlist items detected and added: ${JSON.stringify([...all])}`);
-                add_children([...all], id);
-            }
-        }
-    }
+    //     // handles mediainfo playlists
+    //     var index = 0;
+    //     var all = new Set([...mi.playlist]);
+    //     for (let filename of mi.playlist) {
+    //         if (typeof filename !== "string") continue;
+    //         all.delete(filename);
+    //         this.#playlist_add({filename, index:index++, parent_id:id})
+    //     }
+    //     if (all.size) {
+    //         var add_children = (items, new_parent_id)=>{
+    //             items.sort((a,b)=>a.index-b.index);
+    //             for (var item of items) {
+    //                 all.delete(item);
+    //                 item.index = index++;
+    //                 item.parent_id = new_parent_id;
+    //                 var new_item = this.#playlist_add(item);
+    //                 var children = [];
+    //                 if (item.id) children.push(...[...all].filter(f=>f.parent_id == item.id));
+    //                 if (item.children) children.push(...item.children); // for json playlists with children variable tree-like structure.
+    //                 if (children.length) {
+    //                     add_children(children, new_item.id);
+    //                 }
+    //             }
+    //         }
+    //         add_children([...all].filter(f=>!f.parent_id || f.parent_id == "0"), id);
+    //         // add any leftovers if there was a fuck up:
+    //         if (all.size) {
+    //             this.logger.warn(`Leftover playlist items detected and added: ${JSON.stringify([...all])}`);
+    //             add_children([...all], id);
+    //         }
+    //     }
+    // }
 
     /** @param {PlaylistAddOptions} opts */
     playlist_add(items, opts) {
@@ -614,7 +615,7 @@ export class InternalSession extends Session {
                 f.index = start_index + i;
                 f.parent_id = parent_id;
                 var new_item = this.#playlist_add(f);
-                this.#playlist_add_children(new_item);
+                // this.#playlist_add_children(new_item);
                 results.push(new_item);
                 walk(f.id, new_item.id, 0);
             });
@@ -711,8 +712,8 @@ export class InternalSession extends Session {
     }
 
     async load_autosave(filename) {
-        // this.autosave();
-        var data = JSON.parse(await fs.readFile(path.join(this.saves_dir,filename),"utf8"));
+        var fullpath = path.join(this.saves_dir, filename);
+        var data = JSON.parse(await fs.readFile(fullpath, "utf8"));
         await this.load(data);
     }
 
@@ -724,6 +725,9 @@ export class InternalSession extends Session {
             this.logger.warn("No playlist found, aborting load...");
             return;
         }
+        
+        this.#last_save_data = utils.json_copy($);
+
         var playlist = $.playlist;
         delete $.playlist;
         delete $.id;
@@ -733,7 +737,6 @@ export class InternalSession extends Session {
             delete $.access_control;
             delete $.stream_id;
         }
-        this.#last_save_data = utils.json_copy($);
         
         this.reset();
         Object.assign(this.$, $);
@@ -764,6 +767,11 @@ export class InternalSession extends Session {
         
         delete diff.time;
         delete diff.playlist_id;
+        
+        var json = JSON.stringify($);
+        var fullpath = path.join(this.saves_dir, filename);
+        var old_json = await fs.readFile(fullpath, "utf8").catch(utils.noop);
+        if (json === old_json) return;
 
         if (utils.is_empty(diff) && this.#autosaves.length) {
             // if diff only included playlist_id and time, just replace previous save file...
@@ -773,14 +781,12 @@ export class InternalSession extends Session {
             this.#autosaves.push(filename);
         }
 
-        var json = JSON.stringify($, null, "  ");
-        var fullpath = path.join(this.saves_dir, filename);
-        await fs.writeFile(fullpath, json);
+        await globals.app.safe_write_file(fullpath, json);
         
         while (this.#autosaves.length > globals.app.conf["main.autosaves_limit"]) {
             var filename = this.#autosaves.shift();
             var f = path.join(this.saves_dir, filename);
-            try { await fs.unlink(f); } catch { }
+            await fs.unlink(f).catch(utils.noop);
         }
 
         return $;
@@ -881,11 +887,12 @@ export class InternalSession extends Session {
                 if (d > 1000) this.logger.warn(`loadfile '${item.filename}' took ${d}ms`);
             })
             .catch(e=>{
-                this.logger.warn("loadfile failed:", e);
                 // if loadfile was overridden, we don't want to play the next item, we can assume it's just been called and triggered the override.
                 if (e instanceof MPVLoadFileError && e.name == "override") {
+                    this.logger.warn("loadfile failed (override)");
                     return;
                 }
+                this.logger.error("loadfile failed:", e);
                 return this.playlist_next();
             });
     }
@@ -914,14 +921,16 @@ export class InternalSession extends Session {
     
     /** @param {string} name */
     async set_player_default_override(name, value) {
-        if (!(name in MediaProps)) return;
-        this.$.player_default_override[name] = value;
-        if (this.is_running) {
-            this.#update_player_properties();
-        }
+        if (value == null) delete this.$.player_default_override[name];
+        else this.$.player_default_override[name] = value;
+        utils.cleanup_props(this.$.player_default_override, InternalSessionProps.player_default_override, true, false);
+        this.debounced_update_player_properties();
     }
 
+    debounced_update_player_properties = utils.debounce(this.#update_player_properties, 0);
+
     #update_player_properties() {
+        if (!this.is_running) return;
         var item = this.get_current_playlist_item() || {props:{}};
         for (var name in PlaylistItemPropsProps) {
             this.player.set_property(name, item.props[name] ?? this.$.player_default_override[name] ?? PlaylistItemPropsProps[name].__default__);
@@ -997,7 +1006,7 @@ function fix_session($, warn) {
         if (!(item.parent_id in $.playlist)) item.parent_id = "0";
     }
     if (!$.stream_settings) $.stream_settings = {};
-    utils.cleanup_prop($, InternalSessionProps, true, warn);
+    utils.cleanup_props($, InternalSessionProps, true, warn);
     fix_circular_playlist_items($.playlist, warn);
     return $;
 }
@@ -1028,4 +1037,14 @@ function fix_playlist_item(item, $) {
     track_index = track_index || 0;
     while ($ && $[id]) id = utils.uuidb64();
     return {id, filename, index, parent_id, track_index, props};
+}
+
+/** @param {Record<string,any>} $ @param {Record<string,{__default__:any}>} defaults @param {string} name @param {any} value */
+function set_prop($, defaults, name, value) {
+    if (!(name in defaults)) return;
+    if (JSON.stringify(value) === JSON.stringify(defaults[name].__default__) || value == null) {
+        delete $[name];
+    } else {
+        $[name] = value;
+    }
 }

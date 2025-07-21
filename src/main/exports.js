@@ -18,6 +18,7 @@ export * from "./StreamTarget.js";
 export * from "./Target.js";
 export * from "./Upload.js";
 
+export * as ass from "./ass.js";
 export * as downloaders from "./downloaders/exports.js";
 
 export * from "./MainApp.js";

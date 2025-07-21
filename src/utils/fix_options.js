@@ -1,7 +1,6 @@
 /**
- * @template T
  * @typedef {{
- *   value:T,
+ *   value:any,
  *   text:string,
  *   style:object,
  *   hidden:boolean,
@@ -16,7 +15,7 @@
  * }} OptionGroupSettings
  */
 
-/** @template T @returns {OptionSettings<T>[]} */
+/** @param {any[]} options @returns {OptionSettings[]} */
 export function fix_options(options) {
     return options.map((o)=>{
         if (Array.isArray(o)) {

@@ -1,15 +1,18 @@
 import fs from "fs-extra";
 import path from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, pipeline } from "node:stream";
+import events from "node:events";
 import * as ebml from 'ts-ebml';
+import child_process from 'node:child_process';
+import readline from 'readline';
+import net from 'node:net';
 import {globals, SessionTypes, StreamTarget, SessionPlayer, SessionPlayer$} from "./exports.js";
 import {utils, constants, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, ClientUpdater} from "../core/exports.js";
 /** @import { Session, InternalSession, ExternalSession, Session$ } from './exports.js' */
 
-const WARNING_MPV_LOG_SIZE = 1 * 1024 * 1024 * 1024;
-const MAX_MPV_LOG_SIZE = 8 * 1024 * 1024 * 1024;
+const WARNING_MPV_LOG_SIZE = 1 * 1024 * 1024 * 1024; // 1 GB
+const MAX_MPV_LOG_SIZE = 8 * 1024 * 1024 * 1024; // 8 GB
 const MAX_METRICS_SAMPLES = 1000;
-const LOW_METRIC_SAMPLE_RATE = 20;
 
 export class Stream$ extends StopStartStateMachine$ {
     targets = [];
@@ -48,6 +51,7 @@ export class Stream extends StopStartStateMachine {
     get title() { return this.$.title; }
     get is_running() { return this.$.state === constants.State.STARTED; }
     get fps() { return isNaN(+this.$.fps) ? 30 : +this.$.fps; }
+    get pts() { return this.#pts; }
 
     get_target_opts(target_id) {
         return {
@@ -61,7 +65,9 @@ export class Stream extends StopStartStateMachine {
     /** @type {SessionPlayer} */
     player;
     /** @type {FFMPEGWrapper} */
-    ffmpeg;
+    #ffmpeg_in;
+    /** @type {FFMPEGWrapper} */
+    #ffmpeg_out;
     /** @type {Record<PropertyKey,StreamTarget>} */
     stream_targets = {};
     keys = {};
@@ -69,6 +75,9 @@ export class Stream extends StopStartStateMachine {
     #tick_interval;
     /** @type {Record<PropertyKey,utils.IncrementalAverage>} */
     #metrics_averages = {};
+    #pts = 0;
+    #dts = 0;
+    #timer = new utils.StopWatchHR();
 
     /** @param {Session} session */
     constructor(session) {
@@ -76,7 +85,7 @@ export class Stream extends StopStartStateMachine {
         globals.app.streams[this.id] = this;
         globals.app.$.streams[this.id] = this.$;
         this.logger = new Logger("stream");
-        this.logger.on("log", (log)=>(this.session||session).logger.log(log))
+        this.logger.on("log", (log)=>(this.session||session).logger.log(log));
         
         this.client_updater = new ClientUpdater(this.observer, ["streams", this.id], {
             filter: (c)=>{
@@ -187,10 +196,15 @@ export class Stream extends StopStartStateMachine {
             }
             ffmpeg_args.push(
                 // `-noautoscale`,
-                "-i", "pipe:",
+                "-fflags", "+genpts",
+                // "-use_wallclock_as_timestamps", "1",
+                "-i", "pipe:0",
                 "-bsf:a", "aac_adtstoasc",
                 "-bsf:v", "h264_mp4toannexb",
-                `-vsync`, "1",
+                `-fps_mode`, this.fps ? "cfr" : "passthrough",
+                "-enc_time_base", "-1",
+                "-muxdelay", "0",
+                "-flush_packets", "1",
             );
             if (ffmpeg_copy) {
                 ffmpeg_args.push(
@@ -209,9 +223,9 @@ export class Stream extends StopStartStateMachine {
                     ffmpeg_args.push(
                         `-no-scenecut`, `1`,
                         `-rc`, `cbr_hq`,
-                        `-forced-idr`, `1`,
-                        `-rc-lookahead`, this.fps
-                    )
+                        `-forced-idr`, `1`
+                    );
+                    if (this.fps) `-rc-lookahead`, this.fps
                 }
                 ffmpeg_args.push(
                     "-b:v", `${this.$.video_bitrate}k`,
@@ -222,9 +236,13 @@ export class Stream extends StopStartStateMachine {
                     "-force_key_frames", `expr:gte(t,n_forced*${keyframes_per_second})`,
                 );
             }
-            ffmpeg_args.push(
-                "-r", this.fps
-            );
+
+            if (this.fps) {
+                // doesnt actually apply frame rate conversion with -c copy, just writes it as a tag
+                ffmpeg_args.push(
+                    "-r", this.fps
+                );
+            }
         }
         ffmpeg_args.push(
             "-map_metadata", "-1",
@@ -236,12 +254,6 @@ export class Stream extends StopStartStateMachine {
             let internal_path = `/internal/${this.session.id}`;
             this.$.internal_path = internal_path;
             this.$.output_url = `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${internal_path}`;
-            let ffmpeg_output_url = this.$.output_url;
-            if (this.is_test) {
-                let url = new URL(ffmpeg_output_url);
-                url.searchParams.append("test", 1);
-                ffmpeg_output_url = url.toString();
-            }
             this.$.rtmp_output_url = `rtmp://${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}${internal_path}`;
             this.$.ws_output_url = `ws://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${internal_path}.flv`;
             this.$.wss_output_url = `wss://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${internal_path}.flv`;
@@ -253,25 +265,30 @@ export class Stream extends StopStartStateMachine {
                 "-map", "0:v",
                 "-map", "0:a",
                 `-y`,
-                ffmpeg_output_url
+                "pipe:1"
             );
 
-            this.ffmpeg = new FFMPEGWrapper();
-            /* this.ffmpeg.logger.on("log", (log)=>{
-                log.level = Logger.DEBUG;
-                this.logger.log(log);
-            }); */
-            this.ffmpeg.on("error", (e)=>this.logger.error(e));
-            if (this.session.type === SessionTypes.EXTERNAL) {
-                this.ffmpeg.on("info", (info)=>{
-                    this.$.bitrate = info.bitrate;
-                    this.$.speed = info.speed_alt;
-                })
-            }
-            this.ffmpeg.on("end", ()=>{
+            this.#ffmpeg_in = new FFMPEGWrapper();
+            this.#ffmpeg_in.on("error", (e)=>this.logger.error("ffmpeg error:",e));
+            this.#ffmpeg_in.on("end", ()=>{
                 this._handle_end("ffmpeg");
             });
-            this.ffmpeg.start(ffmpeg_args);
+            this.#ffmpeg_in.start(ffmpeg_args);
+
+            this.#ffmpeg_out = new FFMPEGWrapper();
+            let ffmpeg_output_url = this.$.output_url;
+            if (this.is_test) {
+                let url = new URL(ffmpeg_output_url);
+                url.searchParams.append("test", 1);
+                ffmpeg_output_url = url.toString();
+            }
+            this.#ffmpeg_out.start([
+                "-i", "pipe:0",
+                "-f", "flv",
+                "-c", "copy",
+                `-y`,
+                ffmpeg_output_url
+            ]);
         }
 
         if (this.session.type === SessionTypes.INTERNAL) {
@@ -344,7 +361,7 @@ export class Stream extends StopStartStateMachine {
                 //     // -----------------
                 // );
 
-                if(mpv_custom) mpv_args.push("--orealtime");
+                if (mpv_custom) mpv_args.push("--orealtime");
             }
 
             if (use_hardware && globals.app.conf["core.mpv_hwdec"]) {
@@ -358,8 +375,8 @@ export class Stream extends StopStartStateMachine {
                     `--audio-channels=stereo`,
                     "--framedrop=no",
                     `--o=-`,
-                    "--ofopts-add=strict=+experimental",
-                    "--ofopts-add=fflags=+genpts+autobsf",
+                    // "--ofopts-add=strict=+experimental",
+                    // "--ofopts-add=fflags=+genpts+autobsf",
                     // "--ofopts-add=fflags=+discardcorrupt+genpts+igndts+autobsf",
                     // "--demuxer-lavf-analyzeduration=0.1",
                     // "--ofopts-add=fflags=+nobuffer+fastseek+flush_packets+genpts+autobsf",
@@ -377,7 +394,8 @@ export class Stream extends StopStartStateMachine {
                         // "--of=fifo",
                         // "--ofopts-add=fifo_format=matroska",
                         // "--of=flv",
-                        "--of=matroska",
+                        // "--of=matroska",
+                        "--of=mpegts",
                         // "--ofopts-add=fflags=+flush_packets", //+autobsf // +nobuffer
                         // "--ofopts-add=fflags=+genpts",
                         // `--ofopts-add=avioflags=direct`,
@@ -425,8 +443,8 @@ export class Stream extends StopStartStateMachine {
                             `--oforce-key-frames=expr:gte(t,n_forced*${keyframes_per_second})`,
                         );
                     } else {
-                        x264opts["keyint"] = this.fps*keyframes_per_second;
-                        x264opts["min-keyint"] = this.fps*keyframes_per_second;
+                        x264opts["keyint"] = (this.fps || 30) * keyframes_per_second;
+                        x264opts["min-keyint"] = (this.fps || 30) * keyframes_per_second;
                     }
                     mpv_args.push(
                         `--ovcopts-add=x264opts=${Object.entries(x264opts).map(([k,v])=>`${k}=${v}`).join(":")}`,
@@ -481,15 +499,106 @@ export class Stream extends StopStartStateMachine {
             // -------------------------------------------------------
 
             this.player.mpv.on("before-start", ()=>{
-                if (this.ffmpeg) {
-                    this.mkv_packet_handler = new MKVPacketHandler(this, this.is_realtime);
-                    this.player.mpv.process.stdout.pipe(this.mkv_packet_handler.stream).pipe(this.ffmpeg.process.stdin);
-                    this.player.mpv.on("before-quit", ()=>{
-                        this.player.mpv.process.stdout.unpipe(this.mkv_packet_handler.stream).unpipe(this.ffmpeg.process.stdin);
-                    })
-                    this.ffmpeg.process.stdin.on("error", (e)=>{
-                        this.logger.warn(e);
-                    }); // needed to swallow 'Error: write EOF' when unpiping!!!
+                this.#timer.reset();
+                this.#timer.start();
+                if (this.#ffmpeg_in) {
+                    let is_realtime = this.is_realtime;
+                    let pts = 0;
+                    let dts = 0;
+                    const push = (chunk, callback)=>{
+                        passthru.push(chunk);
+                        callback();
+                    };
+                    const ffprobe = child_process.spawn("ffprobe", [
+                        "-i", "pipe:0",
+                        "-show_packets",       // Display packet-level info
+                        "-of", "json=compact=1",         // JSON output for parsing
+                        "-v", "quiet"          // Suppress logs
+                    ], {
+                        stdio: ["pipe", "pipe", "ignore"]
+                    });
+                    const rl = readline.createInterface({input:ffprobe.stdout});
+                    rl.on("line", (line)=>{
+                        try {
+                            let data = JSON.parse(line.trim().slice(0,-1));
+                            if (data.codec_type === "video") {
+                                var new_pts = +data.pts_time;
+                                var new_dts = +data.dts_time;
+                                dts = Math.max(dts, new_dts);
+                                pts = Math.max(pts, new_pts);
+                                /* if (new_pts > pts) {
+                                } else {
+                                    if (globals.app.debug) this.logger.warn(`PTS ${pts} -> ${new_pts}, skipping packet.`);
+                                } */
+                            }
+                        } catch (e) {
+                            return;
+                        }
+                    });
+                    let last_elapsed = 0;
+                    const passthru = new PassThrough({
+                        transform: (chunk, encoding, callback)=>{
+                            ffprobe.stdin.write(chunk);
+
+                            let elapsed = this.#timer.elapsed / 1000;
+                            let max_buffer_duration = Math.min(this.$.buffer_duration, 60);
+                            let buffer_duration = pts - elapsed;
+                            
+                            if (is_realtime && buffer_duration < 0) {
+                                // this prevents the buffer from speeding up when there has been a significant pause
+                                // elapsed_correction += pts_time_diff;
+                            }
+                            if (is_realtime && buffer_duration > max_buffer_duration) {
+                                let delay = (buffer_duration - max_buffer_duration) * 1000;
+                                setTimeout(()=>push(chunk, callback), delay);
+                            } else {
+                                push(chunk, callback);
+                            }
+                            last_elapsed = elapsed;
+                        }
+                    });
+
+                    var handle_end = (e)=>{
+                        if (this.#ffmpeg_in.stopped) return;
+                        if (e && e.code !== "ERR_STREAM_PREMATURE_CLOSE") {
+                            this.logger.error("pipeline error:", e);
+                        }
+                    };
+
+                    const pipeline1 = pipeline(
+                        this.player.mpv.stdout,
+                        this.#ffmpeg_in.stdin,
+                        handle_end
+                    );
+
+                    const pipeline2 = pipeline(
+                        this.#ffmpeg_in.stdout,
+                        passthru,
+                        this.#ffmpeg_out.stdin,
+                        handle_end
+                    );
+
+                    this.#ffmpeg_in.on("end", ()=>{
+                        pipeline1.destroy();
+                        pipeline2.destroy();
+                        rl.close();
+                        ffprobe.kill()
+                    });
+
+                    // this.mkv_packet_handler = new MKVPacketHandler(this, this.is_realtime);
+                    // this.mkv_packet_handler.on("pts", (pts)=>{
+                    //     this.#pts = pts;
+                    // });
+                    // this.player.mpv.stdout.pipe(this.mkv_packet_handler.stream).pipe(this.ffmpeg.stdin);
+                    // this.player.mpv.on("before-quit", ()=>{
+                    //     this.player.mpv.stdout.unpipe(this.mkv_packet_handler.stream).unpipe(this.ffmpeg.stdin);
+                    // })
+                    
+                    // needed to swallow 'Error: write EOF' when unpiping!!!
+                    /* this.#ffmpeg_in.stdin.on("error", (e)=>{
+                        if (this.#ffmpeg_in.stopped) return;
+                        this.logger.error("ffmpeg stdin error:", e);
+                    }); */
                 }
             })
 
@@ -557,19 +666,16 @@ export class Stream extends StopStartStateMachine {
         if (!this.is_paused) {
             if (this.player) this.register_metric(`decoder:speed`, this.player.$.playback_speed);
             let key = (this.session.type === SessionTypes.EXTERNAL) ? "upstream" : "trans";
-            this.register_metric(`${key}:speed`, this.$.speed);
-            this.register_metric(`${key}:bitrate`, this.$.bitrate);
+            if (this.#ffmpeg_in) {
+                this.$.speed = this.#ffmpeg_in.last_info ? this.#ffmpeg_in.last_info.speed_alt : 0;
+                this.$.bitrate = this.#ffmpeg_in.last_info ? this.#ffmpeg_in.last_info.bitrate : 0;
+                this.register_metric(`${key}:speed`, this.$.speed);
+                this.register_metric(`${key}:bitrate`, this.$.bitrate);
+            }
             for (let st of Object.values(this.stream_targets)) {
                 this.register_metric(`${st.$.key}:speed`, st.$.speed);
                 this.register_metric(`${st.$.key}:bitrate`, st.$.bitrate);
             }
-        }
-        
-        if (this.mkv_packet_handler) {
-            let bitrate = this.mkv_packet_handler.bitrate_avg;
-            let speed = this.mkv_packet_handler.speed_avg;
-            this.$.bitrate = bitrate;
-            this.$.speed = speed;
         }
 
         for (let target of old_targets) {
@@ -593,8 +699,11 @@ export class Stream extends StopStartStateMachine {
             let t1 = Date.now();
             this.logger.info(`MPV terminated in ${(t1-t0)/1000} secs.`);
         }
-        if (this.ffmpeg) {
-            this.ffmpeg.stop();
+        if (this.#ffmpeg_in) {
+            this.#ffmpeg_in.stop();
+        }
+        if (this.#ffmpeg_out) {
+            this.#ffmpeg_out.stop();
         }
 
         globals.app.ipc.emit("main.stream.stopped", this.id);
@@ -608,19 +717,11 @@ export class Stream extends StopStartStateMachine {
 
     register_metric(key, y) {
         // if (this.disable_register_metric) return;
-        if (!this.#metrics_averages[key]) this.#metrics_averages[key] = new utils.IncrementalAverage();
-        this.#metrics_averages[key].push(y);
-        if (!this.$.metrics[key]) this.$.metrics[key] =  {high:{min:0,max:0,data:{}}, low:{min:0,max:0,data:{}}};
+        if (!this.$.metrics[key]) this.$.metrics[key] =  {min:0,max:0,data:{}};
         var d = this.$.metrics[key];
-        d.high.data[d.high.max++] = y;
-        if (d.high.max % LOW_METRIC_SAMPLE_RATE == 0) {
-            d.low.data[d.low.max++] = this.#metrics_averages[key].average;
-            this.#metrics_averages[key].clear();
-        }
-        for (var k in d) {
-            if (d[k].max > MAX_METRICS_SAMPLES) {
-                delete d[k].data[d[k].min++];
-            }
+        d.data[d.max++] = y;
+        if (d.max > MAX_METRICS_SAMPLES) {
+            delete d.data[d.min++];
         }
     }
     
@@ -657,11 +758,13 @@ export class Stream extends StopStartStateMachine {
     onpause() {
         if (this.mkv_packet_handler) this.mkv_packet_handler.pause();
         this.player.set_property("pause", true);
+        this.#timer.pause();
     }
 
     onresume() {
         if (this.mkv_packet_handler) this.mkv_packet_handler.resume();
         this.player.set_property("pause", false);
+        this.#timer.resume();
     }
     
     async try_start_playlist() {
@@ -690,76 +793,91 @@ export class Stream extends StopStartStateMachine {
     }
 }
 
+// class MKVPacketHandler extends events.EventEmitter {
+//     #pts = 0;
+//     #corrected_pts = 0;
+//     /** @type {Stream} */
+//     #stream;
+//     #timer = new utils.StopWatchHR();
 
+//     get pts() { return this.#pts; } // in seconds
+//     get corrected_pts() { return this.#corrected_pts; } // in seconds
 
-class MKVPacketHandler {
-    #pts = 0;
-    /** @type {Stream} */
-    #stream;
-    #bitrate_avg = new utils.ExponentialMovingAverage(10000);
-    #speed_avg = new utils.ExponentialMovingAverage(10000);
-    #timer = new utils.StopWatchHR();
+//     /** @param {Stream} stream */
+//     constructor(stream) {
+//         super();
+//         this.#stream = stream;
+//         let is_realtime = stream.is_realtime;
+//         this.#timer.start();
 
-    get speed_avg() { return this.#speed_avg.average; }
-    get bitrate_avg() { return this.#bitrate_avg.average; }
-    get pts() { return this.#pts + this.pts_offset; } // in seconds
-    pts_offset = 0;
+//         var decoder = new ebml.Decoder();
+//         var reader = new ebml.Reader();
+//         var encoder = new ebml.Encoder();
+//         // reader.use_duration_every_simpleblock = true;
 
-    /** @param {Stream} stream */
-    constructor(stream) {
-        this.#stream = stream;
-        let is_realtime = stream.is_realtime;
-        this.#timer.start();
+//         var push = (chunk, pts, callback)=>{
+//             this.#pts = pts;
+//             this.#corrected_pts = pts + pts_correction;
+//             this.stream.push(chunk);
+//             this.emit("pts", this.#pts);
+//             callback();
+//         }
 
-        var decoder = new ebml.Decoder();
-        var reader = new ebml.Reader();
+//         var last_elapsed = 0;
+//         var elapsed_correction = 0;
+//         var pts_correction = 0;
+//         var avg_pts_delta = new utils.ExponentialMovingAverage(1000);
 
-        var push = (chunk, pts, callback)=>{
-            this.#pts = pts;
-            this.stream.push(chunk);
-            reader.cues.length = 0; // dump this it builds up quickly consuming memory and doesnt appear to affect pts
-            callback();
-        }
-
-        var last_elapsed = 0;
-        this.stream = new PassThrough({
-            transform: (chunk, encoding, callback)=>{
-                let elapsed = this.#timer.elapsed;
-                let delta = elapsed - last_elapsed;
-                var buffer_duration = Math.min(this.#stream.$.buffer_duration, 60);
+//         this.stream = new PassThrough({
+//             transform: (chunk, encoding, callback)=>{
+//                 let elapsed = this.#timer.elapsed/1000;
+//                 let elapsed_adjusted = elapsed + elapsed_correction;
+//                 let delta = elapsed - last_elapsed;
+//                 let buffer_duration = Math.min(this.#stream.$.buffer_duration, 60);
+//                 let next_pts;
+//                 this.#stream.logger.console_adapter(()=>{
+//                     let elements = decoder.decode(chunk);
+//                     for (var e of elements) reader.read(e);
+//                     next_pts = (reader.duration * reader.timestampScale / 1000 / 1000 / 1000); // seconds
+//                     reader.cues.length = 0; // dump this it builds up quickly consuming memory and doesnt appear to affect pts
+//                 }, utils.noop);
+//                 let next_pts_corrected = next_pts + pts_correction;
+//                 let pts_delta = next_pts_corrected - this.#corrected_pts;
+//                 let avg_pts_delta_avg = avg_pts_delta.average || delta;
+//                 let expected_next_pts = this.#corrected_pts + avg_pts_delta_avg;
+//                 let pts_time_diff = this.#corrected_pts - elapsed_adjusted;
+//                 let fix_pts = is_realtime && Math.abs(pts_delta) > constants.MAX_PTS_JUMP;
+//                 if (fix_pts) {
+//                     stream.logger.warn(`Fixing PTS: ${next_pts_corrected.toFixed(3)} => ${expected_next_pts.toFixed(3)}s`);
+//                     let offset_diff = expected_next_pts - next_pts_corrected;
+//                     pts_correction += offset_diff;
+//                     pts_delta = expected_next_pts - this.#corrected_pts; // pts_delta = delta
+//                 }
+//                 avg_pts_delta.add(pts_delta);
                 
-                const elements = decoder.decode(chunk);
-                for (var e of elements) reader.read(e);
-                const nanosec = reader.duration * reader.timestampScale;
-                let next_pts = nanosec / 1000 / 1000 / 1000;
-                let pts_delta = next_pts - this.#pts;
-                
-                const time_diff = this.pts - (elapsed/1000);
+//                 if (is_realtime && pts_time_diff < 0) {
+//                     // this prevents the buffer from speeding up when there has been a significant pause
+//                     elapsed_correction += pts_time_diff;
+//                 }
 
-                if (is_realtime && time_diff > buffer_duration) {
-                    const delay = (time_diff - buffer_duration) * 1000;
-                    setTimeout(()=>push(chunk, next_pts, callback), delay);
-                } else {
-                    push(chunk, next_pts, callback);
-                }
-
-                if (delta > 0) {
-                    let speed = pts_delta / (delta/1000);
-                    let bitrate = chunk.length / (delta/1000);
-                    this.#bitrate_avg.add(bitrate, elapsed);
-                    this.#speed_avg.add(speed, elapsed);
-                }
+//                 if (is_realtime && pts_time_diff > buffer_duration) {
+//                     let delay = (pts_time_diff - buffer_duration) * 1000;
+//                     if (delay > 1000) stream.logger.warn(`Long delay: ${delay.toFixed(3)}ms`);
+//                     setTimeout(()=>push(chunk, next_pts, callback), delay);
+//                 } else {
+//                     push(chunk, next_pts, callback);
+//                 }
                 
-                last_elapsed = elapsed;
-            }
-        });
-    }
-    pause() {
-        this.#timer.pause();
-    }
-    resume() {
-        this.#timer.resume();
-    }
-}
+//                 last_elapsed = elapsed;
+//             }
+//         });
+//     }
+//     pause() {
+//         this.#timer.pause();
+//     }
+//     resume() {
+//         this.#timer.resume();
+//     }
+// }
 
 export default Stream;

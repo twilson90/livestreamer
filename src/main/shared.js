@@ -31,7 +31,12 @@ export function get_stream_by_id(id, streams, type) {
 /** @template T @param {T[]} streams @param {string} type */
 export function get_default_stream(streams, type) {
 	streams = [...streams];
-	if (type) streams = streams.filter(s=>!s || !s.type || s.type == type);
+	if (type) {
+		streams = streams.filter(s=>!s || !s.type || s.type == type);
+		if (type == "subtitle") {
+			if (streams.every(s=>!s.forced && !s.default)) return null;
+		}
+	}
 	var index_map = new Map();
 	streams.forEach((s,i)=>index_map.set(s,i));
 	streams.sort((a,b)=>{

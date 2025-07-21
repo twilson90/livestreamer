@@ -1,5 +1,6 @@
 import path from "node:path";
 import os from "node:os";
+import child_process from "node:child_process";
 import fs from "fs-extra";
 import showdown from "showdown";
 import chokidar from "chokidar";
@@ -8,8 +9,10 @@ import express from "express";
 import bodyParser from "body-parser";
 import multer from "multer";
 import checkDiskSpace from "check-disk-space";
-import {globals, Stream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, downloaders } from "./exports.js";
-import {utils, WebServer, ClientUpdater, ClientServer, Cache, CoreFork, LogCollector} from "../core/exports.js";
+import Color from "color";
+import stream from "node:stream";
+import {globals, Stream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, downloaders, ass } from "./exports.js";
+import {utils, WebServer, ClientUpdater, ClientServer, Cache, CoreFork, LogCollector, StreamRangeServer } from "../core/exports.js";
 
 /** @import {StreamTarget, Session, Session$, MainClient$, Log$, Target$, Upload$, Download$, Stream$} from "./exports.js" */
 
@@ -22,7 +25,7 @@ import {utils, WebServer, ClientUpdater, ClientServer, Cache, CoreFork, LogColle
 
 const dirname = import.meta.dirname;
 const TICK_INTERVAL = 1 * 1000;
-export const MEDIA_INFO_VERSION = 2;
+export const MEDIA_INFO_VERSION = 4;
 export const MAX_CONCURRENT_MEDIA_INFO_PROMISES = 8;
 export const DEFAULT_PROBE_MEDIA_OPTS = {
     force: false, // forces rescan despite still valid in cache
@@ -75,6 +78,7 @@ export class MainApp$ {
     nms_sessions = {};
     processes = {};
     detected_crops = {};
+    volumes = {};
     // properties = utils.json_copy(InternalSessionProps);
     sysinfo = {
         platform: process.platform,
@@ -105,6 +109,20 @@ export class MainApp extends CoreFork {
     // #prepare_promise_pool;
     #virtual_files = {};
     #ticks = 0;
+    
+    #curr_saves_dir = "";
+    #old_saves_dir = "";
+    #public_html_dir = "";
+    #saves_dir = "";
+    #targets_dir = "";
+    #screenshots_dir = "";
+
+    get curr_saves_dir() { return this.#curr_saves_dir; }
+    get old_saves_dir() { return this.#old_saves_dir; }
+    get public_html_dir() { return this.#public_html_dir; }
+    get saves_dir() { return this.#saves_dir; }
+    get targets_dir() { return this.#targets_dir; }
+    get screenshots_dir() { return this.#screenshots_dir; }
 
     get sessions_ordered() { return utils.sort(Object.values(this.sessions), s=>s.index); }
     
@@ -126,9 +144,12 @@ export class MainApp extends CoreFork {
             log_collector.register(log);
         });
 
-        this.curr_saves_dir = path.resolve(this.saves_dir, "curr");
-        this.old_saves_dir = path.resolve(this.saves_dir, "old");
-        this.public_html_dir = path.resolve(dirname, "public_html");
+        this.#saves_dir = path.resolve(this.appdata_dir, "saves");
+        this.#curr_saves_dir = path.resolve(this.#saves_dir, "curr");
+        this.#old_saves_dir = path.resolve(this.#saves_dir, "old");
+        this.#public_html_dir = path.resolve(dirname, "public_html");
+        this.#screenshots_dir = path.resolve(this.cache_dir, "screenshots");
+        this.#targets_dir = path.resolve(this.appdata_dir, "targets");
         
         this.detected_crops_cache = new Cache("detected_crops", {
             ttl: 1000 * 60 * 60 * 24 * 7,
@@ -138,7 +159,7 @@ export class MainApp extends CoreFork {
         });
         this.detected_crops_cache.on("delete", ({key,data})=>{
             delete this.$.detected_crops[key];
-            fs.rm(path.resolve(this.screenshots_dir, key), {recursive:true}).catch(utils.noop);
+            fs.rm(path.resolve(this.#screenshots_dir, key), {recursive:true}).catch(utils.noop);
         });
 
         this.#media_info_cache = new Cache("mediainfo", 1000 * 60 * 60 * 24 * 7);
@@ -157,13 +178,15 @@ export class MainApp extends CoreFork {
                 };
                 this.$.processes[name] = p;
             }
-            this.check_volumes();
         };
         update_processes();
 
         this.ipc.on("internal:processes", ()=>update_processes());
         this.ipc.respond("stream_targets", ()=>{
             return Object.values(this.streams).map(s=>Object.values(s.stream_targets)).flat().map(t=>t.$);
+        });
+        this.ipc.respond("targets", ()=>{
+            return Object.values(this.targets).flat().map(t=>t.$);
         });
         this.ipc.respond("save-sessions", ()=>{
             this.save_sessions();
@@ -187,10 +210,19 @@ export class MainApp extends CoreFork {
             for (var s of sessions) s.destroy();
             delete this.$.nms_sessions[id];
         });
-        var nms_sessions = await this.ipc.request("media-server", "published_sessions").catch(utils.noop);
-        if (nms_sessions) {
+        
+        this.ipc.request("media-server", "published_sessions").then((nms_sessions)=>{
             Object.assign(this.$.nms_sessions, Object.fromEntries(nms_sessions.map(s=>[s.id,s])));
-        }
+        }).catch(utils.noop);
+
+        this.ipc.request("file-manager", "volumes").then((volumes)=>{
+            this.$.volumes = volumes;
+        }).catch(utils.noop);
+
+        this.ipc.on("file-manager.volumes", (volumes)=>{
+            this.$.volumes = volumes;
+        });
+
         this.on("update-conf", (conf)=>{
             this.logger.info("Config file updated.");
             on_update_conf();
@@ -211,6 +243,7 @@ export class MainApp extends CoreFork {
         this.web = new WebServer(exp, {
             auth: (req, res)=>{
                 if (req.url.startsWith("/virtual/")) return false;
+                if (req.url.startsWith("/generate/")) return false;
                 return true;
             },
             allow_unauthorised: false,
@@ -321,29 +354,180 @@ export class MainApp extends CoreFork {
             next();
         });
 
-        exp.use("/screenshots", express.static(this.screenshots_dir));
+        exp.use("/generate/*", async (req, res, next)=>{
+            const controller = new AbortController();
+            var {source} = req.query
+            var data = {
+                type: req.query.type || "video", // can be video, audio, subtitle or a delimeter separated list (e.g. video+audio)
+                background: req.query.background || "#000000",
+                duration: +req.query.duration || 60,
+                fps: +req.query.fps || 30,
+                width: +req.query.width || 1280,
+                height: +req.query.height || 720,
+                filename: req.query.filename || ""
+            };
+            if (source) {
+                try { Object.assign(data, JSON.parse(source)); } catch (e) { data.filename = source; }
+            }
+            var {filename} = data;
+            if (filename.match(/^https?:\/\//)) {
+                var local_path = path.join(this.tmp_dir, utils.md5(source));
+                if (!await fs.exists(local_path)) {
+                    try {
+                        await utils.download_url_to_file(source, local_path, { signal: controller.signal });
+                    } catch (e) {
+                        this.logger.warn(`Failed to download '${source}': ${e}`);
+                        res.status(400).send(e.message);
+                        return;
+                    }
+                }
+                filename = local_path;
+            }
+            if (!await fs.exists(filename)) {
+                res.status(400).send(`File not found: ${filename}`);
+                return;
+            }
+            let color_str = Color(data.background || 0x000000).hex();
+            var hash = utils.md5(JSON.stringify(data));
+            var media_types = new Set(data.type.split(/[^a-zA-Z0-9]/));
+            let [ext, mime] = ["mkv", "video/x-matroska"];
+            if (media_types.has("video")) [ext, mime] = ["mkv", "video/x-matroska"];
+            else if (media_types.has("audio")) [ext, mime] = ["mp3", "audio/mpeg"];
+            else if (media_types.has("subtitle")) [ext, mime] = ["ass", "text/plain"];
+            var generated_filename = path.join(this.tmp_dir, `${hash}.${ext}`);
+            
+            res.status(200);
+            res.setHeader("Content-Type", mime);
+
+            if (await fs.exists(generated_filename)) {
+                res.sendFile(generated_filename);
+            } else {
+                var ffmpeg_args = [
+                    `-r`, `${data.fps}`
+                ];
+                for (var media_type of media_types) {
+                    if (media_type === "video") {
+                        if (filename) {
+                            ffmpeg_args.push(
+                                `-loop`, `1`,
+                                "-i", filename,
+                            );
+                            // vf.push(`pad=width=${data.width}:height=${data.height}:x=(ow-iw)/2:y=(oh-ih)/2:color=${color_str}`);
+                        } else {
+                            ffmpeg_args.push(
+                                "-f", "lavfi",
+                                "-i", `color=c=${color_str}:s=${data.width}x${data.height}:r=${data.fps}`,
+                            );
+                        }
+                    } else if (media_type === "audio") {
+                        ffmpeg_args.push(
+                            "-f", "lavfi",
+                            "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                            "-ar", "44100",
+                            "-c:a", "mp3",
+                            "-b:a", "320k",
+                            "-t", `${data.duration}`,
+                        );
+                    } else if (media_type === "subtitle") {
+                        let ass_text = ass.create(undefined, undefined, [{end:data.duration, text:""}]);
+                        let hash = utils.md5(ass_text);
+                        let tmp = path.join(this.tmp_dir, `${hash}.ass`);
+                        if (!await fs.exists(tmp)) {
+                            await fs.writeFile(tmp, ass_text, "utf-8");
+                        }
+                        ffmpeg_args.push(
+                            "-i", tmp,
+                        );
+                    }
+                }
+                ffmpeg_args.push(
+                    `-crf`, `0`,
+                    `-tune`, `stillimage,zerolatency`,
+                    `-c:v`, `libx264`,
+                    `-preset:v`, `ultrafast`,
+                    `-pix_fmt`, `yuv420p`
+                );
+                if (filename && media_types.has("video")) {
+                    ffmpeg_args.push(
+                        `-vf`, `scale=${data.width}:${data.height}:force_original_aspect_ratio=decrease:force_divisible_by=2`
+                    );
+                }
+                ffmpeg_args.push(
+                    `-g`, `999999`,
+                    `-keyint_min`, `999999`,
+                    `-x264-params`, `ref=1:no-scenecut=1`,
+                    `-force_key_frames`, `0`,
+                    `-f`, `matroska`,
+                    "-t", `${data.duration}`,
+                    `-y`,
+                    `pipe:1`
+                );
+
+                var ffmpeg = child_process.spawn(globals.app.ffmpeg_path, ffmpeg_args);
+
+                ffmpeg.stderr.on("data", (data)=>{
+                    console.log(data.toString());
+                });
+
+                var cleanup = ()=>{
+                    controller.abort();
+                    ffmpeg.kill();
+                    try { fs.unlinkSync(temp_path); } catch (e) {}
+                };
+
+                var temp_path = path.join(this.tmp_dir, `${hash}.mkv`);
+                
+                var success = true;
+                ffmpeg.on("error", (err)=>{
+                    success = false;
+                    cleanup();
+                });
+                ffmpeg.on("close", ()=>{
+                    cleanup();
+                });
+                req.on('close', cleanup);
+                req.on('end', cleanup);
+                req.on('error', cleanup);
+
+                var fs_stream = fs.createWriteStream(temp_path);
+                ffmpeg.stdout.pipe(res, { end: false });
+                ffmpeg.stdout.pipe(fs_stream, { end: true });
+                fs_stream.on("finish", ()=>{
+                    var stat;
+                    try { stat = fs.statSync(temp_path); } catch (e) {}
+                    if (success && stat && stat.size) fs.renameSync(temp_path, generated_filename);
+                    res.end();
+                });
+                return;
+            }
+
+            next();
+
+            // new StreamRangeServer(({start,end})=>{
+            //     return fs.createReadStream(filename, {start, end})
+            // }, {size: stat.size, type: stat.mime}).handleRequest(req, res);
+
+        });
+
+        exp.use("/screenshots", express.static(this.#screenshots_dir));
         
         exp.use("/", await this.serve({
-            root: this.public_html_dir
+            root: this.#public_html_dir
         }));
         this.client_server = new ClientServer("main", this.web.wss, MainClient);
 
         this.api = new API();
+        
+        await fs.mkdir(this.#old_saves_dir, { recursive: true });
+        await fs.mkdir(this.#curr_saves_dir, { recursive: true });
+        await fs.mkdir(this.#saves_dir, { recursive:true });
+        await fs.mkdir(this.#targets_dir, { recursive:true });
+        await fs.mkdir(this.#screenshots_dir, { recursive:true });
 
-        await fs.mkdir(this.old_saves_dir, { recursive: true });
-        await fs.mkdir(this.curr_saves_dir, { recursive: true });
         await this.detected_crops_cache.ready;
         await this.#media_info_cache.ready;
 
         await this.load_sessions();
-
-        var save_interval_id;
-        var setup_save_interval = ()=>{
-            clearInterval(save_interval_id);
-            save_interval_id = setInterval(()=>{
-                this.save_sessions();
-            }, this.conf["main.autosave_interval"] * 1000);
-        }
         
         setInterval(()=>this.#tick(), TICK_INTERVAL);
         var update_change_log = async ()=>{
@@ -360,7 +544,6 @@ export class MainApp extends CoreFork {
 
         var on_update_conf = ()=>{
             this.load_targets();
-            setup_save_interval();
         };
         on_update_conf();
 
@@ -369,6 +552,14 @@ export class MainApp extends CoreFork {
         });
         
         await this.client_server.ready;
+    }
+
+    generate_media_url(data) {
+        var url = new URL("/generate/", this.get_urls().url);
+        for (var k in data) {
+            url.searchParams.set(k, data[k]);
+        }
+        return url.toString();
     }
 
     #setup_client_updaters() {
@@ -421,13 +612,6 @@ export class MainApp extends CoreFork {
             if (client.is_admin) this.admin_updater.subscribe(client);
         });
     }
-
-    async check_volumes() {
-        var data = await this.ipc.request("file-manager", "volumes").catch(utils.noop);
-        if (!data) return;
-        this.logger.info(`update-volumes [${Object.keys(data).length}]`);
-        this.$.volumes = data;
-    }
     
     async load_targets() {
         var leftovers = new Set(Object.values(this.targets));
@@ -442,6 +626,7 @@ export class MainApp extends CoreFork {
                 "opts": {
                     "use_hardware": true,
                     "use_hevc": false,
+                    "fps_passthrough": true,
                     "outputs": this.conf["media-server.outputs"]
                 },
                 "config": (data, st)=>{
@@ -499,11 +684,11 @@ export class MainApp extends CoreFork {
         for (var t of targets) t.locked = true;
 
         var user_targets = [];
-        for (var id of await fs.readdir(this.targets_dir)) {
+        for (var id of await fs.readdir(this.#targets_dir)) {
             /** @type {Target} */
             var t;
             try {
-                t = JSON.parse(await fs.readFile(path.resolve(this.targets_dir, id)));
+                t = JSON.parse(await fs.readFile(path.resolve(this.#targets_dir, id)));
             } catch (e) {
                 this.logger.error(`Couldn't read or parse target '${id}'`);
             }
@@ -556,11 +741,15 @@ export class MainApp extends CoreFork {
                 this.logger.warn(`Disk space is low: ${(disk_percent * 100).toFixed(1)}% free.`);
             }
         }
+        if (this.#ticks % this.conf["main.autosave_interval"] === 0) {
+            this.save_sessions();
+        }
         this.#ticks++;
     }
 
     async #update_sysinfo() {
-        Object.assign(this.$.sysinfo, await this.ipc.request("core", "sysinfo"));
+        var sysinfo = await this.ipc.request("core", "sysinfo").catch(utils.noop);
+        if (sysinfo) Object.assign(this.$.sysinfo, sysinfo);
     }
 
     async save_sessions() {
@@ -573,10 +762,10 @@ export class MainApp extends CoreFork {
 
     async load_sessions() {
         var sessions = [];
-        var session_ids = await fs.readdir(this.curr_saves_dir);
+        var session_ids = await fs.readdir(this.#curr_saves_dir);
         // new format...
         for (let uid of session_ids) {
-            var session_dir = path.resolve(this.curr_saves_dir, uid);
+            var session_dir = path.resolve(this.#curr_saves_dir, uid);
             let filenames = await utils.order_files_by_mtime_descending(await fs.readdir(session_dir), session_dir);
             for (let filename of filenames) {
                 let fullpath = path.resolve(session_dir, filename);
@@ -686,6 +875,10 @@ export class MainApp extends CoreFork {
 
     /** @param {string} filename @param {ProbeMediaOpts} opts */
     get_media_info(filename, opts) {
+        opts = {
+            ...DEFAULT_PROBE_MEDIA_OPTS,
+            ...opts
+        };
         if (!this.#media_info_promise_map[filename] || opts.force) {
             var promise = this.#probe_media(filename, opts);
             promise.catch(e=>{
@@ -708,10 +901,6 @@ export class MainApp extends CoreFork {
     /** @param {string} filename @param {ProbeMediaOpts} opts @returns {Promise<MediaInfo>} */
     async #probe_media(filename, opts) {
         if (!filename) return {exists:false};
-        opts = {
-            ...DEFAULT_PROBE_MEDIA_OPTS,
-            ...opts
-        };
         return this.#media_info_promise_pool.enqueue(async ()=>{
             let t0 = Date.now();
             let url = utils.urlify(filename);
@@ -724,6 +913,7 @@ export class MainApp extends CoreFork {
             /** @type {MediaInfo} */
             let mi;
             let cache_key = utils.md5(JSON.stringify([abspath, MEDIA_INFO_VERSION, stat ? stat.size : 0, stat ? stat.mtimeMs : 0]));
+            let ttl = 1000 * 60 * 60 * 24 * 7; // 7 days
             let cached = this.#media_info_cache.get(cache_key);
             let use_cache = !!opts.cache;
 
@@ -760,9 +950,13 @@ export class MainApp extends CoreFork {
                                 stream.width = +s.width;
                                 stream.height = +s.height;
                                 stream.albumart = !!s.disposition.attached_pic;
-                                try { stream.fps = utils.safe_eval(s.r_frame_rate); } catch { }
-                                try { stream.avg_fps = utils.safe_eval(s.avg_frame_rate); } catch { }
+                                stream.fps = calc_ratio(s.r_frame_rate);
+                                stream.avg_fps = calc_ratio(s.avg_frame_rate);
                                 stream.interlaced = !!(s.field_order && s.field_order != "progressive");
+                                stream.field_order = s.field_order;
+                                let sar = calc_ratio(s.sample_aspect_ratio) ?? 1;
+                                let dar = calc_ratio(s.display_aspect_ratio);
+                                stream.aspect_ratio = dar || ((stream.width * sar) / (stream.height * sar));
                             } else if (s.codec_type === "audio") {
                                 stream.channels = +s.channels;
                             }
@@ -828,6 +1022,7 @@ export class MainApp extends CoreFork {
                             this.logger.warn("YTDL error:", e);
                             mi.ytdl_error = String(e).split("\n").pop();
                         });
+                        ttl = undefined;
                         if (raw) {
                             mi.ytdl = true;
                             mi.size = +raw.filesize_approx || 0;
@@ -924,31 +1119,36 @@ export class MainApp extends CoreFork {
                 if (!opts.silent) {
                     this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
                 }
-                if (mi.exists && use_cache) this.#media_info_cache.set(cache_key, mi);
+                if (mi.exists && use_cache) this.#media_info_cache.set(cache_key, mi, ttl);
             }
             return mi;
         });
     }
 
-    async analyze_local_file_system_volume(id) {
-        var process = async(dir, name, is_dir)=>{
-            var node = [name];
-            var filename = path.join(dir, name);
-            if (is_dir) {
-                node[1] = [];
-                for (var c of await fs.readdir(filename, {withFileTypes:true})) {
-                    var n = await process(filename, c.name, c.isDirectory());
-                    node[1].push(n);
-                }
-            } else {
-                var s = await fs.lstat(filename).catch(utils.noop);
-                node[1] = s ? s.size : 0;
-            }
-            return node;
-        }
-        var v = this.$.volumes[id];
-        return await process(path.dirname(v.root), path.basename(v.root), (await fs.stat(v.root)).isDirectory());
-    }
+    // async analyze_local_file_system_volume(id) {
+    //     var process = async(dir, name, is_dir)=>{
+    //         var node = [name];
+    //         var filename = path.join(dir, name);
+    //         if (is_dir) {
+    //             node[1] = [];
+    //             var files = await fs.readdir(filename, {withFileTypes:true}).catch(utils.noop);
+    //             if (files) {
+    //                 for (var c of files) {
+    //                     var n = await process(filename, c.name, c.isDirectory());
+    //                     node[1].push(n);
+    //                 }
+    //             }
+    //         } else {
+    //             var s = await fs.lstat(filename).catch(utils.noop);
+    //             node[1] = s ? s.size : 0;
+    //         }
+    //         return node;
+    //     }
+    //     var v = this.$.volumes[id];
+    //     let s = await fs.stat(v.root).catch(utils.noop);
+    //     if (!s || !s.isDirectory()) return;
+    //     return await process(path.dirname(v.root), path.basename(v.root), true);
+    // }
 
     async ytdl_probe(uri) {
         var proc = await utils.execa(this.conf["core.ytdl_path"] || "yt-dlp", [
@@ -960,7 +1160,10 @@ export class MainApp extends CoreFork {
             // "--prefer-free-formats",
             // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
             "--flat-playlist",
-            "--format", this.conf["core.ytdl_format"]
+            "--format", this.conf["core.ytdl_format"],
+            "--no-playlist",
+            "--playlist-start", "1",
+            "--playlist-end", "1"
         ]);
         var lines = proc.stdout.split("\n");
         var arr = lines.map(line=>JSON.parse(line));
@@ -1021,13 +1224,13 @@ export class MainApp extends CoreFork {
         await this.ipc.request("media-server", "destroy_live", [id]);
     }
 
-    async destroy() {
+    async ondestroy() {
         this.client_updater.destroy();
         this.admin_updater.destroy();
         this.logger.info("Saving all sessions before exit...");
         await this.save_sessions();
         this.web.destroy();
-        return super.destroy();
+        return super.ondestroy();
     }
 }
 
@@ -1037,6 +1240,13 @@ async function read_file(filename, start, length) {
         chunks.push(chunk);
     }
     return Buffer.concat(chunks);
+}
+
+function calc_ratio(str) {
+    if (!str) return NaN;
+    let [a, b] = str.split(/[:/]/);
+    if (!b) return +a;
+    return +a / +b;
 }
 
 class ProbeError extends Error {}

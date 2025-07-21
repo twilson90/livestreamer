@@ -2,7 +2,6 @@ import http from 'node:http';
 import { PassThrough, Readable, pipeline } from 'node:stream';
 import fs from 'node:fs';
   
-
 export class StreamRangeServer {
     /** @param {(({start: number, end: number}) => Readable)|Readable} readable @param {{size: number, type: string}} opts */
     constructor(readable, opts={}) {

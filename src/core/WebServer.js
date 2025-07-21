@@ -1,7 +1,8 @@
 import http from "node:http";
 import https from "node:https";
 import WebSocket, { WebSocketServer } from "ws";
-import {globals} from "./exports.js";
+import { createHttpTerminator } from 'http-terminator';
+import { globals, utils } from "./exports.js";
 
 var default_opts = {
     allow_origin: "*",
@@ -31,11 +32,13 @@ var default_opts = {
 }
 export class WebServer {
     /** @type {http.Server} */
-    server;
-    /** @type {Record<PropertyKey, import("node:net").Socket>} */
-    #socks = {};
-    /** @type {Record<PropertyKey, string>} */
-    #auths = {};
+    #server;
+    /** @type {import("http-terminator").HttpTerminator} */
+    #terminator;
+    /** @type {WebSocketServer} */
+    #wss;
+    get wss() { return this.#wss; }
+    get server() { return this.#server; }
     /** @param {http.RequestListener<typeof http.IncomingMessage, typeof http.ServerResponse>} handler @param {typeof default_opts} opts */
     constructor(handler, opts) {
 
@@ -44,7 +47,7 @@ export class WebServer {
         /** @type {https.ServerOptions<typeof http.IncomingMessage, typeof http.ServerResponse>} */
         var http_opts = {};
 
-        this.socket_path = globals.app.get_socket_path(`${globals.app.name}_http`);
+        this.socket_path = globals.app.get_socket_path(`${globals.app.name}_http`, true);
         globals.app.logger.info(`Starting HTTP server on socket ${this.socket_path}...`);
         globals.app.logger.info(globals.app.get_urls().http);
         // console.info(globals.app.get_urls(globals.app.name).url);
@@ -83,14 +86,17 @@ export class WebServer {
             }
             return true;
         }
-        this.server = http.createServer(http_opts, async (req, res)=>{
+        this.#server = http.createServer(http_opts, async (req, res)=>{
             await globals.app.ready;
             if (!await check_auth(req, res, null)) return;
             var allow_origin = opts.allow_origin;
-            var urls = globals.app.get_urls();
-            
-            // res.setHeader('Access-Control-Allow-Origin', "*");
-            res.setHeader('Access-Control-Allow-Origin', [urls.http, urls.https].join(" "));
+            // var urls = globals.app.get_urls();
+            // var is_https = false;
+            // if (req.headers.origin && req.headers.origin.startsWith("https://")) {
+            //     is_https = true;
+            // }
+            res.setHeader('Access-Control-Allow-Origin', allow_origin);
+            // res.setHeader('Access-Control-Allow-Origin', is_https ? urls.https : urls.http);
             res.setHeader('Access-Control-Allow-Credentials', true);
             res.setHeader('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', '*');
@@ -107,36 +113,28 @@ export class WebServer {
                 handler(req, res);
             }
         });
-        this.server.listen(this.socket_path);
+        this.#terminator = createHttpTerminator({ server: this.#server, gracefulTerminationTimeout: 1000 });
+        this.#server.listen(this.socket_path);
         
         if (opts.ws) {
-            this.server.on('upgrade', async (req, socket, head)=>{
+            this.#server.on('upgrade', async (req, socket, head)=>{
                 await globals.app.ready;
                 if (!await check_auth(req, null, socket)) return;
-                this.wss.handleUpgrade(req, socket, head, (socket)=>{
-                    this.wss.emit('connection', socket, req);
+                this.#wss.handleUpgrade(req, socket, head, (socket)=>{
+                    this.#wss.emit('connection', socket, req);
                 });
             });
-            this.wss = new WebSocketServer(opts.ws);
-            this.wss.on("error", (error)=>{
+            this.#wss = new WebSocketServer(opts.ws);
+            this.#wss.on("error", (error)=>{
                 globals.app.logger.error(error);
             });
         }
-        var sock_id = 0;
-        this.server.on("connection", (sock)=>{
-            var id = ++sock_id;
-            this.#socks[id] = sock;
-            sock.on('close', ()=>{
-                delete this.#socks[id];
-            });
-        });
     }
 
     async destroy() {
-        await new Promise(r=>this.server.close(r));
-        for (var id of Object.keys(this.#socks)) {
-            this.#socks[id].destroy();
-        }
+        this.#server.closeAllConnections();
+        // await utils.promisify(this.#server.close.bind(this.#server))();
+        await this.#terminator.terminate();
     }
 }
 export default WebServer;

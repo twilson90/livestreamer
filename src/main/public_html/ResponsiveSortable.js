@@ -43,9 +43,42 @@ export class CancelSortPlugin {
 }
 
 /** @extends {SortablePlugin} */
-export class RememberScrollPositionsPlugin {
+export class MyAutoScrollPlugin {
+    #handleAutoScroll;
+
     /** @param {Sortable} sortable */
     constructor(sortable){
+        this.defaults = {
+            myAutoScroll: true,
+        };
+        this.#handleAutoScroll = (e)=>{
+            console.log("auto scroll");
+        };
+    }
+
+    dragStarted({ originalEvent }) {
+        console.log("drag started");
+        Sortable.utils.on(document, 'dragover', this.#handleAutoScroll);
+    }
+
+    dragOverCompleted({ originalEvent }) {
+        console.log("drag over completed");
+    }
+
+    drop() {
+        console.log("drop");
+        Sortable.utils.off(document, 'dragover', this.#handleAutoScroll);
+    }
+
+    static pluginName = "myAutoScroll";
+    static initializeByDefault = true;
+}
+
+/** @extends {SortablePlugin} */
+export class RememberScrollPositionsPlugin {
+    // fucks up auto scroll (dragging to scroll)
+    /** @param {Sortable} sortable */
+    constructor(sortable) {
         sortable.el.addEventListener("start", (e)=>{
             /** @type {Map<HTMLElement, number>} */
             var scroll_map = new Map();
@@ -97,11 +130,13 @@ export class ResponsiveSortable extends Sortable {
         return el ? Sortable.get(el) : null;
     }
     
+    /** @param {HTMLElement} el @param {Sortable.Options} options */
     constructor(el, options) {
-        options = Object.assign({
+        options = {
             lastSelectedClass: "sortable-last-selected",
             lastActiveClass: "sortable-last-active",
-        }, options);
+            ...options,
+        }
         
         super(el, options);
 

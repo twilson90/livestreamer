@@ -16,7 +16,7 @@ export class MainClient extends Client {
 
     api = {
         ...super.api,
-        "analyze_local_file_system_volume": (...args)=>globals.app.analyze_local_file_system_volume(...args),
+        // "analyze_local_file_system_volume": (...args)=>globals.app.analyze_local_file_system_volume(...args),
         "module_restart": (...args)=>globals.app.module_restart(...args),
         "module_stop": (...args)=>globals.app.module_stop(...args),
         "module_start": (...args)=>globals.app.module_start(...args),
@@ -68,6 +68,10 @@ export class MainClient extends Client {
         "destroy_session": (...args)=>this.destroy_session(...args),
         "subscribe_session": (...args)=>this.subscribe_session(...args),
         "subscribe_sysinfo": (...args)=>this.subscribe_sysinfo(...args),
+        "add_volume": (...args)=>globals.app.ipc.request("file-manager", "add_volume", args),
+        "edit_volume": (...args)=>globals.app.ipc.request("file-manager", "edit_volume", args),
+        "delete_volume": (...args)=>globals.app.ipc.request("file-manager", "delete_volume", args),
+        "update_volumes": (...args)=>globals.app.ipc.request("file-manager", "update_volumes", args),
     }
 
     oninit() {
@@ -115,7 +119,7 @@ export class MainClient extends Client {
 
     async save_file(file, data) {
         var fullpath = this.session.evaluate_and_sanitize_filename(file);
-        if (fullpath) await fs.writeFile(fullpath, data);
+        if (fullpath) await globals.app.safe_write_file(fullpath, data, "utf-8");
     }
 
     get_media_info(filename, opts) {

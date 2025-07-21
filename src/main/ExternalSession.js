@@ -16,6 +16,7 @@ export class ExternalSession extends Session {
         var ip = utils.is_ip_local(nms_session.ip) ? "::1" : nms_session.ip;
         var id = nms_session.publishStreamPath.split("/").pop();
         var name = nms_session.publishArgs["name"] || `[${ip}]`;
+        
 
         super(id, new ExternalSession$(), SessionTypes.EXTERNAL, utils.get_defaults(SessionProps));
         

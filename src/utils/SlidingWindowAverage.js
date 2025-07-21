@@ -1,11 +1,13 @@
+import {hr_timestamp} from "./hr_timestamp.js";
+
 export class SlidingWindowAverage {
     #windowSize = 60000;
     #granularity = 1000;
     #buckets = new Map();
     #sum = 0;
     #count = 0;
-    constructor(windowSizeMs = 60000, granularity = 1000) {
-        this.#windowSize = windowSizeMs;
+    constructor(windowSize = 60000, granularity = 1000) {
+        this.#windowSize = windowSize;
         this.#granularity = granularity; // How often to store samples (in ms)
     }
   
@@ -14,6 +16,7 @@ export class SlidingWindowAverage {
     }
   
     add(value, elapsed) {
+        if (!elapsed) elapsed = hr_timestamp();
         this.#evictOldBuckets(elapsed);
         
         const bucketTime = Math.floor(elapsed / this.#granularity) * this.#granularity;

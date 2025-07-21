@@ -1,14 +1,15 @@
 /** @param {HTMLElement} elem @param {string} new_value @param {{trigger:boolean|"change"}} opts */
 export function set_value(elem, new_value, opts) {
-    if (typeof elem.value === "undefined") throw new Error();
+    var value;
+    if (elem.nodeName === "INPUT" || elem.nodeName === "TEXTAREA" || elem.nodeName === "SELECT") value = elem.value;
+    else if (elem.contentEditable) value = elem.innerHTML;
+    else throw new Error();
 
     opts = {
         trigger: false,
         ...opts
     };
     var changed = false;
-    // var curr_val = get_value(elem);
-    // if (curr_val === val) return;
     if (elem.type === "checkbox") {
         new_value = !!new_value;
         if (elem.checked !== new_value) {
@@ -27,15 +28,14 @@ export function set_value(elem, new_value, opts) {
         } else {
             new_value = String(new_value);
         }
-        var old_value = elem.value;
-        if (old_value !== new_value) {
+        if (value !== new_value) {
             var pos = elem.selectionStart;
-            var at_end = pos == elem.value.length;
+            var at_end = pos == value.length;
             changed = true;
             if (elem.nodeName == "INPUT" || elem.nodeName == "SELECT" || elem.nodeName == "TEXTAREA") {
                 elem.value = new_value;
             } else if (elem.contentEditable) {
-                elem.innerText = new_value;
+                elem.innerHTML = new_value;
             }
             if (at_end) pos = elem.size;
             if (pos !== undefined && elem.selectionEnd != null) elem.selectionEnd = pos;

@@ -18,9 +18,12 @@ export class LocalFileSystem extends Driver {
 	}
 	__destroy() { }
 	async __init() {
-		var stat = await fs.stat(this.volume.root).catch(utils.noop);
-		if (!stat || !stat.isDirectory()) {
-			console.error(`LocalFileSystem Volume '${this.volume.config.name}' does not exist.`);
+		var stat = await fs.stat(this.volume.root).catch(err=>{
+			console.error(`LocalFileSystem Volume '${this.volume.config.name}' is not accessible`, err);
+		});
+		if (!stat) return false;
+		if (!stat.isDirectory()) {
+			console.error(`LocalFileSystem Volume '${this.volume.config.name}' is not a directory`);
 			return false;
 		}
 		return true;

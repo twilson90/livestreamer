@@ -21,7 +21,8 @@ export class Log {
 			/** @type {Log} */
 			let log = args.pop();
 			if (log instanceof Error) {
-				this.message = log.stack;
+				if (globals.app.debug) this.message = log.stack;
+				else this.message = log.message;
 				this.level = Logger.ERROR;
 			} else {
 				this.level = log.level;
@@ -108,7 +109,7 @@ export class Logger extends events.EventEmitter {
 
 	log() {
 		let log = this.#process_log(...arguments);
-		this.log_to_file(log);
+		this. log_to_file(log);
 		this.log_to_stdout(log);
 		this.emit("log", log);
 		return log;
@@ -149,12 +150,42 @@ export class Logger extends events.EventEmitter {
 		this.#stream.write(log.toString()+"\n");
 	}
 
-	console_adapter() {
-		console.log = (...args)=>this.log(Logger.INFO, ...args);
-		console.info = (...args)=>this.log(Logger.INFO, ...args);
-		console.warn = (...args)=>this.log(Logger.WARN, ...args);
-		console.error = (...args)=>this.log(Logger.ERROR, ...args);
-		console.debug = (...args)=>this.log(Logger.DEBUG, ...args);
+	/** @param {function():any} cb @param {function(string, ...any):void} log_cb */
+	console_adapter(cb, log_cb) {
+		if (!log_cb) log_cb = (level, ...args)=>this.log(level, ...args);
+		let {log, info, warn, error, debug} = console;
+		console.log = (...args)=>log_cb(Logger.INFO, ...args);
+		console.info = (...args)=>log_cb(Logger.INFO, ...args);
+		console.warn = (...args)=>log_cb(Logger.WARN, ...args);
+		console.error = (...args)=>log_cb(Logger.ERROR, ...args);
+		console.debug = (...args)=>log_cb(Logger.DEBUG, ...args);
+		if (cb) {
+			var res = cb();
+			console.log = log;
+			console.info = info;
+			console.warn = warn;
+			console.error = error;
+			console.debug = debug;
+			return res;
+		}
+	}
+
+	static console_suppressor(cb) {
+		let {log, info, warn, error, debug} = console;
+		console.log = utils.noop;
+		console.info = utils.noop;
+		console.warn = utils.noop;
+		console.error = utils.noop;
+		console.debug = utils.noop;
+		if (cb) {
+			var res = cb();
+			console.log = log;
+			console.info = info;
+			console.warn = warn;
+			console.error = error;
+			console.debug = debug;
+			return res;
+		}
 	}
 
 	destroy() {

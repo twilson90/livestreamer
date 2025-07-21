@@ -11,7 +11,7 @@ if (resources_dir) {
 	add_dir(resources_dir);
 	process.env.LIVESTREAMER_RESOURCES_DIR = resources_dir;
 }
-if (process.versions.electron && process.env.BUILD && process.resourcesPath) {
+if (process.versions.electron && import.meta.env?.BUILD && process.resourcesPath) {
 	add_dir(process.resourcesPath, true);
 }
 

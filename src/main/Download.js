@@ -63,12 +63,15 @@ export class Download extends DataNodeID {
                         // "--prefer-free-formats", // this uses MKV on ubuntu...
                         // "--extractor-args", `youtube:skip=hls,dash,translated_subs`,
                         `--format`, globals.app.conf["core.ytdl_format"],
+                        "--no-playlist",
+                        "--playlist-start", "1",
+                        "--playlist-end", "1",
                         `--no-mtime`,
                         "--output", tmp_download_path
                     ], {buffer:false});
                     var stdout_listener = readline.createInterface(proc.stdout);
                     this.controller.signal.onabort = ()=>{
-                        utils.tree_kill(proc.pid, 'SIGINT');
+                        proc.kill('SIGINT');
                         if (stdout_listener) stdout_listener.close();
                     }
                     var first = false;

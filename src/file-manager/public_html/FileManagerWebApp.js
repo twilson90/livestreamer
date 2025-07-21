@@ -1,5 +1,6 @@
 import {WindowCommunicator} from "../../utils/dom/WindowCommunicator.js";
 import {mime_ext_map} from "../../utils/mime_ext_map.js";
+import {md5} from "../../utils/md5.js";
 import "./extra-style.scss";
 
 export class FileManagerWebApp {
@@ -93,7 +94,7 @@ export class FileManagerWebApp {
 				},
 				toolbar:[
 					['home'],
-					['netmount'],
+					// ['netmount'],
 					['back', 'reload', 'forward'],
 					['mkdir', 'mkfile', 'upload'],
 					['open', 'download', 'info', 'quicklook'],
@@ -185,8 +186,6 @@ export class FileManagerWebApp {
 					messenger.request(window.parent, "exit", {id});
 				};
 
-				var toolbar_observer;
-
 				/* any bind functions etc. */
 				fm.bind('open sync select toolbarpref', function() {
 					elem.classList.remove("elfinder-touch");
@@ -207,6 +206,38 @@ export class FileManagerWebApp {
 					add_quit_button();
 				}).observe(elem, {childList: true, subtree: true});
 				add_quit_button();
+
+				/* var netmounts;
+				try { netmounts = JSON.parse(localStorage.getItem("fm:netmounts")); } catch {}
+				if (!netmounts) netmounts = {}; */
+
+				/* var register_netmount = (key, data)=>{
+					if (data) {
+						let {protocol, host, user, pass, port, path} = data;
+						netmounts[key] = {protocol, host, user, pass, port, path};
+					} else {
+						delete netmounts[key];
+					}
+					localStorage.setItem("fm:netmounts", JSON.stringify(netmounts));
+				}; */
+
+				/* for (var k in netmounts) {
+					let {protocol, host, user, pass, port, path} = netmounts[k];
+					fm.request({data: {cmd: "netmount", protocol, host, user, pass, port, path}});
+				}
+
+				var old_request = fm.request;
+				fm.request = function(...args) {
+					var {data} = args[0];
+					if (data?.cmd == "netmount") {
+						fm.one('netmountdone', function(...args) {
+							if (data?.protocol == "unmount") {
+								rm.reload()
+							}
+						});
+					}
+					return old_request.apply(this, args);
+				} */
 				
 				fm.bind('open', function() {
 					var path = '', cwd = fm.cwd();

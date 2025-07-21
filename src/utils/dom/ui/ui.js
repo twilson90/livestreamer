@@ -10,11 +10,12 @@ import { set_inner_html } from "../set_inner_html.js";
 import { toggle_attribute } from "../toggle_attribute.js";
 import { toggle_class } from "../toggle_class.js";
 import { DeferredReady } from "../../DeferredReady.js";
+import { array_remove } from "../../array_remove.js";
 
 /** @import events from "node:events" */
 
 var ID = 0;
-const PRE = "uis";
+const PRE = "_ui_";
 const EXPANDO = `${PRE}-${Date.now()}`;
 // var updating;
 
@@ -49,6 +50,12 @@ export function *parents(elem, include_self=false) {
  */
 export function closest(elem, type = UI) {
     for (var ui of parents(elem, true)) {
+        if (ui instanceof type) return ui;
+    }
+}
+
+export function find(elem, type = UI) {
+    for (var ui of traverse(elem, true, true)) {
         if (ui instanceof type) return ui;
     }
 }
@@ -106,12 +113,15 @@ export class UI extends EventEmitter {
     #content_override = null;
     #content_timeout;
     #temp_content_deferred = new DeferredReady();
-
+    #index = -1;
+    /** @type {UI} */
     #parent;
+    /** @type {UI[]} */
+    __children = [];
+
     /** @returns {UI} */
     get parent() { return this.#parent; }
-    #index = 0;
-    /** @returns {number} */
+    /** @returns {number} @description The index of the DOM element in the parent */
     get index() { return this.#index; }
 
     get async_click_in_progress() { return !!this.#async_click_promise; }
@@ -120,7 +130,7 @@ export class UI extends EventEmitter {
     get visible() { return is_visible(this.elem); } // not the opposite of hidden
     get descendents() { return [...this.iterate_descendents()]; }
     get parents() { return [...this.iterate_parents()]; }
-    get children() { return [...this.iterate_children()]; }
+    get children() { return [...this.__children]; }
     get root() {
         for (var p of this.iterate_parents());
         return p;
@@ -133,13 +143,27 @@ export class UI extends EventEmitter {
         return !!this.#async_click_promise || (parent && parent.is_disabled) || ("disabled" in this.#settings && !!this.get_setting("disabled"));
     }
     set layout(v) { this.set_layout(v); }
-    
-    iterate_children() {
-        return traverse(this.elem, false);
+
+    /** @param {HTMLElement} parent */
+    __register() {
+        // this.#parent = parent;
+        this.__unregister();
+        this.#parent = closest(this.elem.parentElement, UI);
+        this.#index = get_index(this.elem);
+        if (this.#parent) this.#parent.__children.push(this);
     }
+
+    __unregister() {
+        if (this.#parent) {
+            array_remove(this.#parent.__children, this);
+            this.#parent = null;
+            this.#index = -1;
+        }
+    }
+    
     /** @returns {Generator<UI>} */
     *iterate_descendents() {
-        for (var c of this.iterate_children()) {
+        for (var c of this.__children) {
             yield c;
             yield* c.iterate_descendents();
         }
@@ -167,6 +191,7 @@ export class UI extends EventEmitter {
         this.elem = elem;
         this.elem[EXPANDO] = this;
         this.elem.classList.add(PRE);
+        this.elem.dataset.ui = this.__UID__;
         this.#settings = { ...settings };
 
         if ("class" in this.#settings) {
@@ -204,8 +229,6 @@ export class UI extends EventEmitter {
         return this.#temp_content_deferred.ready;
     }
 
-    init() { }
-
     update_next_frame = debounce_next_frame(() => this.update());
 
     update() {
@@ -215,17 +238,12 @@ export class UI extends EventEmitter {
         this.__render();
     }
 
-    __before_update() {
-    }
+    __before_update() {}
 
-    __update(parent, index) {
-        parent = parent ?? this.parent; // will this work if update is called from a child?
-
+    __update() {
         var resolve;
         this.#updating = new Promise((r)=>resolve=r);
-
-        this.#parent = parent;
-        this.#index = +index;
+        // this.emit("before_update");
         this.__before_update();
 
         this.get_setting("update");
@@ -234,7 +252,7 @@ export class UI extends EventEmitter {
         if (this.get_setting("update_children") !== false) {
             var i = 0;
             for (var c of this.children) {
-                c.__update(this, i);
+                c.__update();
                 i++;
             }
         }
@@ -429,6 +447,10 @@ export class Box extends UI {
             }
             this.header.elem.style.cursor = "pointer";
         }
+        this.content = new UI();
+        this.content.elem.classList.add("inner");
+        this.append(this.content);
+
         this.on("update", ()=>{
             this.elem.toggleAttribute("data-collapsed", this.get_setting("collapsed"));
         });
@@ -579,5 +601,56 @@ export class List extends UI {
     /** @returns {ListItemType[]} */
     get list_items() { return this.children; }
 }
+
+export function init(root) {
+    if (!root) root = document.documentElement;
+    var clazz = `${PRE}-root`;
+    if (root.classList.contains(clazz)) return;
+    /** @param {Element} el @param {function(UI):void} cb @param {UI} ui @param {UI[]} roots */
+    var walk = (el, cb, parent_ui, roots=[])=>{
+        if (el instanceof HTMLElement) {
+            /** @type {UI} */
+            var ui = el[EXPANDO];
+            if (ui) {
+                cb(ui);
+                if (!parent_ui) roots.push(ui);
+            }
+            for (var c of el.children) {
+                walk(c, cb, ui ?? parent_ui, roots);
+            }
+        }
+        return roots;
+    }
+    var observer = new MutationObserver((e)=>{
+        /** @type {UI} */
+        var ui;
+        for (var mutation of e) {
+            if (mutation.type === "childList") {
+                for (var el of mutation.removedNodes) {
+                    walk(el, (ui)=>ui.__unregister());
+                }
+                for (var el of mutation.addedNodes) {
+                    let roots = walk(el, (ui)=>ui.__register());
+                    for (var ui of roots) ui.update();
+                }
+            }
+            if (mutation.type === "attributes") {
+                if (mutation.target instanceof HTMLElement) {
+                    var ui = mutation.target[EXPANDO];
+                    if (ui) ui.__register();
+                }
+            }
+        }
+    });
+    observer.observe(root, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["data-ui"],
+    });
+    root.classList.add(clazz);
+}
+
+init();
 
 export default UI;

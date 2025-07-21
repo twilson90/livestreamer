@@ -2,8 +2,9 @@ import fs from "fs-extra";
 import path from "node:path";
 import child_process from "node:child_process";
 import url from "node:url";
+import tree_kill from "tree-kill-promise";
 import {globals} from "./exports.js";
-import {utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger} from "../core/exports.js";
+import {utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger, MPVWrapper} from "../core/exports.js";
 /** @import { Target, Stream } from './exports.js' */
 
 export class StreamTarget$ extends StopStartStateMachine$ {
@@ -19,6 +20,7 @@ export class StreamTarget$ extends StopStartStateMachine$ {
     opts = {};
     speed = 0;
     bitrate = 0;
+    url = "";
     key = utils.uuidb64();
 }
 
@@ -26,7 +28,7 @@ export class StreamTarget$ extends StopStartStateMachine$ {
 export class StreamTarget extends StopStartStateMachine {
     /** @type {FFMPEGWrapper} */
     #ffmpeg;
-    /** @type {child_process.ChildProcessWithoutNullStreams} */
+    /** @type {MPVWrapper} */
     #mpv;
     /** @param {Stream} stream @param {Target} target */
     constructor(stream, target) {
@@ -46,6 +48,8 @@ export class StreamTarget extends StopStartStateMachine {
         var data = utils.json_copy({
             stream_id: stream.id,
             target_id: target.id,
+            rtmp_host: target.rtmp_host,
+            rtmp_key: target.rtmp_key,
             opts: stream.get_target_opts(target.id),
         });
 
@@ -72,17 +76,14 @@ export class StreamTarget extends StopStartStateMachine {
         }
         Object.assign(this.$, data);
 
-        let key = this.stream.id;
-        if (this.$.output_url) {
-            let output_url = new URL(this.$.output_url);
-            if (output_url.protocol.match(/^(rtmp|http)s?:/)) {
-                key = (output_url.hostname === "127.0.0.1") ? "localhost" : output_url.hostname;
-            } else {
-                key = output_url.protocol.slice(0,-1);
-            }
-        }
+        let key = this.target.name
+            .toLowerCase() // Convert to lowercase
+            .replace(/\s+/g, '-') // Replace spaces with dashes
+            .replace(/[^\w\-\.]+/g, ''); // Remove non-word characters except dashes
+        
         if (!this.stream.keys[key]) this.stream.keys[key] = 0;
-        this.$.key = `${key}:${this.stream.keys[key]++}`;
+        this.stream.keys[key]++;
+        this.$.key = `${key}-${this.stream.keys[key]+1}`;
     }
 
     update() {
@@ -107,7 +108,8 @@ export class StreamTarget extends StopStartStateMachine {
                     "--no-correct-pts",
                     `--osc=${opts.osc?"yes":"no"}`
                 ];
-                this.#mpv = child_process.spawn(globals.app.mpv_path, mpv_args);
+                this.#mpv = new MPVWrapper({ ipc: false });
+                this.#mpv.start(mpv_args);
                 this.#mpv.on("close",()=>{
                     this._handle_end("mpv");
                 });
@@ -119,7 +121,7 @@ export class StreamTarget extends StopStartStateMachine {
                     fs.mkdirSync(path.dirname(output), {recursive:true});
                 }
                 var ffmpeg_args = [];
-                // if (this.stream.is_realtime) ffmpeg_args.push("-re");
+                if (this.stream.is_realtime) ffmpeg_args.push("-re");
                 ffmpeg_args.push(
                     // `-noautoscale`,
                     "-i", input,
@@ -151,7 +153,7 @@ export class StreamTarget extends StopStartStateMachine {
     }
 
     async onstop() {
-        if (this.#mpv) await utils.tree_kill(this.#mpv.pid);
+        if (this.#mpv) await this.#mpv.quit();
         if (this.#ffmpeg) await this.#ffmpeg.stop();
         globals.app.ipc.emit("main.stream-target.stopped", {id:this.id, reason:this.$.stop_reason});
         

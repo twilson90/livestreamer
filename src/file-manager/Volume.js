@@ -10,7 +10,7 @@ import dataUriToBuffer from "data-uri-to-buffer";
 import sharp from "sharp";
 import mime from "mime";
 import https from "node:https";
-import {utils, errors, drivers} from "./exports.js";
+import {utils, errors, drivers, globals} from "./exports.js";
 import {constants} from "../core/exports.js";
 
 /** @import { ElFinder, Driver } from './exports.js' */
@@ -50,21 +50,24 @@ export class Volume {
 	constructor(elfinder, config) {
 		if (typeof config === "string") config = {root:config};
 		config = {
-			id: `v${VOLUME_ID++}_`,
-			name: null,
 			driver: `LocalFileSystem`,
 			permissions: { read:1, write:1, locked:0 },
 			separator: null,
 			isPathBased: undefined,
+			locked: false,
+			access_control: { "*": { "access":"allow" } },
 			...config,
 		}
+		// if (!config.uid) config.uid = globals.app.generate_uid("volume");
+		if (!config.id) config.id = `${globals.app.generate_uid("volume")}`;
 		if (config.root) config.root = config.root.replace(/[\\/]+$/, "");
-		if (!config.name) config.name = config.root ? config.root.split(/[\\/]/).pop() : `Volume ${VOLUME_ID}`;
-		if (elfinder.volumes[config.id]) throw new Error(`Volume with ID '${config.id}' already exists.`);
+		if (!config.name) config.name = config.root ? config.root.split(/[\\/]/).pop() : `Volume ${config.id}`;
+		if (elfinder.volumes.has(config.id)) throw new Error(`Volume with ID '${config.id}' already exists.`);
 
 		/** @type {ElFinder} */
 		this.elfinder = elfinder;
 		this.config = config;
+		this.elf_id = `v${VOLUME_ID++}_`;
 		
 		var temp_driver = new this.driver_class(this);
 		var isPathBased = !!this.driver_class.separator;
@@ -75,11 +78,13 @@ export class Volume {
 		this.not_implemented_commands = [...this.elfinder.commands].filter(p=>!this.__proto__[p]);
 	}
 
-	register() {
-		this.elfinder.volumes[this.id] = this;
+	async save() {
+		if (this.config.locked) throw new Error("Volume is locked");
+		await globals.app.safe_write_file(path.join(this.elfinder.volumes_dir, this.id), JSON.stringify(this.config));
 	}
-	unregister() {
-		delete this.elfinder.volumes[this.id];
+
+	async destroy() {
+		await fs.rm(path.join(this.elfinder.volumes_dir, this.id)).catch(utils.noop);
 	}
 
 	// -------------------------------------------------------------
@@ -409,12 +414,12 @@ export class Volume {
 				data.options = driver.options();
 				var files = [];
 				if (opts.tree) {
-					for (var v of Object.values(this.elfinder.volumes)) {
+					for (var v of this.elfinder.volumes.values()) {
 						await v.driver(opts.id, async (d)=>{
 							if (d.initialized) {
 								files.push(await d.file("/"));
 							}
-						});
+						})
 					}
 				}
 				if (driver.initialized) {

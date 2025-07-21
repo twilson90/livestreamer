@@ -13,22 +13,42 @@ const dirname = import.meta.dirname;
 export class ElFinder {
 	/** @type {Object.<string,express.Request>} */
 	requests = {};
-	/** @type {Object.<string,Volume>} */
-	volumes = {};
+	/** @type {Map<string,Volume>} */
+	volumes = new Map();
+	/** @type {Map<string,Volume>} */
+	volumes_by_elf_id = new Map();
 	config;
 	/** @type {Object.<string,string[]>} */
 	uploads = {}
 	#ready;
+	#volumes_dir = "";
+	#elfinder_dir = "";
+	#netmounts_dir = "";
+	#uploads_dir = "";
+	#thumbnails_dir = "";
+	#tmp_dir = "";
+
+	get elfinder_dir() { return this.#elfinder_dir; }
+	get netmounts_dir() { return this.#netmounts_dir; }
+	get uploads_dir() { return this.#uploads_dir; }
+	get thumbnails_dir() { return this.#thumbnails_dir; }
+	get tmp_dir() { return this.#tmp_dir; }
+	get volumes_dir() { return this.#volumes_dir; }
+
 	get ready() { return this.#ready; }
+	get volume_configs() { return Object.fromEntries(this.volumes.entries().map(([k,v], i)=>[k,{...v.config}])); }
 
 	/** @param {Express} express @param {object} config */
 	constructor(express, config) {
-		this.commands = new Set(['abort','archive','callback','chmod','dim','duplicate','editor','extract','file','get','info','ls','mkdir','mkfile','netmount','open','parents','paste','put','rename','resize','rm','search','size','subdirs','tmb','tree','upload','url','zipdl']);
-		this.elfinder_dir = path.join(globals.app.appdata_dir, "elfinder");
-		this.netmounts_dir = path.join(this.elfinder_dir, "netmounts");
-		this.uploads_dir = path.join(this.elfinder_dir, 'uploads');
-		this.thumbnails_dir = path.join(this.elfinder_dir, 'tmb');
-		this.tmp_dir = path.join(this.elfinder_dir, 'tmp');
+		this.commands = new Set(['abort','archive','callback','chmod','dim','duplicate','editor','extract','file','get','info','ls','mkdir','mkfile'/* ,'netmount' */,'open','parents','paste','put','rename','resize','rm','search','size','subdirs','tmb','tree','upload','url','zipdl']);
+
+		this.#elfinder_dir = path.join(globals.app.appdata_dir, "elfinder");
+		this.#netmounts_dir = path.join(this.#elfinder_dir, "netmounts");
+		this.#uploads_dir = path.join(this.#elfinder_dir, 'uploads');
+		this.#thumbnails_dir = path.join(this.#elfinder_dir, 'tmb');
+		this.#tmp_dir = path.join(this.#elfinder_dir, 'tmp');
+		this.#volumes_dir = path.join(this.#elfinder_dir, 'volumes');
+		
 		this.callback_template = fs.readFileSync(globals.app.resources.get_path("callback-template.html"), "utf-8");
 
 		config = {
@@ -50,16 +70,16 @@ export class ElFinder {
 			limit: '50mb',
 		}))
 		
-		var upload = multer({ dest: this.uploads_dir }).array("upload[]");
+		var upload = multer({ dest: this.#uploads_dir }).array("upload[]");
 		router.post('/', upload, (req, res, next)=>{
 			this.exec(req, res);
 		});
 		router.get('/', (req, res, next)=>{
 			this.exec(req, res);
 		});
-		var check_volume = (req)=>{
+		var check_volume = (req, res)=>{
 			var volumeid = req.params.volume
-			var volume = this.volumes[volumeid];
+			var volume = this.volumes.get(volumeid);
 			if (!volume) res.status(404).send("Volume does not exist.");
 			return volume;
 		}
@@ -69,7 +89,7 @@ export class ElFinder {
 				if (req.params.tmb == "0") {
 					res.status(404).send("Thumbnail not generatable.");
 				} else {
-					var tmbpath = path.join(this.thumbnails_dir, req.params.volume, req.params.tmb);
+					var tmbpath = path.join(this.#thumbnails_dir, req.params.volume, req.params.tmb);
 					res.sendFile(tmbpath);
 				}
 			}
@@ -93,28 +113,55 @@ export class ElFinder {
 	}
 
 	async #init() {
-		await fs.mkdir(this.thumbnails_dir, {recursive:true});
-		await fs.mkdir(this.uploads_dir, {recursive:true});
-		await fs.emptyDir(this.uploads_dir);
-		await fs.mkdir(this.tmp_dir, {recursive:true});
-		await fs.emptyDir(this.tmp_dir);
-		await fs.mkdir(this.netmounts_dir, {recursive:true});
+		await fs.mkdir(this.#thumbnails_dir, {recursive:true});
+		await fs.mkdir(this.#uploads_dir, {recursive:true});
+		await fs.emptyDir(this.#uploads_dir);
+		await fs.mkdir(this.#tmp_dir, {recursive:true});
+		await fs.emptyDir(this.#tmp_dir);
+		await fs.mkdir(this.#netmounts_dir, {recursive:true});
+		await fs.mkdir(this.#volumes_dir, {recursive:true});
 
-		for (var v of this.config.volumes) {
-			new Volume(this, v).register();
+		var load_config = async (id)=>{
+			try { return JSON.parse(await fs.readFile(path.join(this.#volumes_dir, id), "utf8")); } catch (e) {}
 		}
 
-		for (var netkey of await fs.readdir(this.netmounts_dir)) {
-			var config = JSON.parse(await fs.readFile(path.join(this.netmounts_dir, netkey), "utf8"));
-			new Volume(this, config).register();
-		}
-
+		// always first so temp gets id v0_ by default.
 		this.tmpvolume = new Volume(this, {
 			driver: "LocalFileSystem",
-			root: this.tmp_dir
+			root: this.#tmp_dir,
 		});
 
+		for (var id in this.config.volumes) {
+			let volume = new Volume(this, {locked: true, ...this.config.volumes[id], id});
+			this.register_volume(volume);
+		}
+
+		for (var id of await fs.readdir(this.#volumes_dir)) {
+			var config = await load_config(id);
+			if (!config) continue;
+			var volume = new Volume(this, {...config, id});
+			this.register_volume(volume);
+		}
+
+		/* for (var netkey of await fs.readdir(this.#netmounts_dir)) {
+			var config = JSON.parse(await fs.readFile(path.join(this.#netmounts_dir, netkey), "utf8"));
+			await new Volume(this, config).register();
+		} */
+
 		await this.init();
+	}
+
+	/** @param {Volume} volume */
+	register_volume(volume) {
+		if (this.volumes.has(volume.id)) throw new Error(`Volume with ID '${volume.id}' already exists.`);
+		this.volumes.set(volume.id, volume);
+		this.volumes_by_elf_id.set(volume.elf_id, volume);
+	}
+
+	/** @param {Volume} volume */
+	unregister_volume(volume) {
+		this.volumes.delete(volume.id);
+		this.volumes_by_elf_id.delete(volume.elf_id);
 	}
 
 	async init(){}
@@ -125,7 +172,7 @@ export class ElFinder {
 		var opts = Object.assign({}, req.body, req.query);
 		var cmd = opts.cmd;
 		
-		var allvolumes = Object.values(this.volumes);
+		var allvolumes = [...this.volumes.values()];
 		if (allvolumes.length == 0) {
 			res.end(`No volumes configured.`);
 			return;
@@ -186,6 +233,35 @@ export class ElFinder {
 		delete this.requests[taskid];
 	}
 
+	async add_volume(config) {
+		var volume = new Volume(this, config);
+		this.register_volume(volume);
+		await volume.save();
+		globals.app.ipc.emit("file-manager.volumes", this.volume_configs);
+	}
+
+	async edit_volume(id, config) {
+		var volume = this.volumes.get(id);
+		if (!volume) throw new Error(`Volume ${id} does not exist`);
+		if (volume.config.locked) throw new Error(`Volume ${volume.id} is locked`);
+		Object.assign(volume.config, config);
+		await volume.save();
+		globals.app.ipc.emit("file-manager.volumes", this.volume_configs);
+	}
+
+	async delete_volume(id) {
+		var volume = this.volumes.get(id);
+		if (!volume) throw new Error(`Volume ${id} does not exist`);
+		if (volume.config.locked) throw new Error(`Volume ${volume.id} is locked`);
+		this.unregister_volume(volume);
+		await volume.destroy();
+		globals.app.ipc.emit("file-manager.volumes", this.volume_configs);
+	}
+
+	/* async update_volumes(volume_ids) {
+		globals.app.ipc.emit("file-manager.volumes", volumes);
+	} */
+
 	/** @param {Volume} volume */
 	hash(volume, id="") {
 		var idhash = Buffer.from(id).toString('base64')
@@ -193,7 +269,7 @@ export class ElFinder {
 			.replace(/\+/g, '-')
 			.replace(/\//g, '_')
 			.replace(/=/g, '.');
-		return `${volume.id}${idhash}`;
+		return `${volume.elf_id}${idhash}`;
 	}
 
 	unhash(hash) {
@@ -201,7 +277,7 @@ export class ElFinder {
 		var volumeid = hash.slice(0,i+1);
 		var idhash = hash.slice(i+1).replace(/-/g, '+').replace(/_/g, '/').replace(/\./g, '=')+'==';
 		var id = Buffer.from(idhash, 'base64').toString("utf8");
-		var volume = this.volumes[volumeid];
+		var volume = this.volumes_by_elf_id.get(volumeid);
 		return {
 			volume,
 			id
@@ -337,15 +413,13 @@ export class ElFinder {
 			var protocol = opts.protocol;
 			var config = opts.options || {};
 			if (protocol === 'netunmount') {
-				let netkey = opts.user;
-				if (netkey.match(/^v.+\_.+$/)) netkey = netkey.slice(1, -1);
-				let id = `v${netkey}_`
-				let volume = this.volumes[id];
+				let netkey = opts.host;
+				let id = `v${netkey}_`;
+				let volume = this.volumes_by_elf_id.get(id);
 				if (volume) {
-					await fs.rm(path.join(this.netmounts_dir, netkey));
-					volume.unregister();
+					await volume.unregister(true);
 					return volume.driver(null, async (driver)=>{
-						return { removed: [{ 'hash': driver.hash("/") }] };
+						return { sync:true, removed: [{ 'hash': driver.hash("/") }] };
 					});
 				} else {
 					throw ["errNetMount", opts.host, "Not NetMount driver."]
@@ -371,15 +445,13 @@ export class ElFinder {
 			}
 			var netkey = utils.md5(JSON.stringify(config));
 			var id = `v${netkey}_`;
-			if (this.volumes[id]) {
+			if (this.volumes_by_elf_id.has(id)) {
 				throw ["errNetMount", opts.host, "Already mounted."]
 			}
 			config.id = id;
 			config.netkey = netkey;
-			await fs.writeFile(path.join(this.netmounts_dir, netkey), JSON.stringify(config), "utf8");
 			var netvolume = new Volume(this, config);
-			netvolume.register();
-	
+			await netvolume.register(true);
 			return netvolume.driver(null, async (driver)=>{
 				return { added: [await driver.file("/")] };
 			});

@@ -1,10 +1,10 @@
 import events from "node:events";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import fs from "fs-extra";
 import readline from "node:readline";
 import child_process from "node:child_process";
+import tree_kill from "tree-kill-promise";
 import {globals, utils, Logger} from "./exports.js";
 // import which from "which";
 
@@ -18,6 +18,12 @@ const default_observes = [
     "volume",
     "mute",
 ];
+
+const default_options = {
+    executable: "mpv",
+    cwd: ".",
+    ipc: false,
+};
 
 export class MPVWrapper extends events.EventEmitter {
     #message_id;
@@ -34,29 +40,34 @@ export class MPVWrapper extends events.EventEmitter {
     #socket;
     #socket_path = "";
     #version;
-    options;
-    args;
+    #options;
+    #args;
     logger;
 
+    get options() { return this.#options; }
+    get args() { return this.#args; }
     get observed_props() { return this.#observed_props; }
     get process() { return this.#process; }
     get quitting() { return this.#quitting; }
-    get cwd() { return path.resolve(this.options.cwd); }
+    get cwd() { return path.resolve(this.#options.cwd); }
     get load_id() { return this.#load_id; }
     /** @returns {[number, number, number]} */
     get version() { return this.#version; }
+    get stdin() { return this.#process.stdin; }
+    get stdout() { return this.#process.stdout; }
+    get stderr() { return this.#process.stderr; }
 
+    /** @param {typeof default_options} options */
     constructor(options) {
         super();
 
-        this.options = options = {
+        this.#options = {
+            ...default_options,
             executable: globals.app.mpv_path,
-            cwd: ".",
-            ipc: true,
             ...options,
         };
         
-        this.#socket_path = globals.app.get_socket_path(`mpv-${utils.uuid4()}`);
+        this.#socket_path = globals.app.get_socket_path(`mpv-${utils.uuid4()}`, true);
 
         this.logger = new Logger("mpv");
     }
@@ -71,9 +82,9 @@ export class MPVWrapper extends events.EventEmitter {
             // "--msg-level=all=status,ipc=v"
             // "--msg-level=all=trace,ipc=v"
         ];
-        args.push(`--input-ipc-server=${this.#socket_path}`);
+        if (this.#options.ipc) args.push(`--input-ipc-server=${this.#socket_path}`);
         var is_piped = !!args.find(a=>a.match(/^--o=(-|pipe:)/));
-        this.args = args;
+        this.#args = args;
         this.#message_id = 0;
         this.#observed_id = 0;
         this.#socket_requests = {}
@@ -83,7 +94,7 @@ export class MPVWrapper extends events.EventEmitter {
         this.logger.info("Starting MPV...");
         this.logger.debug("MPV args:", args);
         
-        this.#process = child_process.spawn(this.options.executable, args, {
+        this.#process = child_process.spawn(this.#options.executable, args, {
             cwd: this.cwd,
             windowsHide: true,
             // stdio: ['ignore', is_piped ? 'pipe' : 'ignore', 'ignore'],
@@ -105,11 +116,13 @@ export class MPVWrapper extends events.EventEmitter {
         });
 
         var std_info = is_piped ? this.#process.stderr : this.#process.stdout;
-        readline.createInterface(std_info).on("line", (line)=>{
+        const rl = readline.createInterface(std_info);
+        rl.on("error", utils.noop);
+        rl.on("line", (line)=>{
             this.logger.debug(line.trim());
         });
 
-        globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
+        // globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
         
         this.logger.info("Waiting for MPV IPC to signal open...");
         
@@ -164,7 +177,7 @@ export class MPVWrapper extends events.EventEmitter {
                 setTimeout(async ()=>{
                     if (this.#closed) return;
                     this.logger.debug("Quit signal not working. Terminating MPV process tree with SIGKILL...");
-                    await utils.tree_kill(this.#process.pid, "SIGKILL");
+                    await tree_kill(this.#process.pid, "SIGKILL").catch(utils.noop);
                     resolve();
                 }, 1000);
             }).catch((e)=>{
@@ -203,6 +216,10 @@ export class MPVWrapper extends events.EventEmitter {
                 this.logger.warn("socket error:", error);
             });
             var socket_listener = readline.createInterface(this.#socket);
+            socket_listener.on("error", (e)=>{
+                if (this.#closed) return;
+                this.logger.error(e);
+            });
             socket_listener.on("line", (msg)=>{
                 if (msg.length > 0) {
                     try {

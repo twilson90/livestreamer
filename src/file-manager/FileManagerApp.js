@@ -25,26 +25,31 @@ export class FileManagerApp extends CoreFork {
         exp.use(compression({threshold:0}));
         
         this.elFinder = new ElFinderEx(exp, {
-            volumes: [
-                {
+            volumes: {
+                "files": {
                     "name": "Files",
                     "driver": "LocalFileSystem",
                     "root": this.files_dir,
                 },
                 ...this.conf["file-manager.volumes"]
-            ],
+            },
         });
         await this.elFinder.ready;
 
-        this.ipc.respond("volumes", ()=>Object.fromEntries(Object.entries(this.elFinder.volumes).map(([k,v])=>[k,v.config])));
+        this.ipc.respond("volumes", ()=>this.elFinder.volume_configs);
+        this.ipc.respond("add_volume", (...args)=>this.elFinder.add_volume(...args));
+        this.ipc.respond("edit_volume", (...args)=>this.elFinder.edit_volume(...args));
+        this.ipc.respond("delete_volume", (...args)=>this.elFinder.delete_volume(...args));
+        this.ipc.respond("update_volumes", (...args)=>this.elFinder.update_volumes(...args));
+        this.ipc.emit("file-manager.volumes", this.elFinder.volume_configs);
 
         exp.use("/", await this.serve({
             root: path.resolve(dirname, `public_html`)
         }));
     }
-    async destroy(){
+    async ondestroy(){
         await this.web.destroy();
-        return super.destroy();
+        return super.ondestroy();
     }
 }
 

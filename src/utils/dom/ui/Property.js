@@ -24,6 +24,7 @@ import deep_equals from "../../deep_equals.js";
 *   "data": (this:ThisType, item:ItemType, path:string[])=>ValueType,
 *   "modifiers": PropertyModifer<ItemType,ValueType>[],
 *   "nullify_default": UISetting<ThisType,boolean>,
+*   "valid": (this:ThisType, value:ValueType)=>boolean|string,
 * }} PropertySettings
 */
 
@@ -178,9 +179,14 @@ export class Property extends UI {
         if (this.#valid === undefined) {
             var valid = true;
             for (var value of this.values) {
-                for (var validator of this.validators) {
-                    valid = validator.apply(this, [value]);
-                    if (valid !== true) break;
+                if ("valid" in this.settings) {
+                    valid = this.get_setting("valid", value);
+                }
+                if (valid === true) {
+                    for (var validator of this.validators) {
+                        valid = validator.apply(this, [value]);
+                        if (valid !== true) break;
+                    }
                 }
             }
             this.#valid = valid;
@@ -292,7 +298,6 @@ export class Property extends UI {
         this.#has_defaults = undefined;
         this.#is_default = undefined;
         this.#is_changed = undefined;
-        this.#valid = undefined;
 
         var changed = this.#last_values_hash !== new_values_hash;
         this.#last_values_hash = new_values_hash;
@@ -318,6 +323,7 @@ export class Property extends UI {
         this.#datas = undefined;
         this.#defaults = undefined;
         this.#path = undefined;
+        this.#valid = undefined;
 
         this.__data_update();
     }

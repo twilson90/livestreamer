@@ -8,3 +8,5 @@ export const State = new class {
 };
 
 /** @typedef {State.STARTED | State.STARTING | State.STOPPED | State.STOPPING} StateType */
+
+export const MAX_PTS_JUMP = 2.0;

@@ -6,8 +6,10 @@ import { PropertyGroup } from "./PropertyGroup.js";
 import { InputProperty } from "./InputProperty.js";
 import { array_move_element } from "../../array_move_element.js";
 import { json_copy } from "../../json_copy.js";
+import { uuid4 } from "../uuid4.js";
+import { rebuild } from "../rebuild.js";
 
-/** @import {PropertyEvents,InputPropertySettings,UISetting,SetValueOptions} from "./exports.js" */
+/** @import {InputPropertyEvents,InputPropertySettings,UISetting,SetValueOptions} from "./exports.js" */
 
 
 /**
@@ -16,22 +18,26 @@ import { json_copy } from "../../json_copy.js";
  * @template {PropertyList} [ThisType=PropertyList]
  * @typedef {InputPropertySettings<ItemType,ValueType,ThisType> & {
 *   'item_size': UISetting<ThisType,string>,
-*   'ui': (this:ThisType,ui:PropertyListItem)=>void,
+*   'ui': (this:ThisType, ui:PropertyListItem)=>void,
 *   'new': (this:ThisType)=>ValueType,
 * }} PropertyListSettings
 */
+
+/** @typedef {InputPropertyEvents & {"list.move":[string],"list.delete":[string],"list.add":[string]}} PropertyListEvents */
 
 /**
  * @template ItemType
  * @template ValueType
  * @template {PropertyListSettings<ItemType,ValueType,PropertyList>} [Settings=PropertyListSettings<ItemType,ValueType,PropertyList>]
- * @template {PropertyEvents} [Events=PropertyEvents]
- * @extends {InputProperty<ItemType, ValueType[], Settings, Events>} */
+ * @template {PropertyListEvents} [Events=PropertyListEvents]
+ * @extends {InputProperty<ItemType, ValueType, Settings, Events>} */
 export class PropertyList extends InputProperty {
-    get values() { return super.values.map(v=>v||[]); }
+    // get values() { return super.values.map(v=>v||[]); }
     get is_disabled() {
         return super.is_disabled;
     }
+
+    get item_count() { return Object.keys(this.value).length; }
 
     /** @param {Settings} settings */
     constructor(settings) {
@@ -39,47 +45,71 @@ export class PropertyList extends InputProperty {
         super(wrapper.elem, {
             "setup": false,
             "item_size": "auto",
-            // "allow_empty": true,
             "empty": "No items",
             "new": ()=>({}),
             "default": ()=>[],
             "vertical": true,
             "copy_id": ()=>this.id,
-            "list.copy": true,
+            "can_add": true,
+            "can_move": true,
+            "can_delete": true,
             ...settings
         });
 
+        this.modifiers.push((value)=>{
+            if (!value) return {};
+            if (Array.isArray(value)) value = Object.fromEntries(value.map((v,i)=>({id:v.id, index:i,v})));
+            var i = 0;
+            var items = Object.values(value).filter(v=>v).sort((a,b)=>a.index - b.index);
+            var new_value = {};
+            for (var item of items) {
+                if (!item.id) item.id = uuid4();
+                item.index = i++;
+                new_value[item.id] = item;
+            }
+            return value;
+        });
+
         var add_button = new Button(`<button style="flex:1"><i class="fas fa-plus"></i></button>`, {
-            title: "Add",
+            "title": "Add",
             "click": async() => {
                 var value = this.value;
                 var new_value = await this.get_setting("new");
                 if (!new_value) return;
-                value.push(new_value);
+                var id = uuid4();
+                value[id] = {id, ...new_value};
                 this.set_value(value, { trigger: true });
+                this.emit("list.add", new_value);
                 this.once("render", ()=>{
                     list.elem.scrollLeft = 999999999;
                     list.elem.scrollTop = 999999999;
                 });
-            }
+            },
+            "hidden": ()=>!this.get_setting("can_add") || this.get_setting("readonly"),
         });
 
         var copy_key = `clipboard:${this.copy_id}`;
         var copy = ()=>{
             localStorage.setItem(copy_key, JSON.stringify(this.value));
-        }
+        };
 
-        var paste = ()=>{
-            var value = localStorage.getItem(copy_key);
-            if (!value) return;
-            this.set_value(JSON.parse(value), {trigger: true});
-        }
+        var paste = (append)=>{
+            var value;
+            try {
+                value = JSON.parse(localStorage.getItem(copy_key));
+                value = value.map(v=>({id: uuid4(), ...v}));
+            } catch (e) {
+                return;
+            }
+            if (append) value = {...this.value, ...value};
+            this.set_value(value, {trigger: true});
+        };
 
         var more_button = new Button(`<button class="icon button"><i class="fas fa-ellipsis-v"></i></button>`, {
-            title: "More"
+            title: "More",
+            hidden: ()=>!list.list_items.every(i=>this.get_setting("can_add", i)) || this.get_setting("readonly"),
         });
         more_button.elem.style.flex = "none";
-
         var more_dropdown = new DropdownMenu({
             target: more_button.elem,
             parent: this.elem,
@@ -88,16 +118,19 @@ export class PropertyList extends InputProperty {
                 {
                     icon: `<i class="fas fa-copy"></i>`,
                     label: `Copy`,
-                    hidden: ()=>!this.get_setting("list.copy"),
-                    // disabled: ()=>!this.value.length,
                     click: ()=>copy()
                 },
                 {
                     icon: `<i class="fas fa-clipboard"></i>`,
-                    label: `Paste`,
-                    hidden: ()=>!this.get_setting("list.copy"),
+                    label: `Paste (Replace)`,
                     disabled: ()=>!localStorage.getItem(copy_key),
-                    click: ()=>paste()
+                    click: ()=>paste(false)
+                },
+                {
+                    icon: `<i class="fas fa-clipboard"></i>`,
+                    label: `Paste (Append)`,
+                    disabled: ()=>!localStorage.getItem(copy_key),
+                    click: ()=>paste(true)
                 }
             ]
         });
@@ -118,19 +151,17 @@ export class PropertyList extends InputProperty {
         this.buttons_el.append(more_button.elem);
 
         this.on("update", () => {
-            let list_items = list.list_items;
             /** @type {ValueType[]} */
-            let value = this.value || [];
-            for (var i = 0; i < value.length; i++) {
-                let index = i;
-                if (!list_items[index]) {
-                    list_items[index] = new PropertyListItem(this, index);
-                    list.append(list_items[index]);
-                }
-            }
-            for (; i < list_items.length; i++) {
-                list_items[i].destroy();
-            }
+            let value = Object.values(this.value).sort((a,b)=>a.index - b.index);
+
+            rebuild(list.elem, value, {
+                add: (item, elem, index)=>{
+                    if (!item.id) item.id = uuid4();
+                    if (!elem) elem = new PropertyListItem(this, item.id).elem;
+                    return elem;
+                },
+            });
+
             var vertical = !!this.get_setting("vertical");
             wrapper.elem.classList.toggle("vertical", vertical);
 
@@ -147,77 +178,70 @@ export class PropertyList extends InputProperty {
 }
 
 export class PropertyListItem extends UI {
-    get value() { return this.list.value[this.index]; }
-    set value(v) { this.set_value(v); }
+    get value() { return this.list.value[this.item_id]; }
+    set value(value) { this.set_value(value); }
     /** @param {SetValueOptions} opts */
-    set_value(v, opts) {
-        var value = [...this.list.value];
-        value[this.index] = v;
-        this.list.set_value(value, opts);
+    set_value(value, opts) {
+        var value_list = this.list.value;
+        value_list[this.item_id] = {...this.value, ...value, id: this.item_id};
+        this.list.set_value(value_list, opts);
     }
 
-    /** @param {PropertyList} list @param {number} index */
-    constructor(list, index) {
+    get list_index() { return this.list.value.findIndex(v=>v.id == this.item_id); }
+
+    /** @param {PropertyList} list @param {string} item_id */
+    constructor(list, item_id) {
         super({
             class: "property-list-item",
         });
         this.list = list;
+        this.item_id = item_id;
 
         let buttons = new UI({ class: "property-list-item-buttons" });
         var up_button = new Button(`<button></button>`, {
             "content": () => `<i class="fas fa-arrow-${list.get_setting("vertical") ? "up" : "left"}"></i>`,
             "click": () => {
-                var value = list.value;
-                array_move_element(value, index, index - 1);
-                list.set_value(value, { trigger: true });
+                var index = this.index;
+                this.set_value({...this.value, index: index - 1.5}, { trigger: true }); // weird way of doing it but works. relies on modifier to generate new indices, kinda fucked.
+                this.list.emit("list.move", this.item_id);
             },
-            "hidden": () => list.value.length < 2,
-            "disabled": () => index == 0,
+            "hidden": () => list.item_count < 2 || !this.list.get_setting("can_move", this) || this.list.get_setting("readonly"),
+            "disabled": () => this.index == 0,
             "title": `Move Back`,
         });
         var down_button = new Button(`<button></button>`, {
             "content": () => `<i class="fas fa-arrow-${list.get_setting("vertical") ? "down" : "right"}"></i>`,
             "click": () => {
-                var value = list.value;
-                array_move_element(value, index, index + 1);
-                list.set_value(value, { trigger: true });
+                var index = this.index;
+                this.set_value({...this.value, index: index + 1.5}, { trigger: true }); // ditto
+                this.list.emit("list.move", this.item_id);
             },
-            "hidden": () => list.value.length < 2,
-            "disabled": () => index == list.value.length - 1,
+            "hidden": () => list.item_count < 2 || !this.list.get_setting("can_move", this) || this.list.get_setting("readonly"),
+            "disabled": () => this.index == list.item_count - 1,
             "title": `Move Forward`,
         });
         var delete_button = new Button(`<button><i class="fas fa-trash"></i></button>`, {
             "click": () => {
                 var value = list.value;
-                value.splice(index, 1);
+                delete value[this.item_id];
                 list.set_value(value, { trigger: true });
+                this.list.emit("list.delete", this.item_id);
             },
-            // "disabled": () => (list.value.length <= 1), // !list.get_setting("allow_empty")
+            "hidden": ()=>!this.list.get_setting("can_delete", this) || this.list.get_setting("readonly"),
+            // "disabled": () => (list.item_count <= 1), // !list.get_setting("allow_empty")
             "title": "Delete",
         });
         buttons.append(up_button, down_button, delete_button);
         this.buttons = buttons;
 
-        this.props = new PropertyGroup({
+        this.props = new UI({
             "class": "property-list-item-content",
-            "name": index,
-            "show_not_default": false,
-            "show_changed": false,
-        });
-        this.props.on("change", (e)=>{
-            if (e.trigger) this.set_value(this.props.value);
-        });
-        var on_change;
-        list.on("post_update", on_change = (e)=>{
-            this.props.set_value(this.list.value[index]);
         });
 
         this.append(this.props, this.buttons);
 
-        list.get_setting("ui", this);
-
-        this.on("destroy", ()=>{
-            list.off("change", on_change);
+        this.once("update", ()=>{
+            list.get_setting("ui", this);
         });
     }
 }

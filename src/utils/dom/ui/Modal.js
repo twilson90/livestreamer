@@ -105,7 +105,7 @@ export class Modal extends UI {
         
         this.header = new UI(null, {
             class: "modal-header",
-            hidden: !this.get_setting("modal.header"),
+            hidden: ()=>!this.get_setting("modal.header") || !this.get_setting("modal.title"),
         });
         this.content = new UI(null, {
             class: "modal-content",
@@ -131,11 +131,13 @@ export class Modal extends UI {
         this.content.append(this.props);
         
         var prevent_click = false;
-        this.modal_elem.onmousedown = (e)=>{
+        this.modal_elem.addEventListener("mousedown", (e)=>{
             document.addEventListener("mouseup", (e)=>{
-                if (!this.modal_elem.contains(e.target)) prevent_click = true;
+                if (!this.modal_elem.contains(e.target)) {
+                    prevent_click = true;
+                }
             }, {once:true});
-        }
+        }, {capture:true});
         this.elem.onclick = (e)=>{
             if (!e.target.isConnected) return;
             if (this.modal_elem.contains(e.target)) return;
@@ -161,16 +163,16 @@ export class Modal extends UI {
             var width = this.get_setting("modal.width");
             var min_width = this.get_setting("modal.min-width");
             var max_width = this.get_setting("modal.max-width");
+            toggle_class(this.elem, "closable", !!this.get_setting("modal.close"));
+            set_inner_html(this.header.elem, `<span>${this.get_setting("modal.title")}</span>`);
+            toggle_class(this.header.elem, "overflow", this.get_setting("modal.title_overflow"));
+            var h = this.header.elem.clientHeight || 0;
             update_style_properties(this.elem, {
                 "--modal-width": typeof width === "number" ? `${width}px` : width,
                 "--modal-min-width": typeof min_width === "number" ? `${min_width}px` : min_width,
                 "--modal-max-width": typeof max_width === "number" ? `${max_width}px` : max_width,
+                "--modal-close-size": `${h}px`,
             });
-            set_inner_html(this.header.elem, this.get_setting("modal.title"));
-            toggle_class(this.header.elem, "overflow", this.get_setting("modal.title_overflow"));
-            var h = this.header.elem.clientHeight || 0;
-            this.close_button.elem.style.height = h ? `${h}px` : undefined;
-            this.close_button.elem.style.width = h ? `${h}px` : undefined;
         });
 
         this.on("destroy", ()=>{

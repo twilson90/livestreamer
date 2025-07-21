@@ -186,23 +186,116 @@
 [x] logged in as root. livestream_ids is none
 [x] figure out why shows dont have gutenberg editor, post on pods forum.
 [x] never saw grimword user approval, MAKE MORE OBVIOUS! BIG RED BANNER
-[?] sheepy smaller screen chat was
-[ ] probably go back to using mutationobserver and assigning UI on add, instead of traversing the document everytime root updates.
 
-[ ] ERROR: [youtube+oauth2] always happening twice, and whenever the app starts (not a problem)
+[?] ELUSIVE: sheepy bottom of chat was wcut off when height of screen very small. 
+[?] ELUSIVE: Sheepy: If you type a long line, as you get close to the end of the second (wrapped around) line, the text entry box starts oscillating up and down violently at frame rate, until you get onto the third.
+
+[x] probably go back to using mutationobserver and assigning UI on add, instead of traversing the document everytime root updates.
+[x] ERROR: [youtube+oauth2] always happening twice, and whenever the app starts (not a problem)
+[x] audio notifications volume slider.
+[x] everything that isnt 16:9 is stretched to 16:9.
+[x] low res metrics fucked completely, max: 1377, min: 7539, wtf? I guess when it becomes full. get rid of low.
+[x] go live didnt auto terminate.
+[x] chat scroll history borked, repeats.
+[x] grumpio comment is hidden (what?) and I ant unhide it.
+[~] go_live had null livestream_ids somehow? caused crash.
+
+[ ] stream was a bit jumpy, audio wise, cutting in out every now and then, maybe bad encoder settings.
 [ ] fs.R_OK is deprecated, use fs.constants.R_OK instead
-
 [ ] `url.parse()` behavior is not standardized and prone to errors
 [ ] new playlist uploads present with red x icon shortly before starting.
-[ ] turned off audio notifications, had to reload for it to switch
 [ ] live page mobile shit
     focus on chat text field still occasionally (rarely) causes chat scroll to jump
     videojs is fucking bullshit, the UI is SO atrocious.
-    Obscured popup menus.
-    Tapping reveals ui for like a split second.
-    Too many UI items push buttons off screen
+        - Obscured popup menus.
+        - Tapping reveals ui for like a split second.
+        - Too many UI items push buttons off screen
     live page disable sticky header on mobile
 [ ] running time, stream title and controls should be ontop of the stream, show on hover
 [ ] when logged out, sign in button popup should show a modal / popup with login form / register link.
-[ ] toggle debug mode / change, probably see if I can generate some 'stats for nerds' nonsense.
-[x] audio notifications volume slider.
+[x] toggle debug mode / change, probably see if I can generate some 'stats for nerds' nonsense.
+[?] interestingly the onesignal notification now uses a silhouette of the site logo SVG, create a new one for onesignal that instead of white is transparent (empty) and use that instead.
+[x] image gallery fucked: https://dev-local.cabtv.co.uk/jay-gnashers-cakey-mix/
+[x] responsive images below fold not adding loaded class (opacity:0) https://cabtv.co.uk/jay-gnashers-cakey-mix/
+[x] if the buffer's duration is > 0, then rush to encode until the buffer refills. If the buffer is < 0, we should NOT rush, geddit?
+[x] stream start forgot current item time-pos
+[x] toggle debug mode right click menu cant get rid of without right clicking again or clicking toggle debug mode.
+[x] check all images are loading on site, 404 detector?
+[x] check external live streams are working before nj tuesday
+[x] CABTVApp GoLive _livestreams not iterable... why? no idea.
+[x] auto wasnt working on live page with flouncer's temp stream. (was probably on an old expired stream at the time)
+
+[x] fix ssl cert and key, setup letsencrypt separate to website.
+[x] subtitles cant be turned off
+[?] livestreamer restarted unprompted for no reason after I fixed the sudoers error. No idea  why...
+[x] Access-Control-Allow-Origin for changelog on cabtv blocked.
+[~] interface subtitle / audio options do not reflect ADDED files. Do some great unifier between front and backend so it's consistent and we can calculate independently.
+[?] bizarre time_display_ms setting was going back and forth after setting on server... couldn't repeat.
+[~] massive pause in stream realtime going from still image to video. PTS jump.
+[x] live manager not updating after delete.
+[x] stream metrics trans speed was 1.5 consistently during phil's stream
+[x] image with 100 sec duration ended at 60 seconds.
+[~] after image ended, massive 10 second pause as PTS jumped. PTS in mpv is fucked.
+[x] disable auto interpolation by default.
+[x] turning off interpoaltion made subs disappear and then the file wouldnt play whatsoever when started again. completely fucked.
+[x] switch off auto crop by default.
+[x] external subs didnt work at all maybe, bizarre.
+[ ] get a life:
+    [16:55:11.724][d][main][session-1][stream][player] [ffmpeg] libx264: invalid DTS: PTS is less than DTS
+    [16:55:11.725][w][main][session-1][stream][player] [ffmpeg] libx264: invalid DTS: PTS is less than DTS
+    [16:55:11.727][e][main][session-1][stream][player] [ffmpeg] matroska: pts (376659) < dts (376676) in stream 0
+    [16:55:11.728][e][main][session-1][stream][player] [encode] Writing packet failed.
+    [16:55:11.729][d][main][session-1][stream][player] [ffmpeg] matroska: pts (376659) < dts (376676) in stream 0
+    [16:55:11.731][d][main][session-1][stream][player] [encode] Writing packet failed.
+    file ended.
+    might have to recompile the old mpv...
+[ ] changing from auto to id reloads the video
+[ ] tons of Invalid timestamps errors: 
+    [15:49:03.027][w][main][session-friday-fundown][stream][player] [ffmpeg/demuxer] mpegts: Invalid timestamps stream=1, pts=19866600, dts=19868400, size=205
+[ ] buz loaded old rul and it didnt load the new stream by default. should revert to auto if id not exist.
+[ ] [23:14:15.390][e][cabtv] TypeError: go_live._livestreams is not iterable
+        at file:///opt/livestreamer/cabtv/index_cabtv.js:76762:33
+    STILL AN ISSUE, CAUSED RESTART AFTER STREAM ENDED.
+[ ] youtube (via go live) video appears as 'active' for a few minutes before going 'expired'
+[ ] overlay fade from settings to another weird jank
+[x] the - So there's no visual feedback that you've scrolled up, but there's also no way to tell the chat scroll to stop floating around midfield and to lock to the lastest message again, which I think sometimes causes the scroll to flick back up if you've scrolled back down manually.
+[x] user avatars in chat
+[~] auto filled stream url is 'https://media-server.media.cabtv.co.uk:8121/player/index.html?id=75', should be cabtv.co.uk/live/#1212983761823
+[x] think of a better way of attaching live url to go live... how do we know the live id without waiting a moment?
+[~] go live icon on android transparent outline looks bad on right side, replace. figure out which is which.
+[x] scan_livestreams interval kinda dumb, do setup next every time, cleartimeout
+[ ] list_item.value so crap, value gets json copied at some point so original value prototype lost.
+[x] update youtube dl cookies ssh not working again
+[~] "Playback stalling at @6007.981773 due to low buffer ({"len":0.0760469999995621,"start":5956.083978,"end":6008.05782,"buffered":[{"start":5308.069944,"end":5356.064714},{"start":5472.100478,"end":5490.067072},{"start":5782.076811,"end":5794.062695},{"start":5852.080078,"end":5946.060541},{"start":5956.083978,"end":6008.05782}],"bufferedIndex":4})"
+    playback is too close to live edge? maybe relation to newly added buffer duration?  
+    prevent live edge from being exceeded when x2 speed is enabled.
+[~] mysterious crash caused seemingly by loads of orphaned mpv and ffmpeg processes... no idea why.
+[~] check htop, stop pm2 with stream running check, stop stream check
+[x] accidentally added playlist with over 1600 items, absolutely fucked the livestreamer. Limit to 100 items max.
+[x] DENY playlists completely, totally fucks up and pollutes root playlist on error apparently.
+[x] stopping root/core is no longer killing sub processes on server...
+[x] remove livestream not working
+[~] null video stream is SO SLOW to generate, atrocious. Need to figure out better way for backgrounds and images.
+[x] file manager broken on remote.
+[x] auto selected my previous test stream when go live published via the livestreamer scheduler (JESUS THE PROBLEMS ARE NEVERENDING)
+[x] stopped stream, started another. The previous go live was still attached to the old stream, and was the preferred stream on live (auto)
+I think the go lives are not glomming onto the new stream for some reason.
+[x] videojs seektolive is too damn SHIT. It seeks to absolute furthest edge, no easy way to fix it.
+[?] Error: ENOENT: no such file or directory, rename '/var/opt/livestreamer/tmp/76f6fef133a3c26ad2b9f6244d120590' -> '/var/opt/livestreamer/media/live/162/data.json'
+[~] massive drift between live  stream source. about 3 minutes out after 4 hours. The stream is running slightly faster than realtime, and keeps reporting 'Long delay'.
+ok it appears to only have drifted during task master, there were PTS fixes and MANY MANY long delays. But I think the issue was the PTS rubbish. MKV packethandler is shit and needs sorting.
+[?] Corrupt file detected. Trying to resync starting from position 1081846733 (fucked up taskmaster, it was mpv not my script! WTF)
+    think this happened with adrian mole last week when it restarted.
+[x] download to file fucked in main, crashes at download complete.
+[x] navigate to on video url opens URL and THEN file manager
+
+[ ] fc2 + ok.ru always in active but always offline after restart? wtf. Then disappear I guess.
+[ ] quick login button.
+[ ] Info on livestreamer, show simple and advanced toggles. simple shows things in pretty form (bytes, times, bitrrates, etc.)
+[ ] unpinning playlist:
+    EventEmitter.js:40 Uncaught SecurityError: Failed to read a named property 'document' from 'Window': Blocked a frame with origin "https://main.media.cabtv.co.uk:8121" from accessing a cross-origin frame (remote, cabtv.co.uk)
+[ ] during beatles paused forever buffering clicking live did nothing, had to refresh. Should have captured error log ffs.
+[ ] CRON_RESTART exists for all subprocesses... should only be for livestreamer.root.
+[ ] iOS issue, play button doesnt work. Ask chat for iOS help.
+    although, no reason I can see why the ssl certificates were not readable... figure out why.
+[ ] figure out subdomains and shit. currently any subdomain that isnt media goes to admin's site.

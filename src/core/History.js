@@ -126,12 +126,10 @@ export class History extends DataNode {
         if (reverse) {
             for (var i = this.$.position-1; i >= new_pos; i--) {
                 this.#stack[i].undo(this.target.$);
-                // utils.Observer.apply_changes(this.target.$, this.#stack[i].backward_changes)
             }
         } else {
             for (var i = this.$.position; i < new_pos; i++) {
                 this.#stack[i].redo(this.target.$);
-                // utils.Observer.apply_changes(this.target.$, this.#stack[i].forward_changes);
             }
         }
         this.$.position = new_pos;

@@ -4,13 +4,14 @@ import {API, vite} from "./api.js";
 const api = new API();
 
 program.name('Live Streamer Builder')
-    .option(`-p --production`, "Production")
-    .option(`--platform <string>`, "Platform", "windows")
 
-program.command("build").action(()=>build());
-program.command("start").action(()=>api.start());
-program.command("package").action(()=>api.package());
-program.command("make").action(()=>api.make());
+program.command("build")
+    .option(`--mode <string>`, "Mode", "development")
+    .option(`--platform <string>`, "Platform", "windows")
+    .action(()=>build());
+// program.command("start").action(()=>api.start());
+// program.command("package").action(()=>api.package());
+// program.command("make").action(()=>api.make());
 
 program.command("generate_google_drive_offline_refresh_token")
     .description("Generate a Google Drive offline refresh token")

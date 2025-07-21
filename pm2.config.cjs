@@ -6,12 +6,16 @@ module.exports = {
 		{
 			name: `${appspace}.root`,
 			namespace: appspace,
-			script: path.resolve(__dirname, "index.js"),
+			script: path.resolve("index.js"),
 			args: [],
-			cron: process.env.LIVESTREAMER_CRON,
+			cron_restart: process.env.LIVESTREAMER_CRON,
+			exec_mode: 'fork',
 			env: {
 				"LIVESTREAMER_APPSPACE": appspace,
-			}
+			},
+			kill_timeout: 5000,
+			node_args: process.env.LIVESTREAMER_DEBUG ? ["--inspect=0.0.0.0:9229"] : [],
+			// shutdown_with_message: true,
 		},
 	],
 };

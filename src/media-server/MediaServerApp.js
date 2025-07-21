@@ -134,7 +134,7 @@ export class MediaServerApp extends CoreFork {
         
         this.blocklist = new Blocklist(this.blocklist_path);
 
-        this.set_priority(process.pid, os.constants.priority.PRIORITY_ABOVE_NORMAL);
+        // this.set_priority(process.pid, os.constants.priority.PRIORITY_ABOVE_NORMAL);
         
         /** @param {NodeRtmpSession | NodeFlvSession} session */
         const session_json = (session)=>{
@@ -466,6 +466,7 @@ export class Live$ extends StopStartStateMachine$ {
     segment = 0;
     use_hevc = false;
     use_hardware = false;
+    fps_passthrough = true;
     outputs = [];
     origin = "";
     title = "";
@@ -527,7 +528,7 @@ export class Live extends StopStartStateMachine {
     }
 
     async save() {
-        await fs.writeFile(this.data_filename, JSON.stringify(this.$), "utf-8");
+        await globals.app.safe_write_file(this.data_filename, JSON.stringify(this.$), "utf-8");
     }
 
     debounced_save = utils.debounce(async ()=>{
@@ -561,6 +562,7 @@ export class Live extends StopStartStateMachine {
             segment: 0,
             use_hardware: false,
             use_hevc: false,
+            fps_passthrough: true,
             outputs: [],
             ...data,
             is_live: false,
@@ -639,60 +641,60 @@ export class Live extends StopStartStateMachine {
             `-dts_delta_threshold`, `0`,
             // `-stream_loop`, `-1`,
         );
+        
+        var fps = this.$.fps_passthrough ? 0 : (this.session?.videoFps || 30);
+        
         ffmpeg_args.push(
             // `-re`, // if enabled, whenever there is speedup live stream will be way behind.
             // `-noautoscale`,
             "-i", `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${this.session.publishStreamPath}`,
             `-ar`, `44100`,
             `-ac`, `2`,
-            // `-pix_fmt`, `yuv420p`, // fucks up hw scaler
             `-bsf:v`, this.$.use_hevc ? `hevc_mp4toannexb` : `h264_mp4toannexb`,
             `-bsf:a`, `aac_adtstoasc`,
+            `-async`, `1`,
+            // `-movflags`,` +faststart`,
+
             // `-vf`, `setpts=PTS-STARTPTS`,
             // `-af`, `asetpts=PTS-STARTPTS`,
-            `-async`, `1`,
-
             // `-vsync`, `2`,
             // `-fpsmax`, `60`, // max fps
             // `-avoid_negative_ts`, `make_zero`,
             // `-vsync`, `cfr`,
-            // `-r`, "60",
             
-            // `-fps_mode`, `passthrough`,
+            `-fps_mode`, fps ? `cfr` : "vfr",
             // `-vsync`, `0`,
 
-            // `-movflags`,` +faststart`,
-            "-force_key_frames", `expr:gte(t,n_forced*${globals.app.conf["media-server.keyframe_interval"]})`, // keyframe every 2 seconds.
+            "-force_key_frames", `expr:gte(t,n_forced*${globals.app.conf["media-server.keyframe_interval"]})`, // keyframe every 2 seconds, this takes precedence over -g
+            `-g`, `${(fps || 30) * globals.app.conf["media-server.keyframe_interval"]}`, // kind of like a backup, probably not necessary
+
+            // -----------------
+            
+            // `-enc_time_base`, `-1`, //           <-- this
+            // `-video_track_timescale`, `1000`, // <-- and this seems to fix all dts errors
         );
-        if (this.$.use_hardware) {
-            ffmpeg_args.push(
-                // "-r", "30",
-                
-                // `-no-scenecut`, `1`, // these no longer work
-                // `-rc`, `cbr_hq`,     // these no longer work
 
-
-                // `-rc`, `constqp`,
-                // `-bf`, `2`, // 2 is default
-                `-forced-idr`, `1`,
-                `-rc-lookahead`, `30`,
-            );
-        } else {
-            ffmpeg_args.push(
-                `-enc_time_base`, `-1`, //           <-- this
-                `-video_track_timescale`, `1000`, // <-- and this seems to fix all dts errors
-                `-vsync`, `2`,
-            )
+        if (fps) {
+            ffmpeg_args.push(`-r`, `${fps}`);
         }
-        ffmpeg_args.push(
-            // `-preset`, `ultrafast`
-            `-preset`, hwenc ? `p7` : `medium`
-        );
+        
+        if (hwenc == "vaapi") {
+            ffmpeg_args.push(`-global_quality`, `24`);
+            ffmpeg_args.push(`-compression_level`, "4"); // 1-7 (1 = fastest, 7 = slowest)
+        } else if (hwenc == "nvenc" || hwenc == "cuda") {
+            ffmpeg_args.push(`-cq`, `24`);
+            ffmpeg_args.push(`-preset`, "p4"); // p1-p7 (1 = fastest, 7 = slowest)
+        } else if (!hwenc) {
+            ffmpeg_args.push(`-preset`, "medium");
+            ffmpeg_args.push(`-pix_fmt`, `yuv420p`); // shouldn't be necessary
+        }
 
         var vid = `0:v:0`;
         var filter_complex = [];
         var video_height_map = {};
         var video_heights = [...new Set(this.$.outputs.filter(c=>c.resolution).map(c=>c.resolution))];
+        let ar = this.session.videoWidth /this.session.videoHeight;
+        ffmpeg_args.push(`-aspect`, `${ar.toFixed(6)}`);
 
         if (video_heights.length == 1 && video_heights[0] == this.session.videoHeight) {
             video_height_map[video_heights[0]] = vid;
@@ -701,11 +703,12 @@ export class Live extends StopStartStateMachine {
                 `[${vid}]split=${video_heights.length}${video_heights.map((c,i)=>`[v${i}]`).join("")}`
             );
             video_heights.forEach((height,i)=>{
-                let needs_scaling = this.session.videoHeight != height;
+                let width = Math.round(ar * height);
+                let needs_scaling = this.session.videoHeight != height || this.session.videoWidth != width;
                 let out = `v${i}`;
                 let graph = [];
                 if (needs_scaling) {
-                    let s = `-2:${height}`;
+                    let s = `${width}:${height}`;
                     if (hwenc) graph.push(`scale_${globals.app.conf["core.ffmpeg_hwaccel"]}=${s}`);
                     else graph.push(`scale=${s}`);
                     out = `vscaled${i}`;
@@ -755,7 +758,6 @@ export class Live extends StopStartStateMachine {
             // `-hls_init_time`, `1`,
             `-hls_time`, `${this.$.segment_duration}`,
             `-hls_flags`, `independent_segments+append_list+discont_start`,
-            // `-hls_flags`, `+delete_segments`, // at some point I want to keep segments and serve atleast several hours of stream // +independent_segments
             `-master_pl_name`, `master.m3u8`,
             `-y`, `%v/stream.m3u8`
         );
@@ -871,7 +873,12 @@ export class Live extends StopStartStateMachine {
     }
 }
 
-/** @typedef {{i:number, duration:number, uri:string}} Segment */
+class Segment {
+    title="";
+    duration=0;
+    uri="";
+    data={};
+}
 export class LiveLevel extends events.EventEmitter {
     /** @type {Segment[]} */
     #segments = [];
@@ -915,42 +922,88 @@ export class LiveLevel extends events.EventEmitter {
         var s = this.last_segment;
         return s ? s.uri : null;
     }
-    get next_segment_index() { return this.#segments.length; }
+    #uris = new Set();
     
     /** @param {string} str */
-    parse(str) {
-        var lines = str.split(/(?<!,)\n/);
+    #parse_segments(str) {
+        var lines = str.split(/\n/);
         var segments = [];
-        var m;
-        var discontinuity = false;
+        var segment_str;
         for (var line of lines) {
-            if (m = line.match(/^#EXTINF:(.+?),\s*(.+)$/)) {
-                var s = {
-                    duration: +m[1],
-                    uri: m[2],
-                    i: +m[2].match(/^(\d+)/)[1],
-                };
-                if (discontinuity) {
-                    s.discontinuity = true;
-                }
-                discontinuity = false;
-                segments.push(s);
-            } else if (line.match(/^#EXT-X-DISCONTINUITY$/)) {
-                discontinuity = true;
+            if (line.match(/^#EXTINF:/)) {
+                if (segment_str) segments.push(this.#parse_segment(segment_str));
+                segment_str = line+"\n";
+            } else if (segment_str) {
+                segment_str += line+"\n";
             }
         }
+        if (segment_str) segments.push(this.#parse_segment(segment_str));
         return segments;
+    }
+
+    /** @param {string} str */
+    #parse_segment(str) {
+        var segment = new Segment();
+        for (var line of str.split(/\n/)) {
+            line = line.trim();
+            let m;
+            if (line.startsWith('#EXTINF:')) {
+                let extinfData = line.substring(8).trim();
+                const [durationStr, ...titleParts] = extinfData.split(',');
+                const title = titleParts.join(',').replace(/"/g, '');
+                segment.duration = parseFloat(durationStr);
+                segment.title = title || null;
+                segment.uri = null;
+            } else if (m = line.match(/^#EXT-X-([^:]+):(.+)$/) || line.match(/^#EXT-X-([^:]+)$/)) {
+                var [key, value] = m;
+                if (value === undefined) value = true;
+                else {
+                    let dict = {};
+                    for (let pair of value.split(",")) {
+                        let [k,v] = pair.split("=");
+                        try {
+                            dict[k] = JSON.parse(v);
+                        } catch (e) {
+                            dict[k] = v;
+                        }
+                    }
+                    value = dict;
+                }
+                segment.data[key] = value;
+            } else if (line) {
+                segment.uri = line;
+            }
+        }
+        return segment;
+    }
+
+    /** @param {Segment} segment */
+    #render_segment(segment) {
+        var str = "";
+        str += `#EXTINF:${segment.duration.toFixed(3)},${segment.title || ""}\n`;
+        for (var k in segment.data) {
+            var v = segment.data[k];
+            if (typeof v == "boolean") {
+                str += `#EXT-X-${k}\n`;
+            } else if (typeof v == "object" && v !== null) {
+                str += `#EXT-X-${k}:${Object.entries(v).map(([k,v])=>`${k}=${JSON.stringify(v)}`).join(",")}\n`;
+            } else {
+                str += `#EXT-X-${k}:${v}\n`;
+            }
+        }
+        str += `${segment.uri}\n`;
+        return str;
     }
 
     async #update() {
         var str = await fs.readFile(this.live_filename, "utf-8").catch(()=>"");
-        var segments = this.parse(str);
+        var segments = this.#parse_segments(str);
         if (segments.length && !this.#segments.length) {
             var old = await fs.readFile(this.filename, "utf-8").catch(()=>"");
             if (old) {
-                // old = old.replace(/#EXT-X-ENDLIST\n+?$/, "");
-                // await fs.writeFile(this.filename, old, "utf-8");
-                this.#segments.push(...this.parse(old));
+                for (let s of this.#parse_segments(old)) {
+                    await this.#add_segment(s, false);
+                }
             } else {
                 var init = str.match(/^#EXT-X-MAP:URI="(.+)"$/m);
                 if (init) this.init_uri = init[1];
@@ -958,18 +1011,18 @@ export class LiveLevel extends events.EventEmitter {
             }
         }
         for (var s of segments) {
-            if (s.i < this.next_segment_index) continue;
-            await this.#add_segment(s);
+            if (this.#uris.has(s.uri)) continue;
+            this.#uris.add(s.uri);
+            await this.#add_segment(s, true);
         }
     }
 
     /** @param {Segment} segment */
-    async #add_segment(segment) {
+    async #add_segment(segment, append_to_vod=false) {
+        segment.i = this.#segments.length;
         this.#segments.push(segment);
-        if (segment.discontinuity) {
-            await this.#append(`#EXT-X-DISCONTINUITY\n`);
-        }
-        await this.#append(`#EXTINF:${segment.duration.toFixed(6)},\n${segment.uri}\n`);
+        var segment_str = this.#render_segment(segment);
+        if (append_to_vod) await this.#append(segment_str);
         fs.stat(path.join(this.dir, segment.uri)).then((s)=>{
             this.live.$.size += s.size;
         });
@@ -1009,12 +1062,11 @@ export class LiveLevel extends events.EventEmitter {
             start += skipped_segments;
             lines += `#EXT-X-SKIP:SKIPPED-SEGMENTS=${skipped_segments}\n`;
         }
-        this.#segments.slice(start, end).forEach(s=>{
-            if (s.discontinuity) {
-                lines += `#EXT-X-DISCONTINUITY\n`;
-            }
-            lines += `#EXTINF:${s.duration.toFixed(6)},\n${s.uri}\n`;
-        });
+
+        // lines += `#EXT-X-DISCONTINUITY\n`;
+        for (var s of this.#segments.slice(start, end)) {
+            lines += this.#render_segment(s);
+        }
         return lines;
     }
     /** @param {Request} req @param {Response} res */

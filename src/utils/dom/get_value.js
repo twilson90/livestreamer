@@ -1,4 +1,4 @@
-/** @param {Element} elem */
+/** @param {HTMLElement} elem */
 export function get_value(elem) {
     if (elem.type === "checkbox") {
         return elem.checked;
@@ -8,8 +8,10 @@ export function get_value(elem) {
         else return elem.value;
     } else if (["number", "range"].includes(elem.type)) {
         return parseFloat(elem.value) || 0;
-    } else {
+    } else if (elem.nodeName === "INPUT" || elem.nodeName === "TEXTAREA") {
         return elem.value;
+    } else if (elem.contentEditable) {
+        return elem.innerHTML;
     }
 }
 

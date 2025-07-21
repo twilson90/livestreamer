@@ -94,14 +94,16 @@ export class Cache extends events.EventEmitter {
         await fs.rm(filename).catch(utils.noop);
     }
 
-    /** @param {string} key @param {any} data @param {number} ttl */
-    async set(key, data, ttl=null) {
-        if (!ttl) ttl = this.#opts.ttl;
+    /** @param {string} key @param {any} data @param {number} ttl @description ttl if explicitly set to 0 or false will have infinite ttl, undefined or null will use the default ttl set in the constructor */
+    async set(key, data, ttl) {
+        if (ttl == undefined) ttl = this.#opts.ttl;
+        var expires = ttl ? (Date.now() + ttl) : null;
+        if (isNaN(expires)) expires = null;
         /** @type {CacheData} */
-        var d = {data, expires: ttl ? (Date.now() + ttl) : null};
+        var d = {data, expires};
         this.#set(key, d);
         var filename = this.#get_cache_filename(key);
-        await fs.writeFile(filename, JSON.stringify(d));
+        await globals.app.safe_write_file(filename, JSON.stringify(d));
     }
 }
 export default Cache;

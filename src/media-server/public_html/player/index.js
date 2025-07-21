@@ -1,2 +1,2 @@
-import MediaServerVideoPlayerWebApp from "./MediaServerVideoPlayerWebApp.js";
+import MediaServerVideoPlayerWebApp from "./VideoPlayerWebApp.js";
 window.app = new MediaServerVideoPlayerWebApp();

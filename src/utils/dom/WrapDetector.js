@@ -1,3 +1,4 @@
+import ResizeObserver from 'resize-observer-polyfill';
 import EventEmitter from "../EventEmitter.js";
 import { debounce_next_frame } from "./debounce_next_frame.js";
 import { get_top_position } from "./get_top_position.js";
@@ -16,8 +17,7 @@ export class WrapDetector extends EventEmitter {
         };
         this.elem = elem;
         this.opts = opts;
-        var detect_wrap = debounce_next_frame(() => this.detect_wrap());
-        this.resize_observer = new ResizeObserver(() => detect_wrap());
+        this.resize_observer = new ResizeObserver(debounce_next_frame(() => this.detect_wrap()));
         this.resize_observer.observe(elem);
     }
     detect_wrap() {

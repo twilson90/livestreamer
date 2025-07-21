@@ -8,6 +8,7 @@ import http_proxy from "http-proxy-node16";
 import http from "node:http";
 import https from "node:https";
 import child_process, { ChildProcess } from "node:child_process";
+import events from "node:events";
 import { program } from 'commander';
 import chokidar from "chokidar";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -20,9 +21,29 @@ import Cookies from "cookies";
 import minimist from "minimist";
 import pidusage from "pidusage";
 import { createRequire } from 'node:module';
+import { createHttpTerminator } from 'http-terminator';
+import tree_kill from "tree-kill-promise";
 import * as resources from "./resources.js";
 
-let os_username = os.userInfo().username || "admin";
+const DEV_MODE = !(import.meta.env?.PRODUCTION);
+const BUILD_MODE = import.meta.env?.BUILD ?? false;
+const BUILD_VERSION = import.meta.env?.BUILD_VERSION ?? utils.uuid4();
+
+function getCurrentUser() {
+  try {
+    if (process.platform === 'win32') {
+      return execSync('whoami').toString().trim();
+    } else {
+      // Linux/macOS: safer than `whoami` (respects sudo)
+      return execSync('id -un').toString().trim();
+    }
+  } catch (error) {
+    return process.env.USER || process.env.USERNAME || 'unknown';
+  }
+}
+
+const STOP_MODULE_TIMEOUT = 5000;
+let os_username = getCurrentUser();
 let default_auth_data = {
     user_id: 0,
     username: os_username,
@@ -68,18 +89,18 @@ export class Core extends DataNode {
     #clients_dir = "";
     #files_dir = "";
     #uids_dir = "";
-    #saves_dir = "";
-    #targets_dir = "";
-    #screenshots_dir = "";
+    #sockets_dir = "";
     /** @type {Conf} */
     #conf = {};
     #exiting = false;
+    /** @type {Set<string>} */
+    #socket_files = new Set();
     
     get name() { return this.#name; }
     get logger() { return this.#logger; }
     get appspace() { return (process.env.LIVESTREAMER_APPSPACE ?? this.conf["core.appspace"] ?? "livestreamer"); }
-    get portable() { return !!(process.env.LIVESTREAMER_PORTABLE ?? this.conf["core.portable"] ?? portable_file); }
-    get debug() { return !!(process.env.LIVESTREAMER_DEBUG ?? this.conf["core.debug"]); }
+    get portable() { return !!(process.env.LIVESTREAMER_PORTABLE ?? portable_file); }
+    get debug() { return !!(process.env.LIVESTREAMER_DEBUG ?? DEV_MODE); }
     get auth() { return !!(process.env.LIVESTREAMER_AUTH ?? this.conf["core.auth"]); }
     
     get use_pm2() { return !!("pm_id" in process.env || this.conf["core.pm2"]); }
@@ -93,12 +114,11 @@ export class Core extends DataNode {
     get tmp_dir() { return this.#tmp_dir; }
     get logs_dir() { return this.#logs_dir; }
     get cache_dir() { return this.#cache_dir; }
+    get uids_dir() { return this.#uids_dir; }
     get clients_dir() { return this.#clients_dir; }
     get files_dir() { return this.#files_dir; }
-    get uids_dir() { return this.#uids_dir; }
-    get saves_dir() { return this.#saves_dir; }
-    get targets_dir() { return this.#targets_dir; }
-    get screenshots_dir() { return this.#screenshots_dir; }
+
+    get sockets_dir() { return this.#sockets_dir; }
     get conf() { return this.#conf; }
     get resources() { return resources; }
     
@@ -114,10 +134,11 @@ export class Core extends DataNode {
         this.#logger.console_adapter();
 
         process.on('beforeExit', (code)=>this.exit(code));
-        process.on('SIGINT', ()=>this.exit(0));
-        process.on('SIGTERM', ()=>this.exit(0));
+        process.on('SIGINT', ()=>this.exit("SIGINT", 0));
+        process.on('SIGTERM', ()=>this.exit("SIGTERM", 0));
+        process.on('SIGUSR2', ()=>this.exit("SIGUSR2", 0));
         process.on('message', async (msg)=>{
-            if (msg == 'shutdown') await this.exit(0);
+            if (msg == 'shutdown') await this.exit(`message '${msg}'`, 0);
         });
     }
 
@@ -134,11 +155,9 @@ export class Core extends DataNode {
         this.#logs_dir = path.resolve(appdata_dir, "logs");
         this.#cache_dir = path.resolve(appdata_dir, "cache");
         this.#clients_dir = path.resolve(appdata_dir, "clients");
-        this.#files_dir = path.resolve(appdata_dir, "files");
         this.#uids_dir = path.resolve(appdata_dir, "uids");
-        this.#saves_dir = path.resolve(appdata_dir, "saves");
-        this.#targets_dir = path.resolve(appdata_dir, "targets");
-        this.#screenshots_dir = path.resolve(this.cache_dir, "screenshots");
+        this.#sockets_dir = path.resolve(appdata_dir, "sockets");
+        this.#files_dir = path.resolve(appdata_dir, "files");
 
         process.env.PATH = [...new Set([this.bin_dir, ...process.env.PATH.split(path.delimiter)])].join(path.delimiter);
 
@@ -149,17 +168,28 @@ export class Core extends DataNode {
         });
     }
 
-    get_socket_path(sock_name) {
-        return utils.is_windows() ? `\\\\.\\pipe\\${this.appspace}_${sock_name}` : path.join("/tmp", `${this.appspace}_${sock_name}.sock`);
+    get_socket_path(sock_name, register=false) {
+        var p = utils.is_windows() ? `\\\\.\\pipe\\${this.appspace}_${sock_name}` : path.join(this.sockets_dir, `${this.appspace}_${sock_name}.sock`);
+        if (register) {
+            this.#socket_files.add(p);
+            try { fs.unlinkSync(p); } catch (e) {}
+        }
+        return p;
     }
 
-    get_ssl_certs(){
+    get_ssl_certs() {
+        var ssl_key_path = this.conf["core.ssl_key"] || path.resolve(this.appdata_dir, "ssl", `${this.appspace}.key`);
+        var ssl_cert_path = this.conf["core.ssl_cert"] || path.resolve(this.appdata_dir, "ssl", `${this.appspace}.pem`);
+        if (!ssl_key_path || !ssl_cert_path) return null;
         try {
             return {
-                key: fs.readFileSync(this.conf["core.ssl_key"]),
-                cert: fs.readFileSync(this.conf["core.ssl_cert"])
+                key: fs.readFileSync(ssl_key_path),
+                cert: fs.readFileSync(ssl_cert_path)
             };
-        } catch {}
+        } catch (e) {
+            this.logger.error(`Could not load SSL certs: ${e.message}`);
+            return null;
+        }
     }
     
     get_urls(subdomain) {
@@ -181,20 +211,46 @@ export class Core extends DataNode {
         }
     }
 
-    set_priority(pid, pri) {
+    async safe_write_file(filename, data, encoding="utf-8") {
+        var tmp_filename = path.join(this.tmp_dir, `${utils.md5(filename)}_${utils.uuid4()}.tmp`);
+        await fs.writeFile(tmp_filename, data, encoding);
+        await fs.rename(tmp_filename, filename);
+    }
+
+    /* set_priority(pid, pri) {
         try {
             if (pid) os.setPriority(pid, pri);
             else os.setPriority(pri);
         } catch (e) {
             this.logger.warn(`Could not set process priority for pid: ${pid||process.pid}`);
         }
+    } */
+
+    #cleanup_sockets() {
+        if (utils.is_windows()) return;
+        for (let socket_file of this.#socket_files) {
+            if (fs.existsSync(socket_file)) {
+                try {
+                    fs.unlinkSync(socket_file);
+                } catch (e) {
+                    this.logger.error(`Could not unlink socket file: ${socket_file}`, e);
+                }
+            }
+        }
+        this.#socket_files.clear();
     }
 
-    async exit(code=0) {
+    async exit(signal, code=0) {
         if (this.#exiting) return;
         this.#exiting = true;
+        this.logger.info(`Received signal ${signal}, exiting with code ${code}.`);
         await this.destroy();
         process.exit(code);
+    }
+
+    ondestroy() {
+        this.#cleanup_sockets();
+        return super.ondestroy();
     }
 }
 
@@ -213,6 +269,8 @@ export class CoreMaster extends Core {
     modules = {}; // just a map of name:path to dir
     /** @type {(http.Server | https.Server)[]} */
     #servers = [];
+    /** @type {import("http-terminator").HttpTerminator[]} */
+    #server_terminators = [];
     /** @type {string[]} */
     #conf_paths = [];
     /** @type {MasterOpts} */
@@ -221,8 +279,8 @@ export class CoreMaster extends Core {
     #ipc;
     #ready;
     #netstats = [];
-    /** @type {Record<PropertyKey,utils.Deferred>} */
-    #processes = {};
+    /** @type {Record<PropertyKey,Process>} */
+    processes = {};
 
     get ipc() { return this.#ipc; }
     get ready() { return this.#ready; }
@@ -282,19 +340,18 @@ export class CoreMaster extends Core {
         fs.mkdirSync(this.logs_dir, { recursive: true });
         fs.mkdirSync(this.cache_dir, { recursive: true });
         fs.mkdirSync(this.clients_dir, { recursive:true });
-        fs.mkdirSync(this.files_dir, { recursive:true });
         fs.mkdirSync(this.uids_dir, { recursive:true });
-        fs.mkdirSync(this.saves_dir, { recursive:true });
-        fs.mkdirSync(this.targets_dir, { recursive:true });
-        fs.mkdirSync(this.screenshots_dir, { recursive:true });
+        fs.mkdirSync(this.sockets_dir, { recursive:true });
         // try { fs.emptyDirSync(this.tmp_dir, { recursive:true }); } catch (e) {}
         
-        this.#cleanup_sockets(); // this deletes the socket files immediately after creation...
+        this.#ipc = new IPCMaster(this.name, this.get_socket_path(`ipc`, true));
         
-        this.#ipc = new IPCMaster(this.name, this.get_socket_path(`ipc`));
-        
-        let nethogs = child_process.spawn(`nethogs`, ["-t"]);
-        readline.createInterface(nethogs.stdout).on("line", line=>{
+        let nethogs = child_process.spawn(`nethogs`, ["-t"], {
+            stdio: ["ignore", "pipe", "ignore"]
+        });
+        const rl = readline.createInterface(nethogs.stdout);
+        rl.on("error", utils.noop);
+        rl.on("line", line=>{
             if (String(line).match(/^Refreshing:/)) {
                 this.#netstats = [];
                 return;
@@ -313,7 +370,7 @@ export class CoreMaster extends Core {
         this.#ipc.respond("core", ()=>{
             return {
                 conf: this.conf,
-                appspace: this.appspace,
+                // appspace: this.appspace,
                 debug: this.debug,
                 modules: this.modules,
                 auth: !!this.auth,
@@ -366,30 +423,30 @@ export class CoreMaster extends Core {
             await pm2.connect(true);
             var pm2_bus = await pm2.launchBus();
             pm2_bus.on("process:event", (data)=>{
+                if (data.event == "online") {
+                    let [appspace, m] = data.process.name.split(".");
+                    if (appspace === this.appspace) {
+                        new Process(m);
+                    }
+                }
                 if (data.event == "stopped" || data.event == "exit") {
                     let [appspace, m] = data.process.name.split(".");
                     if (appspace === this.appspace) {
-                        if (m === "core") {
-                            for (var c of Object.keys(this.modules)) {
-                                this.module_stop(c);
-                            }
-                        }
-                        if (m in this.#processes) {
-                            this.#exit_handler(m);
+                        if (m in this.processes) {
+                            this.processes[m].destroy();
                         }
                     }
                 }
             });
-            /* var procs = await pm2.list();
+            var procs = await pm2.list();
             for (var p of procs) {
-                console.log(p)
                 let [appspace, m] = p.name.split(".");
                 if (appspace === this.appspace) {
                     if (p.pm2_env.status === "online") {
-                        this.#processes[m] = new utils.Deferred();
+                        new Process(m);
                     }
                 }
-            } */
+            }
         }
 
         for (let m in this.modules) {
@@ -397,88 +454,80 @@ export class CoreMaster extends Core {
         }
         
         this.logger.info(`Initializing ${this.name}...`);
+        this.logger.info(`  user: ${os_username}`);
         this.logger.info(`  cwd: ${this.cwd}`);
         this.logger.info(`  appdata: ${this.appdata_dir}`);
-        if (utils.has_root_privileges()) {
-            this.logger.info(`  root: true`);
-        } else {
-            this.logger.warn(`  root: false (Without root privileges some functionality will be limited.)`);
+        if (process.getuid) {
+            this.logger.info(`  userinfo:`, {
+                uid: process.getuid(),
+                euid: process.geteuid(),
+                gid: process.getgid(),
+                egid: process.getegid(),
+                groups: process.getgroups()
+            });
         }
 
-        if (this.use_pm2) {
+        if (process.send) {
             process.send('ready');
         }
+        this.ipc.emit(`${this.name}.ready`);
     }
 
     async module_start(m) {
-        if (this.#processes[m]) {
-            console.warn(`Module '${m}' is already running.`)
+        if (this.processes[m]) {
+            console.warn(`Module '${m}' is already running.`);
             return;
         }
         var run_path = this.modules[m];
         this.logger.info(`Starting ${m} [${run_path}]...`);
         
-        this.#processes[m] = new utils.Deferred();
-        var args = [];
-        var node_args = [];
-        if (this.debug && this.conf[`${m}.inspect`]) {
-            node_args.push(`--inspect=${this.conf[`${m}.inspect`]}`);
-        }
-        if (this.use_pm2) {
-            let p = {
-                "wait_ready": true,
-                "namespace": this.appspace,
-                "name": `${this.appspace}.${m}`,
-                "script": run_path,
-                "args": args,
-                "node_args": node_args,
-                "windowsHide": true,
-                "max_restarts": 5,
-                "autorestart": true,
-                "restart_delay": 5000,
-                // "cron_restart" : null // prevent inheriting
-            };
-            await pm2.start(p);
-        } else {
-            let p = child_process.fork(run_path, args, {
-                execArgv: node_args,
-                stdio: ["ignore", "inherit", "inherit", "ipc"]
+        return new Promise(async (resolve)=>{
+            var proc = new Process(m);
+            var args = [];
+            var node_args = [];
+            if (this.debug && this.conf[`${m}.inspect`]) {
+                node_args.push(`--inspect=${this.conf[`${m}.inspect`]}`);
+            }
+            this.#ipc.once(`${m}.ready`, ()=>{
+                this.logger.info(`Module '${m}' is ready.`);
+                resolve();
             });
-            p.on("error", (err)=>{
-                console.error(err);
-            });
-            p.on("close", ()=>{
-                this.#exit_handler(m);
-            });
-        }
+            if (this.use_pm2) {
+                
+                let p = {
+                    "wait_ready": true,
+                    "namespace": this.appspace,
+                    "name": `${this.appspace}.${m}`,
+                    "script": run_path,
+                    "args": args,
+                    "node_args": node_args,
+                    "windowsHide": true,
+                    "max_restarts": 5,
+                    "autorestart": true,
+                    "restart_delay": 5000,
+                    "cron_restart" : "0" // prevent inheriting
+                };
+                var res = await pm2.start(p);
+                proc.init(res[0]);
+            } else {
+                let p = child_process.fork(run_path, args, {
+                    execArgv: node_args,
+                    stdio: ["ignore", "inherit", "inherit", "ipc"]
+                });
+                proc.init(p);
+            }
+        });
     }
 
     async module_restart(m) {
-        if (this.use_pm2) {
-            return pm2.restart(`${this.appspace}.${m}`);
-        } else {
-            await this.module_stop(m);
-            await this.module_start(m);
-        }
+        await this.module_stop(m);
+        await this.module_start(m);
     }
 
     async module_stop(m) {
-        if (!this.#processes[m]) return;
+        if (!this.processes[m]) return;
         this.logger.info(`Stopping ${m}...`);
-        if (this.use_pm2) {
-            return pm2.stop(`${this.appspace}.${m}`);
-        } else {
-            this.#ipc.emit_to(m, "core:shutdown");
-        }
-        return this.#processes[m].promise;
-    }
-
-    #cleanup_sockets() {
-        if (utils.is_windows()) return;
-        let socket_files = glob.sync(`${this.appspace}_*.sock`, {cwd: "/tmp", absolute: true});
-        for (let socket_file of socket_files) {
-            fs.unlinkSync(socket_file);
-        }
+        await this.processes[m].stop();
     }
     
     async #setup_proxies() {
@@ -569,8 +618,9 @@ export class CoreMaster extends Core {
 
         if (this.conf["core.http_port"]) {
             proxy_http_server = http.createServer(create_request_listener(false));
-            proxy_http_server.listen(this.conf["core.http_port"]);
             this.#servers.push(proxy_http_server);
+            this.#server_terminators.push(createHttpTerminator({ server: proxy_http_server, gracefulTerminationTimeout:1000 }));
+            proxy_http_server.listen(this.conf["core.http_port"]);
         }
 
         if (this.conf["core.https_port"] && ssl_certs) {
@@ -578,8 +628,9 @@ export class CoreMaster extends Core {
             proxy_https_server = https.createServer({
                 ...ssl_certs,
             }, create_request_listener(true));
-            proxy_https_server.listen(this.conf["core.https_port"]);
             this.#servers.push(proxy_https_server);
+            this.#server_terminators.push(createHttpTerminator({ server: proxy_https_server, gracefulTerminationTimeout:1000 }));
+            proxy_https_server.listen(this.conf["core.https_port"]);
             setInterval(async ()=>{
                 ssl_certs = this.get_ssl_certs();
                 if (ssl_certs) {
@@ -604,6 +655,7 @@ export class CoreMaster extends Core {
 
     async #load_confs() {
         var new_conf = utils.json_copy(config_default);
+        console.log(`Loading confs [${this.#conf_paths.join(", ")}]...`);
         for (let conf_path of this.#conf_paths) {
             if (!(await fs.exists(conf_path))) {
                 console.error(`Conf file '${conf_path}' does not exist.`)
@@ -671,15 +723,77 @@ export class CoreMaster extends Core {
     }
 
     async ondestroy() {
-        console.info("Shutting down...");
-        await Promise.all(Object.keys(this.#processes).map((m)=>this.module_stop(m)));
+        console.info("Shutting down servers...");
+        await Promise.all(this.#server_terminators.map(s=>s.terminate()));
+        console.info("Shutting down modules...");
+        await Promise.all(Object.keys(this.processes).map((m)=>this.module_stop(m)));
+        console.info("Shutting down IPC...");
         await this.#ipc.destroy();
+        console.info("Shutting down complete.");
         return super.ondestroy();
     }
+}
 
-    #exit_handler(m) {
-        this.#processes[m].resolve();
-        delete this.#processes[m];
+/** @extends {events.EventEmitter<{exit:[]}>} */
+class Process extends events.EventEmitter {
+    #pid;
+    #is_pm2;
+    #name;
+    #destroyed = false;
+    #stopping = false;
+    get is_expired() { return globals.app.processes[this.#name] !== this; }
+
+    constructor(name) {
+        super();
+        this.#name = name;
+        if (name != "root") {
+            globals.app.processes[name] = this;
+        }
+    }
+
+    /** @param {import("child_process").ChildProcess | import("pm2").ProcessDescription} p */
+    init(p) {
+        if (this.is_expired) return;
+        this.#pid = p.pid;
+        if (globals.app.use_pm2) {
+        } else {
+            p.on("error", (err)=>{
+                console.error(err);
+            });
+            p.on("close", ()=>{
+                this.destroy();
+            });
+        }
+    }
+
+    async stop() {
+        if (this.is_expired) return;
+        if (this.#stopping) return;
+        this.#stopping = true;
+        return new Promise((resolve)=>{ 
+            var timeout;
+            if (globals.app.use_pm2) {
+                pm2.stop(`${globals.app.appspace}.${this.#name}`);
+            } else {
+                globals.app.ipc.emit_to(this.#name, "core:shutdown");
+                timeout = setTimeout(()=>{
+                    globals.app.logger.warn(`Module '${this.#name}' did not stop within ${STOP_MODULE_TIMEOUT}ms. Terminating...`);
+                    tree_kill(this.#pid, "SIGKILL").catch(utils.noop);
+                }, STOP_MODULE_TIMEOUT);
+            }
+            this.once("destroyed", ()=>{
+                clearTimeout(timeout);
+                resolve();
+            });
+        });
+    }
+
+    destroy() {
+        if (this.is_expired) return;
+        if (this.#destroyed) return;
+        this.#destroyed = true;
+        delete globals.app.processes[this.#name];
+        this.emit("destroyed");
     }
 }
 
@@ -708,6 +822,9 @@ export class CoreFork extends Core {
     }
     
     async #init() {
+
+        this.__init();
+        
         this.#ipc = new IPCFork(this.name, this.get_socket_path(`ipc`));
 
         var core = await this.#ipc.request("core", "core", null, 0);
@@ -719,8 +836,6 @@ export class CoreFork extends Core {
         Object.assign(this.conf, core.conf);
 
         this.#modules = core.modules;
-
-        this.__init();
 
         this.logger.on("log", (log)=>{
             this.#ipc.emit("internal:log", log).catch(utils.noop); // IMPORTANT: will create log feedback loop if socket is closed (logs error, collects error, tries to emit, and so on).
@@ -752,6 +867,7 @@ export class CoreFork extends Core {
         if (this.use_pm2) {
             process.send('ready');
         }
+        this.ipc.emit(`${this.name}.ready`);
     }
 
     init() {}
@@ -773,7 +889,7 @@ export class CoreFork extends Core {
         plugins = plugins ?? [];
         root = path.resolve(root);
         var pages = await glob("**/*.html", {cwd: root});
-        if (process.env.BUILD) {
+        if (BUILD_MODE) {
             return express.static(root);
         } else {
             var ssl_certs = this.get_ssl_certs();
@@ -781,6 +897,7 @@ export class CoreFork extends Core {
             let vite = await import("vite");
             /** @type {import("vite").UserConfig} */
             var config = {
+                mode: DEV_MODE ? "development" : "production",
                 configFile: false,
                 base: `./`,
                 root,

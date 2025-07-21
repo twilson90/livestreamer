@@ -30,7 +30,10 @@ $modal-button-height: 40px;
 	line-height: normal;
 	background: var(--background-color);
 }
-
+img {
+	max-width: 100%;
+	height: auto;
+}
 select, input, textarea, button, .button, .fake-input, [contenteditable=true] {
 	&:not(textarea) {
 		min-height: var(--ui-property-input-height);
@@ -56,7 +59,6 @@ select, input, textarea, button, .button, .fake-input, [contenteditable=true] {
 		@include focus();
 	}
 }
-
 button, .button, input, textarea, select {
 	font-size:1em;
 	&.mini, &.icon {
@@ -271,7 +273,6 @@ table.files {
 		overflow:auto;
 	}
 	&>.help {
-		border-bottom: var(--ui-border);
 		display:none;
 		background: white;
 		position: sticky;
@@ -279,6 +280,7 @@ table.files {
 		width: var(--help-size);
 		height: 100vh;
 		z-index:2;
+		border-left: 1px solid var(--ui-border-color);
 	}
 
 	&.show-side-panel {
@@ -302,7 +304,7 @@ table.files {
 			&>.help {
 				order: 0;
 				border-left: none;
-				border-top: var(--ui-border);
+				border-bottom: 1px solid var(--ui-border-color);
 				width: 100%;
 				height: var(--help-size);
 			}
@@ -450,7 +452,7 @@ table.files {
 
 /* ----------------------- */
 
-.test-stream {
+.live-feed {
 	display: flex;
 	flex-direction:column;
 	background: #111;
@@ -462,6 +464,16 @@ table.files {
 	inset: 0;
 	max-height: min(600px, 80vh);
 	min-height: 200px;
+	color: white;
+	&:not(.live-feed-available) {
+		&>.overlay {
+			display: none;
+		}
+		&>.info {
+			display: none;
+		}
+	}
+
 	&.popout {
 		height:100%;
 		width:100%;
@@ -485,7 +497,7 @@ table.files {
 			opacity: 0.5;
 		}
 	}
-	.video-wrapper {
+	&>.video-wrapper {
 		display: flex;
 		width: 100%;
 		height: 100%;
@@ -502,7 +514,7 @@ table.files {
 			}
 		}
 	}
-	.overlay {
+	&>.overlay {
 		position: absolute;
 		inset:0;
 		opacity: 0;
@@ -512,8 +524,14 @@ table.files {
 		&>*{
 			pointer-events: auto;
 		}
+		.button-group {
+			position: absolute;
+			display: flex;
+			top: 10px;
+			left: 10px;
+		}
 	}
-	.info {
+	&>.info {
 		position: absolute;
 		top: 10px;
 		right: 10px;
@@ -526,13 +544,13 @@ table.files {
 		body:not([data-setting__show_player_info]) & {
 			display:none;
 		}
-
 	}
-	.button-group {
+	&>.empty {
 		position: absolute;
+		inset: 0;
 		display: flex;
-		top: 10px;
-		left: 10px;
+		align-items: center;
+		justify-content: center;
 	}
 	&:hover {
 		.play>* {
@@ -542,24 +560,23 @@ table.files {
 		.overlay {
 			opacity: 1;
 		}
+		.button-group {
+			opacity: 1;
+		}
 	}
 }
 
 .player-interface-wrapper {
 	width: 100%; // THIS IS THE ONLY THING THAT WORKS FOR FIXING ASPECT RATIO OUTGROWING CONTAINER BUG.
 	
-	.test-stream-container {
+	.live-feed-container {
+		display: flex;
+		justify-content: center;
 		position: relative;
-		.test-stream {
+		.live-feed {
 			aspect-ratio: 16 / 9;
 		}
 	}
-
-	/* &:not(.live-feed-available) {
-		button.show_live_feed {
-			display:none
-		}
-	} */
 
 	.ui-wrapper {
 		display: flex;
@@ -688,9 +705,6 @@ table.files {
 		&:empty {
 			display:flex;
 		}
-	}
-	&:has(.playlist-wrapper) {
-		align-self: normal;
 	}
 }
 
@@ -1260,9 +1274,9 @@ table.files {
 /* ------------------- */
 .button-group {
 	@extend %button-group;
-	.property-input-wrapper>* {
-		border: 0 !important;
-	}
+	// .property-input-wrapper>* {
+	// 	border: 0 !important;
+	// }
 }
 .console {
 	font-family: "Lucida Sans Typewriter","Courier New","Courier";
@@ -1555,6 +1569,12 @@ input[type=number]::-webkit-inner-spin-button {
 	}
 	body[data-setting__playlist_display_mode="1"] & {
 		min-height: auto;
+		button[data-setting__playlist_sticky] {
+			display: none;
+		}
+		button[data-setting__wrap_playlist_items] {
+			display: none;
+		}
 	}
 	.playlist-body {
 		padding: 0;
@@ -1577,8 +1597,12 @@ input[type=number]::-webkit-inner-spin-button {
 		}
 	}
 	.timeline-controls {
-		display:none;
+		display:flex;
+		body[data-setting__playlist_display_mode="0"] & {
+			display: none;
+		}
 		.playlist-zoom-input{
+			text-transform: none !important;
 			width:80px;
 		}
 	}
@@ -1781,6 +1805,7 @@ input[type=number]::-webkit-inner-spin-button {
 			padding: 0;
 			position: relative;
 			width:100%;
+			flex:1;
 
 			&:empty{
 				&:after {
@@ -1928,7 +1953,8 @@ input[type=number]::-webkit-inner-spin-button {
 						gap:5px;
 						align-items: center;
 						// line-height: 1;
-						body[data-setting__wrap_playlist_items] & {
+						
+						body[data-setting__wrap_playlist_items]:not([data-setting__playlist_display_mode="1"]) & {
 							flex: 1 1 auto;
 							white-space: normal;
 							word-break: break-all;
@@ -1970,7 +1996,7 @@ input[type=number]::-webkit-inner-spin-button {
 						align-items: center;
 						margin-bottom: -2px;
 						overflow: hidden;
-						body[data-setting__wrap_playlist_items] & {
+						body[data-setting__wrap_playlist_items]:not([data-setting__playlist_display_mode="1"]) & {
 							flex: 0 1 0;
 							flex-wrap: wrap;
 							overflow: visible;
@@ -2105,9 +2131,6 @@ body[data-setting__playlist_display_mode="1"] {
 		}
 		.playlist-content {
 			flex-direction: row;
-		}
-		.timeline-controls {
-			display: flex;
 		}
 		button.playlist_sticky {
 			display: none;
@@ -2833,7 +2856,7 @@ table.keyboard-shortcuts {
 	box-shadow: 0 0 1px #888, 0 1px 0 #fff, 0 3px 3px rgba(68, 68, 68, 0.4);
 } */
 
-.uis.bar {
+._ui_.bar {
 	background:#ddd;
 	border: var(--ui-border);
 	position: relative;
@@ -2855,7 +2878,7 @@ table.keyboard-shortcuts {
 		justify-content: center;
 	}
 }
-.uis.process {
+._ui_.process {
 	padding: 5px;
 	border: var(--ui-border);
 }
@@ -2869,14 +2892,18 @@ table.keyboard-shortcuts {
 		}
 	}
 }
-.filter-list-item-contents {
+.filter-list-item {
 	display: flex;
 	align-items: center;
-	justify-content: center;
 	gap:5px;
 	&.disabled {
 		text-decoration: line-through;
 	}
+}
+.volume-list-item {
+	display: flex;
+	align-items: center;
+	gap:5px;
 }
 .progress-bar {
 	display: inline-block;
@@ -2933,6 +2960,7 @@ table.keyboard-shortcuts {
 	border-left:0;
 }
 .property-list-item-buttons>button {
+	padding: 0 !important;
 	@extend .icon, .mini;
 }
 /* .property-buttons>button {
@@ -2946,13 +2974,8 @@ table.keyboard-shortcuts {
 	outline: 1px solid var(--ui-border-color);
 	gap: 1px;
 	background: var(--ui-border-color);
-	// inset: 1px 0 0 1px;
-	// padding: 1px 0 0 1px;
-	// transform: translate(1px,1px);
 	&>*{
 		border: 0 !important;
-		// border:1px solid var(--ui-border-color);
-		// margin: -1px 0 0 -1px;
 	}
 }
 
@@ -3045,5 +3068,11 @@ table.keyboard-shortcuts {
 				gap: 10px;
 			}
 		}
+	}
+}
+
+._ui_.range-property {
+	.property-input-wrapper {
+		outline: none !important;
 	}
 }

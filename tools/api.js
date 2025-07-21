@@ -10,7 +10,7 @@ import esmShim from '@rollup/plugin-esm-shim';
 import { api as forge_api } from "@electron-forge/core";
 import finder from "find-package-json";
 import open from "open";
-
+import { createHash } from "node:crypto";
 // import replace from "@rollup/plugin-replace";
 export const dirname = import.meta.dirname;
 
@@ -53,6 +53,10 @@ export function importMetaPlugin() {
     }
 }
 
+export function md5(str) {
+    return createHash('md5').update(str).digest('hex');
+}
+
 export class API {
 
     constructor(dir) {
@@ -82,7 +86,7 @@ export class API {
     async config_electron_forge() {
         await this.copy_to(forge_config_path, this.dist);
         this.suppress_warnings();
-        process.env.DEBUG = 1;
+        // process.env.DEBUG = 1;
     }
 
     /** @returns {Promise<vite.InlineConfig[]>} */
@@ -92,6 +96,7 @@ export class API {
             external: [],
             entry: path.resolve(src, "index.js"),
             root: src,
+            mode: "development",
             plugins: [],
             /** @type {vite.Plugin[]} */
             vite_plugins: [],
@@ -151,14 +156,15 @@ export class API {
 
         let configs = [];
         let platform = opts.platform.match(/^win/i) ? "windows" : "linux";
+        var date_str = new Date().toISOString().split("T").join("-").split(":").join("-").slice(0,-5);
         let define = {
-            "process.env.BUILD": JSON.stringify(1),
+            "import.meta.env.BUILD": JSON.stringify(1),
+            "import.meta.env.BUILD_DATE": JSON.stringify(date_str),
+            "import.meta.env.BUILD_VERSION": JSON.stringify(`${pkg.version}-${md5(date_str)}`),
         };
-        if (opts.production) {
-            define["process.env.PRODUCTION"] = "1";
-        }
         
         let node_config = defineConfig({
+            mode: opts.mode,
             configFile: false,
             plugins: [
                 ...(format.match(/^(cjs|commonjs)$/i) ? [importMetaPlugin()] : []),
@@ -248,6 +254,7 @@ export class API {
                 // var rel = path.relative(dir, root_dir);
                 let pages = glob.sync(`*.html`, {cwd: root_dir, absolute:true});
                 let web_config = defineConfig({
+                    mode: opts.mode,
                     configFile: false,
                     css: {
                         preprocessorOptions: {
@@ -280,6 +287,7 @@ export class API {
     /* async electron_config() {
         var preload = path.join(src, "electron", "preload.cjs");
         let preload_config = defineConfig({
+            mode: opts.mode,
             configFile: false,
             build: {
                 minify,

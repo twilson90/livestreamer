@@ -65,8 +65,10 @@ export const vignette = new Filter({
     },
     apply(ctx, $) {
         let v1 = ctx.id("v");
-        $.angle_expr = String($.angle_expr).trim();
-        ctx.stack.push(`[${ctx.vid}]vignette=angle=${$.angle_expr ? ctx.quote($.angle_expr) : $.angle}:x0=w*${$.x0}:y0=h*${$.y0}:mode=${$.mode}:eval=${$.eval}:dither=${$.dither}:aspect=${$.aspect}[${v1}]`);
+        $.angle_expr = String($.angle_expr || "").trim();
+        var args = [`x0=w*${$.x0}`, `y0=h*${$.y0}`, `mode=${$.mode}`, `eval=${$.eval}`, `dither=${$.dither}`, `aspect=${$.aspect}`];
+        if ($.angle_expr) args.push(`angle=${$.angle_expr}`);
+        ctx.stack.push(`[${ctx.vid}]vignette=${args.join(":")}[${v1}]`);
         ctx.vid = v1;
     }
 });

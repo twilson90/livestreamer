@@ -14,12 +14,13 @@ import Hammer from 'hammerjs';
 import Sortable, {MultiDrag} from 'sortablejs';
 import Color from 'color';
 import { terminalCodesToHtml } from "terminal-codes-to-html";
+import ResizeObserver from 'resize-observer-polyfill';
+
 import * as constants from "../../core/constants.js" ;
 import { get_default_stream, get_auto_background_mode } from "../shared.js";
 import filters from "../filters/exports.js";
 import { InternalSessionProps, PlaylistItemProps, PlaylistItemPropsProps, SessionProps } from "../InternalSessionProps.js";
-
-import { ResponsiveSortable, CancelSortPlugin, RememberScrollPositionsPlugin } from './ResponsiveSortable.js';
+import { ResponsiveSortable, CancelSortPlugin, RememberScrollPositionsPlugin, MyAutoScrollPlugin } from './ResponsiveSortable.js';
 const {OverlayScrollbars} = dom;
 
 import "overlayscrollbars/overlayscrollbars.css";
@@ -43,7 +44,6 @@ const SessionTypes = {
 // if (window.videojs) window.videojs.options.autoplay = true;
 // export const WS_MIN_WAIT = 1000;
 export const WS_MIN_WAIT = 0;
-export const MIN_VIDEO_BUFFER_TIME = 1000; // 1 second
 
 export const IMAGE_DURATION = 0.040;
 export const CROP_LIMIT = 0.4;
@@ -119,7 +119,7 @@ const VALIDATORS = (()=>{
         var value = this.value;
         if (!value) return true;
         if (value.startsWith("livestreamer://")) return true;
-        var mi = app.$._session.media_info[value] || app.media_info[value];
+        var mi = app.media_info[value] || app.$._session.media_info[value];
         if (!mi || !mi.exists) return "Media does not exist.";
         if (type) {
             if (!mi.streams) return `No streams detected.`;
@@ -584,7 +584,7 @@ export function create_video_file_start_end_properties(settings) {
         "default": settings.default || get_file_duration,
     });
 
-    return [file, file_start, file_end]
+    return [file, file_start, file_end];
 }
 
 function get_file_manager_url(opts) {
@@ -948,13 +948,13 @@ class Progress$ extends utils.remote.ProxyID$ {
 /** @typedef {{start:number,end:number,duration:number,offset:number}} Clipping */
 export class Remote$ extends utils.remote.Proxy$ {
     client_id = "";
-    clients = utils.remote.Collection$(()=>new Client$());
-    sessions = utils.remote.Collection$(()=>new Session$());
-    targets = utils.remote.Collection$(()=>new Target$());
-    streams = utils.remote.Collection$(()=>new Stream$());
-    uploads = utils.remote.Collection$(()=>new Progress$());
-    downloads = utils.remote.Collection$(()=>new Progress$());
-    volumes = {};
+    clients = utils.remote.Collection$(()=>new Client$()).__proxy__;
+    sessions = utils.remote.Collection$(()=>new Session$()).__proxy__;
+    targets = utils.remote.Collection$(()=>new Target$()).__proxy__;
+    streams = utils.remote.Collection$(()=>new Stream$()).__proxy__;
+    uploads = utils.remote.Collection$(()=>new Progress$()).__proxy__;
+    downloads = utils.remote.Collection$(()=>new Progress$()).__proxy__;
+    volumes = utils.remote.Collection$(()=>new Volume$()).__proxy__;
     change_log = {};
     logs = LogProxy$(()=>app.logger);
     nms_sessions = {};
@@ -1077,6 +1077,16 @@ class SessionPlayer$ extends utils.remote.Proxy$ {
     playback_speed = 1;
     current_fps = 0;
 }
+
+export class Volume$ extends utils.remote.ProxyID$ {
+    name = "";
+    driver = "";
+    root = "";
+    access_control = new AccessControl$();
+    locked = false;
+    index = -1;
+}
+
 export class Stream$ extends utils.remote.ProxyID$ {
     start_ts = 0;
     stop_ts = 0;
@@ -1085,13 +1095,13 @@ export class Stream$ extends utils.remote.ProxyID$ {
     session_id = "";
     targets = [];
     target_opts = {};
-    stream_targets = utils.remote.Collection$(()=>new StreamTarget$());
+    stream_targets = utils.remote.Collection$(()=>new StreamTarget$()).__proxy__;
     test = false;
     bitrate = 0;
     internal_path;
     is_encoding = false;
     restart = 0;
-    player = new SessionPlayer$();
+    player = new SessionPlayer$().__proxy__;
     fps = 0;
     buffer_duration = 0;
     
@@ -1220,7 +1230,7 @@ function LogProxy$(logger) {
                 }
             });
         }
-    });
+    }).__proxy__;
 }
 export class Session$ extends utils.remote.ProxyID$ {
     type = "";
@@ -1242,9 +1252,8 @@ export class Session$ extends utils.remote.ProxyID$ {
     fade_out_speed = 2;
     stream_id = "";
     files_dir = "";
-    /** @type {Record<string,PlaylistInfo$>} */
-    playlist_info = utils.remote.Collection$(()=>new PlaylistInfo$());
-    playlist_history = new PlaylistHistory$();
+    playlist_info = utils.remote.Collection$(()=>new PlaylistInfo$()).__proxy__;
+    playlist_history = new PlaylistHistory$().__proxy__;
 
     constructor() {
         super();
@@ -1542,12 +1551,11 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
         if (!this._is_navigatable) return;
         var url = this._url;
         if (IS_ELECTRON) {
-            if (url.protocol.match(/^https?:$/)) await electron.openExternal(this._uri);
-            else if (url.protocol === "file:") await electron.showItemInFolder(utils.pathify(this._uri));
-        } else {
-            if (url.protocol.match(/^https?:$/)) window.open(url, "_blank");
+            if (url.protocol.match(/^https?:$/)) return electron.openExternal(this._uri);
+            else if (url.protocol === "file:") return electron.showItemInFolder(utils.pathify(this._uri));
         }
-        open_file_manager({start: this.filename});
+        if (url.protocol.match(/^https?:$/)) return window.open(url, "_blank");
+        return open_file_manager({start: this.filename});
     }
     get _uri() {
         return utils.is_uri(this.filename) ? this.filename : utils.urlify(this.filename).toString();
@@ -1832,11 +1840,11 @@ export class Chapter$ {
 }
 
 /** @param {PlaylistItem$[]} items */
-function get_items_title(items) {
+function get_items_title_html(items) {
     items = items.filter(i=>i);
     if (items.length > 1) return `${items.length} Files`;
     if (items.length == 1) {
-        return `${items[0]._get_pretty_name()}`;
+        return `<i>${items[0]._get_pretty_name()}</i>`;
     }
     return `[No Item]`;
 }
@@ -2235,7 +2243,7 @@ export class TargetConfigMenu extends ui.EditModal {
     /** @param {string} target_id @param {ExpandedTargetsProperty} prop */
     constructor(target_id, title, prop) {
         super({
-            "modal.title": `Configure ${title}`,
+            "modal.title": `Configure <i>${title}</i>`,
             "modal.apply": ()=>{
                 var value = prop.targets_prop.opts.value;
                 value[target_id] = {...this.props.raw_value};
@@ -2279,6 +2287,13 @@ export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
             "info": "Use a modern video codec (incompatible with older browsers & firefox, not recommended)"
         });
         this.props.append(use_hevc);
+        var fps_passthrough = new ui.InputProperty(`<select>`, {
+            "name": "fps_passthrough",
+            "label": "FPS Passthrough",
+            "options": YES_OR_NO,
+            "default": this._get_default,
+        });
+        this.props.append(fps_passthrough);
         /* var outputs = new ui.PropertyList({
             "name": "outputs",
             "label": "Outputs", 
@@ -2391,8 +2406,8 @@ export class UserConfigurationSettings extends ui.EditModal {
         var groups = utils.group_by(Object.entries(app.settings_prop_defs), ([k,v])=>v.__group__);
         var group_keys = Object.keys(app.settings_groups);
         group_keys.forEach((k,i)=>{
-            var box = new ui.Box({header:app.settings_groups[k].title});
-            var row = box.append(new ui.FlexRow());
+            var box = new ui.Box({header:app.settings_groups[k].title, collapsible:true, collapsed:false});
+            var row = new ui.FlexRow();
             for (var [name, def] of groups.get(k)) {
                 var prop_settings = {
                     "name": name,
@@ -2406,6 +2421,7 @@ export class UserConfigurationSettings extends ui.EditModal {
                 
                 row.append(new ui.InputProperty(def.__input__, prop_settings));
             }
+            box.content.append(row);
             this.props.append(box);
         });
         var ping = new ui.InputProperty(`<input type="text">`, {
@@ -2486,225 +2502,378 @@ export class KeyboardShortcutsMenu extends ui.Modal {
     }
 }
 
-export class FileSystemInfoMenu extends ui.Modal {
-    constructor() {
+class FileManagerVolumeConfigurationMenu extends ui.EditModal {
+    /** @param {ui.PropertyList} list_item */
+    constructor(list_item) {
+        var is_new = !list_item;
         super({
-            "modal.title": "Local File System Tree",
-            "modal.width": "80%",
+            "modal.title": is_new ? "New Volume" : `Edit '${list_item.value.name}'`,
+            "modal.auto_apply": !is_new,
+            "modal.apply": ()=>{
+                var value = {...this.props.value, ...subprops.value};
+                if (is_new) {
+                    app.request("add_volume", [value]);
+                } else {
+                    app.request("edit_volume", [list_item.value.id, value]);
+                }
+            },
+            "modal.allow_invalid": false,
+            "modal.items": [list_item?.value],
         });
-        var uid = 0;
-        var nodes = [];
-        var percent_fraction_digits=1;
-        var path_join = (...parts)=>parts.join("/").replace(/\/+/g, "/");
-        var process = (d, parent, icon)=>{
-            var node = {};
-            node.id = ++uid;
-            nodes[node.id] = node;
-            let level = parent.level+1;
-            node.level = level;
-            node.parent = parent;
-            node.name = d[0];
-            
-            node.path = (icon == "files") ? parent.path : path_join(parent.path, node.name);
 
-            if (typeof d[1] === "object") {
-                var children = d[1];
-                node.icon = icon || "folder";
-                node.isdir = true;
-                node.folders = 0;
-                node.files = 0;
-                node.size = 0;
-                node.children = [];
-                children.sort((a,b)=>(typeof b[1]==="object"?1:0)-(typeof a[1]==="object"?1:0));
-                var i=0, len=children.length;
-                var f = children.findIndex(c=>typeof c[1]!=="object");
-                if (f < 1) f = len;
-                for (;i<f;i++) {
-                    node.children.push(process(children[i], node));
-                }
-                if (i<len) {
-                    var files = children.slice(i);
-                    if (files.length == 1) {
-                        var f = files[0];
-                        node.children.push(process(files[0], node));
-                    } else {
-                        node.children.push(process([`[${files.length} Files]`, files], node, "files"));
-                    }
-                }
-                for (var c of node.children) {
-                    if (c.isdir) {
-                        node.folders += c.folders + 1;
-                        node.files += c.files;
-                    } else {
-                        node.files++;
-                    }
-                    node.size += c.size;
-                }
-            } else {
-                node.icon = icon || "file";
-                node.size = d[1] || 0;
+        var name = new ui.InputProperty(`<input type="text">`, {
+            "name": "name",
+            "label": "Name",
+            "valid": VALIDATORS.not_empty,
+        });
+
+        var opts = [];
+        if (app.$._client.user.is_admin) opts.push(["LocalFileSystem", "Local File System"]);
+        opts.push(["FTP", "FTP"]);
+        var driver = new ui.InputProperty(`<select></select>`, {
+            "name": "driver",
+            "label": "Type",
+            "options": opts,
+            "default": opts[0][0],
+        });
+        driver.on("change", (e)=>{
+            if (e.trigger) {
+                rebuild();
             }
-            return node;
-        };
-        var create_bar = (p)=>{
-            var outer = document.createElement("div");
-            dom.add_class(outer, "percent-bar");
-            var inner = document.createElement("div");
-            var text = document.createElement("span");
-            inner.style.width = `${p*100}%`;
-            outer.append(inner, text);
-            text.innerText = p === undefined ? "-" : (p*100).toLocaleString(undefined, {minimumFractionDigits:percent_fraction_digits,maximumFractionDigits:percent_fraction_digits})+"%";
-            return outer;
-        }
-        var process2 = (node, parent, root_node)=>{
-            if (parent) {
-                node.percent = (node.size / parent.size) || 0;
+        });
+
+        var subprops = new ui.PropertyGroup();
+        var rebuild = ()=>{
+            subprops.empty();
+            if (driver.value == "LocalFileSystem") {
+                let root = new ui.InputProperty(`<input type="text">`, {
+                    "name": "root",
+                    "label": "Root",
+                    "valid": VALIDATORS.not_empty,
+                });
+                subprops.append(root);
+            } else if (driver.value == "FTP") {
+                let sftp = new ui.InputProperty(`<select></select>`, {
+                    "name": "sftp",
+                    "label": "SFTP",
+                    "options": YES_OR_NO,
+                    "default": false,
+                });
+                let host = new ui.InputProperty(`<input type="text">`, {
+                    "name": "host",
+                    "label": "Host",
+                    "valid": VALIDATORS.not_empty,
+                });
+                let port = new ui.InputProperty(`<input type="number">`, {
+                    "name": "port",
+                    "label": "Port",
+                    "default": ()=>sftp.value ? 22 : 21,
+                    "valid": VALIDATORS.not_empty,
+                });
+                let username = new ui.InputProperty(`<input type="text">`, {
+                    "name": "username",
+                    "label": "Username",
+                    "default": "",
+                    "valid": VALIDATORS.not_empty,
+                });
+                let password = new ui.InputProperty(`<input type="password">`, {
+                    "name": "password",
+                    "label": "Password",
+                    "default": "",
+                    "valid": VALIDATORS.not_empty,
+                });
+                let path = new ui.InputProperty(`<input type="text">`, {
+                    "name": "path",
+                    "label": "Path",
+                    "default": "/",
+                    "valid": VALIDATORS.not_empty,
+                });
+                subprops.append(sftp, host, port, username, password, path);
             }
-            node.total_percent = (node.size / root_node.size) || 0;
-            if (node.isdir) {
-                for (var c of node.children) {
-                    process2(c, node, root_node);
-                }
-            }
-        };
-
-        var init = async()=> {
-            dom.remove_children(tbody);
-            for (let id in app.$.volumes) {
-                if (app.$.volumes[id].driver !== "LocalFileSystem") continue;
-                var volume = app.$.volumes[id];
-                var loading_el = $(`<tr><td colspan="6"><i class="fas fa-sync fa-spin"></i> Loading...</td></tr>`)[0];
-                tbody.append(loading_el);
-                var r = await app.request("analyze_local_file_system_volume", [id]);
-                loading_el.remove();
-                var root_node = process(r, {path:volume.root.split("/").slice(0, -1).join("/"), level:-1}, "drive");
-                root_node.name = volume.name
-                process2(root_node, null, root_node);
-                render(root_node);
-                tbody.append(root_node.el);
-                root_node.toggle();
-            }
-        };
-
-        var render = (node)=>{
-            if (node.el) return;
-            var row_el = document.createElement("tr");
-            tbody.append(row_el);
-            
-            var name_outer_el = document.createElement("td");
-            dom.add_class(name_outer_el, "name");
-
-            var name_inner_el = document.createElement("div");
-            name_inner_el.style.display="flex";
-            name_inner_el.style.alignItems="center";
-            name_inner_el.style.gap="5px";
-            name_inner_el.style.paddingLeft = `${node.level * 10}px`;
-
-            var name_el = document.createElement("a");
-            name_el.href = get_file_manager_url({start:node.path});
-            name_el.target = "_blank";
-            name_el.innerText = node.name;
-            name_el.onclick = (e)=>{
-                e.preventDefault();
-                open_file_manager({start:node.path});
-            }
-            
-            var arrow_el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-            dom.set_inner_html(arrow_el, `<use href="icons.svg#chevron-right"></use>`);
-            dom.add_class(arrow_el, "arrow");
-            name_inner_el.append(arrow_el);
-            if (!node.isdir) arrow_el.style.visibility = "hidden";
-
-            var icon_el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-            dom.set_inner_html(icon_el, `<use href="icons.svg#${node.icon}"></use>`);
-            name_inner_el.append(icon_el, name_el);
-            name_outer_el.append(name_inner_el);
-
-            var size_el = document.createElement("td");
-            dom.add_class(size_el, "size");
-            size_el.innerText = utils.format_bytes(node.size);
-            var files_el = document.createElement("td");
-            dom.add_class(files_el, "files");
-            files_el.innerText = node.isdir ? node.files.toLocaleString() : "-";
-            var folders_el = document.createElement("td");
-            dom.add_class(folders_el, "folders");
-            folders_el.innerText = node.isdir ? node.folders.toLocaleString() : "-";
-            var percent_el = document.createElement("td");
-            dom.add_class(percent_el, "percent");
-            percent_el.append(create_bar(node.percent));
-            var percent_total_el = document.createElement("td");
-            dom.add_class(percent_total_el, "percent-total");
-            percent_total_el.append(create_bar(node.total_percent));
-
-            row_el.append(name_outer_el, size_el, files_el, folders_el, percent_total_el, percent_el);
-            node.el = row_el;
-
-            if (node.isdir) {
-                node.open = false;
-                node.toggle = ()=>{
-                    var open = node.open = !node.open;
-                    dom.toggle_class(row_el, "open", open);
-                    var next = node;
-                    if (!node.sorted) {
-                        node.sorted = true;
-                        node.children.sort((a,b)=>b.size-a.size);
-                    }
-                    for (var c of node.children) {
-                        render(c);
-                        next.el.after(c.el);
-                        next = c;
-                    }
-                    var update = (n)=>{
-                        if (!n.isdir) return;
-                        var next = n;
-                        for (var c of n.children) {
-                            if (!c.el) continue;
-                            var o = open && n.open;
-                            if (o && !c.el.parentElement) {
-                                next.el.after(c.el);
-                                next = c;
-                            } else if (!o && c.el.parentElement) {
-                                c.el.remove();
-                            }
-                            // c.el.style.display = (open && n.open)?"":"none";
-                            update(c);
-                        }
-                    }
-                    update(node);
-                }
-                arrow_el.style.cursor = "pointer";
-                arrow_el.onclick = node.toggle;
-            }
-            return node;
         }
 
-        // -------------------------------
+        this.props.append(name, driver, new ui.Separator(), subprops);
 
-        var table = document.createElement("table");
-        dom.add_class(table, "files");
-        var th = document.createElement("thead");
-        table.append(th);
-        var tr = document.createElement("tr");
-        tr.append(...["Name", "Size", "Files", "Folders", "% Total", "% Parent"].map((c)=>{
-            var td = document.createElement("td");
-            dom.set_inner_html(td, c);
-            return td;
-        }))
-        th.append(tr);
-        var tbody = document.createElement("tbody");
-        table.append(tbody);
-        this.props.append(table);
-
-        var refresh_button = new ui.Button(`<button>Refresh</button>`, {
-            "click":()=>init()
-        });
-        this.footer.append(refresh_button)
-        
-        this.on("show", ()=>{
-            init();
-        })
+        rebuild();
     }
 }
+
+export class FileManagerVolumesMenu extends ui.Modal {
+    constructor() {
+        super({
+            "modal.title": "File Manager Volumes",
+        });
+
+        let can_edit = (list_item)=>{
+            var volume = app.$.volumes[list_item?.value?.id];
+            return !volume?.locked && volume?.access_control._self_has_access;
+        };
+
+        for (let locked of [true, false]) {
+            let list = new ui.PropertyList({
+                "label": locked ? "Default Volumes" : "User Volumes",
+                "empty": "No volumes",
+                "item_size": 25,
+                "vertical": true,
+                "data": ()=>Object.fromEntries(Object.entries(app.$.volumes).filter(([_,v])=>v.locked == locked)),
+                "new": ()=>{
+                    return new FileManagerVolumeConfigurationMenu().show();
+                },
+                "can_add": !locked,
+                "can_move": false,
+                "can_delete": can_edit,
+                "readonly": locked,
+                ui(list_item) {
+                    list_item.buttons.prepend(
+                        new ui.Button(`<button title="Edit"><i class="fas fa-wrench"></i></button>`, {
+                            click() {
+                                new FileManagerVolumeConfigurationMenu(list_item).show();
+                            },
+                            disabled: ()=>!can_edit(list_item),
+                            hidden: ()=>locked,
+                        })
+                    );
+                    var e = new ui.UI(`<span class="volume-list-item"></span>`, {
+                        content: ()=>{
+                            if (!list_item.value) return;
+                            var html = list_item.value.name;
+                            if (list_item.value.locked) {
+                                html += `<i class="fas fa-lock"></i>`;
+                            }
+                            return html;
+                        },
+                    });
+                    list_item.props.append(e);
+                },
+            });
+            if (!locked) {
+                list.on("list.delete", (id)=>{
+                    app.request("delete_volume", [id]);
+                });
+            }
+            this.props.append(list);
+        }
+    }
+}
+// export class FileSystemInfoMenu extends ui.Modal {
+//     constructor() {
+//         super({
+//             "modal.title": "Local File System Tree",
+//             "modal.width": "80%",
+//         });
+//         var uid = 0;
+//         var nodes = [];
+//         var percent_fraction_digits=1;
+//         var path_join = (...parts)=>parts.join("/").replace(/\/+/g, "/");
+//         var process = (d, parent, icon)=>{
+//             var node = {};
+//             node.id = ++uid;
+//             nodes[node.id] = node;
+//             let level = parent.level+1;
+//             node.level = level;
+//             node.parent = parent;
+//             node.name = d[0];
+            
+//             node.path = (icon == "files") ? parent.path : path_join(parent.path, node.name);
+
+//             if (typeof d[1] === "object") {
+//                 var children = d[1];
+//                 node.icon = icon || "folder";
+//                 node.isdir = true;
+//                 node.folders = 0;
+//                 node.files = 0;
+//                 node.size = 0;
+//                 node.children = [];
+//                 children.sort((a,b)=>(typeof b[1]==="object"?1:0)-(typeof a[1]==="object"?1:0));
+//                 var i=0, len=children.length;
+//                 var f = children.findIndex(c=>typeof c[1]!=="object");
+//                 if (f < 1) f = len;
+//                 for (;i<f;i++) {
+//                     node.children.push(process(children[i], node));
+//                 }
+//                 if (i<len) {
+//                     var files = children.slice(i);
+//                     if (files.length == 1) {
+//                         var f = files[0];
+//                         node.children.push(process(files[0], node));
+//                     } else {
+//                         node.children.push(process([`[${files.length} Files]`, files], node, "files"));
+//                     }
+//                 }
+//                 for (var c of node.children) {
+//                     if (c.isdir) {
+//                         node.folders += c.folders + 1;
+//                         node.files += c.files;
+//                     } else {
+//                         node.files++;
+//                     }
+//                     node.size += c.size;
+//                 }
+//             } else {
+//                 node.icon = icon || "file";
+//                 node.size = d[1] || 0;
+//             }
+//             return node;
+//         };
+//         var create_bar = (p)=>{
+//             var outer = document.createElement("div");
+//             dom.add_class(outer, "percent-bar");
+//             var inner = document.createElement("div");
+//             var text = document.createElement("span");
+//             inner.style.width = `${p*100}%`;
+//             outer.append(inner, text);
+//             text.innerText = p === undefined ? "-" : (p*100).toLocaleString(undefined, {minimumFractionDigits:percent_fraction_digits,maximumFractionDigits:percent_fraction_digits})+"%";
+//             return outer;
+//         }
+//         var process2 = (node, parent, root_node)=>{
+//             if (parent) {
+//                 node.percent = (node.size / parent.size) || 0;
+//             }
+//             node.total_percent = (node.size / root_node.size) || 0;
+//             if (node.isdir) {
+//                 for (var c of node.children) {
+//                     process2(c, node, root_node);
+//                 }
+//             }
+//         };
+
+//         var init = async()=> {
+//             dom.remove_children(tbody);
+//             for (let id in app.$.volumes) {
+//                 if (app.$.volumes[id].driver !== "LocalFileSystem") continue;
+//                 var volume = app.$.volumes[id];
+//                 var loading_el = $(`<tr><td colspan="6"><i class="fas fa-sync fa-spin"></i> Loading...</td></tr>`)[0];
+//                 tbody.append(loading_el);
+//                 var r = await app.request("analyze_local_file_system_volume", [id]);
+//                 loading_el.remove();
+//                 var root_node = process(r, {path:volume.root.split("/").slice(0, -1).join("/"), level:-1}, "drive");
+//                 root_node.name = volume.name
+//                 process2(root_node, null, root_node);
+//                 render(root_node);
+//                 tbody.append(root_node.el);
+//                 root_node.toggle();
+//             }
+//         };
+
+//         var render = (node)=>{
+//             if (node.el) return;
+//             var row_el = document.createElement("tr");
+//             tbody.append(row_el);
+            
+//             var name_outer_el = document.createElement("td");
+//             dom.add_class(name_outer_el, "name");
+
+//             var name_inner_el = document.createElement("div");
+//             name_inner_el.style.display="flex";
+//             name_inner_el.style.alignItems="center";
+//             name_inner_el.style.gap="5px";
+//             name_inner_el.style.paddingLeft = `${node.level * 10}px`;
+
+//             var name_el = document.createElement("a");
+//             name_el.href = get_file_manager_url({start:node.path});
+//             name_el.target = "_blank";
+//             name_el.innerText = node.name;
+//             name_el.onclick = (e)=>{
+//                 e.preventDefault();
+//                 open_file_manager({start:node.path});
+//             }
+            
+//             var arrow_el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+//             dom.set_inner_html(arrow_el, `<use href="icons.svg#chevron-right"></use>`);
+//             dom.add_class(arrow_el, "arrow");
+//             name_inner_el.append(arrow_el);
+//             if (!node.isdir) arrow_el.style.visibility = "hidden";
+
+//             var icon_el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+//             dom.set_inner_html(icon_el, `<use href="icons.svg#${node.icon}"></use>`);
+//             name_inner_el.append(icon_el, name_el);
+//             name_outer_el.append(name_inner_el);
+
+//             var size_el = document.createElement("td");
+//             dom.add_class(size_el, "size");
+//             size_el.innerText = utils.format_bytes(node.size);
+//             var files_el = document.createElement("td");
+//             dom.add_class(files_el, "files");
+//             files_el.innerText = node.isdir ? node.files.toLocaleString() : "-";
+//             var folders_el = document.createElement("td");
+//             dom.add_class(folders_el, "folders");
+//             folders_el.innerText = node.isdir ? node.folders.toLocaleString() : "-";
+//             var percent_el = document.createElement("td");
+//             dom.add_class(percent_el, "percent");
+//             percent_el.append(create_bar(node.percent));
+//             var percent_total_el = document.createElement("td");
+//             dom.add_class(percent_total_el, "percent-total");
+//             percent_total_el.append(create_bar(node.total_percent));
+
+//             row_el.append(name_outer_el, size_el, files_el, folders_el, percent_total_el, percent_el);
+//             node.el = row_el;
+
+//             if (node.isdir) {
+//                 node.open = false;
+//                 node.toggle = ()=>{
+//                     var open = node.open = !node.open;
+//                     dom.toggle_class(row_el, "open", open);
+//                     var next = node;
+//                     if (!node.sorted) {
+//                         node.sorted = true;
+//                         node.children.sort((a,b)=>b.size-a.size);
+//                     }
+//                     for (var c of node.children) {
+//                         render(c);
+//                         next.el.after(c.el);
+//                         next = c;
+//                     }
+//                     var update = (n)=>{
+//                         if (!n.isdir) return;
+//                         var next = n;
+//                         for (var c of n.children) {
+//                             if (!c.el) continue;
+//                             var o = open && n.open;
+//                             if (o && !c.el.parentElement) {
+//                                 next.el.after(c.el);
+//                                 next = c;
+//                             } else if (!o && c.el.parentElement) {
+//                                 c.el.remove();
+//                             }
+//                             // c.el.style.display = (open && n.open)?"":"none";
+//                             update(c);
+//                         }
+//                     }
+//                     update(node);
+//                 }
+//                 arrow_el.style.cursor = "pointer";
+//                 arrow_el.onclick = node.toggle;
+//             }
+//             return node;
+//         }
+
+//         // -------------------------------
+
+//         var table = document.createElement("table");
+//         dom.add_class(table, "files");
+//         var th = document.createElement("thead");
+//         table.append(th);
+//         var tr = document.createElement("tr");
+//         tr.append(...["Name", "Size", "Files", "Folders", "% Total", "% Parent"].map((c)=>{
+//             var td = document.createElement("td");
+//             dom.set_inner_html(td, c);
+//             return td;
+//         }))
+//         th.append(tr);
+//         var tbody = document.createElement("tbody");
+//         table.append(tbody);
+//         this.props.append(table);
+
+//         var refresh_button = new ui.Button(`<button>Refresh</button>`, {
+//             "click":()=>init()
+//         });
+//         this.footer.append(refresh_button)
+        
+//         this.on("show", ()=>{
+//             init();
+//         })
+//     }
+// }
 
 class Bar extends ui.UI {
     constructor(settings) {
@@ -2859,22 +3028,20 @@ class LiveUI extends ui.Box {
         });
         this.elem.classList.add("live-ui");
         var ts = Date.now();
-        var inner = $(`<div class="inner"></div>`)[0];
-        this.append(inner);
         var stats = $(`<div class="stats"></div>`)[0];
-        inner.append(stats);
+        this.content.append(stats);
+
         var destroyed = false;
         var destroy_button = new ui.Button(`<button>Destroy Live</button>`, {
-            "click": ()=>{
+            "click_async": async ()=>{
                 if (window.confirm("Are you sure you want to destroy this live?")) {
-                    app.request("destroy_live", [live.id]).then(()=>{
-                        destroyed = true;
-                        this.update();
-                    });
+                    await app.request("destroy_live", [live.id]);
+                    destroyed = true;
+                    this.update();
                 }
             }
         });
-        inner.append(destroy_button);
+        this.content.append(destroy_button);
 
         this.on("update", ()=>{
             var is_ended = (live.state == "stopped");
@@ -2892,7 +3059,7 @@ class LiveUI extends ui.Box {
                 "Link": `<a href="${live.url}" target="_blank">${live.url}</a>`,
             };
             if (destroyed) {
-                dom.set_inner_html(inner, `<p>Destroyed</p>`);
+                dom.set_inner_html(this.content.elem, `<p>Destroyed</p>`);
             } else {
                 dom.set_inner_html(stats, Object.entries(props).filter(([k,v])=>v).map(([k,v])=>`<p><span><b>${k}</b>:</span><span>${v}</span></p>`).join(""));
             }
@@ -2900,56 +3067,6 @@ class LiveUI extends ui.Box {
     }
 }
 
-/* {
-    "id": "15",
-    "restart": 0,
-    "state": "stopped",
-    "start_ts": 1751119550815,
-    "stop_ts": 1751119558436,
-    "paused": false,
-    "stop_reason": "unknown",
-    "hls_list_size": 10,
-    "hls_max_duration": 7200,
-    "segment_duration": 2,
-    "segment": 3,
-    "use_hevc": false,
-    "use_hardware": true,
-    "outputs": [
-        {
-            "name": "240p",
-            "resolution": 240,
-            "video_bitrate": "300k",
-            "audio_bitrate": "64k"
-        },
-        {
-            "name": "360p",
-            "resolution": 360,
-            "video_bitrate": "600k",
-            "audio_bitrate": "128k"
-        },
-        {
-            "name": "480p",
-            "resolution": 480,
-            "video_bitrate": "1200k",
-            "audio_bitrate": "128k"
-        },
-        {
-            "name": "720p",
-            "resolution": 720,
-            "video_bitrate": "2000k",
-            "audio_bitrate": "160k"
-        }
-    ],
-    "origin": "/internal/d722e422-724c-4337-8656-474292623cb0",
-    "title": "test",
-    "url": "https://media-server.dev-local.cabtv.co.uk:8121/player/index.html?id=15",
-    "is_vod": true,
-    "is_live": false,
-    "ts": 1751119558190,
-    "duration": 7375,
-    "thumbnail_url": "https://media-server.dev-local.cabtv.co.uk:8121/media/live/15/thumbnails/000.ts.webp",
-    "ended": true
-} */
 export class LiveManagerMenu extends ui.Modal {
     constructor() {
         super({
@@ -3009,7 +3126,7 @@ export class LiveManagerMenu extends ui.Modal {
     }
 }
 
-/** @extends {Modal<string>} */
+/** @extends {ui.Modal<string>} */
 export class FileManagerMenu extends ui.Modal {
     constructor(url) {
         super({
@@ -3017,7 +3134,7 @@ export class FileManagerMenu extends ui.Modal {
             "modal.width":"100%",
             "modal.close": false,
         });
-        Object.assign(this.elem.style, {
+        Object.assign(this.modal_elem.style, {
             "height": "100%",
             "min-height": "200px",
         });
@@ -3227,7 +3344,7 @@ export class ScheduleGeneratorMenu extends ui.EditModal {
 export class SplitMenu extends ui.EditModal {
     constructor(items) {
         super({
-            "modal.title": ()=>`Split '<span class="overflow">${get_items_title(items)}</span>'`,
+            "modal.title": ()=>`Split ${get_items_title_html(items)}`,
             "modal.ok": "Split",
             "modal.auto_apply": false,
             "modal.apply": ()=>{
@@ -3492,10 +3609,13 @@ export class SessionConfigurationMenu extends ui.EditModal {
             "modal.items": [app.$._session],
         });
 
-        function get_default() { return utils.try_catch(()=>InternalSessionProps[this.name].__default__); }
-        function get_options() { return utils.try_catch(()=>InternalSessionProps[this.name].__options__, []); }
+        function _get_property_opts(name, cb) {
+            var p = InternalSessionProps[name];
+            return get_property_opts(p, cb);
+        }
         
         this.name = new ui.InputProperty(`<input type="text">`, {
+            ..._get_property_opts("name"),
             "name": "name",
             "label": "Session Name",
             "default": app.$._session.name,
@@ -3534,36 +3654,36 @@ export class SessionConfigurationMenu extends ui.EditModal {
             "default": ()=>`session/${app.$._session.id}`,
         });
         this.background_mode = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("background_mode"),
             "name": "background_mode",
             "label": "Background Mode",
-            "options": get_options,
-            "default": get_default,
         });
 
         this.background_color = new ui.InputProperty(`<input type="color">`, {
+            ..._get_property_opts("background_color"),
             "name": "background_color",
             "label": "Background Color",
-            "default": get_default,
         });
         
         [this.video_file, this.video_file_start, this.video_file_end] = create_video_file_start_end_properties({
+            ..._get_property_opts("video_file"),
             "name": "video_file",
             "label": "Background File",
             "hidden": ()=>this.background_mode.value !== "file",
-            "default": get_default,
         })
 
         this.files_dir = new FileProperty({
+            ..._get_property_opts("files_dir"),
             "name": "files_dir",
             "label": "Session Directory",
             "info": "Your preferred location for storing any uploaded / downloaded files.",
             "file.options":{ folders: true },
             "file.check_media": true,
-            "default": get_default,
         });
         this.files_dir.validators.push(VALIDATORS.media_exists);
 
         this.access_control = new AccessControlProperty({
+            ..._get_property_opts("access_control"),
             "name": "access_control",
             "label": "Access Control",
             "info": "Owners: Full access.\nAllowed: Full access but cannot edit session confugration, delete the session, load/save session files or access history.\nDenied: No access rights whatsoever.",
@@ -3690,7 +3810,7 @@ export class PlaylistInfoMenu extends ui.Modal {
             return copy;
         })
         if (items.length == 1) {
-            name = `'<span class="overflow">${items[0]._get_pretty_name()}</span>'`;
+            name = `'${items[0]._get_pretty_name()}'`;
             data = data[0]
         } else {
             name = `[${items.length} Items]`
@@ -3764,7 +3884,7 @@ export class SetVolumeSettings extends ui.EditModal {
         var volume_input = new ui.InputProperty(`<input type="number">`, {
             "label": "Volume (%)",
             "data": app.$._session.volume_target,
-            ...get_prop_attrs(InternalSessionProps.volume_target),
+            ...get_property_opts(InternalSessionProps.volume_target),
         });
         volume_input.on("change", (e)=>{
             if (e.trigger) volume_slider.set_value(e.value);
@@ -3772,7 +3892,7 @@ export class SetVolumeSettings extends ui.EditModal {
 
         var volume_speed = new ui.InputProperty(`<input type="number">`, {
             "label": "Volume Transition Speed",
-            ...get_prop_attrs(InternalSessionProps.volume_speed),
+            ...get_property_opts(InternalSessionProps.volume_speed),
             "data": app.$._session.volume_speed,
         });
         
@@ -3805,14 +3925,14 @@ export class FadeOutSettings extends ui.Modal {
         var fade_out_speed = new ui.InputProperty(`<input type="number">`, {
             "name": "fade_out_speed",
             "label": "Fade Out Speed",
-            ...get_prop_attrs(InternalSessionProps.fade_out_speed),
+            ...get_property_opts(InternalSessionProps.fade_out_speed),
             "data": app.$._session.fade_out_speed,
         });
 
         var fade_in_speed = new ui.InputProperty(`<input type="number">`, {
             "name": "fade_in_speed",
             "label": "Fade In Speed",
-            ...get_prop_attrs(InternalSessionProps.fade_in_speed),
+            ...get_property_opts(InternalSessionProps.fade_in_speed),
             "data": app.$._session.fade_in_speed,
         });
 
@@ -3963,7 +4083,7 @@ export class EditTargetMenu extends ui.EditModal {
     constructor(target) {
         var is_new = !target.id;
         super({
-            "modal.title": ()=>is_new ? "New Target" : `Edit '<span class="overflow">${target.name}</span>'`,
+            "modal.title": ()=>is_new ? "New Target" : `Edit <i>${target.name}</i>`,
             "modal.items": [target],
             "modal.auto_apply": !is_new,
             "modal.apply": ()=>{
@@ -4312,7 +4432,6 @@ export class TargetsProperty extends ui.InputProperty {
             "opts_name": "",
             ...settings,
             "readonly": true,
-            "width": 180,
         });
 
         this.opts = new ui.Property({
@@ -4693,15 +4812,18 @@ export class StreamConfigurationMenu extends ui.EditModal {
         var row = new ui.FlexRow({
             "align":"end",
         });
-        
-        function get_default() { return utils.try_catch(()=>SessionProps.stream_settings[this.name].__default__); }
+
+        function _get_property_opts(name, cb) {
+            var p = SessionProps.stream_settings[name];
+            return get_property_opts(p, cb);
+        }
 
         var targets = new TargetsProperty({
+            ..._get_property_opts("targets"),
             "name": "targets",
             "label": "Target(s)",
             // "allow_empty": true,
             "auto_apply": false,
-            "default": get_default,
             "opts_name": "target_opts",
         });
 
@@ -4717,9 +4839,9 @@ export class StreamConfigurationMenu extends ui.EditModal {
         this.props.append(row);
 
         var buffer_duration = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("buffer_duration"),
             ...buffer_duration_opts,
             "name": "buffer_duration",
-            "default": get_default,
             "hidden": ()=>app.$._session.type == SessionTypes.EXTERNAL
         });
         this.props.append(buffer_duration);
@@ -4750,7 +4872,7 @@ export class HandoverSessionMenu extends ui.EditModal {
 export class SavePlaylistMenu extends ui.Modal {
     constructor() {
         super({
-            "modal.title": ()=>`Save Playlist '<span class="overflow">${playlist_name}</span>'`,
+            "modal.title": ()=>`Save Playlist <i>${playlist_name}</i>`,
             "modal.items": [app.settings.get("save_playlist_settings")||{}],
         });
         
@@ -4992,6 +5114,7 @@ export class PlaylistAddURLMenu extends ui.EditModal {
             }
         });
         var urls = new ui.InputProperty(`<textarea style="height:180px;white-space:pre"></textarea>`, {
+            "default": "",
             "label": "URLs",
             "info": "To enter multiple URLs seperate each one with a new line.",
             "placeholder": [
@@ -5025,10 +5148,7 @@ export class PlaylistItemModifyMenu extends ui.EditModal {
     constructor(items) {
         var is_new = items.length == 1 && !items[0].id;
         super({
-            "modal.title": ()=>{
-                if (is_new) return `New Playlist Item`;
-                return `Modify '<span class="overflow">${get_items_title(this.props.items)}</span>'`;
-            },
+            "modal.title": ()=>is_new ? `New Playlist Item` : `Modify ${get_items_title_html(this.props.items)}`,
             "modal.auto_apply": !is_new,
             "modal.apply": ()=>{
                 if (is_new) {
@@ -5122,8 +5242,8 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
         let stream_to_text = (s,i, use_prefix=true)=>{
             if (!s) return "None";
             var parts = [];
-            var name = `${s.title||`Track ${i+1}`}`;
-            if (use_prefix) name = `${i+1}. ${name}`;
+            var name = `${s.title||`Track ${i}`}`;
+            if (use_prefix) name = `${i}. ${name}`;
             parts.push(name);
             if (s.language && s.language != "und") parts.push(s.language);
             return parts.join(" | ")
@@ -5133,21 +5253,30 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
         let get_stream_options = (type)=>{
             /** @param {PlaylistItem$} item */
             return (item)=>{
+                if (mode == MediaSettingsMode.all) return [];
                 item = item || this.item;
                 var streams = get_streams(item, type);
-                if (streams.length == 0 || type == "subtitle") {
-                    streams.unshift(null);
-                }
                 let default_stream = get_default_stream(streams, type);
                 var options = [];
                 let indeterminate_option = {value:"", text:"-", hidden:true};
                 options.push(indeterminate_option);
-                var i = 0;
+                var i = 1;
+                if (streams.length == 0 || type == "subtitle") {
+                    streams.unshift(null);
+                }
                 for (let s of streams) {
                     let value = s ? i : false;
                     let text = stream_to_text(s,i);
                     options.push({value,text});
                     if (s == default_stream) {
+                        var video_file = this.video_file?.value ?? item?.props.video_file;
+                        var audio_file = this.audio_file?.value ?? item?.props.audio_file;
+                        var subtitle_file = this.subtitle_file?.value ?? item?.props.subtitle_file;
+
+                        if (type == "video" && video_file) text = pretty_uri_basename(video_file);
+                        else if (type == "audio" && audio_file) text = pretty_uri_basename(audio_file);
+                        else if (type == "subtitle" && subtitle_file) text = pretty_uri_basename(subtitle_file);
+
                         options.unshift({value:"auto", text:`Auto [${text}]`});
                     }
                     if (s != null) i++;
@@ -5179,119 +5308,102 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             streams = streams.filter(s=>!s.albumart);
             return streams;
         };
-        
-        let get_default = function() {
-            var value;
-            var path = this.name.split("/")
-            if (mode !== MediaSettingsMode.all) {
-                value = utils.reflect.get(app.$._session.player_default_override, path);
-            }
-            if (value == undefined) {
-                value = utils.try_catch(()=>utils.reflect.get(PlaylistItemPropsProps, [...path, "__default__"]));
-            }
-            return value;
-        }
-        
-        let get_options = function() {
-            var options;
-            var path = this.name.split("/")
+
+        let _get_property_opts = function(name, cb) {
+            var path = name.split("/");
+            let prop;
             if (mode === MediaSettingsMode.all) {
-                options = utils.try_catch(()=>utils.reflect.get(InternalSessionProps.player_default_override, [...path, "__options__"]));
+                prop = utils.try_catch(()=>utils.reflect.get(InternalSessionProps.player_default_override, [...path]));
             } else {
-                options = utils.try_catch(()=>utils.reflect.get(PlaylistItemPropsProps, [...path, "__options__"]));
+                prop = utils.try_catch(()=>utils.reflect.get(PlaylistItemPropsProps, [...path]));
             }
-            return options || [];
-        };
+            var opts =  get_property_opts(prop, cb);
+            if ("default" in opts) {
+                if (mode !== MediaSettingsMode.all) {
+                    opts.default = utils.reflect.get(app.$._session.player_default_override, path) ?? opts.default;
+                }
+            }
+            return opts;
+        }
 
         this.aspect_ratio = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("aspect_ratio"),
             "name": "aspect_ratio",
             "label": "Aspect Ratio",
-            "options": get_options,
-            "default": get_default,
         });
 
         this.deinterlace_mode = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("deinterlace_mode"),
             "name": "deinterlace_mode",
             "label": "Deinterlace",
-            "options": [["auto","Auto"],[false, "Off"],[true, "On"]],
-            "default": get_default,
         });
 
         this.vid_override = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("vid_override"),
             "name": "vid_override",
             "label": "Video Track",
             "options": get_stream_options("video"),
-            "default": get_default,
             "disabled": ()=>this.items.length > 1,
             "hidden": ()=>mode === MediaSettingsMode.all,
         });
 
         this.aid_override = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("aid_override"),
             "name": "aid_override",
             "label": "Audio Track",
             "options": get_stream_options("audio"),
-            "default": get_default,
             "disabled": ()=>this.items.length > 1,
             "hidden": ()=>mode === MediaSettingsMode.all,
         });
        
         this.audio_delay = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("audio_delay"),
             "name": "audio_delay",
             "label": "Audio Delay",
             "suffix": "secs",
-            "step":0.05,
-            "default": get_default,
             "info": "Positive values delay the audio playback, while negative values make the audio play earlier relative to the video."
         });
         
         this.audio_channels = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("audio_channels"),
             "name": "audio_channels",
             "label": "Audio Channels",
-            "default": get_default,
-            "options":()=>[["left", "Left → Mono"],["right", "Right → Mono"],["mix", "L + R → Mono"],["stereo", "Stereo"]],
         });
         
         this.sid_override = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("sid_override"),
             "name": "sid_override",
             "label": "Subtitle Track",
             "options": get_stream_options("subtitle"),
-            "default": get_default,
             "disabled": ()=>this.items.length > 1,
             "hidden": ()=>mode === MediaSettingsMode.all,
         });
 
         this.subtitle_delay = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("sub_delay"),
             "name": "sub_delay",
             "label": "Subtitle Delay",
             "suffix": `secs`,
             "precision":3,
-            "step": 0.05,
-            "default": get_default,
         });
         this.subtitle_delay.output_modifiers.push((v)=>Number(v).toFixed(2));
         
-        this.subtitle_scale = new ui.InputProperty(`<input type="number">`, {
+        this.subtitle_scale = new ui.InputProperty(`<input type="text">`, {
+            ..._get_property_opts("sub_scale"),
             "name": "sub_scale",
             "label": "Subtitle Scale",
             "precision":2,
-            "step": 0.01,
-            "min": 0.1,
-            "max": 10,
             "suffix": "%",
-            "default": get_default,
         });
         this.subtitle_scale.input_modifiers.push((v)=>+v/100);
         this.subtitle_scale.output_modifiers.push((v)=>Math.round(+v*100));
 
         this.subtitle_pos = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("sub_pos"),
             "name": "sub_pos",
             "label": "Subtitle Position",
             "precision":2,
-            "step": 1,
-            "min": 0,
-            "max": 150,
             "suffix": "%",
-            "default": get_default,
             "info": `The vertical position of the subtitle in % of the screen height. 100 is the original position, which is often not the absolute bottom of the screen, but with some margin between the bottom and the subtitle. Values above 100 move the subtitle further down.`
         });
         this.subtitle_pos.output_modifiers.push((v)=>Math.round(+v));
@@ -5314,48 +5426,72 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
         }); */
         
         this.volume_normalization = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("volume_normalization"),
             "name": "volume_normalization",
             "label": "Volume Normalization",
-            "options":()=>{
-                return [[false,"Off"], ...(utils.try_catch(()=>InternalSessionProps.player_default_override.volume_normalization.__options__)||EMPTY_ARRAY).map(([f,_])=>[f,f])]
-            },
-            "default": get_default,
         });
         
-        this.volume_multiplier = new ui.InputProperty(`<input type="number">`, {
+        this.volume_multiplier = new ui.InputProperty(`<input type="text">`, {
+            ..._get_property_opts("volume_multiplier"),
             "name": "volume_multiplier",
             "label": "Volume Multiplier",
-            "step":0.05,
-            "min": 0,
-            "max": 2,
             "suffix": "%",
             "precision":2,
-            "default": 1,
         });
         this.volume_multiplier.input_modifiers.push((v)=>v/100);
         this.volume_multiplier.output_modifiers.push((v)=>Math.round(v*100).toString());
 
         this.interpolation = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("interpolation_mode"),
             "label": "Interpolation",
             "name": "interpolation_mode",
-            "options": get_options,
-            "default": get_default,
             "info": "Blends frames to reduce judder due to mismatched frame rates."
         });
 
         this.auto_interpolation_rate = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("auto_interpolation_rate"),
             "name": "auto_interpolation_rate",
             "label": "Auto Interpolation Target FPS",
-            "options": get_options,
-            "default": get_default,
             "hidden":()=>true,
             "disabled":()=>this.interpolation.value !== "auto",
         });
+        
+
+        this.brightness = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("brightness"),
+            "label": "Brightness",
+            "name": "brightness",
+        });
+
+        this.contrast = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("contrast"),
+            "label": "Contrast",
+            "name": "contrast",
+        });
+
+        this.saturation = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("saturation"),
+            "label": "Saturation",
+            "name": "saturation",
+        });
+
+        this.gamma = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("gamma"),
+            "label": "Gamma",
+            "name": "gamma",
+        });
+        
+        /* this.hue = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("hue"),
+            "label": "Hue",
+            "name": "hue",
+        }); */
         
         var create_filter = (pre)=>{
             var name = pre ? "pre_filters" : "filters";
             /** @type {ui.PropertyList<PlaylistItem$,FilterInput>} */
             var list = new ui.PropertyList({
+                ..._get_property_opts(name),
                 "name": name,
                 "label": pre ? "Pre-Filters" : "Filters",
                 "empty": "No filters",
@@ -5385,7 +5521,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                             }
                         })
                     );
-                    var e = new ui.UI(`<span class="filter-list-item-contents"></span>`, {
+                    var e = new ui.UI(`<span class="filter-list-item"></span>`, {
                         "update":()=>{
                             var str = "";
                             var value = list_item.value || {};
@@ -5402,7 +5538,6 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                     })
                     list_item.props.append(e);
                 },
-                "default": get_default,
                 "hidden": ()=>{
                     if (pre && mode === MediaSettingsMode.all) return false;
                     if (!pre && mode !== MediaSettingsMode.all) return false;
@@ -5415,10 +5550,9 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
         this.pre_filters = create_filter(true);
 
         this.loop = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("loop_file"),
             "name": "loop_file",
             "label": "Loop",
-            "options": get_options,
-            "default": get_default,
         });
 
         if (!simple) {
@@ -5428,46 +5562,40 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             };
 
             this.playlist_mode = new ui.InputProperty(`<select>`, {
+                ..._get_property_opts("playlist_mode"),
                 "name": "playlist_mode",
                 "label": "Playlist Mode",
                 "info": `Setting to 'Merged' or '2-Track', the media player will attempt to merge the playlist's contents as if it were a single file, with each item represented as a chapter. A merged playlist may only include local files (ie, no URIs or special items).`,
-                "options": get_options,
-                "default": get_default,
             });
 
             this.playlist_end_on_shortest_track = new ui.InputProperty(`<select>`, {
+                ..._get_property_opts("playlist_end_on_shortest_track"),
                 "name": "playlist_end_on_shortest_track",
                 "label": "End Playlist on Shortest Track",
                 "info": `Enabling sets the item to end when the track with the shortest duration ends. Disabling will pad the shortest track to match the duration of the longer track.`,
-                "options": ()=>{
-                    return [[false, "Off"], [true, "On"]];
-                },
                 "hidden": ()=>!this.items.every(i=>i.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK),
-                "default": get_default,
             });
 
             this.playlist_revert_to_video_track_audio = new ui.InputProperty(`<select>`, {
+                ..._get_property_opts("playlist_revert_to_video_track_audio"),
                 "name": "playlist_revert_to_video_track_audio",
                 "label": "Revert to Video Track Audio",
                 "info": `If the audio track is shorter than the video track, revert to the audio supplied in the video track.`,
-                "options": ()=>{
-                    return [[false, "Off"], [true, "On"]];
-                },
                 "disabled": ()=>this.items.every(i=>i.props.playlist_end_on_shortest_track),
                 "hidden": ()=>!this.items.every(i=>i.props.playlist_mode == PLAYLIST_MODE.DUAL_TRACK),
-                "default": get_default,
             });
 
             this.clip_start = new ui.TimeSpanProperty({
+                ..._get_property_opts("clip_start"),
                 "name": "clip_start",
                 "label": "Clip Start",
                 "timespan.format": "h:mm:ss.SSS",
-                "min": 0,
                 "max": (item)=>this.clip_end.value||get_default_duration(item),
                 "default": 0,
             });
 
             this.clip_end = new ui.TimeSpanProperty({
+                ..._get_property_opts("clip_end"),
                 "name": "clip_end",
                 "label": "Clip End",
                 "timespan.format": "h:mm:ss.SSS",
@@ -5477,6 +5605,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             });
 
             this.clip_length = new ui.TimeSpanProperty({
+                ..._get_property_opts("clip_length"),
                 "label": "Clip Length",
                 "timespan.format": "h:mm:ss.SSS",
                 "reset": false,
@@ -5491,28 +5620,23 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             };
 
             this.clip_offset = new ui.TimeSpanProperty({
+                ..._get_property_opts("clip_offset"),
                 "name": "clip_offset",
                 "label": "Clip Offset",
                 "timespan.format": "h:mm:ss.SSS",
-                "default": 0,
             });
 
             this.clip_loops = new ui.InputProperty(`<input type="number">`, {
+                ..._get_property_opts("clip_loops"),
                 "name": "clip_loops",
                 "label": "Clip Loops",
-                "min": 0,
-                "step": 0.1,
                 "precision": 8,
-                "default": 1,
             });
             // this.clip_loops.output_modifiers.push(v=>v.toFixed(6).replace(/0+$/, ""));
 
             this.total_duration = new ui.TimeSpanProperty({
                 "label": "Total Duration",
-                // "readonly": true,
-                // "disabled": true,
                 "reset": false,
-                // "spinner": false,
                 "min":0,
                 "timespan.format": "h:mm:ss.SSS",
             });
@@ -5564,85 +5688,86 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             // -------------------------------------
 
             this.fade_in_time = new ui.InputProperty(`<input type="number">`, {
+                ..._get_property_opts("fade_in"),
                 "name": "fade_in",
                 "label": "Fade In Duration",
                 "suffix": "secs",
-                "step":0.1,
-                "default": get_default,
-                "min": 0,
             })
 
             this.fade_out_time = new ui.InputProperty(`<input type="number">`, {
+                ..._get_property_opts("fade_out"),
                 "name": "fade_out",
                 "label": "Fade Out Duration",
                 "suffix": "secs",
-                "step":0.1,
-                "default": get_default,
-                "min": 0,
             });
 
             // var background_mode_prop = ()=>PlaylistItemPropsProps.background_mode;
             this.background_mode = new ui.InputProperty(`<select></select>`, {
+                ..._get_property_opts("background_mode", (opts)=>{
+                    var options = opts.options
+                    /** @this {ui.InputProperty} */
+                    /** @param {PlaylistItem$} item */
+                    opts.options = function(item) {
+                        if (item._is_special) {
+                            options = options.filter(o=>!["embedded","external"].includes(o[0]));
+                        }
+                        // } else {
+                        // utils.sort(options, o=>o[0]==background_mode_prop().__default__ ? 0 : 1);
+                        var default_opt = options.find(o=>o[0]=="default") || options.find(o=>o[0]==null);
+                        var background_mode_option = InternalSessionProps.background_mode.__options__.find(o=>o[0]==app.$._session.background_mode);
+                        if (default_opt && background_mode_option) {
+                            default_opt[1] = `Default Background (${background_mode_option[1]})`;
+                        }
+                        var auto_option = options.find(o=>o[0]=="auto");
+                        var ao = get_auto_background_mode(item, item._media_info);
+                        var auto_option_link = options.find(o=>o[0]==ao);
+                        auto_option[1] = `Auto (${auto_option_link?auto_option_link[1]:"-"})`;
+
+                        return options;
+                    }
+                    return opts;
+                }),
                 "name": "background_mode",
                 "info": background_mode_info,
                 "label": "Background Mode",
-                /** @this {ui.InputProperty} */
-                /** @param {PlaylistItem$} item */
-                "options": function(item) {
-                    var options = utils.json_copy(get_options.apply(this));
-                    if (item._is_special) {
-                        options = options.filter(o=>!["embedded","external"].includes(o[0]));
-                    }
-                    // } else {
-                    // utils.sort(options, o=>o[0]==background_mode_prop().__default__ ? 0 : 1);
-                    var default_opt = options.find(o=>o[0]=="default") || options.find(o=>o[0]==null);
-                    var background_mode_option = InternalSessionProps.background_mode.__options__.find(o=>o[0]==app.$._session.background_mode);
-                    if (default_opt && background_mode_option) {
-                        default_opt[1] = `Default Background (${background_mode_option[1]})`;
-                    }
-                    var auto_option = options.find(o=>o[0]=="auto");
-                    var ao = get_auto_background_mode(item, item._media_info);
-                    var auto_option_link = options.find(o=>o[0]==ao);
-                    auto_option[1] = `Auto (${auto_option_link?auto_option_link[1]:"-"})`;
-
-                    return options;
-                },
-                "default": get_default,
             });
         
             this.background_color = new ui.InputProperty(`<input type="color">`, {
+                ..._get_property_opts("background_color"),
                 "name": `background_color`,
                 "label": "Background Color",
-                "default": get_default,
             });
-            [this.video_file, this.video_file_start, this.video_file_end] = create_video_file_start_end_properties({
+            var [video_file, video_file_start, video_file_end] = create_video_file_start_end_properties({
+                ..._get_property_opts("video_file"),
                 "name": "video_file",
                 "label": "Video File",
-                "default": get_default,
             });
+            this.video_file = video_file;
+            this.video_file_start = video_file_start;
+            this.video_file_end = video_file_end;
 
             this.audio_file = new FileProperty({
+                ..._get_property_opts("audio_file"),
                 "name": "audio_file",
                 "label": "Audio File",
                 "file.options": { files: true, filter: ["audio", "video"] },
                 "file.check_media": true,
-                "default": get_default,
             });
             this.audio_file.validators.push(VALIDATORS.media_audio);
 
             this.subtitle_file = new FileProperty({
+                ..._get_property_opts("subtitle_file"),
                 "name": "subtitle_file",
                 "label": "Subtitle File",
                 "file.options": { files: true, filter: ["text"] },
                 "file.check_media": true,
-                "default": get_default,
             })
             this.subtitle_file.validators.push(VALIDATORS.media_subtitle);
             
             this.crop = new ui.MultiInputProperty({
+                ..._get_property_opts("crop"),
                 "name": "crop",
                 "label": "Crop",
-                "default": get_default,
                 "props": ["left","up","right","down"].map((dir,i)=>{
                     var p = new ui.InputProperty(`<input type="text">`, {
                         "name": i,
@@ -5717,25 +5842,28 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             // -------------------------------------
             
             this.duration = new ui.TimeSpanProperty({
+                ..._get_property_opts("duration", (opts)=>{
+                    var orig_default = opts.default;
+                    opts.default = ()=>{
+                        if (_this.items.some(i=>i._root_merged_playlist)) return 60;
+                        return orig_default;
+                    }
+                    return opts;
+                }),
                 "name": "duration",
                 "label": "Duration",
-                "min":0,
                 "timespan.zero_infinity": ()=>{
                     return !this.items.some(i=>i._root_merged_playlist);
                 },
                 "timespan.format": "h:mm:ss.SSS",
-                "default": function() {
-                    if (_this.items.some(i=>i._root_merged_playlist)) return 60;
-                    return get_default.apply(this);
-                },
             });
 
             // -------------------------------------
             
             this.title_text = new ui.TextAreaProperty({
+                ..._get_property_opts("title_text"),
                 "name": "title_text",
                 "label": "Text",
-                "default": get_default,
                 "placeholder":"Insert Text Here",
                 "reset": false,
                 "textarea.rows": 3,
@@ -5746,10 +5874,9 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             //Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 
             this.title_font = new ui.InputProperty(`<select>`, {
+                ..._get_property_opts("title_font"),
                 "name": "title_font",
                 "label": "Font",
-                "default": get_default,
-                "options": get_options,
             });
             /* this.title_font.group_elem.append(new ui.Button(`<button><i class="fas fa-plus"></i></button>`, {
                 "title": `Add New Font...`,
@@ -5759,74 +5886,61 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             })) */
 
             this.title_size = new ui.InputProperty(`<input type="number">`, {
+                ..._get_property_opts("title_size"),
                 "name": "title_size",
                 "label": "Size",
-                "default": get_default,
-                "min": 10,
-                "max": 100,
             });
             this.title_color = new ui.InputProperty(`<input type="color">`, {
+                ..._get_property_opts("title_color"),
                 "name": "title_color",
                 "label": "Color",
-                "default": get_default,
             });
             this.title_style = new ui.InputProperty(`<select>`, {
+                ..._get_property_opts("title_style"),
                 "name": "title_style",
                 "label": "Style",
-                "default": get_default,
-                "options": get_options,
             });
             this.title_alignment = new ui.InputProperty(`<select>`, {
+                ..._get_property_opts("title_alignment"),
                 "name": "title_alignment",
                 "label": "Alignment",
-                "default": get_default,
-                "options": get_options,
             });
             this.title_spacing = new ui.InputProperty(`<input type="number">`, {
+                ..._get_property_opts("title_spacing"),
                 "name": "title_spacing",
                 "label": "Letter Spacing",
-                "default": get_default,
-                "min": -50,
-                "max": 50,
             });
             this.title_outline_thickness = new ui.InputProperty(`<input type="number"></div>`, {
+                ..._get_property_opts("title_outline_thickness"),
                 "name": "title_outline_thickness",
                 "label": "Outline Thickness",
                 "precision":1,
-                "step": 0.5,
-                "min": 0,
-                "max": 50,
-                "default": get_default
             });
             this.title_outline_color = new ui.InputProperty(`<input type="color">`, {
+                ..._get_property_opts("title_outline_color"),
                 "name": "title_outline_color",
                 "label": "Outline Color",
-                "default": get_default
             });
             this.title_shadow_depth = new ui.InputProperty(`<input type="number">`, {
+                ..._get_property_opts("title_shadow_depth"),
                 "name": "title_shadow_depth",
                 "label": "Shadow Depth",
                 "precision":1,
-                "step": 0.5,
-                "min": 0,
-                "max": 50,
-                "default": get_default,
             });
             this.title_shadow_color = new ui.InputProperty(`<input type="color">`, {
+                ..._get_property_opts("title_shadow_color"),
                 "name": "title_shadow_color",
                 "label": "Shadow Color",
-                "default": get_default,
             });
             this.title_underline = new ui.InputProperty(`<select>`, {
+                ..._get_property_opts("title_underline"),
                 "name": "title_underline",
                 "label": "Underline",
-                "default": get_default,
-                "options": YES_OR_NO,
             });
             this.title_rotation = new ui.MultiInputProperty({
+                ..._get_property_opts("title_rotation"),
                 "name": "title_rotation",
                 "label": "3D Rotation (degrees)",
-                "default": get_default,
                 props: ["x","y","z"].map((n,i)=>{
                     return new ui.InputProperty(`<input type="number">`, {
                         "name": i,
@@ -5837,11 +5951,9 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 })
             });
             this.title_margin = new ui.InputProperty(`<input type="number">`, {
+                ..._get_property_opts("title_margin"),
                 "name": "title_margin",
                 "label": "Margin",
-                "default": get_default,
-                "min": 0,
-                "max": 100,
             });
             
             var alignments = ["bottom left", "bottom center", "bottom right", "center left", "center", "center right", "top left", "top center", "top right"];
@@ -6053,18 +6165,17 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             // -------------------------------------
 
             this.macro_function = new ui.InputProperty(`<select>`, {
+                ..._get_property_opts("macro_function"),
                 "name": "function",
                 "label": "Function",
-                "options":get_options,
-                "default":get_default,
             });
             // this.macro_function.validators.push(VALIDATORS.not_empty);
 
             this.macro_handover_session = new ui.InputProperty(`<select>`, {
+                ..._get_property_opts("macro_handover_session"),
                 "name": "function_handover_session",
                 "label": "Handover Session",
                 "options":()=>app.get_handover_sessions_options(),
-                "default": get_default,
                 "reset":true,
                 "hidden":()=>this.macro_function.value != "handover"
             });
@@ -6073,6 +6184,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             // -------------------------------------
 
             this.label = new ui.InputProperty(`<input type="text">`, {
+                ..._get_property_opts("label"),
                 "name": "label",
                 "label": "Label",
                 /** @param {PlaylistItem$} item */
@@ -6083,6 +6195,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
 
 
             this.color = new ui.InputProperty(`<select></select>`, {
+                ..._get_property_opts("color"),
                 "name": "color",
                 "label": "Item Color",
                 "options": Object.keys(item_colors).map(k=>{
@@ -6138,6 +6251,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             var get_default_layout = (is_empty)=>{
                 var layout = [];
                 layout.push([this.vid_override, this.aspect_ratio, this.deinterlace_mode, this.interpolation, this.auto_interpolation_rate]);
+                layout.push([this.brightness, this.contrast, this.saturation, this.gamma]); // , this.hue
                 layout.push([this.aid_override, this.audio_delay, this.audio_channels]);
                 layout.push([this.sid_override, this.subtitle_delay, this.subtitle_scale, this.subtitle_pos]);
                 layout.push([this.loop, this.volume_normalization, this.volume_multiplier]);
@@ -6273,21 +6387,23 @@ export class FileProperty extends ui.InputProperty {
         });
         this.validators.push(()=>{
             if (!this.get_setting("file.check_media")) return true;
-            var valid = VALIDATORS.media_exists.apply(this, [this.value]);
+            var valid = VALIDATORS.media_exists.apply(this);
             if (valid !== true) return valid;
             return true;
         });
+        this.buttons_el.prepend(browse_button);
+        var last_has_focus;
         this.on("change", async(e)=>{
-            if (this.get_setting("file.check_media")) {
-                if (e.trigger) {
-                    await app.get_media_info(this.value);
-                    this.update();
-                }
+            if (!this.get_setting("file.check_media")) return;
+            if (e.trigger) {
+                app.get_media_info(this.value).then(info=>this.update_next_frame());
             }
         });
-        var last_has_focus;
-        this.buttons_el.prepend(browse_button);
-        this.on("render", ()=>{
+        /* this.on("render", ()=>{
+            var value = this.input.value;
+            this.input.setSelectionRange(value.length, value.length);
+        }); */
+        /* this.on("render", ()=>{
             var value = this.value;
             var has_focus = dom.has_focus(this.input);
             if (!has_focus) {
@@ -6296,10 +6412,11 @@ export class FileProperty extends ui.InputProperty {
             if (this.input.value != value) this.input.value = value;
             if (has_focus && !last_has_focus) {
                 this.input.scrollLeft = Number.MAX_SAFE_INTEGER;
+                // dom.set_selection_range(this.input, value.length, value.length);
                 this.input.setSelectionRange(value.length, value.length);
             }
             last_has_focus = has_focus;
-        });
+        }); */
     }
 }
 
@@ -6680,6 +6797,8 @@ export class RangeProperty extends ui.InputProperty {
         settings.default = settings.default ?? ((item)=>[this.get_setting("min", item), this.get_setting("max", item)]);
         super(input, settings);
 
+        this.elem.classList.add("range-property");
+
         var last_hash;
         this.on("render", (e)=>{
             var is_indeterminate = this.is_indeterminate;
@@ -6911,105 +7030,92 @@ export class StreamSettings extends Panel {
         
         this.add_reset_button(this.props, { "disabled":()=>app.$._session._is_running });
 
-        function get_default() {
-            return InternalSessionProps.stream_settings[this.name].__default__;
-        }
-        function get_options() {
-            var p = InternalSessionProps.stream_settings[this.name];
-            return p.__options__ ?? (typeof p[this.name].__default__ === "boolean" ? YES_OR_NO : []);
+        function _get_property_opts(name, cb) {
+            var p = InternalSessionProps.stream_settings[name];
+            return get_property_opts(p, cb);
         }
 
         this.targets = new TargetsProperty({
+            ..._get_property_opts("targets"),
             "name": "targets",
             "label": "Target(s)",
             "reset": true,
             // "allow_empty": false,
-            "default": get_default,
             "opts_name": "target_opts",
+            width: 200,
         });
 
         this.stream_props_ui.append(this.targets, this.targets.opts);
 
         this.title = new ui.InputProperty(`<input type="text">`, {
+            ..._get_property_opts("title"),
             "name": "title",
             "label": "Title",
-            "default": get_default,
             "placeholder": ()=>/* app.$.session.default_stream_title || */ app.$._session.name,
             width: 200,
         });
         this.stream_props_ui.append(this.title)
 
         this.h264_preset = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("h264_preset"),
             "name": "h264_preset",
             "label": "h264 Preset",
-            "options": get_options,
-            "default": get_default,
         });
         this.stream_props_ui.append(this.h264_preset)
 
         this.video_bitrate = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("video_bitrate"),
             "name": "video_bitrate",
             "label": "Video Bitrate",
             "suffix": `kbps`,
-            "step": 100,
-            "min": 500,
-            "max": 8000,
-            "default": get_default,
             width: 140,
         });
         this.stream_props_ui.append(this.video_bitrate)
 
         this.audio_bitrate = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("audio_bitrate"),
             "name": "audio_bitrate",
             "label": "Audio Bitrate",
-            "step": 1,
-            "min": 64,
-            "max": 320,
             "suffix": `kbps`,
-            "default": get_default,
             width: 140,
         });
         this.stream_props_ui.append(this.audio_bitrate)
 
         this.stream_resolution = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("resolution"),
             "name": "resolution",
             "label": "Resolution",
-            "options": get_options,
-            "default": get_default,
         });
         this.stream_props_ui.append(this.stream_resolution)
 
         this.fps = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("fps"),
             "name": "fps",
             "label": "Frame Rate",
-            "options": get_options,
-            "default": get_default,
         });
         this.stream_props_ui.append(this.fps)
 
         this.buffer_duration = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("buffer_duration"),
             ...buffer_duration_opts,
             "name": "buffer_duration",
-            "default": get_default,
             width: 140,
         });
         this.stream_props_ui.append(this.buffer_duration);
 
         this.experimental_mode = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("experimental_mode"),
             "name": "experimental_mode",
             "label": "Experimental Mode",
             "info": "Uses an alternative method to stream. Recommended to be left off.",
-            "options": get_options,
-            "default": get_default,
             "hidden": true
         });
         this.stream_props_ui.append(this.experimental_mode)
 
         this.use_hardware = new ui.InputProperty(`<select></select>`, {
+            ..._get_property_opts("use_hardware"),
             "name": "use_hardware",
             "label": "Hardware Transcoding",
-            "options": get_options,
-            "default": get_default,
             "hidden": ()=>!this.experimental_mode.value
         });
         this.stream_props_ui.append(this.use_hardware)
@@ -7052,7 +7158,7 @@ export class StreamSettings extends Panel {
                 if (stream["filename_evaluated"]) {
                     stream_info["Output Path"] = stream["filename_evaluated"] || "-";
                 }
-                stream_info["Frame Rate"] = `${stream["fps"]}`;
+                stream_info["Frame Rate"] = `${stream["fps"] || "Variable"}`;
                 stream_info["Buffer Duration"] = `${stream["buffer_duration"]} secs`;
             } else {
                 var nms_session = session._get_connected_nms_session_with_appname("livestream", "external");
@@ -7106,8 +7212,8 @@ export class StreamSettings extends Panel {
 }
 
 export class MediaPlayerPanel extends Panel {
-
-    get video_buffer_length() {
+    _buffer_duration;
+    get buffer_duration() {
         return utils.try_catch(()=>(this.flv_player._mediaElement.buffered.end(0)-this.flv_player.currentTime));
     }
 
@@ -7129,8 +7235,8 @@ export class MediaPlayerPanel extends Panel {
         </div>`)[0];
         this.header_elem.append(bg);
 
-        var test_container_el = $(`<div class="test-stream-container">
-            <div class="test-stream">
+        this.live_feed_container_elem = $(`<div class="live-feed-container">
+            <div class="live-feed">
                 <div class="video-wrapper"></div>
                 <div class="overlay">
                     <div class="button-group">
@@ -7140,32 +7246,33 @@ export class MediaPlayerPanel extends Panel {
                     </div>
                 </div>
                 <span class="info"></span>
+                <span class="empty">No live feed currently available</span>
             </div>
         </div>`)[0];
-        this.props.append(test_container_el);
+        this.props.append(this.live_feed_container_elem);
 
-        var media_ui = new ui.UI(`<div class="ui-wrapper"></div>`, {
-            "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL,
-        });
-        this.props.append(media_ui);
-
-        this.test_stream_container_elem = this.elem.querySelector(".test-stream-container");
         this.toggle_live_feed_button = new ui.Button(`<button class="">Show Live Feed</button>`, {
-            "hidden": ()=>app.$._session.type !== SessionTypes.EXTERNAL || app.settings.get("show_live_feed"),
+            "hidden": ()=>app.settings.get("show_live_feed"),
             "click": ()=>{
                 app.settings.toggle("show_live_feed");
             }
         });
         this.props.append(this.toggle_live_feed_button);
 
-        this.test_stream_elem = this.elem.querySelector(".test-stream");
-        this.test_stream_video_wrapper = this.test_stream_elem.querySelector(".video-wrapper");
-        this.test_stream_overlay_elem = this.test_stream_elem.querySelector(".overlay");
-        this.test_stream_info_elem = this.test_stream_elem.querySelector(".info");
-        this.test_stream_reload_button = this.test_stream_elem.querySelector("button.reload");
-        this.test_stream_popout_button = this.test_stream_elem.querySelector("button.popout");
+        var media_ui = new ui.UI(`<div class="ui-wrapper"></div>`, {
+            "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL,
+        });
+        this.props.append(media_ui);
 
-        this.test_stream_popout_button.addEventListener("click", async (e)=>{
+        this.live_feed_elem = this.elem.querySelector(".live-feed");
+        this.live_feed_video_wrapper = this.live_feed_elem.querySelector(".video-wrapper");
+        this.live_feed_overlay_elem = this.live_feed_elem.querySelector(".overlay");
+        this.live_feed_info_elem = this.live_feed_elem.querySelector(".info");
+        this.live_feed_empty_elem = this.live_feed_elem.querySelector(".empty");
+        this.live_feed_reload_button = this.live_feed_elem.querySelector("button.reload");
+        this.live_feed_popout_button = this.live_feed_elem.querySelector("button.popout");
+
+        this.live_feed_popout_button.addEventListener("click", async (e)=>{
             var id = app.$._session.id;
             var w = windows["test-"+id];
             if (w && !w.closed) {
@@ -7192,23 +7299,23 @@ video { width: 100% !important; height: 100% !important; }`;
 
                     [...window.document.body.attributes].forEach(({name,value})=>w.document.body.setAttribute(name, value));
 
-                    root.append(this.test_stream_elem);
-                    this.test_stream_elem.classList.add("popout");
-                    this.refresh_player(true);
+                    root.append(this.live_feed_elem);
+                    this.live_feed_elem.classList.add("popout");
+                    this.update_player(true);
                     app.setup_events(root.elem);
                     
                     w.addEventListener("unload", (e)=>{
                         delete windows["test-"+id];
                         root.destroy();
-                        this.test_stream_elem.classList.remove("popout");
-                        this.test_stream_container_elem.append(this.test_stream_elem);
-                        this.refresh_player(true);
+                        this.live_feed_elem.classList.remove("popout");
+                        this.live_feed_container_elem.append(this.live_feed_elem);
+                        this.update_player(true);
                     });
                 }
             }
         });
-        this.test_stream_reload_button.addEventListener("click", (e)=>{
-            this.refresh_player(true);
+        this.live_feed_reload_button.addEventListener("click", (e)=>{
+            this.update_player(true);
         })
         
         this.status_elem = $(`<div class="player-status"><div class="currently-playing"><span class="prefix"></span><span class="path"></span></div></div>`)[0];
@@ -7329,7 +7436,7 @@ video { width: 100% !important; height: 100% !important; }`;
 
         this.volume = new ui.InputProperty(`<input id="volume" type="range" value="100" title="Volume" style="width:100px">`, {
             "name": "volume_target",
-            ...get_prop_attrs(InternalSessionProps.volume_target),
+            ...get_property_opts(InternalSessionProps.volume_target),
             "reset": false,
             "dblclick": ()=>this.volume.reset(),
         });
@@ -7338,7 +7445,7 @@ video { width: 100% !important; height: 100% !important; }`;
         this.volume_speed = new ui.InputProperty(`<input type="number">`, {
             "name": "volume_speed",
             "title": "Volume Transition Speed",
-            ...get_prop_attrs(InternalSessionProps.volume_speed),
+            ...get_property_opts(InternalSessionProps.volume_speed),
             "reset": false,
             "hidden": true,
         });
@@ -7401,8 +7508,14 @@ video { width: 100% !important; height: 100% !important; }`;
         // this.body.append(this.fader_controls_elem);
 
         // var wrap = new dom.WrapDetector(player_inline_elem);
+
+        var update_interval = setInterval(()=>{
+            this._buffer_duration = this.buffer_duration;
+            this.update_player();
+        }, 500);
         
         this.on("destroy", ()=>{
+            clearInterval(update_interval);
         });
 
         this.on("update", ()=>{
@@ -7429,7 +7542,7 @@ video { width: 100% !important; height: 100% !important; }`;
                     }
                 }
                 stats["INTRP"] = {
-                    "value": stream.player.props.interpolation ? "On" : "Off",
+                    "value": stream.player.interpolation ? "On" : "Off",
                     "info": "Interpolation"
                 };
                 stats["DEINT"] = {
@@ -7457,7 +7570,7 @@ video { width: 100% !important; height: 100% !important; }`;
             }
             dom.toggle_display(this.stats_elem, started);
 
-            dom.toggle_display(this.test_stream_info_elem, app.settings.get("show_player_info"));
+            dom.toggle_display(this.live_feed_info_elem, app.settings.get("show_player_info"));
             dom.toggle_class(this.elem, "chapters-available", app.media.chapters.length > 0);
             
             if (app.media.chapters.length) {
@@ -7465,31 +7578,36 @@ video { width: 100% !important; height: 100% !important; }`;
                 dom.set_inner_html(this.chapters_elem, `<span>${html}</span>`);
             }
             dom.toggle_display(this.chapters_elem, app.media.chapters.length!=0);
-
-            this.refresh_player();
+            this.update_player();
         });
     }
 
-    async refresh_player(force) {
+    async update_player(force_reinit) {
         var was_muted = this.video_el ? this.video_el.muted : true;
         var session = app.$._session;
         var stream = session._stream;
-        var show = !!(session._is_running && stream.is_encoding);
-        dom.toggle_class(this.elem, "live-feed-available", show);
-        if (!app.settings.get("show_live_feed")) show = false;
+        var show = app.settings.get("show_live_feed");
         var is_popped_out = !!windows["test-"+session.id];
         var url = location.protocol === "https:" ? stream.wss_output_url : stream.ws_output_url;
-        var is_playable = !!(show && url);
+        var has_started = session._is_running;
+        var is_playable = !!(has_started && stream.is_encoding && url);
+        var buffer_duration = this.buffer_duration;
 
-        dom.toggle_display(this.test_stream_container_elem, show);
-        dom.toggle_display(this.test_stream_overlay_elem, is_playable);
-        dom.toggle_display(this.test_stream_popout_button, !is_popped_out);
-        // this.test_stream_popout_button.dataset.toggled = is_popped_out;
+        dom.toggle_class(this.live_feed_elem, "live-feed-available", is_playable);
+        dom.toggle_display(this.live_feed_container_elem, show);
+        dom.toggle_display(this.live_feed_popout_button, !is_popped_out);
+
+        dom.toggle_display(this.live_feed_empty_elem, !is_playable);
+        dom.set_inner_html(this.live_feed_empty_elem, has_started ? "No live feed is available" : "Stream has not started");
+        // this.live_feed_popout_button.dataset.toggled = is_popped_out;
         
-        var buffer_length = this.video_buffer_length;
-        dom.set_inner_html(this.test_stream_info_elem, `Buffered: ${buffer_length ? buffer_length.toFixed(2) : "-"} secs`);
+        dom.set_inner_html(this.live_feed_info_elem, `Buffered: ${buffer_duration ? buffer_duration.toFixed(2) : "-"} secs`);
 
-        if (!force && (!!this.flv_player == is_playable)) return;
+        // if (buffer_duration < -2) force_reinit = true;
+
+        var init_flv_video = is_playable && show;
+
+        if (!force_reinit && !!this.flv_player == init_flv_video) return;
 
         if (this.flv_player) {
             this.flv_player.pause();
@@ -7503,9 +7621,9 @@ video { width: 100% !important; height: 100% !important; }`;
             }
         }
 
-        if (is_playable) {
+        if (init_flv_video) {
 
-            this.video_el = this.test_stream_elem.ownerDocument.createElement("video");
+            this.video_el = this.live_feed_elem.ownerDocument.createElement("video");
             this.video_el.controls = true;
             this.video_el.autoplay = false;
             this.video_el.muted = was_muted;
@@ -7514,9 +7632,9 @@ video { width: 100% !important; height: 100% !important; }`;
                 localStorage.setItem("livestreamer.media-player-volume", this.video_el.volume);
             };
             this.video_el.addEventListener('loadedmetadata', (e)=>{
-                // set_style_property(this.test_stream_container_elem, "--aspect-ratio", this.video_el.videoWidth / this.video_el.videoHeight)
+                // set_style_property(this.live_feed_container_elem, "--aspect-ratio", this.video_el.videoWidth / this.video_el.videoHeight)
             });
-            this.test_stream_video_wrapper.append(this.video_el);
+            this.live_feed_video_wrapper.append(this.video_el);
             this.flv_player = flvjs.createPlayer({
                 type: "flv",
                 url,
@@ -7537,7 +7655,7 @@ video { width: 100% !important; height: 100% !important; }`;
             this.flv_player.on(flvjs.Events.STATISTICS_INFO, (s)=>{
                 this.flv_statistics = s;
                 if (!initialized) {
-                    if (this.video_buffer_length > (MIN_VIDEO_BUFFER_TIME/1000)) {
+                    if (this.buffer_duration > 1) {
                         this.flv_player.play();
                         initialized = true;
                     }
@@ -7825,7 +7943,6 @@ export class LogPanel extends Panel {
 
 export class StreamMetricsPanel extends Panel {
     #mode = "";
-    #res = "";
     #zooming = false;
     #panning = false;
     #init_view_len = 60
@@ -7850,17 +7967,6 @@ export class StreamMetricsPanel extends Panel {
             }
         };
 
-        var resolutions = {
-            "high": {
-                "html": `<span>HIGH</span>`,
-                "title": `High resolution data samples (recent)`
-            },
-            "low": {
-                "html": `<span>LOW</span>`,
-                "title": `Low resolution data samples (older)`
-            }
-        };
-
         var make_button_group = (o, onclick)=>{
             var button_group = $(`<div class="button-group">`)[0];
             Object.entries(o).forEach(([t,d])=>{
@@ -7873,7 +7979,6 @@ export class StreamMetricsPanel extends Panel {
         }
 
         make_button_group(modes, (mode)=>set_mode(mode));
-        make_button_group(resolutions, (res)=>set_res(res));
 
         var toggle_button = (o, value)=>{
             for (var [key,d] of Object.entries(o)) {
@@ -7888,15 +7993,7 @@ export class StreamMetricsPanel extends Panel {
             this.update_next_frame();
         };
 
-        var set_res = (res)=>{
-            if (this.#res === res) return;
-            this.#res = res;
-            toggle_button(resolutions, res);
-            this.update_next_frame();
-        };
-
         set_mode("speed");
-        set_res("high");
         
         var inner_el = $(`<div class="chart-inner"></div>`)[0];
         /** @type {HTMLCanvasElement} */
@@ -8082,7 +8179,7 @@ export class StreamMetricsPanel extends Panel {
 
         var reset = false;
 
-        var mode_hash = JSON.stringify([this.#mode, this.#res]);
+        var mode_hash = JSON.stringify([this.#mode]);
         if (this._mode_hash != mode_hash) {
             this._mode_hash = mode_hash;
             this.chart.data.datasets = [];
@@ -8098,12 +8195,12 @@ export class StreamMetricsPanel extends Panel {
 
         let metrics = app.$._session._stream.metrics;
         let raw_data = Object.fromEntries(Object.entries(metrics).filter(([k,v])=>k.split(":").pop()===this.#mode));
-        var data_hash = JSON.stringify([mode_hash, reinit_hash, Object.entries(raw_data).map(([k,g])=>[k, g[this.#res].min, g[this.#res].max])]);
+        var data_hash = JSON.stringify([mode_hash, reinit_hash, Object.entries(raw_data).map(([k,g])=>[k, g.min, g.max])]);
         if (this._data_hash === data_hash) return;
         this._data_hash = data_hash;
         
         this.chart.data.datasets = Object.entries(raw_data).map(([key,d], i)=>{
-            let {min,max,data} = d[this.#res];
+            let {min,max,data} = d;
             let dataset = this.chart.data.datasets.find(d=>d.label==key);
             dataset = dataset ?? {
                 label: key,
@@ -8116,12 +8213,10 @@ export class StreamMetricsPanel extends Panel {
                 borderJoinStyle: "round",
                 data: [],
                 borderColor: graph_colors[i%graph_colors.length]
-                // tension: this.#res == "high" ? 0.5 : 0;
             };
             // min = Math.max(min,+utils.first_key(data));
             let dataset_data = dataset._data ?? dataset.data;
             var last_x = dataset_data.length ? dataset_data[dataset_data.length-1].x+1 : min;
-            console.log(key, last_x, max);
             for (var i=last_x; i<max; i++) {
                 let d = {x:i, y: data[i]};
                 dataset.data.push(d);
@@ -8258,7 +8353,7 @@ export class PlaylistPanel extends Panel {
         <div class="timeline-and-ticks-wrapper">
             <div class="timeline-ticks"></div>
             <div class="timeline-wrapper">
-                <div class="timeline-tracks" data-overlayscrollbars-initialize></div>
+                <div class="timeline-tracks"></div>
                 <div class="timeline-overlay">
                     <div class="timeline-playhead" style="--color:rgb(185,0,0);--triangle-size:3px"><div class="tri top-right"></div><div class="tri top-left"></div></div>
                     <div class="timeline-cursor" style="--color:black;--triangle-size:3px"><div class="tri top-right"></div><div class="tri top-left"></div><div class="tri bottom-right"></div><div class="tri bottom-left"></div></div>
@@ -8347,6 +8442,7 @@ export class PlaylistPanel extends Panel {
         this.timeline_container_elem = this.elem.querySelector(".timeline-container");
         this.wrapper_elem = this.elem.querySelector(".timeline-and-ticks-wrapper");
         var tracks_outer = this.elem.querySelector(".timeline-tracks");
+
         this.os = OverlayScrollbars(tracks_outer, {
             "update": {
                 "ignoreMutation": ()=>true,
@@ -8356,6 +8452,11 @@ export class PlaylistPanel extends Panel {
             } */
         });
         this.tracks_elem = this.os.elements().viewport;
+
+        // this.tracks_elem = tracks_outer;
+        // this.tracks_elem.style.overflow = "auto";
+        // this.tracks_elem.classList.add("thin-scrollbar");
+
         this.tracks_elem.removeAttribute("tabindex");
         this.ticks_elem = this.elem.querySelector(".timeline-ticks");
         this.headers_elem = this.elem.querySelector(".timeline-headers");
@@ -9027,7 +9128,10 @@ export class PlaylistPanel extends Panel {
         this.update();
     }
     
-    debounced_os_update = dom.debounce_next_frame(()=>this.os.update(true));
+    update_scroll() {
+        if (this.os) this.os.update(true);
+    }
+    debounced_update_scroll = dom.debounce_next_frame(()=>this.update_scroll(true));
 
     set_tracks(num_tracks, is_2_track) {
         var tracks = (is_2_track) ? [{
@@ -9071,6 +9175,7 @@ export class PlaylistPanel extends Panel {
                 group: 'playlist-tracks',
                 // handle: ".handle",
                 filter: ".item-dropdown",
+                scroll: true,
                 multiDrag: true, // Enable multi-drag
                 fallbackTolerance: 3, // So that we can select items on mobile
                 animation: 150,
@@ -9547,7 +9652,7 @@ export class PlaylistPanel extends Panel {
             this.playlist_goto_playhead_button.disabled = this.time == null;
             
             // this.debounced_os_update();
-            if (changed_zoom) this.os.update(true);
+            if (changed_zoom) this.update_scroll();
             // this.tracks_elem.dispatchEvent(new Event("scroll"));
         }
 
@@ -9736,13 +9841,13 @@ class PlaylistItemUI extends ui.UI {
                 play_icons.push(`<span class="numbering">${String(index+1).padStart(2,"0")}</span>`);
             }
             
-            if (!upload) {
+            if (!upload) { // check upload queue ids
                 if (!item._is_special && media_info.exists === false) {
                     problems.push({level:3, text:"Media does not exist."});
                 } else if (!item._is_special && !utils.is_empty(media_info) && !media_info.streams && media_info.protocol !== "livestreamer:" && !item._is_playlist && !userdata.is_processing) {
                     problems.push({level:1, text:"Possibly invalid media."});
                 }
-                /*  else if (root_merged_playlist && !item._is_mergable) {
+                /*  else if (root_merged_playlist && !item._is_mergable) {s
                     problems.push({level:2, text:"Merged items must be local files or empties."});
                 } */
             }
@@ -10046,7 +10151,7 @@ export class MainWebApp extends utils.EventEmitter {
         Chart.register(zoomPlugin);
         // Chart.register(annotationPlugin);
         
-        Sortable.mount(new MultiDrag(), CancelSortPlugin, RememberScrollPositionsPlugin);
+        Sortable.mount(new MultiDrag(), CancelSortPlugin, /* RememberScrollPositionsPlugin */); // , MyAutoScrollPlugin
         
         window.onbeforeunload = (e)=>{
             if (ALL_XHRS.size) return `Uploads are in progress, leaving will abort the uploads.`;
@@ -10188,20 +10293,6 @@ export class MainWebApp extends utils.EventEmitter {
         this.root = new Root(this.elem);
         this.roots.add(this.root);
         this.media = new Media();
-        
-        var connection_loader = new ui.Loader({
-            "hidden": ()=>app.ws.is_open,
-            update() {
-                var text = {
-                    [WebSocket.CONNECTING]: "Connecting...",
-                    [WebSocket.OPEN]: "Connected",
-                    [WebSocket.CLOSING]: "Disconnecting...",
-                    [WebSocket.CLOSED]: "Disconnected",
-                }[app.ws.ready_state];
-                this.settings["loader.message"] = text;
-            }
-        });
-        this.elem.append(connection_loader);
 
         // this.conf = await fetch("conf").then(r=>r.json()); // crazy...;
         /** @type {Area[]} */
@@ -10329,7 +10420,7 @@ export class MainWebApp extends utils.EventEmitter {
                 return [["","-",{style:{"display":"none"}}], ...[...this.session_tabs_elem.children].map(e=>e.option_data)];
             },
             "data": ()=>this.$._client.session_id || "",
-            "width": "",
+            "width": 240,
         });
         session_select.on("change", (e)=>{
             if (e.trigger) {
@@ -10394,7 +10485,8 @@ export class MainWebApp extends utils.EventEmitter {
                 },
                 onEnd: ()=>{
                     document.body.classList.remove("dragging-ui");
-                    this.save_layout()
+                    this.save_layout();
+                    this.update();
                 },
                 preventOnFilter: false,
             });
@@ -10419,20 +10511,24 @@ export class MainWebApp extends utils.EventEmitter {
         dom.set_style_property(this.footer_buttons, "justify-content", "end");
 
         {
-            let row = new ui.Row({
+            let group = new ui.UI({
                 "class": "button-group",
                 "gap": 0,
                 "hidden": ()=>!(app.$.processes["file-manager"] || IS_ELECTRON)
             });
             
             if (!IS_ELECTRON) {
-                row.append(
-                    new ui.Button(`<button><i class="fas fa-folder-tree"></i></button>`, {
+                group.append(
+                    new ui.Button(`<button><i class="fas fa-screwdriver-wrench"></i></button>`, {
+                        "click": ()=>new FileManagerVolumesMenu().show(),
+                        "title": "Manage Volumes"
+                    }),
+                    /* new ui.Button(`<button><i class="fas fa-folder-tree"></i></button>`, {
                         "click": ()=>new FileSystemInfoMenu().show(),
                         "title": "File Tree"
-                    })
+                    }) */
                 )
-                row.append(
+                group.append(
                     new ui.Link(`<a class="button">File Manager</a>`, {
                         "href": ()=>get_file_manager_url(),
                         "click": (e)=>{
@@ -10442,7 +10538,7 @@ export class MainWebApp extends utils.EventEmitter {
                     })
                 );
             }
-            this.footer_buttons.append(row);
+            this.footer_buttons.append(group);
         }
         
         /* this.footer_buttons.append(
@@ -10641,7 +10737,10 @@ export class MainWebApp extends utils.EventEmitter {
         if (key) ws_url.searchParams.set("livestreamer_auth", key);
 
         this.ws = new dom.ReconnectingWebSocket();
+        var opens = 0;
         this.ws.on("open", ()=>{
+            if (opens > 0) window.location.reload();
+            opens++;
             this.$ = new Remote$();
             var session_id = window.location.hash.slice(1) || this.settings.get("last_session_id");
             var hash = `#${session_id}`;
@@ -10656,6 +10755,20 @@ export class MainWebApp extends utils.EventEmitter {
             for (var m of ui.Modal.showing) m.hide();
             this.update_next_frame();
         });
+        
+        var connection_loader = new ui.Loader({
+            "hidden": ()=>app.ws.is_open,
+            update() {
+                var text = {
+                    [WebSocket.CONNECTING]: "Connecting...",
+                    [WebSocket.OPEN]: "Connected",
+                    [WebSocket.CLOSING]: "Disconnecting...",
+                    [WebSocket.CLOSED]: "Disconnected",
+                }[app.ws.ready_state];
+                this.settings["loader.message"] = text;
+            }
+        });
+        this.elem.append(connection_loader);
         
         this.tick_interval = setInterval(()=>this.tick(), 1000/10);
         this.tick();
@@ -10751,6 +10864,11 @@ export class MainWebApp extends utils.EventEmitter {
         if (this.$.disk.is_low && !disk_warn_shown) {
             disk_warn_shown = true;
                 new Toast(`<span>Disk space is low: ${(this.$.disk.free / this.$.disk.size * 100).toFixed(1)}% remaining, ${utils.format_bytes(this.$.disk.free)} free.</span>`).show();
+        }
+        
+        document.body.dataset.playlist_id = this.playlist.id;
+        for (var area of this.areas) {
+            area.elem.dataset.children = [...area.children].map(c=>c.id).join(",");
         }
 
         this.media.update();
@@ -11033,7 +11151,6 @@ export class MainWebApp extends utils.EventEmitter {
             utils.merge(item.props, props, {delete_nulls:true});
             // utils.deep_merge(item, props, {deep:!replace_props, delete_null:true});
         }
-        // Observer.apply_changes(playlist, changes);
         // this.update();
         this.request("playlist_update", [changes, {register_history, replace_props}]);
     }
@@ -11427,6 +11544,7 @@ export class MainWebApp extends utils.EventEmitter {
         if (!(filename in this.media_info_promises)) {
             this.media_info_promises[filename] = app.request("get_media_info", [filename]).then((mi)=>{
                 this.media_info[filename] = mi;
+                return mi;
             })
         }
         return this.media_info_promises[filename];
@@ -11455,15 +11573,14 @@ class Root extends ui.UI {
     }
 }
 
-function get_prop_attrs(prop) {
-    var attrs = {};
-    if ("__default__" in prop) attrs.default = prop.__default__;
-    if ("__step__" in prop) attrs.step = prop.__step__;
-    if ("__min__" in prop) attrs.min = prop.__min__;
-    if ("__max__" in prop) attrs.max = prop.__max__;
-    if ("__options__" in prop) attrs.options = prop.__options__;
-    
-    return attrs;
+let get_property_opts = function(prop, cb) {
+    var filtered = {}, m;
+    for (var k in prop) {
+        if (m = k.match(/^__(default|min|max|step|options|info|label)__$/)) filtered[m[1]] = prop[k];
+    }
+    if (!filtered.options && typeof prop?.default === "boolean") filtered.options = YES_OR_NO;
+    if (cb) filtered = cb(filtered);
+    return filtered;
 }
 
 export default MainWebApp;

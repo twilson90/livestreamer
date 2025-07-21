@@ -1,5 +1,5 @@
 import tippy from "tippy.js";
-import { fix_options } from "../fix_options.js";
+import { fix_options } from "../../fix_options.js";
 import { get_value } from "../get_value.js";
 import { has_focus } from "../has_focus.js";
 import { set_inner_html } from "../set_inner_html.js";
@@ -51,6 +51,7 @@ const editable_input_types = {
  *  "vertical": UISetting<ThisType,boolean>,
  *  "focus": (this:ThisType,input:InputElement)=>void,
  *  "blur": (this:ThisType,input:InputElement)=>void,
+ *  "readonly": UISetting<ThisType,boolean>,
  * }} InputPropertySettings
  */
 
@@ -75,11 +76,14 @@ export class InputProperty extends Property {
     #force_update_inputs = false;
     #last_valid;
     #is_focussed = false;
+    #focus_promise = null;
+
 
     get inputs() { return this.#inputs; }
     get input() { return this.#inputs[0]; }
     get input_modifiers() { return this.#input_modifiers; }
     get output_modifiers() { return this.#output_modifiers; }
+    get is_focussed() { return this.#is_focussed; }
     
     /** @param {HTMLElement} contents @param {InputPropertySettings} settings */
     constructor(contents, settings) {
@@ -104,10 +108,11 @@ export class InputProperty extends Property {
             "placeholder": "",
             "invalid_class": "invalid",
             "disabled": false,
-            "reset": ()=>("default" in this.settings && !this.get_setting("copy")),
+            "reset": ()=>"default" in this.settings && !this.get_setting("copy"),
             "hidden": false,
             "copy":false,
             "inline": false,
+            "readonly": false,
             ...settings
         });
         
@@ -167,47 +172,21 @@ export class InputProperty extends Property {
         /** @type {InputElement[]} */
         var inputs = this.get_setting("setup") || [];
         if (!Array.isArray(inputs)) inputs = [inputs];
+
+        var update_value = (input, trigger)=>{
+            if (input.type === "color" && !trigger) return;
+            var value = this.apply_input_modifiers(get_value(input));
+            if (this.is_numeric && isNaN(value)) value = 0;
+            return this.set_value(value, {trigger});
+        }
+
         inputs.forEach((input, i)=>{
             if (input.matches(".fake-input") || input.matches("[contenteditable=true]")) {
                 input.tabIndex = "-1"
             }
             set_attribute(input, "id", this.name_id);
-            var input_value_on_focus;
-            var update_value = (trigger)=>{
-                if (input.type === "color" && !trigger) return;
-                // with fake inputs `get_value` will return undefined
-                // we check if the value is the same as the one on focus, ignore if identical.
-                var value = this.apply_input_modifiers(get_value(input));
-                if (this.is_numeric && isNaN(value)) value = 0;
-                return this.set_value(value, {trigger});
-            }
-            input.addEventListener("change", (e)=>update_value(true));
-            input.addEventListener("input", (e)=>update_value(false));
-            input.addEventListener("focus", (e)=>{
-                this.focus_promise = new Promise(resolve=>{
-                    this.#is_focussed = true;
-                    input_value_on_focus = get_value(input);
-                    var on_blur = (e)=>{
-                        if (document.activeElement === input) return;
-                        var input_value_on_blur = get_value(input);
-                        this.#is_focussed = false;
-                        this.focus_promise = null;
-                        input.removeEventListener("blur", on_blur);
-                        this.get_setting("blur", [input]);
-                        this.emit("blur", input);
-                        var result = false;
-                        if (input_value_on_blur !== input_value_on_focus) {
-                            result = update_value(true);
-                        }
-                        resolve(result);
-                        // this.update_next_frame();
-                    };
-                    input.addEventListener("blur", on_blur);
-                });
-                this.get_setting("focus", [input]);
-                this.emit("focus", input);
-                this.update_next_frame();
-            });
+            input.addEventListener("change", (e)=>update_value(input, true));
+            input.addEventListener("input", (e)=>update_value(input, false));
             if (input.nodeName === "INPUT" || input.isContentEditable) {
                 input.addEventListener("keydown", (e)=>{
                     if (e.key === "Enter") {
@@ -227,6 +206,36 @@ export class InputProperty extends Property {
             }
         });
         this.#inputs = inputs;
+
+        this.elem.addEventListener("focusin", (e)=>{
+            if (this.#is_focussed) return;
+            console.log(e.target);
+            if (!this.#inputs.includes(e.target)) return;
+            /** @type {InputElement} */
+            var input = e.target;
+            this.#focus_promise = new Promise(resolve=>{
+                this.#is_focussed = true;
+                var input_value_on_focus = get_value(input);
+                var on_blur = (e)=>{
+                    if (document.activeElement === input) return;
+                    var input_value_on_blur = get_value(input);
+                    this.#is_focussed = false;
+                    input.removeEventListener("blur", on_blur);
+                    this.get_setting("blur", [input]);
+                    this.emit("blur", input);
+                    var result = false;
+                    if (input_value_on_blur !== input_value_on_focus) {
+                        result = update_value(input, true);
+                    }
+                    resolve(result);
+                    // this.update_next_frame();
+                };
+                input.addEventListener("blur", on_blur);
+            });
+            this.get_setting("focus", [input]);
+            this.emit("focus", input);
+            this.update_next_frame();
+        });
 
         if (this.input) {
             if (this.settings["placeholder"] === undefined) this.settings["placeholder"] = this.input.placeholder;
@@ -292,7 +301,7 @@ export class InputProperty extends Property {
             this.reset_button = new Button(`<button class="reset"><i class="fas fa-undo"></i></button>`, {
                 "click":()=>this.reset(),
                 "title": "Reset",
-                "hidden": ()=>!this.get_setting("reset"),
+                "hidden": ()=>!this.get_setting("reset") || this.get_setting("readonly"),
             });
             this.buttons_el.append(this.reset_button);
         }
@@ -341,12 +350,13 @@ export class InputProperty extends Property {
             
         toggle_class(this.elem, "vertical", !!this.get_setting("vertical"))
         toggle_class(this.elem, "is-null", values[0] == null);
+        set_attribute(this.elem, "data-input-type", this.input?.type || "");
         toggle_class(this.elem, "not-default", this.has_defaults && !is_default); // !is_focussed && 
         toggle_class(this.elem, "changed", this.has_datas && is_changed); // !is_focussed && 
         toggle_class(this.elem, "inline", !!this.get_setting("inline"));
 
         if (width != null) {
-            this.elem.style.setProperty("--ui-property-min-width", typeof width == "number" ? `${width}px` : width);
+            this.elem.style.setProperty("--ui-property-width", typeof width == "number" ? `${width}px` : width);
         }
         
         /* if (this.reset_button) {
@@ -466,9 +476,9 @@ export class InputProperty extends Property {
     }
 
     async __data_update() {
-        if (this.focus_promise) {
+        if (this.#is_focussed) {
              // if resolves true then the property has just changed, so we don't need to update the inputs on the data.
-            if (await this.focus_promise) return;
+            if (await this.#focus_promise) return;
         }
         super.__data_update();
     }

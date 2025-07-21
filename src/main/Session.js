@@ -24,7 +24,7 @@ export class StreamSettings$ {
     targets = [];
     target_opts = {};
     title = "";
-    fps = 30;
+    fps = 0;
     use_hardware = 0;
     experimental_mode = false;
     resolution = "1280x720";
@@ -186,7 +186,7 @@ export class Session extends DataNodeID {
         this.client_updater.destroy();
 
         // this.logger.destroy();
-        super.ondestroy();
+        return super.ondestroy();
     }
 
     tick() { }

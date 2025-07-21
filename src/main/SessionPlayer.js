@@ -3,8 +3,9 @@ import path from "node:path";
 import sharp from "sharp";
 import Color from 'color';
 import events from "node:events";
-import {globals, MPVEDL, MPVEDLEntry, FilterContext } from "./exports.js";
-import {utils, MPVWrapper, DataNode, DataNode$, Logger} from "../core/exports.js";
+import child_process from "node:child_process";
+import {globals, MPVEDL, MPVEDLEntry, FilterContext, ass } from "./exports.js";
+import {utils, MPVWrapper, DataNode, DataNode$, Logger, FFMPEGWrapper, constants} from "../core/exports.js";
 import { get_default_stream, get_stream_by_id, get_auto_background_mode } from "./shared.js";
 
 /** @import { InternalSession, Stream, PlaylistItem$, MediaInfo, PlaylistItemProps, MediaInfoStream, MediaInfoStreamType, FilterInput, Filter, PlaylistItemPropsProps } from './exports.js' */
@@ -22,6 +23,7 @@ const MEDIA_INFO_STREAM_TYPES = ["video", "audio", "subtitle"];
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
 const NULL_STREAM_DURATION = 60;
+const NULL_STREAM_FPS = 30;
 /** @type {Map<string,Promise<string>>} */
 const CACHE = new Map();
 
@@ -53,6 +55,11 @@ const LOCAL_MPV_OPTIONS = {
     "aid": 1,
     "sid": 1,
     "pause": 1,
+    "brightness": 1,
+    "contrast": 1,
+    "saturation": 1,
+    "gamma": 1,
+    "hue": 1,
 }
 
 export class SessionPlayer$ extends DataNode$ {
@@ -67,6 +74,7 @@ export class SessionPlayer$ extends DataNode$ {
     playback_speed = 1;
     current_fps = 0;
     props = {};
+    interpolation = false;
 }
 
 const ytdl_cache = new utils.SimpleCache(1000 * 60 * 60);
@@ -140,6 +148,8 @@ export class SessionPlayer extends DataNode {
     #fading = false;
     /** @type {MpvInfo} */
     #mpv_info;
+    /** @type {import("child_process").ChildProcessWithoutNullStreams} */
+    #ffmpeg;
 
     /** @type {ParsedItem} */
     parsed_item = {};
@@ -171,7 +181,8 @@ export class SessionPlayer extends DataNode {
         this.#width = opts.width;
         this.#height = opts.height;
         this.#mpv = new MPVWrapper({
-            cwd: globals.app.tmp_dir,
+            ipc: true,
+            cwd: globals.app.tmp_dir_dir,
         });
         this.logger = new Logger("player");
         this.#mpv.logger.on("log", (log)=>{
@@ -202,6 +213,8 @@ export class SessionPlayer extends DataNode {
             this.logger.error(e);
         });
         if (!success) return;
+        
+        this.#mpv.request_log_messages("info");
 
         let mpv_props = {
             ["time-pos"]: 0,
@@ -275,7 +288,7 @@ export class SessionPlayer extends DataNode {
             this.$.internal_seeking = false;
             this.$.seeking = false;
         });
-        var last_load_id, last_time_pos=0;
+        var last_load_id, last_time_pos=0, last_delta=0;
 
         this.#mpv.on("property-change", async (e)=>{
             let {name, data} = e;
@@ -296,10 +309,13 @@ export class SessionPlayer extends DataNode {
             if (name === "time-pos") {
                 if (this.$.loaded && !this.$.internal_seeking) {
                     var delta = Math.max(0, (data - last_time_pos) || 0);
-                    if (Math.abs(delta) > 5) {
+                    if (delta > constants.MAX_PTS_JUMP) {
+                        this.#pts += last_delta;
                         this.logger.warn(`pts jumped ${delta}`);
-                    } else {
+                    } else if (delta > 0) {
+                        // if backwards, just ignore...
                         this.#pts += delta;
+                        last_delta = delta;
                     }
                     /* if (this.#fade_out_pts && this.#pts > this.#fade_out_pts) {
                         this.#fade_out_pts = null;
@@ -324,13 +340,19 @@ export class SessionPlayer extends DataNode {
             this.logger.info("MPV idle.");
         });
 
-        this.#mpv.request_log_messages("info");
+        this.lua_message("setup", [{
+            default_props: {},
+            width: this.width,
+            height: this.height,
+            fps: this.fps
+        }]);
 
         var seekable_ranges_hash;
         var last_pts = 0;
         var last_speed_check = Date.now();
         
         var tick_interval = setInterval(async()=>{
+
             let ts = Date.now();
 
             {
@@ -455,16 +477,12 @@ export class SessionPlayer extends DataNode {
 
         this.update_time_pos();
 
-        var load_opts = {
+        var loadfile_opts = {
             filename: parsed_item.parsed_filename,
             props: this.#mpv_load_props,
             commands: on_load_commands,
-            width: this.#width,
-            height: this.#height,
-            fps: this.fps
         }
-        this.lua_message("setup_loadfile", [load_opts]);
-        
+        this.lua_message("setup_loadfile", [loadfile_opts]);
         this.logger.info("loading file:", parsed_item.filename);
         var res = await this.#mpv.loadfile(parsed_item.parsed_filename)
         
@@ -522,27 +540,20 @@ export class SessionPlayer extends DataNode {
         let background_mode = props.background_mode;
         if (background_mode == "auto") background_mode = get_auto_background_mode(item, media_info);
         if (background_mode == "default") background_mode = background_mode_default;
-        
-        /** @type {MPVEDL} */
-        let edl;
-                
-        /** @param {string} filename @param {MediaInfoStreamType} type @param {RegisterFileOpts} opts */
-        const add_file = async (filename, type, opts)=>{
-            var original_filename = filename;
-            if (!type) throw new Error("type is required");
-            opts = {
-                name: filename ? path.basename(filename) : "None",
-                ...opts,
-            };
-            let tmp = (await this.parse_item(filename, {media_type:type, duration, root, loop:(type === "video")}));
-            map.register_file({filename: tmp.parsed_filename, original_filename, streams:tmp.map.streams, ...opts, type});
+
+        const generate_map = ()=>{
+            let map = new StreamMap();
+            if (needs_video) map.register_stream({type:"video", title:"EDL Video"}, true);
+            if (needs_audio) map.register_stream({type:"audio", title:"EDL Audio"}, true);
+            if (needs_subtitle) map.register_stream({type:"subtitle", title:"EDL Subtitle"}, true);
+            return map;
         }
 
         if ((filename||"").startsWith("livestreamer://")) {
             let ls_path = new URL(filename).host;
             filename = "null://";
             if (ls_path == "intertitle") {
-                let ass_str = ass_create(undefined, [{
+                let ass_str = create(undefined, [{
                     font: props.title_font || "Arial",
                     size: props.title_size || 20,
                     color: props.title_color || "#ffffff",
@@ -561,7 +572,6 @@ export class SessionPlayer extends DataNode {
                     end: (Math.max(0, (duration || Number.MAX_SAFE_INTEGER) - 0.5))*1000,
                     text: ass_fade(props.fade_in || 0, props.fade_out || 0) + (ass_rotate(...(Array.from(props.title_rotation)||[0,0,0]))) + ass_text(props.title_text),
                 }]);
-                // filename = is_root ? `memory://${ass_str}` : await get_ass_subtitle(ass_str);
                 filename = await get_ass_subtitle(ass_str);
                 map.register_stream({type:"subtitle"}, true);
             } else if (ls_path == "rtmp") {
@@ -575,8 +585,12 @@ export class SessionPlayer extends DataNode {
         if (is_image) {
             // let title = `Image (${path.basename(filename)})`;
             filename = await get_image_as_video(filename, this.#width, this.#height, background_color);
-            map.register_stream({type:"video", codec:"h264", duration:NULL_STREAM_DURATION, fps:1, title:path.basename(filename)}, true);
+            map.register_stream({type:"video", codec:"h264", duration:NULL_STREAM_DURATION, fps:NULL_STREAM_FPS, title:path.basename(filename)}, true);
             media_duration = NULL_STREAM_DURATION;
+            if (duration != media_duration) {
+                let edl = new MPVEDL(MPVEDL.repeat(filename, {end:media_duration, duration}));
+                filename = edl.toString();
+            }
         }
         
         let is_rtmp = !!filename.match(/^rtmps?:/);
@@ -616,7 +630,7 @@ export class SessionPlayer extends DataNode {
         let is_unknown_duration = !duration && !media_info.duration && !is_playlist;
         duration = duration || media_duration;
         let fix_low_fps_duration = (is_image || is_empty) && !is_unknown_duration && media_type == "video";
-        if (fix_low_fps_duration) duration++;
+        if (fix_low_fps_duration) duration += 1/NULL_STREAM_FPS;
 
         // this only works for jpg and webp... what's the point?
         /* if (is_image && is_root) {
@@ -627,7 +641,7 @@ export class SessionPlayer extends DataNode {
         if (is_playlist && (props.playlist_mode || !is_root)) {
 
             let is_2track = props.playlist_mode == 2;
-            edl = new MPVEDL();
+            let edl = new MPVEDL();
             let tracks = [];
             let playlist_tracks = this.session.get_playlist_tracks(id);
             let duration_override = false;
@@ -704,13 +718,15 @@ export class SessionPlayer extends DataNode {
                 }
                 edl.append(...track.entries);
             }
+            filename = edl.toString();
+            map = generate_map();
 
         } else if (!is_root) {
 
             let pad_duration = Math.max(0, duration - media_duration);
             let duration_mismatch = (pad_duration > 0.04);
             if (duration_mismatch || media_type_mismatch) {
-                edl = new MPVEDL();
+                let edl = new MPVEDL();
                 edl.append("!no_chapters");
                 if (media_type) edl.append(new MPVEDLEntry("!delay_open", {media_type}));
                 if (exists) {
@@ -742,16 +758,48 @@ export class SessionPlayer extends DataNode {
                 }
                 for (let t of missing_stream_types) {
                     let null_filename;
-                    if (t === "audio") null_filename = await get_null_audio();
-                    else if (t === "video") null_filename = await get_color_as_video(this.#width, this.#height, background_color);
-                    else if (t === "subtitle") null_filename = await get_null_subtitle();
+                    if (t === "audio") {
+                        null_filename = await globals.app.generate_media_url({
+                            type:"audio",
+                            duration:NULL_STREAM_DURATION
+                        });
+                    } else if (t === "video") {
+                        null_filename = await globals.app.generate_media_url({
+                            type:"video",
+                            duration: NULL_STREAM_DURATION+(1/NULL_STREAM_FPS),
+                            width: this.#width,
+                            height: this.#height,
+                            background: background_color,
+                            fps: NULL_STREAM_FPS
+                        });
+                    } else if (t === "subtitle") {
+                        null_filename = await globals.app.generate_media_url({
+                            type:"subtitle",
+                            duration:NULL_STREAM_DURATION
+                        });
+                    }
                     if (!is_empty) edl.append("!new_stream");
                     edl.append(...MPVEDL.repeat(null_filename, {end:NULL_STREAM_DURATION, duration}));
                 }
+                filename = edl.toString();
+                map = generate_map();
             }
         }
         
         if (is_root) {
+                
+            /** @param {string} filename @param {MediaInfoStreamType} type @param {RegisterFileOpts} opts */
+            const add_file = async (filename, type, opts)=>{
+                var original_filename = filename;
+                if (!type) throw new Error("type is required");
+                opts = {
+                    name: filename ? path.basename(filename) : "None",
+                    ...opts,
+                };
+                let tmp_duration = type === "subtitle" ? null : duration;
+                let tmp = (await this.parse_item(filename, {media_type:type, duration:tmp_duration, root, loop:(type === "video")}));
+                await map.register_file({filename: tmp.parsed_filename, original_filename, streams:tmp.map.streams, ...opts, type});
+            }
 
             if (background_mode == "external" || background_mode == "embedded") embed: {
                 if (background_mode == "external") {
@@ -766,7 +814,6 @@ export class SessionPlayer extends DataNode {
                     await add_file(await extract_albumart(filename, map.streams.indexOf(s), s.codec), "video");
                     break embed;
                 }
-            } else if (background_mode == "logo") {
             }
 
             if (background_mode == "file") {
@@ -815,17 +862,9 @@ export class SessionPlayer extends DataNode {
                 loops: clip_loops || 1,
                 offset: clip_offset || 0,
             };
-            edl = new MPVEDL(MPVEDL.repeat(edl ? edl.toString() : filename, repeat_opts));
-        }
-        // }
-        
-        if (edl) {
-            duration = edl.duration;
+            let edl = new MPVEDL(MPVEDL.repeat(filename, repeat_opts));
             filename = edl.toString();
-            map = new StreamMap();
-            if (!media_type || media_type == "video") map.register_stream({type:"video", title:"EDL Video"}, true);
-            if (!media_type || media_type == "audio") map.register_stream({type:"audio", title:"EDL Audio"}, true);
-            if (media_type == "subtitle") map.register_stream({type:"subtitle", title:"EDL Subtitle"}, true);
+            duration = edl.duration;
         }
 
         if (fix_low_fps_duration) duration--;
@@ -851,7 +890,6 @@ export class SessionPlayer extends DataNode {
             seekable,
             internal_seekable,
             children,
-            edl,
             map,
         };
     }
@@ -865,9 +903,9 @@ export class SessionPlayer extends DataNode {
         // this.lua_message("fade_out", [this.session.$.fade_out_speed]);
     }
     
-    async set_property(key, value) {
+    async set_property(key, value, force=false) {
         var hash = JSON.stringify(value);
-        if (this.#props_hash[key] === hash) return;
+        if (this.#props_hash[key] === hash && !force) return;
         this.#props[key] = value;
         this.#props_hash[key] = hash;
         this.$.props[key] = value;
@@ -903,6 +941,7 @@ export class SessionPlayer extends DataNode {
 
         if (this.$.preloaded) {
             switch (key) {
+                case "interpolation_mode": // weird but subs disappear when interpolation is enabled, requires reload.
                 case "fade_in":
                 case "fade_out":
                 case "video_file":
@@ -910,6 +949,11 @@ export class SessionPlayer extends DataNode {
                 case "subtitle_file":
                     this.debounced_reload();
                     break;
+                case "contrast":
+                case "brightness":
+                case "saturation":
+                case "gamma":
+                case "hue":
                 case "deinterlace_mode":
                 case "interpolation_mode":
                 case "audio_delay":
@@ -951,7 +995,7 @@ export class SessionPlayer extends DataNode {
             }
         } else {
             if (aspect_ratio == "auto") {
-                this.set_property("video-aspect-override", 0);
+                this.set_property("video-aspect-override", -2);
                 this.set_property("video-aspect-method", "container");
             } else {
                 this.set_property("video-aspect-override", aspect_ratio);
@@ -1032,11 +1076,6 @@ export class SessionPlayer extends DataNode {
         let a_stream = this.parsed_item.map.audio.streams[aid-1];
         let s_stream = this.parsed_item.map.subtitle.streams[sid-1];
 
-        let deinterlace = this.#props.deinterlace_mode;
-        if (deinterlace == "auto") {
-            deinterlace = !!v_stream.interlaced;
-        }
-
         let interpolation;
         {
             let dfps = (this.stream.is_encoding ? this.stream.fps : this.#props["display-fps"]) || 30;
@@ -1055,12 +1094,12 @@ export class SessionPlayer extends DataNode {
                 interpolation = this.#props.interpolation_mode;
             }
         }
+        this.$.interpolation = interpolation;
 
         var ctx = new FilterContext({
             aid: `aid${aid}`,
             vid: `vid${vid}`,
-            sid: `sid${sid}`,
-            fps: fps,
+            fps: fps || 30,
             width: w,
             height: h,
             color: this.parsed_item.background_color,
@@ -1078,6 +1117,31 @@ export class SessionPlayer extends DataNode {
         let pre_vf_graph = [];
         let pre_af_graph = [];
         // let fps = +(this.props.force_fps || this.stream.fps);
+
+        let deinterlace = this.#props.deinterlace_mode;
+        if (deinterlace == "auto") deinterlace = !!v_stream?.interlaced;
+        if (this.is_encoding && deinterlace) {
+            let mode = v_stream.field_order == "tt" || v_stream.field_order == "bb" ? 1 : 0;
+            pre_vf_graph.push(`yadif=mode=${mode}`);
+        }
+
+        if (this.is_encoding) {
+            pre_vf_graph.push(`format=yuv420p`);
+        }
+
+        if (this.is_encoding) {
+            let c = this.#props.contrast;
+            let b = this.#props.brightness;
+            let s = this.#props.saturation;
+            let g = this.#props.gamma;
+            let h = this.#props.hue;
+            if (b || s || g || c) {
+                pre_vf_graph.push(`eq=${[b && `brightness=${utils.map_range(b, -100, 100, -1, 1)}`, c && `contrast=${utils.map_range(c, -100, 100, 0, 2)}`, s && `saturation=${utils.map_range(s, -100, 100, 0, 2)}`, g && `gamma=${utils.map_range(g, -100, 100, 0, 2)}`].filter(s=>s).join(":")}`);
+            }
+            if (h) {
+                pre_vf_graph.push(`hue=${utils.map_range(h, -100, 100, -180, 180)}`);
+            }
+        }
 
         {
             let left = utils.clamp(Math.abs(this.#props.crop[0] || 0));
@@ -1106,7 +1170,7 @@ export class SessionPlayer extends DataNode {
             if (fps) {
                 // it appears interpolation is not applied in encoding mode so we have to use filters:
                 if (interpolation) {
-                    // works incredibly well but slow as fuck
+                    // works well but slow as fuck
                     /* pre_vf_graph.push(
                         `minterpolate=fps=${fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1`
                     ); */
@@ -1120,8 +1184,6 @@ export class SessionPlayer extends DataNode {
                 }
             }
         }
-
-        
 
         let audio_stream = get_stream_by_id(this.#props.aid, this.parsed_item.map.audio.streams);
         let has_2_channels = audio_stream ? audio_stream.channels >= 2 : false;
@@ -1162,8 +1224,11 @@ export class SessionPlayer extends DataNode {
             ctx.aid = pre_af;
         }
 
-        var props_pre_filters = this.#props.pre_filters.filter(f=>is_filter_allowed(f.name));
-        var props_filters = this.#props.filters.filter(f=>is_filter_allowed(f.name));
+        var get_filters = (p)=>Object.values(p).sort((a,b)=>a.index - b.index).filter(f=>is_filter_allowed(f.name));
+        
+        var props_pre_filters = get_filters(this.#props.pre_filters);
+        var props_filters = get_filters(this.#props.filters);
+
         ctx.apply([...props_pre_filters, ...props_filters]);
 
         // -----------------------------------------
@@ -1189,8 +1254,6 @@ export class SessionPlayer extends DataNode {
         }
 
         vf_graph.push(`pad=width=${w}:height=${h}:x=(ow-iw)/2:y=(oh-ih)/2:color=${this.parsed_item.background_color}`);
-
-        vf_graph.push(`format=yuv420p`);
 
         let vfades = [];
         let afades = [];
@@ -1252,8 +1315,10 @@ export class SessionPlayer extends DataNode {
         this.set_property("lavfi-complex", lavfi_complex_str);
         this.set_property("af", af_graph.filter(is_filter_allowed).map(make_lavfi_filter));
         this.set_property("vf", vf_graph.filter(is_filter_allowed).map(make_lavfi_filter));
-        this.set_property("deinterlace", deinterlace); // apparently doesnt need a filter to work in encoding mode
-        this.set_property("interpolation", interpolation);
+        this.set_property("sid", sid);
+        if (this.is_encoding) {
+            this.set_property("deinterlace", deinterlace); // in encoding mode the built in deint filter is prone to mucking up
+        }
     }
 
     update_volume(immediate=false) {
@@ -1304,7 +1369,7 @@ class StreamMap {
         file.streams.forEach((s,i)=>{
             s = {...s};
             s.title = [s.title, file.name].filter(s=>s).join(" | ");
-            if (s.type === "subtitle" && opts.secondary) s.secondary = true;
+            if (s.type === "subtitle" && file.secondary) s.secondary = true;
             this.register_stream(s, file.type);
         });
     }
@@ -1340,243 +1405,37 @@ class StreamCollection {
     }
 }
 
-async function get_null_audio() {
-    var filename = `na.mp3`;
-    if (!CACHE.get(filename)) {
-        CACHE.set(filename, (async ()=>{
-            var output_path = path.resolve(globals.app.tmp_dir, filename);
-            await utils.execa(globals.app.ffmpeg_path, [
-                "-f", "lavfi",
-                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-                // "-i", "aevalsrc=0.000001*random(0):c=stereo:s=44100", // thought random noise might prevent pausing, probably didnt.
-                "-ar", "44100",
-                "-c:a", "mp3", // needs to be mp3 to prevent those weird pauses, no idea why. flac, wav, aac didnt work.
-                "-t", `${NULL_STREAM_DURATION}`,
-                `-y`,
-                output_path
-            ]);
-            return output_path;
-        })());
+async function get_generated_path(filename, generator) {
+    var dir = path.resolve(globals.app.tmp_dir, "0");
+    await fs.mkdir(dir, { recursive: true });
+    var fullpath = path.resolve(dir, filename);
+    if (!CACHE.has(fullpath)) {
+        CACHE.set(fullpath, fs.existsSync(fullpath) ? fullpath : Promise.resolve(generator(fullpath)).then(()=>fullpath));
     }
-    return CACHE.get(filename);
-}
-
-async function get_ass_subtitle(ass) {
-    var filename = `${utils.md5(ass)}.ass`;
-    if (!CACHE.get(filename)) {
-        CACHE.set(filename, (async ()=>{
-            var output_path = path.resolve(globals.app.tmp_dir, filename);
-            await fs.writeFile(output_path, ass);
-            return output_path;
-        })());
-    }
-    return CACHE.get(filename);
-}
-
-async function get_null_subtitle() {
-    await get_ass_subtitle(ass_create({}, [], [{end:NULL_STREAM_DURATION, text:""}]));
-}
-
-/** @param {number} color */
-async function get_color_as_video(w, h, color) {
-    var color_str = Color(color || 0x000000).hex();
-    var filename = `${color_str}-${w}x${h}.mkv`;
-    if (!CACHE.get(filename)) {
-        CACHE.set(filename, (async ()=>{
-            var output_path = path.resolve(globals.app.tmp_dir, filename);
-            await utils.execa(globals.app.ffmpeg_path, [
-                `-r`, `1`,
-                "-f", "lavfi",
-                "-i", `color=c=${color_str}:s=${w}x${h}:r=1`,
-                `-crf`, `0`,
-                `-tune`, `stillimage,zerolatency`,
-                `-c:v`, `libx264`,
-                "-preset:v", "ultrafast",
-                "-pix_fmt", "yuv420p",
-                `-f`, `matroska`,
-                `-g`, `${NULL_STREAM_DURATION+1}`,
-                "-t", `${NULL_STREAM_DURATION+1}`,
-                `-y`,
-                output_path
-            ]);
-            return output_path;
-        })());
-    }
-    return CACHE.get(filename);
-}
-
-async function get_image_as_video(image_filename, w=1280, h=720, color=0x000000) {
-    var color_str = Color(color).hex();
-    image_filename = path.resolve(image_filename);
-    var hash = utils.md5(image_filename);
-    var filename = `${hash}-${color_str}-${w}x${h}`;
-    if (!CACHE.get(filename)) {
-        CACHE.set(filename, (async ()=>{
-            var t0 = Date.now();
-            var img = sharp(image_filename);
-            if ((await img.metadata()).channels == 4) {
-                var flat_path = path.resolve(globals.app.tmp_dir, `${hash}-${color_str}.png`);
-                if (!await fs.exists(flat_path)) {
-                    await img.flatten({ background: color_str }).toFile(flat_path);
-                    image_filename = flat_path;
-                }
-            }
-            var output_path = path.resolve(globals.app.tmp_dir, filename);
-            await utils.execa(globals.app.ffmpeg_path, [
-                `-r`, `1`,
-                `-loop`, `1`,
-                `-i`, image_filename,
-                // `-vf`, `scale=ceil((iw*sar)*min(${w}/(iw*sar)/2)*2\\,${h}/ih):ih*min(${w}/(iw*sar)\\,${h}/ih)`,
-                `-vf`, `scale=${w}:${h}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
-                `-tune`, `stillimage,zerolatency`,
-                `-crf`, `0`,
-                // `-b:v`, `10m`,
-                `-c:v`, `libx264`,
-                "-preset:v", "ultrafast",
-                "-pix_fmt", "yuv420p",
-                `-f`, `matroska`,
-                `-g`, `${NULL_STREAM_DURATION+1}`,
-                `-t`, `${NULL_STREAM_DURATION+1}`,
-                `-y`,
-                output_path
-            ]);
-            var t1 = Date.now();
-            globals.app.logger.info(`get_image_as_video '${image_filename}' ${t1-t0}ms`);
-            return output_path;
-        })());
-    }
-    return CACHE.get(filename);
+    return CACHE.get(fullpath);
 }
 
 async function extract_albumart(media_filename, stream_id, format) {
     var filename = `${utils.md5(media_filename)}-${stream_id}-${format}`;
-    if (!CACHE.get(filename)) {
-        CACHE.set(filename, (async ()=>{
-            var output_path = path.resolve(globals.app.tmp_dir, filename);
-            await utils.execa(globals.app.ffmpeg_path, [
-                `-i`, media_filename,
-                `-map`, `0:${stream_id}`,
-                `-an`,
-                `-sn`,
-                `-c:v`, `copy`,
-                `-f`, format,
-                `-y`,
-                output_path
-            ]);
-            return output_path;
-        })());
-    }
-    return CACHE.get(filename);
+    return get_generated_path(filename, async (fullpath)=>{
+        await utils.execa(globals.app.ffmpeg_path, [
+            `-i`, media_filename,
+            `-map`, `0:${stream_id}`,
+            `-an`,
+            `-sn`,
+            `-c:v`, `copy`,
+            `-f`, format,
+            `-y`,
+            fullpath
+        ]);
+    });
 }
 
-/* async function get_image_as_mf_sequence(image_filename, duration=NULL_STREAM_DURATION) {
-    duration = Math.ceil(duration);
-    var hash = utils.md5(image_filename);
-    var filename = path.resolve(globals.app.tmp_dir, `${hash}-${duration}`);
-    if (!await fs.exists(filename)) {
-        await fs.writeFile(filename, new Array(duration).fill(image_filename).join("\n"));
-    }
-    return `mf://@${filename.replace(/\\/g, "/")}`;
-} */
-
-/** @param {width:number, height:number} meta @param {(AssStyle|AssStyle[])} styles @param {(AssEvent|AssEvent[])} events */
-function ass_create(meta, styles, events) {
-    meta = {...meta};
-    if (!Array.isArray(events)) events = [events||{}];
-    if (!Array.isArray(styles)) styles = [styles||{}];
-    return `[Script Info]
-ScriptType: v4.00+
-WrapStyle: ${meta.wrap_style??2}
-ScaledBorderAndShadow: ${(meta.scaled_border_and_shadow??true)?"yes":"no"}
-YCbCr Matrix: ${meta.ycbcr_matrix??"None"}
-PlayResX: ${meta.width||384}
-PlayResY: ${meta.height||288}
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-${styles.map(s=>ass_style(s)).join("\n")}
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-${events.map(l=>ass_event({style: styles[0].name, ...l})).join("\n")}`;
-}
-
-/** @typedef {{style:string, fade_in: number, fade_out: number, rotation: [number,number,number], start: number, end: number, text: string}} AssEvent */
-/** @param {AssEvent} o */
-function ass_event(o) {
-    var props = [
-        o.layer||0,
-        ass_time(o.start||0),
-        ass_time(o.end||0),
-        o.style||"Default",
-        o.name||"",
-        o.margin_l||0,
-        o.margin_r||0,
-        o.margin_v||0,
-        o.effect||"",
-        o.text||""
-    ]
-    return `Dialogue: ${props.join(",")}`;
-}
-
-/** @typedef {{style: string, font: string, size: number, color: number, secondary_color: number, outline_color: number, shadow_color: number, bold: number, italic: number, underline: number, spacing: number, outline_thickness: number, shadow_depth: number, alignment: number, margin_l: number, margin_r: number, margin_v: number, encoding: number, border_style: number, angle: number, scale_x: number, scale_y: number, strike_out: number}} AssStyle */
-/** @param {AssStyle} o */
-function ass_style(o) {
-    var props = [
-        o.style||"Default",
-        o.font||"Arial",
-        o.size||24,
-        ass_color(o.color||0xffffff),
-        ass_color(o.secondary_color||o.color||0xffffff),
-        ass_color(o.outline_color||0x000000),
-        ass_color(o.shadow_color||0x000000),
-        (+o.bold||0)*-1,
-        (+o.italic||0)*-1,
-        (+o.underline||0)*-1,
-        (+o.strike_out||0)*-1,
-        (o.scale_x||1)*100,
-        (o.scale_y||1)*100,
-        o.spacing||0,
-        o.angle||0,
-        o.border_style||1,
-        o.outline_thickness||1,
-        o.shadow_depth||0,
-        o.alignment||2,
-        o.margin_l||10,
-        o.margin_r||10,
-        o.margin_v||10,
-        o.encoding||1
-    ]
-    return `Style: ${props.join(", ")}`;
-}
-function ass_text(text) {
-    return (text||"").replace(/\r?\n/g, "\\N");
-}
-function ass_fade(fade_in=0, fade_out=0) {
-    fade_in = +(fade_in || 0);
-    fade_out = +(fade_out || 0);
-    if (fade_in || fade_out) return `{\\fad(${fade_in*1000},${fade_out*1000})}`;
-    return "";
-}
-function ass_rotate(x=0, y=0, z=0) {
-    if (x || y || z) return `{\\frx${x||0}}{\\fry${y||0}}{\\frz${-(z||0)}}`;
-    return "";
-}
-function ass_time(a) {
-    let h = Math.floor(a/(60*60*1000));
-    a -= h*(60*60*1000);
-    let m = Math.floor(a/(60*1000));
-    a -= m*(60*1000);
-    let s = Math.floor(a/1000);
-    a -= s*1000;
-    a = Math.floor(a/10);
-    return `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}.${String(a).padStart(2,"0")}`;
-}
-function ass_color(color) { //rrggbbaa
-    var c = Color(color);
-    // ass color is in BBGGRR or AABBGGRR format
-    // (1-c.alpha())*255, 
-    return  `&H${[c.blue(), c.green(), c.red()].map(n=>n.toString(16).padStart(2,"0").toUpperCase()).join("")}`;
+async function get_ass_subtitle(ass_str) {
+    var filename = `${utils.md5(ass_str)}.ass`;
+    return get_generated_path(filename, async (output_path)=>{
+        await globals.app.safe_write_file(output_path, ass_str);
+    });
 }
 
 /* cache-speed

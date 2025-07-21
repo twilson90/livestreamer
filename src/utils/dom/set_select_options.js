@@ -1,6 +1,6 @@
 import { create_select_options } from './create_select_options.js';
 import { remove_children } from "./remove_children.js";
-/** @import {OptionSettings, OptionGroupSettings} from './fix_options.js' */
+/** @import {OptionSettings, OptionGroupSettings} from '../fix_options.js' */
 
 /** @param {HTMLSelectElement} select @param {(OptionSettings|OptionGroupSettings)[]} options */
 export function set_select_options(select, options) {

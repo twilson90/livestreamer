@@ -4,14 +4,10 @@ export default {
 	"core.title": "Core",
 	"core.description": "IPC, web proxies, process management.",
 	
-	"core.debug": false,
 	"core.appspace": "livestreamer",
-	"core.portable": false,
 	"core.hostname": "livestreamer.localhost",
 	"core.logs_max_length": 64,
 	"core.logs_max_msg_length": 128 * 1024, // 128 kb
-	"core.ssl_key": resources.get_path(`ssl/livestreamer.localhost-key.pem`),
-	"core.ssl_cert": resources.get_path(`ssl/livestreamer.localhost.pem`),
 	"core.compress_logs_schedule": "* 4 * * *", // Every day @ 4:00 am
 	"core.http_port": 8120,
 	"core.https_port": 8121,
@@ -30,7 +26,7 @@ export default {
 	
 	"file-manager.title": "File Manager",
 	"file-manager.description": "File manager server and interface.",
-	"file-manager.volumes": [],
+	"file-manager.volumes": {},
 	"file-manager.inspect": "",
 	
 	"main.title": "Live Streamer",

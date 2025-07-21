@@ -167,7 +167,6 @@ export class Observer extends EventEmitter {
         }
     }
 
-    static RESET_KEY = "__RESET_0f726b__";
     /** @returns {Observer} */
     static get_observer(proxy) {
         if (proxy) return proxy[Observer_core];
@@ -189,67 +188,6 @@ export class Observer extends EventEmitter {
         }
         return object;
     };
-    /** @param {Iterable<ObserverChangeEvent>} changes */
-    static flatten_changes(changes, reverse=false) {
-        let result = {};
-        if (reverse) changes = reverse_iterator(changes);
-        for (let c of changes) {
-            let key = c.path[c.path.length-1];
-            let r = result;
-            let last_r;
-            for (let i = 0; i < c.path.length-1; i++) {
-                let p = c.path[i];
-                if (r[p] === undefined) r[p] = {};
-                last_r = r;
-                r = r[p];
-            }
-            if (typeof r === "object" && r !== null) {
-                let value = reverse ? c.old_value : c.new_value;
-                if (typeof value === "object" && value !== null) {
-                    value = {
-                        [Observer.RESET_KEY]: value.constructor.name,
-                        ...value
-                    };
-                }
-                r[key] = value;
-            }
-        }
-        return result;
-    };
-
-    // root must be object, not array.
-    static apply_changes(target, changes) {
-        if (is_iterable(changes)) {
-            changes = Observer.flatten_changes(changes);
-        }
-        apply_changes(target, changes);
-    }
 }
 
-function apply_changes(target, changes) {
-    for (var k in changes)  {
-        if (k === Observer.RESET_KEY) continue;
-        if (typeof changes[k] === 'object' && changes[k] !== null) {
-            let t = target[k];
-            if (Observer.RESET_KEY in changes[k]) {
-                var old_constructor = t ? t.constructor : undefined;
-                if (old_constructor) {
-                    t = new (old_constructor)();
-                } else {
-                    var new_constructor_name = changes[k][Observer.RESET_KEY] || "Object"
-                    t = new (globalThis[new_constructor_name])();
-                }
-            } else if (typeof t !== "object" || t === null) {
-                t = (Array.isArray(changes[k])) ? [] : {};
-            }
-            apply_changes(t, changes[k]);
-            if (Array.isArray(changes[k])) t.length = changes[k].length;
-            if (t !== target[k]) target[k] = t;
-        } else if (changes[k] == null) {
-            delete target[k];
-        } else {
-            target[k] = changes[k];
-        }
-    }
-};
 export default Observer;

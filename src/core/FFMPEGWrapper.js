@@ -21,6 +21,10 @@ class FFMPEGInfo {
     }
 }
 
+const default_opts = {
+    info_interval: 1000,
+}
+
 /** @extends {events.EventEmitter<{info:[FFMPEGInfo]}>} */
 export class FFMPEGWrapper extends events.EventEmitter {
     /** @type {import("child_process").ChildProcessWithoutNullStreams} */
@@ -30,15 +34,23 @@ export class FFMPEGWrapper extends events.EventEmitter {
     #closed;
     #info_interval;
     #outputs = [];
+    /** @type {FFMPEGInfo} */
+    #last_info;
 
+    get last_info() { return this.#last_info; }
     get process() { return this.#process; }
     get logger() { return this.#logger; }
     get outputs() { return this.#outputs; }
+    get stopped() { return this.#stopped; }
+    get stderr() { return this.#process.stderr; }
+    get stdin() { return this.#process.stdin; }
+    get stdout() { return this.#process.stdout; }
 
+    /** @param {typeof default_opts} opts */
     constructor(opts) {
         super();
         this.opts = {
-            info_interval: 1000,
+            ...default_opts,
             ...opts
         }
         this.#logger = new Logger("ffmpeg");
@@ -53,7 +65,7 @@ export class FFMPEGWrapper extends events.EventEmitter {
             
             this.#process = child_process.spawn(globals.app.ffmpeg_path, args, {windowsHide: true, ...spawn_opts});
 
-            globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
+            // globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
 
             var handle_error = (e)=>{
                 this.emit("error", e);
@@ -71,7 +83,9 @@ export class FFMPEGWrapper extends events.EventEmitter {
                 if (this.#closed) return;
                 this.#closed = true;
                 clearInterval(this.#info_interval);
-                if (!this.#stopped && code) handle_error(new Error(`Error code ${code}: ${last_line}`));
+                if (!this.#stopped && code) {
+                    handle_error(new Error(`Error code ${code}: ${globals.app.debug ? last_lines.join("\n") : last_lines[last_lines.length-1]}`));
+                }
                 this.emit("end");
                 resolve();
             });
@@ -84,12 +98,17 @@ export class FFMPEGWrapper extends events.EventEmitter {
             // this.#process.stdin.on("close",  (e)=>{});
             // this.#process.stdout.on("close", (e)=>{});
             
-            let last_info, last_ts, last_emitted_info;
+            let last_ts, last_emitted_info;
             let listener = readline.createInterface(this.#process.stderr);
             var init_str = "", initialized = false;
-            var last_line;
+            var last_lines = [];
+            listener.on("error", (e)=>{
+                if (this.#closed) return;
+                this.logger.error(e);
+            });
             listener.on("line", line=>{
-                last_line = line;
+                last_lines.push(line);
+                if (last_lines.length > 64) last_lines.shift();
                 this.#logger.debug(line);
                 // console.info(line);
                 this.emit("line", line);
@@ -162,19 +181,19 @@ export class FFMPEGWrapper extends events.EventEmitter {
                         speed: parseFloat(m[7]),
                         speed_alt: 1,
                     });
-                    if (last_info) {
-                        info.speed_alt = (info.time - last_info.time) / (ts - last_ts);
+                    if (this.#last_info) {
+                        info.speed_alt = (info.time - this.#last_info.time) / (ts - last_ts);
                     }
-                    if (!this.opts.info_interval) this.emit("info", last_info);
-                    last_info = info;
+                    if (!this.opts.info_interval) this.emit("info", this.#last_info);
+                    this.#last_info = info;
                     last_ts = ts;
                 }
             });
             if (this.opts.info_interval) {
                 this.#info_interval = setInterval(()=>{
-                    if (last_info == last_emitted_info) return;
-                    this.emit("info", last_info);
-                    last_emitted_info = last_info
+                    if (this.#last_info == last_emitted_info) return;
+                    this.emit("info", this.#last_info);
+                    last_emitted_info = this.#last_info
                 }, this.opts.info_interval);
             }
         });
