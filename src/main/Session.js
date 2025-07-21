@@ -26,7 +26,6 @@ export class StreamSettings$ {
     title = "";
     fps = 0;
     use_hardware = 0;
-    experimental_mode = false;
     resolution = "1280x720";
     h264_preset = "veryfast";
     video_bitrate = 5000;

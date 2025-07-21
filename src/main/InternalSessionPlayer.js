@@ -62,7 +62,7 @@ const LOCAL_MPV_OPTIONS = {
     "hue": 1,
 }
 
-export class SessionPlayer$ extends DataNode$ {
+export class InternalSessionPlayer$ extends DataNode$ {
     item = {};
     seeking = false;
     internal_seeking = false;
@@ -128,10 +128,10 @@ async function get_mpv_info() {
     return mpv_info_cache[version_str];
 }
 
-/** @typedef {Awaited<ReturnType<SessionPlayer["parse_item"]>>} ParsedItem */
+/** @typedef {Awaited<ReturnType<InternalSessionPlayer["parse_item"]>>} ParsedItem */
 
-/** @extends {DataNode<SessionPlayer$>} */
-export class SessionPlayer extends DataNode {
+/** @extends {DataNode<InternalSessionPlayer$>} */
+export class InternalSessionPlayer extends DataNode {
     /** @type {MPVWrapper} */
     #mpv;
     /** @type {PlaylistItemPropsProps} */
@@ -167,19 +167,15 @@ export class SessionPlayer extends DataNode {
     get height() { return this.#height; }
     get fps() { return this.#stream.fps; }
     
-    /** @param {Stream} stream @param {{width:number, height:number}} opts */
-    constructor(stream, opts) {
-        super(new SessionPlayer$());
-
-        opts = {
-            width: DEFAULT_WIDTH,
-            height: DEFAULT_HEIGHT,
-            ...opts
-        };
+    /** @param {Stream} stream */
+    constructor(stream) {
+        super(new InternalSessionPlayer$());
 
         this.#stream = stream;
-        this.#width = opts.width;
-        this.#height = opts.height;
+        var res = stream.$.resolution.split("x");
+        this.#width = +res[0];
+        this.#height = +res[1];
+
         this.#mpv = new MPVWrapper({
             ipc: true,
         });
@@ -1396,6 +1392,14 @@ class StreamMap {
             let default_stream = get_default_stream(this[k].streams, k);
             this[k].auto_id = default_stream ? default_stream.type_id : null;
         }
+    }
+
+    async destroy() {
+        this.logger.info("Terminating MPV...");
+        let t0 = Date.now();
+        await this.mpv.quit();
+        let t1 = Date.now();
+        this.logger.info(`MPV terminated in ${(t1-t0)/1000} secs.`);
     }
 }
 

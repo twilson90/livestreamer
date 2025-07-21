@@ -7119,20 +7119,10 @@ export class StreamSettings extends Panel {
         });
         this.stream_props_ui.append(this.buffer_duration);
 
-        this.experimental_mode = new ui.InputProperty(`<select></select>`, {
-            ..._get_property_opts("experimental_mode"),
-            "name": "experimental_mode",
-            "label": "Experimental Mode",
-            "info": "Uses an alternative method to stream. Recommended to be left off.",
-            "hidden": true
-        });
-        this.stream_props_ui.append(this.experimental_mode)
-
         this.use_hardware = new ui.InputProperty(`<select></select>`, {
             ..._get_property_opts("use_hardware"),
             "name": "use_hardware",
             "label": "Hardware Transcoding",
-            "hidden": ()=>!this.experimental_mode.value
         });
         this.stream_props_ui.append(this.use_hardware)
 
@@ -7164,10 +7154,7 @@ export class StreamSettings extends Panel {
                 stream_info["Video Bitrate"] = `${stream["video_bitrate"]}Kbps`;
                 stream_info["Audio Bitrate"] = `${stream["audio_bitrate"]}Kbps`;
                 stream_info["Resolution"] = `${stream["resolution"]}`;
-                stream_info["Experimental Mode"] = stream["experimental_mode"]?"Yes":"No";
-                if (stream["experimental_mode"]) {
-                    stream_info["Use Hardware"] = `${stream["use_hardware"]?"Yes":"No"}`;
-                }
+                stream_info["Use Hardware"] = `${stream["use_hardware"]?"Yes":"No"}`;
                 if (stream["re"]) {
                     stream_info["Realtime"] =`${stream["re"]?"Yes":"No"}`;
                 }

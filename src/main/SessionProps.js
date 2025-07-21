@@ -31,10 +31,6 @@ export const SessionProps = {
             __default__: 0,
             __options__: [[0,"Off"],[1,"On"]]
         },
-        experimental_mode: {
-            __default__: 0,
-            __options__: [[0,"Off"],[1,"On"]]
-        },
         resolution: {
             __default__: "1280x720",
             __options__: [

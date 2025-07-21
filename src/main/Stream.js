@@ -6,7 +6,7 @@ import * as ebml from 'ts-ebml';
 import child_process from 'node:child_process';
 import readline from 'readline';
 import net from 'node:net';
-import {globals, SessionTypes, StreamTarget, SessionPlayer, SessionPlayer$} from "./exports.js";
+import {globals, SessionTypes, StreamTarget, InternalSessionPlayer, InternalSessionPlayer$} from "./exports.js";
 import {utils, constants, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, ClientUpdater} from "../core/exports.js";
 /** @import { Session, InternalSession, ExternalSession, Session$ } from './exports.js' */
 
@@ -27,7 +27,7 @@ export class Stream$ extends StopStartStateMachine$ {
     internal_path = "";
     /** @type {string | undefined} */
     title;
-    player = new SessionPlayer$();
+    player = new InternalSessionPlayer$();
     buffer_duration = 5;
     fps = 0;
     
@@ -37,7 +37,6 @@ export class Stream$ extends StopStartStateMachine$ {
     title = "";
     fps = 0;
     use_hardware = 0;
-    experimental_mode = false;
     resolution = "1280x720";
     h264_preset = "veryfast";
     video_bitrate = 5000;
@@ -76,12 +75,10 @@ export class Stream extends StopStartStateMachine {
 
     /** @type {Session<Session$>} */
     session;
-    /** @type {SessionPlayer} */
+    /** @type {InternalSessionPlayer} */
     player;
     /** @type {FFMPEGWrapper} */
-    #ffmpeg_in;
-    /** @type {FFMPEGWrapper} */
-    #ffmpeg_out;
+    #ffmpeg;
     /** @type {Record<PropertyKey,StreamTarget>} */
     stream_targets = {};
     keys = {};
@@ -150,8 +147,7 @@ export class Stream extends StopStartStateMachine {
         
         let error;
         let keyframes_per_second = 2.0;
-        let use_hardware = this.$.use_hardware && this.$.experimental_mode;
-        let ffmpeg_copy = !this.$.experimental_mode;
+        let use_hardware = this.$.use_hardware;
         
         if (error) {
             this.logger.error(`Start stream error: ${error}`)
@@ -159,110 +155,8 @@ export class Stream extends StopStartStateMachine {
             return false;
         }
         
-        let ffmpeg_args = [
-            // `-re`,
-            `-strict`, `experimental`,
-            `-stream_loop`, `-1`,
-        ];
-        
         var hwenc = (use_hardware && globals.app.conf["core.ffmpeg_hwenc"]);
         var hwaccel = (use_hardware && globals.app.conf["core.ffmpeg_hwaccel"]);
-
-        if (this.session.type === SessionTypes.EXTERNAL) {
-            /** @type {ExternalSession} */
-            let session = this.session;
-            ffmpeg_args.push(
-                // `-noautoscale`,
-                "-i", `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${session.nms_session.publishStreamPath}`,
-                "-c", "copy",
-            );
-        } else {
-            
-            if (use_hardware) {
-                if (!globals.app.conf["core.ffmpeg_hwaccel"]) this.logger.warn(`ffmpeg_hwaccel must be set in config to use hardware acceleration.`);
-                if (!globals.app.conf["core.ffmpeg_hwenc"]) this.logger.warn(`ffmpeg_hwenc must be set in config to use hardware acceleration.`);
-            }
-
-            if (this.is_realtime) {
-                // ffmpeg_args.push("-re") // with mpv's --orealtime it usually runs at about x1.01 (not sure why), with -re it is about x1.001 (+1s ~= +1ms sync, so over an hour the viewer will fall around 3.6 secs behind the live edge)
-            }
-            ffmpeg_args.push(
-                "-err_detect", "ignore_err",
-            );
-            if (ffmpeg_copy) {
-                ffmpeg_args.push(
-                    "-threads", "1",
-                    // "-fflags", "+genpts+igndts+nobuffer",
-                    // "-flags", "+low_delay",
-                    // "-thread_queue_size", "512", // is this a good idea... ?
-                    // "-probesize", "32",
-                    // "-analyzeduration", "0",
-                    // "-rtbufsize", `${bitrate}k`,
-                    // "-blocksize", "128",
-                );
-            }
-            if (hwaccel) {
-                ffmpeg_args.push(
-                    "-hwaccel", globals.app.conf["core.ffmpeg_hwaccel"],
-                    "-hwaccel_output_format", globals.app.conf["core.ffmpeg_hwaccel"],
-                    // "-extra_hw_frames", "10"
-                );
-            }
-            ffmpeg_args.push(
-                // `-noautoscale`,
-                "-fflags", "+genpts",
-                // "-use_wallclock_as_timestamps", "1",
-                "-i", "pipe:0",
-                "-bsf:a", "aac_adtstoasc",
-                "-bsf:v", "h264_mp4toannexb",
-                `-fps_mode`, this.fps ? "cfr" : "passthrough",
-                "-enc_time_base", "-1",
-                "-muxdelay", "0",
-                "-flush_packets", "1",
-            );
-            if (ffmpeg_copy) {
-                ffmpeg_args.push(
-                    "-c:v", "copy",
-                    "-c:a", "copy",
-                    "-b:v", `${this.$.video_bitrate}k`, // <-+ this simply writes the bitrate as a tag. Required for Afreecatv.
-                    "-b:a", `${this.$.audio_bitrate}k`, // <-+
-                );
-
-            } else {
-                ffmpeg_args.push(
-                    "-c:v", hwenc ? `h264_${globals.app.conf["core.ffmpeg_hwenc"]}` : "libx264",
-                    "-preset", hwenc ? `p7` : this.$.h264_preset,
-                );
-                if (hwaccel) {
-                    ffmpeg_args.push(
-                        `-no-scenecut`, `1`,
-                        `-rc`, `cbr_hq`,
-                        `-forced-idr`, `1`
-                    );
-                    if (this.fps) `-rc-lookahead`, this.fps
-                }
-                ffmpeg_args.push(
-                    "-b:v", `${this.$.video_bitrate}k`,
-                    `-maxrate`, `${this.$.video_bitrate}k`,
-                    `-bufsize`, `${this.$.video_bitrate}k`,
-                    "-c:a", `aac`,
-                    "-b:a", `${this.$.audio_bitrate}k`,
-                    "-force_key_frames", `expr:gte(t,n_forced*${keyframes_per_second})`,
-                );
-            }
-
-            if (this.fps) {
-                // doesnt actually apply frame rate conversion with -c copy, just writes it as a tag
-                ffmpeg_args.push(
-                    "-r", this.fps
-                );
-            }
-        }
-        ffmpeg_args.push(
-            "-map_metadata", "-1",
-            // "-sn",
-            "-flvflags", "no_duration_filesize"
-        );
 
         if (this.is_encoding) {
             let internal_path = `/internal/${this.session.id}`;
@@ -273,359 +167,98 @@ export class Stream extends StopStartStateMachine {
             this.$.wss_output_url = `wss://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${internal_path}.flv`;
             this.$.http_output_url = `http://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${internal_path}.flv`;
             this.$.https_output_url = `https://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${internal_path}.flv`;
-            
-            ffmpeg_args.push(
-                "-f", "flv",
-                "-map", "0:v",
-                "-map", "0:a",
-                `-y`,
-                "pipe:1"
-            );
 
-            this.#ffmpeg_in = new FFMPEGWrapper();
-            this.#ffmpeg_in.on("error", (e)=>this.logger.error("ffmpeg error:",e));
-            this.#ffmpeg_in.on("end", ()=>{
-                this._handle_end("ffmpeg");
-            });
-            this.#ffmpeg_in.start(ffmpeg_args);
-
-            this.#ffmpeg_out = new FFMPEGWrapper();
+            this.#ffmpeg = new FFMPEGWrapper();
             let ffmpeg_output_url = this.$.output_url;
             if (this.is_test) {
                 let url = new URL(ffmpeg_output_url);
                 url.searchParams.append("test", 1);
                 ffmpeg_output_url = url.toString();
             }
-            this.#ffmpeg_out.start([
-                "-i", "pipe:0",
+        
+            let ffmpeg_args = [
+                // `-re`,
+                `-strict`, `experimental`,
+                `-stream_loop`, `-1`,
+                "-err_detect", "ignore_err",
+            ];
+            if (this.session.type === SessionTypes.EXTERNAL) {
+                /** @type {ExternalSession} */
+                let session = this.session;
+                ffmpeg_args.push(
+                    // `-noautoscale`,
+                    "-i", `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${session.nms_session.publishStreamPath}`,
+                    "-c", "copy",
+                );
+            } else {
+                
+                if (hwaccel) {
+                    ffmpeg_args.push(
+                        "-hwaccel", globals.app.conf["core.ffmpeg_hwaccel"],
+                        "-hwaccel_output_format", globals.app.conf["core.ffmpeg_hwaccel"],
+                        // "-extra_hw_frames", "10"
+                    );
+                }
+                ffmpeg_args.push(
+                    // `-noautoscale`,
+                    "-fflags", "+genpts",
+                    // "-use_wallclock_as_timestamps", "1",
+                    "-i", "pipe:0",
+                    "-bsf:a", "aac_adtstoasc",
+                    "-bsf:v", "h264_mp4toannexb",
+                    `-fps_mode`, this.fps ? "cfr" : "passthrough",
+                    "-enc_time_base", "-1",
+                    "-muxdelay", "0",
+                    "-flush_packets", "1",
+                );
+
+                ffmpeg_args.push(
+                    "-c:v", hwenc ? `h264_${globals.app.conf["core.ffmpeg_hwenc"]}` : "libx264",
+                    "-preset", hwenc ? `p7` : this.$.h264_preset,
+                );
+                if (hwaccel) {
+                    ffmpeg_args.push(
+                        `-no-scenecut`, `1`,
+                        `-rc`, `cbr_hq`,
+                        `-forced-idr`, `1`
+                    );
+                    if (this.fps) {
+                        ffmpeg_args.push(
+                            `-rc-lookahead`, this.fps
+                        );
+                    }
+                }
+                ffmpeg_args.push(
+                    "-b:v", `${this.$.video_bitrate}k`,
+                    `-maxrate`, `${this.$.video_bitrate}k`,
+                    `-bufsize`, `${this.$.video_bitrate}k`,
+                    "-c:a", `aac`,
+                    "-b:a", `${this.$.audio_bitrate}k`,
+                    "-force_key_frames", `expr:gte(t,n_forced*${keyframes_per_second})`,
+                );
+
+                if (this.fps) {
+                    // doesnt actually apply frame rate conversion with -c copy, just writes it as a tag
+                    ffmpeg_args.push(
+                        "-r", this.fps
+                    );
+                }
+            }
+            ffmpeg_args.push(
+                "-map_metadata", "-1",
+                "-flvflags", "no_duration_filesize",
                 "-f", "flv",
-                "-c", "copy",
                 `-y`,
                 ffmpeg_output_url
-            ]);
+            );
+            this.#ffmpeg.start(ffmpeg_args);
         }
 
         if (this.session.type === SessionTypes.INTERNAL) {
-            
-            let [width, height] = this.$.resolution.split("x").map(d=>parseInt(d));
-            width = Math.round(width/2)*2;
-            height = Math.round(height/2)*2;
-
-            this.player = new SessionPlayer(this, {
-                width,
-                height,
-            });
+            this.player = new InternalSessionPlayer(this);
+            this.player.out.pipe(this.#ffmpeg.stdin);
             this.player.logger.on("log", (log)=>{
                 this.logger.log(log);
-            });
-
-            var mpv_custom = false;
-            
-            this.mpv_log_file = path.join(globals.app.logs_dir, `mpv-${this.id}-${utils.date_to_string(Date.now())}.log`);
-
-            var mpv_args = [];
-            
-            mpv_args.push(
-                "--no-config",
-                "--cache=no",
-                "--sub-font-size=66",
-                `--sub-margin-x=50`,
-                "--sub-margin-y=30",
-                `--sub-fix-timing=yes`,
-                // `--sub-ass-vsfilter-aspect-compat=no`, // fixes fucked up sub scaling on ass files for anamorphic vids (vids with embedded aspect ratio)
-                `--autoload-files=no`,
-                // -----------------------------
-                "--stream-buffer-size=4k",
-                "--interpolation=no",
-                `--video-sync=display-resample`,
-                // "--interpolation-threshold=-1",
-                `--tscale=box`,
-                `--tscale-window=sphinx`,
-                `--tscale-clamp=0.0`,
-                `--tscale-param1=0.1`,
-                `--tscale-radius=0.95`,
-                "--force-window=yes",
-                // "--ytdl=no",
-                `--ytdl-format=${globals.app.conf["core.ytdl_format"]}`,
-                // `--script-opts-append=ytdl_hook-try_ytdl_first=yes`, // <-- important for detecting youtube edls on load hook in livestreamer.lua
-                // `--script-opts-append=ytdl_hook-ytdl_path=${globals.app.conf["core.ytdl_path"]}`,
-                `--script=${globals.app.resources.get_path("mpv_lua/livestreamer.lua")}`,
-                `--script-opts-append=livestreamer-fix_discontinuities=${this.$.fix_discontinuities?"yes":"no"}`,
-                "--quiet",
-                `--log-file=${this.mpv_log_file}`,
-
-                `--audio-stream-silence=no`, // maybe fixes issue with silent segments in EDLs?
-                //--------------------
-                // "--sub-use-margins=no", // new
-                // "--image-subs-video-resolution=yes",
-                //--------------------
-            );
-            if (mpv_custom) {
-                mpv_args.push(`--end-on-eof=${this.is_encoding ? "yes" : "no"}`);
-            }
-            
-            if (this.is_realtime) {
-                // mpv_args.push(
-                //     "--cache=yes",
-                //     "--cache-secs=1",
-                //     // `--demuxer-max-bytes=${32*1024*1024}`,
-                //     // `--demuxer-readahead-secs=5`,
-                //     "--demuxer-readahead-secs=1",
-                //     "--demuxer-hysteresis-secs=1",
-                //     // -----------------
-                // );
-
-                if (mpv_custom) mpv_args.push("--orealtime");
-            }
-
-            if (use_hardware && globals.app.conf["core.mpv_hwdec"]) {
-                mpv_args.push(`--hwdec=${globals.app.conf["core.mpv_hwdec"]}-copy`);
-            }
-            if (this.is_encoding) {
-                mpv_args.push(
-                    // "--gapless-audio=yes",
-                    "--audio-format=float",
-                    "--audio-samplerate=48000",
-                    `--audio-channels=stereo`,
-                    "--framedrop=no",
-                    `--o=-`,
-                    // "--ofopts-add=strict=+experimental",
-                    // "--ofopts-add=fflags=+genpts+autobsf",
-                    // "--ofopts-add=fflags=+discardcorrupt+genpts+igndts+autobsf",
-                    // "--demuxer-lavf-analyzeduration=0.1",
-                    // "--ofopts-add=fflags=+nobuffer+fastseek+flush_packets+genpts+autobsf",
-                    // `--demuxer-lavf-o-add=avoid_negative_ts=make_zero`,
-                    // `--demuxer-lavf-o-add=copyts`,
-                    // `--demuxer-lavf-o-add=use_wallclock_as_timestamps=1`,
-                    // ----------------
-                    "--no-ocopy-metadata",
-                );
-                if (mpv_custom) {
-                    mpv_args.push("--ocontinue-on-fail");
-                }
-                if (ffmpeg_copy) {
-                    mpv_args.push(
-                        // "--of=fifo",
-                        // "--ofopts-add=fifo_format=matroska",
-                        // "--of=flv",
-                        // "--of=matroska",
-                        "--of=mpegts",
-                        // "--ofopts-add=fflags=+flush_packets", //+autobsf // +nobuffer
-                        // "--ofopts-add=fflags=+genpts",
-                        // `--ofopts-add=avioflags=direct`,
-
-                        // "--ofopts-add=chunk_duration=5000000",
-                        // "--ofopts=max_delay=1000000",
-                        // `--ofopts-add=packetsize=${1024*1024*10}`,
-                        // "--ofopts-add=flush_packets=1",
-                        // "--ofopts-add=avoid_negative_ts=+make_zero",
-                        // "--ofopts-add=avoid_negative_ts",
-
-                        "--ovc=libx264",
-                        `--ovcopts-add=profile=main`,
-                        `--ovcopts-add=preset=${this.$.h264_preset}`,
-                        `--ovcopts-add=level=4`,
-                        `--ovcopts-add=b=${this.$.video_bitrate}k`,
-                        `--ovcopts-add=maxrate=${this.$.video_bitrate}k`,
-                        `--ovcopts-add=minrate=${Math.floor(this.$.video_bitrate)}k`,
-                        `--ovcopts-add=bufsize=${Math.floor(this.$.video_bitrate*2)}k`,
-                        // `--ovcopts-add=tune=fastdecode`, // this reduces quality to big wet arses
-                        // `--ovcopts-add=tune=zerolatency`, // <-- new
-                        `--ovcopts-add=rc_init_occupancy=${Math.floor(this.$.video_bitrate)}k`,
-                        `--ovcopts-add=strict=+experimental`,
-                        // `--ovcopts-add=x264opts=rc-lookahead=0`,
-                        // `--ovcopts-add=flags=+low_delay`,
-                        // `--ovcopts-add=keyint_min=30`,
-                        // `--ovcopts-add=g=30`,
-                        // `--ovcopts-add=x264opts=`+mpv_escape("keyint=60:min-keyint=60:no-scenecut"),
-
-                        // `--vd-lavc-o-add=forced_keyframes=`+mpv_escape(`expr:gte(t,n_forced*1)`),
-                        // `--vd-lavc-o-add=g=30`,
-                        `--oac=aac`,
-                        `--oacopts-add=b=${this.$.audio_bitrate}k`,
-                        // --------------
-                        // `--ovcopts-add=x264opts=no-scenecut`, // only if using force key frames
-                        // `--oforce-key-frames=expr:gte(t,n_forced*2)`, // keyframe every 2 seconds.
-                    );
-                    var x264opts = {
-                        "nal-hrd": `cbr`,
-                        "force-cfr": `1`,
-                        "scenecut": `0`,
-                    }
-                    if (mpv_custom) {
-                        mpv_args.push(
-                            `--oforce-key-frames=expr:gte(t,n_forced*${keyframes_per_second})`,
-                        );
-                    } else {
-                        x264opts["keyint"] = (this.fps || 30) * keyframes_per_second;
-                        x264opts["min-keyint"] = (this.fps || 30) * keyframes_per_second;
-                    }
-                    mpv_args.push(
-                        `--ovcopts-add=x264opts=${Object.entries(x264opts).map(([k,v])=>`${k}=${v}`).join(":")}`,
-                    );
-                } else {
-                    if (use_hardware && !globals.app.conf["core.mpv_hwdec"]) {
-                        this.logger.warn(`mpv_hwdec must be set in config to use hardware acceleration.`);
-                    }
-                    /* mpv_args.push(
-                        `--ovc=rawvideo`,
-                        `--oac=pcm_s16le`,
-                        `--of=nut` // nut,matroska,avi
-                    ); */
-                    // at 1080p server can't do this at realtime for some reason?
-                    mpv_args.push(
-                        // `--ovc=huffyuv`, // doesnt work on server
-                        // `--ovc=utvideo`, // doesnt work on server
-                        // `--ovc=rawvideo`, // works on server except when in livestreamer, not sure why
-                        `--ovc=mpeg2video`,
-                        `--ovcopts-add=b=500M`, // set to some absurdly high bitrate
-                        `--oac=pcm_s16le`,
-                        `--of=matroska` // nut, matroska, avi
-                    );
-                    /* if (use_hardware) mpv_args.push(`--hwdec=${core.conf["core.mpv_hwdec"]}-copy`);
-                    mpv_args.push(
-                        use_hardware && core.conf["core.mpv_hwenc"] === "vaapi" ? `--ovc=mpeg2_vaapi` : `--ovc=mpeg2video`,
-                        `--ovcopts-add=b=30m`,
-                        `--ovcopts-add=maxrate=30m`,
-                        `--ovcopts-add=minrate=15m`,
-                        `--ovcopts-add=bufsize=15m`,
-                        `--oac=pcm_s16le`,
-                        `--of=nut` // nut,matroska,avi
-                    ); */
-                }
-            }
-
-            if (this.is_only_gui) {
-                let opts = this.get_target_opts("gui");
-                mpv_args.push(
-                    `--osc=${opts.osc?"yes":"no"}`,
-                    // `--script-opts-append=livestreamer-capture-mode=1`,
-                    "--force-window",
-                    // `--interpolation=yes`,
-                    `--profile=gpu-hq`,
-                    `--deband=no`,
-                    `--blend-subtitles=yes`,
-                    `--osd-level=1`,
-                    `--term-osd=force`,
-                );
-            }
-            
-            // -------------------------------------------------------
-
-            this.player.mpv.on("before-start", ()=>{
-                this.#timer.reset();
-                this.#timer.start();
-                if (this.#ffmpeg_in) {
-                    let is_realtime = this.is_realtime;
-                    let pts = 0;
-                    let dts = 0;
-                    const push = (chunk, callback)=>{
-                        passthru.push(chunk);
-                        callback();
-                    };
-                    const ffprobe = child_process.spawn("ffprobe", [
-                        "-i", "pipe:0",
-                        "-show_packets",       // Display packet-level info
-                        "-of", "json=compact=1",         // JSON output for parsing
-                        "-v", "quiet"          // Suppress logs
-                    ], {
-                        stdio: ["pipe", "pipe", "ignore"]
-                    });
-                    const rl = readline.createInterface(ffprobe.stdout);
-                    ffprobe.stdout.on("close", ()=>rl.close());
-                    rl.on("line", (line)=>{
-                        try {
-                            let data = JSON.parse(line.trim().slice(0,-1));
-                            if (data.codec_type === "video") {
-                                var new_pts = +data.pts_time;
-                                var new_dts = +data.dts_time;
-                                dts = Math.max(dts, new_dts);
-                                pts = Math.max(pts, new_pts);
-                                /* if (new_pts > pts) {
-                                } else {
-                                    if (globals.app.debug) this.logger.warn(`PTS ${pts} -> ${new_pts}, skipping packet.`);
-                                } */
-                            }
-                        } catch (e) {
-                            return;
-                        }
-                    });
-                    let last_elapsed = 0;
-                    const passthru = new PassThrough({
-                        transform: (chunk, encoding, callback)=>{
-                            ffprobe.stdin.write(chunk);
-
-                            let elapsed = this.#timer.elapsed / 1000;
-                            let max_buffer_duration = Math.min(this.$.buffer_duration, 60);
-                            let buffer_duration = pts - elapsed;
-                            
-                            if (is_realtime && buffer_duration < 0) {
-                                // this prevents the buffer from speeding up when there has been a significant pause
-                                // elapsed_correction += pts_time_diff;
-                            }
-                            if (is_realtime && buffer_duration > max_buffer_duration) {
-                                let delay = (buffer_duration - max_buffer_duration) * 1000;
-                                setTimeout(()=>push(chunk, callback), delay);
-                            } else {
-                                push(chunk, callback);
-                            }
-                            last_elapsed = elapsed;
-                        }
-                    });
-
-                    var handle_end = (e)=>{
-                        if (this.#ffmpeg_in.stopped) return;
-                        if (e && e.code !== "ERR_STREAM_PREMATURE_CLOSE") {
-                            this.logger.error("pipeline error:", e);
-                        }
-                    };
-
-                    const pipeline1 = pipeline(
-                        this.player.mpv.stdout,
-                        this.#ffmpeg_in.stdin,
-                        handle_end
-                    );
-
-                    const pipeline2 = pipeline(
-                        this.#ffmpeg_in.stdout,
-                        passthru,
-                        this.#ffmpeg_out.stdin,
-                        handle_end
-                    );
-
-                    this.#ffmpeg_in.on("end", ()=>{
-                        pipeline1.destroy();
-                        pipeline2.destroy();
-                        rl.close();
-                        ffprobe.kill()
-                    });
-
-                    // this.mkv_packet_handler = new MKVPacketHandler(this, this.is_realtime);
-                    // this.mkv_packet_handler.on("pts", (pts)=>{
-                    //     this.#pts = pts;
-                    // });
-                    // this.player.mpv.stdout.pipe(this.mkv_packet_handler.stream).pipe(this.ffmpeg.stdin);
-                    // this.player.mpv.on("before-quit", ()=>{
-                    //     this.player.mpv.stdout.unpipe(this.mkv_packet_handler.stream).unpipe(this.ffmpeg.stdin);
-                    // })
-                    
-                    // needed to swallow 'Error: write EOF' when unpiping!!!
-                    /* this.#ffmpeg_in.stdin.on("error", (e)=>{
-                        if (this.#ffmpeg_in.stopped) return;
-                        this.logger.error("ffmpeg stdin error:", e);
-                    }); */
-                }
-            });
-
-            let res = await this.player.start(mpv_args);
-            if (!res) {
-                return;
-            }
-            this.logger.info("Started MPV successfully");
-            
-            this.player.mpv.on("quit", async ()=>{
-                if (this.is_only_gui) await this.stop("quit");
-                else this._handle_end("mpv");
             });
         }
         
@@ -680,13 +313,8 @@ export class Stream extends StopStartStateMachine {
 
         if (!this.is_paused) {
             if (this.player) this.register_metric(`decoder:speed`, this.player.$.playback_speed);
-            let key = (this.session.type === SessionTypes.EXTERNAL) ? "upstream" : "trans";
-            if (this.#ffmpeg_in) {
-                this.$.speed = this.#ffmpeg_in.last_info ? this.#ffmpeg_in.last_info.speed_alt : 0;
-                this.$.bitrate = this.#ffmpeg_in.last_info ? this.#ffmpeg_in.last_info.bitrate : 0;
-                this.register_metric(`${key}:speed`, this.$.speed);
-                this.register_metric(`${key}:bitrate`, this.$.bitrate);
-            }
+            this.$.speed = this.#ffmpeg.last_info ? this.#ffmpeg.last_info.speed_alt : 0;
+            this.$.bitrate = this.#ffmpeg.last_info ? this.#ffmpeg.last_info.bitrate : 0;
             for (let st of Object.values(this.stream_targets)) {
                 this.register_metric(`${st.$.key}:speed`, st.$.speed);
                 this.register_metric(`${st.$.key}:bitrate`, st.$.bitrate);
@@ -708,17 +336,10 @@ export class Stream extends StopStartStateMachine {
             target.destroy();
         }
         if (this.player) {
-            this.logger.info("Terminating MPV...");
-            let t0 = Date.now();
-            await this.player.mpv.quit();
-            let t1 = Date.now();
-            this.logger.info(`MPV terminated in ${(t1-t0)/1000} secs.`);
+            this.player.destroy();
         }
-        if (this.#ffmpeg_in) {
-            this.#ffmpeg_in.stop();
-        }
-        if (this.#ffmpeg_out) {
-            this.#ffmpeg_out.stop();
+        if (this.#ffmpeg) {
+            this.#ffmpeg.stop();
         }
 
         globals.app.ipc.emit("main.stream.stopped", this.id);
