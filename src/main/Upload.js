@@ -187,11 +187,11 @@ export class Upload extends DataNodeID {
         this.destroy();
     }
 
-    async ondestroy() {
+    async _destroy() {
         delete globals.app.uploads[this.id];
         delete globals.app.$.uploads[this.id];
         clearInterval(this.#speed_check_interval_id);
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 

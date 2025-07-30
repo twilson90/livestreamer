@@ -1,9 +1,10 @@
 import path from "node:path";
 import fs from "fs-extra";
-import {globals, Stream} from "./exports.js";
+import {globals, SessionStream} from "./exports.js";
 import {utils, constants, DataNodeID, DataNodeID$, Logger, ClientUpdater, LogCollector, AccessControl } from "../core/exports.js";
+import e from "express";
 
-/** @import {Stream$, MainClient} from "./exports.js" */
+/** @import {SessionStream$, MainClient} from "./exports.js" */
 /** @import {Log} from "../core/exports.js" */
 /** @import * as events from "events" */
 
@@ -15,7 +16,7 @@ export class Session$ extends DataNodeID$ {
     /** @type {Record<PropertyKey,Log>} */
     logs = {};
     version = "1.0";
-    access_control = new AccessControl();
+    access_control = new AccessControl().$;
     stream_settings = new StreamSettings$();
     stream_id;
 }
@@ -24,14 +25,6 @@ export class StreamSettings$ {
     targets = [];
     target_opts = {};
     title = "";
-    fps = 0;
-    use_hardware = 0;
-    resolution = "1280x720";
-    h264_preset = "veryfast";
-    video_bitrate = 5000;
-    audio_bitrate = 160;
-    buffer_duration = 5;
-    test = false;
 }
 
 /**
@@ -53,8 +46,8 @@ export class Session extends DataNodeID {
     get clients() { return this.client_updater.clients; }
     // get clients() { return Object.values(globals.app.clients).filter(c=>c.session === this); }
 
-    /** @type {Stream} */
-    get stream() { return globals.app.streams[this.$.stream_id]; }
+    /** @type {SessionStream} */
+    get stream() { return globals.app.session_streams[this.$.stream_id]; }
 
     reset() {
         Object.assign(this.$, this.defaults);
@@ -141,7 +134,7 @@ export class Session extends DataNodeID {
 
     async start_stream(settings) {
         if (this.stream && this.stream.state !== constants.State.STOPPED) return;
-        var stream = new Stream();
+        var stream = new SessionStream();
         stream.attach(this);
         settings = utils.json_copy({
             ...utils.json_copy(this.defaults.stream_settings),
@@ -161,7 +154,7 @@ export class Session extends DataNodeID {
         }
     }
 
-    async ondestroy() {
+    async _destroy() {
         
         await this.stop_stream();
 
@@ -185,7 +178,7 @@ export class Session extends DataNodeID {
         this.client_updater.destroy();
 
         // this.logger.destroy();
-        return super.ondestroy();
+        return super._destroy();
     }
 
     tick() { }

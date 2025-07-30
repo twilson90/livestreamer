@@ -189,14 +189,20 @@ class PlayButton {
         var paused = false;
         var ended = false;
         var seeking = false;
-        var videoWasPlaying = false;
+        var was_just_seeking = false;
+        var was_just_seeking_timeout_id;
 
         if (app.player) {
             var vjs = app.player.player;
             seeking  = vjs.scrubbing() || vjs.seeking();
-            videoWasPlaying = vjs.controlBar.progressControl.seekBar.videoWasPlaying;
+            if (seeking) {
+                was_just_seeking = true;
+                clearTimeout(was_just_seeking_timeout_id);
+            } else {
+                was_just_seeking_timeout_id = setTimeout(()=>was_just_seeking = false, 500);
+            }
             ended = vjs.ended();
-            paused = !ended && vjs.hasStarted() && vjs.paused() && (!seeking || !videoWasPlaying);
+            paused = !ended && vjs.hasStarted() && vjs.paused() && (!seeking && !was_just_seeking);
         }
         var initialized = app.player && app.player.initialized;
         this.el.querySelector(".play").style.display = !initialized ? "" :  "none";

@@ -258,10 +258,6 @@ export class ElFinder {
 		globals.app.ipc.emit("file-manager.volumes", this.volume_configs);
 	}
 
-	/* async update_volumes(volume_ids) {
-		globals.app.ipc.emit("file-manager.volumes", volumes);
-	} */
-
 	/** @param {Volume} volume */
 	hash(volume, id="") {
 		var idhash = Buffer.from(id).toString('base64')

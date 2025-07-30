@@ -1,5 +1,7 @@
 export const DIRECTORY = "directory";
 
+export const DEFAULT_FPS = 25;
+
 export const State = new class {
     STARTED = "started";
     STARTING = "starting";

@@ -12,7 +12,7 @@ export class MainClient extends Client {
     get session() { return globals.app.sessions[this.$.session_id]; }
     /** @type {InternalSession} */
     get internal_session() { return this.session; }
-    get stream() { return this.session.stream; }
+    get session_stream() { return this.session.stream; }
 
     api = {
         ...super.api,
@@ -30,8 +30,12 @@ export class MainClient extends Client {
         "handover": (...args)=>this.internal_session.handover(...args),
         "get_autosave_history": (...args)=>this.internal_session.get_autosave_history(...args),
         "detect_crop": (...args)=>this.internal_session.detect_crop(...args),
-        "stop_stream": (...args)=>this.internal_session.stop_stream(...args),
-        "start_stream": (...args)=>this.internal_session.start_stream(...args),
+        "stop_stream": (...args)=>{
+            this.internal_session.stop_stream(...args)
+        },
+        "start_stream": (...args)=>{
+            this.internal_session.start_stream(...args)
+        },
         "reload": (...args)=>this.internal_session.reload(...args),
         "set_player_default_override": (...args)=>this.internal_session.set_player_default_override(...args),
         "update_media_info_from_ids": (...args)=>this.internal_session.update_media_info_from_ids(...args),
@@ -39,7 +43,7 @@ export class MainClient extends Client {
         "playlist_remove": (ids, session_id, opts)=>{
             /** @type {InternalSession} */
             var session = globals.app.sessions[session_id] || this.internal_session;
-            session.playlist_remove(ids, opts);
+            return session.playlist_remove(ids, opts);
         },
         "playlist_update": (...args)=>this.internal_session.playlist_update(...args),
         "playlist_undo": (...args)=>this.internal_session.playlist_undo(...args),
@@ -48,19 +52,27 @@ export class MainClient extends Client {
         "download_and_replace": (...args)=>this.internal_session.download_and_replace(...args),
         "cancel_download": (...args)=>this.internal_session.cancel_download(...args),
         "cancel_upload": (...args)=>this.internal_session.cancel_upload(...args),
-        "playlist_play": (...args)=>this.internal_session.playlist_play(...args),
+        "playlist_play": (...args)=>{
+            this.internal_session.playlist_play(...args)
+        },
         "seek": (...args)=>this.internal_session.seek(...args),
         "update_player_controls": (...args)=>this.internal_session.update_player_controls(...args),
         "fade_out_in": (...args)=>this.internal_session.fade_out_in(...args),
         "load_session": (...args)=>this.internal_session.load(...args),
         "load_session_autosave": (...args)=>this.internal_session.load_autosave(...args),
         "get_user_save_data": (...args)=>this.internal_session.get_user_save_data(...args),
-        "pause": (...args)=>this.stream.pause(...args),
-        "resume": (...args)=>this.stream.resume(...args),
-        "session_update_values": (...args)=>utils.merge(this.session.$, args[0], {delete_nulls:true}),
-        "stream_update_values": (...args)=>utils.merge(this.stream.$, args[0], {delete_nulls:true}),
-        "stream_settings_update_values": (...args)=>utils.merge(this.internal_session.$.stream_settings, args[0], {delete_nulls:true}),
-        "restart_stream": (...args)=>this.stream.restart(...args),
+        "pause": (...args)=>this.session_stream.pause(...args),
+        "resume": (...args)=>this.session_stream.resume(...args),
+        "session_update_values": (...args)=>{
+            utils.merge(this.session.$, args[0], {delete_nulls:true})
+        },
+        "stream_update_values": (...args)=>{
+            utils.merge(this.session_stream.$, args[0], {delete_nulls:true})
+        },
+        "stream_settings_update_values": (...args)=>{
+            utils.merge(this.internal_session.$.stream_settings, args[0], {delete_nulls:true})
+        },
+        "restart_targets": (...args)=>this.session_stream.restart_targets(...args),
         "new_session": (...args)=>this.new_session(...args),
         "get_media_info": (...args)=>this.get_media_info(...args),
         "save_file": (...args)=>this.save_file(...args),
@@ -71,10 +83,9 @@ export class MainClient extends Client {
         "add_volume": (...args)=>globals.app.ipc.request("file-manager", "add_volume", args),
         "edit_volume": (...args)=>globals.app.ipc.request("file-manager", "edit_volume", args),
         "delete_volume": (...args)=>globals.app.ipc.request("file-manager", "delete_volume", args),
-        "update_volumes": (...args)=>globals.app.ipc.request("file-manager", "update_volumes", args),
     }
 
-    oninit() {
+    _init() {
         globals.app.$.clients[this.id] = this.$;
     }
 
@@ -126,9 +137,9 @@ export class MainClient extends Client {
         return globals.app.get_media_info(filename, opts);
     }
 
-    ondestroy() {
+    _destroy() {
         delete globals.app.$.clients[this.id];
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 

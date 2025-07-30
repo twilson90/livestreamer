@@ -10,10 +10,10 @@ import bodyParser from "body-parser";
 import multer from "multer";
 import Color from "color";
 import stream from "node:stream";
-import {globals, Stream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, downloaders, ass } from "./exports.js";
-import {utils, WebServer, ClientUpdater, ClientServer, Cache, CoreFork, LogCollector, StreamRangeServer } from "../core/exports.js";
+import {globals, SessionStream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, downloaders, ass } from "./exports.js";
+import {utils, WebServer, ClientUpdater, ClientServer, Cache, CoreFork, LogCollector, StreamRangeServer, FFMPEGWrapper } from "../core/exports.js";
 
-/** @import {StreamTarget, Session, Session$, MainClient$, Log$, Target$, Upload$, Download$, Stream$} from "./exports.js" */
+/** @import {StreamTarget, Session, Session$, MainClient$, Log$, Target$, Upload$, Download$, SessionStream$} from "./exports.js" */
 
 /** @typedef {"video"|"audio"|"subtitle"} MediaInfoStreamType */
 /** @typedef {{index:number, start:number, end:number, title:string}} MediaInfoChapter */
@@ -72,8 +72,8 @@ export const DEFAULT_GENERATE_MEDIA_OPTS = {
 export class MainApp$ {
     /** @type {Record<PropertyKey,Session$>} */
     sessions = {};
-    /** @type {Record<PropertyKey,Stream$>} */
-    streams = {};
+    /** @type {Record<PropertyKey,SessionStream$>} */
+    session_streams = {};
     /** @type {Record<PropertyKey,MainClient$>} */
     clients = {};
     /** @type {Record<PropertyKey,Log$>} */
@@ -105,10 +105,12 @@ export class MainApp extends CoreFork {
     targets = {};
     /** @type {Record<PropertyKey,Upload>} */
     uploads = {};
-    /** @type {Record<PropertyKey,Stream>} */
-    streams = {};
+    /** @type {Record<PropertyKey,SessionStream>} */
+    session_streams = {};
     /** @type {Cache} */
     #media_info_cache;
+    // /** @type {Cache} */
+    // #ytdlp_cache;
     #media_refs = {};
     /** @type {Record<PropertyKey,Promise<MediaInfo>>} */
     #media_info_promise_map = {};
@@ -172,6 +174,8 @@ export class MainApp extends CoreFork {
         });
 
         this.#media_info_cache = new Cache("mediainfo", 1000 * 60 * 60 * 24 * 7);
+        
+        // this.#ytdlp_cache = new Cache("ytdlp");
 
         this.#media_info_promise_pool = new utils.PromisePool(MAX_CONCURRENT_MEDIA_INFO_PROMISES);
         
@@ -181,9 +185,9 @@ export class MainApp extends CoreFork {
                 var p = {
                     name,
                     status: proc?"online":"stopped",
-                    pid: proc?proc.pid:null, 
+                    pid: proc?proc.pid:null,
                     title: this.conf[`${name}.title`],
-                    description: this.conf[`${name}.description`]
+                    description: this.conf[`${name}.description`],
                 };
                 this.$.processes[name] = p;
             }
@@ -192,7 +196,7 @@ export class MainApp extends CoreFork {
 
         this.ipc.on("internal:processes", ()=>update_processes());
         this.ipc.respond("stream_targets", ()=>{
-            return Object.values(this.streams).map(s=>Object.values(s.stream_targets)).flat().map(t=>t.$);
+            return Object.values(this.session_streams).map(s=>Object.values(s.stream_targets)).flat().map(t=>t.$);
         });
         this.ipc.respond("targets", ()=>{
             return Object.values(this.targets).flat().map(t=>t.$);
@@ -244,9 +248,9 @@ export class MainApp extends CoreFork {
             ["rtmp_port"]: this.conf["media-server.rtmp_port"],
             ["session_order_client"]: this.conf["main.session_order_client"],
             ["media_expire_time"]: this.conf["media-server.media_expire_time"],
+            ["mpv_hwdec"]: this.conf["core.mpv_hwdec"],
         };
         this.$.hostname = this.hostname;
-
         
         var exp = express();
         this.web = new WebServer(exp, {
@@ -363,163 +367,148 @@ export class MainApp extends CoreFork {
             next();
         });
 
-        exp.use("/generate/*", async (req, res, next)=>{
-            const controller = new AbortController();
-            var {source} = req.query
-            var data = {
-                ...DEFAULT_GENERATE_MEDIA_OPTS,
-            };
-            for (var k in req.query) {
-                if (k in DEFAULT_GENERATE_MEDIA_OPTS) data[k] = req.query[k];
-            }
-            if (source) {
-                try { Object.assign(data, JSON.parse(source)); } catch (e) { data.filename = source; }
-            }
-            var {filename} = data;
-            if (filename) {
-                if (filename.match(/^https?:\/\//)) {
-                    var local_path = path.join(this.tmp_dir, utils.md5(source));
-                    if (!await fs.exists(local_path)) {
-                        try {
-                            let downloader = new utils.Downloader(source, { controller: controller });
-                            await downloader.file(local_path);
-                        } catch (e) {
-                            this.logger.warn(`Failed to download '${source}': ${e}`);
-                            res.status(400).send(e.message);
-                            return;
-                        }
-                    }
-                    filename = local_path;
-                }
-                if (!(await fs.exists(filename))) {
-                    res.status(400).send(`File not found: ${filename}`);
-                    return;
-                }
-            }
-            let color_str = Color(data.background || 0x000000).hex();
-            var hash = utils.md5(JSON.stringify(data));
+        // exp.use("/generate/*", async (req, res, next)=>{
+        //     const controller = new AbortController();
+        //     var {source} = req.query
+        //     var data = {
+        //         ...DEFAULT_GENERATE_MEDIA_OPTS,
+        //     };
+        //     for (var k in req.query) {
+        //         if (k in DEFAULT_GENERATE_MEDIA_OPTS) data[k] = req.query[k];
+        //     }
+        //     if (source) {
+        //         try { Object.assign(data, JSON.parse(source)); } catch (e) { data.filename = source; }
+        //     }
+        //     var {filename} = data;
+        //     if (filename) {
+        //         if (filename.match(/^https?:\/\//)) {
+        //             var local_path = path.join(this.tmp_dir, utils.md5(source));
+        //             if (!await fs.exists(local_path)) {
+        //                 try {
+        //                     let downloader = new utils.Downloader(source, { controller: controller });
+        //                     await downloader.file(local_path);
+        //                 } catch (e) {
+        //                     this.logger.warn(`Failed to download '${source}': ${e}`);
+        //                     res.status(400).send(e.message);
+        //                     return;
+        //                 }
+        //             }
+        //             filename = local_path;
+        //         }
+        //         if (!(await fs.exists(filename))) {
+        //             res.status(400).send(`File not found: ${filename}`);
+        //             return;
+        //         }
+        //     }
+        //     let color_str = Color(data.background || 0x000000).hex();
+        //     var hash = utils.md5(JSON.stringify(data));
 
-            var media_types = new Set(data.type.split(/[^a-zA-Z0-9]/));
-            let [ext, mime] = ["mkv", "video/x-matroska"];
-            if (media_types.has("video")) [ext, mime] = ["mkv", "video/x-matroska"];
-            else if (media_types.has("audio")) [ext, mime] = ["mp3", "audio/mpeg"];
-            else if (media_types.has("subtitle")) [ext, mime] = ["ass", "text/plain"];
-            var generated_filename = path.join(this.tmp_dir, `${hash}.${ext}`);
-            var exists = !!(await fs.exists(generated_filename) && (await fs.stat(generated_filename))?.size);
-            
-            res.status(200);
-            res.setHeader("Content-Type", mime);
+        //     var media_types = new Set(data.type.split(/[^a-zA-Z0-9]/));
+        //     let [ext, mime] = ["mkv", "video/x-matroska"];
+        //     if (media_types.has("video")) [ext, mime] = ["mkv", "video/x-matroska"];
+        //     else if (media_types.has("audio")) [ext, mime] = ["mp3", "audio/mpeg"];
+        //     else if (media_types.has("subtitle")) [ext, mime] = ["ass", "text/plain"];
+        //     var generated_filename = path.join(this.tmp_dir, `${hash}.${ext}`);
+        //     var exists = !!(await fs.exists(generated_filename));
+        //     var stat = exists ? await fs.stat(generated_filename) : null;
+        //     var size = stat?.size;
+        //     var readable = exists ? fs.createReadStream(generated_filename) : null;
 
-            if (exists) {
-                res.sendFile(generated_filename);
-            } else {
-                fs.writeFile(generated_filename, "").catch(utils.noop);
-                var ffmpeg_args = [
-                    `-r`, `${data.fps}`
-                ];
-                for (var media_type of media_types) {
-                    if (media_type === "video") {
-                        if (filename) {
-                            ffmpeg_args.push(
-                                `-loop`, `1`,
-                                "-i", filename,
-                            );
-                            // vf.push(`pad=width=${data.width}:height=${data.height}:x=(ow-iw)/2:y=(oh-ih)/2:color=${color_str}`);
-                        } else {
-                            ffmpeg_args.push(
-                                "-f", "lavfi",
-                                "-i", `color=c=${color_str}:s=${data.width}x${data.height}:r=${data.fps}`,
-                            );
-                        }
-                    } else if (media_type === "audio") {
-                        ffmpeg_args.push(
-                            "-f", "lavfi",
-                            "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-                            "-ar", "44100",
-                            "-c:a", "mp3",
-                            "-b:a", "320k",
-                            "-t", `${data.duration}`,
-                        );
-                    } else if (media_type === "subtitle") {
-                        let ass_text = ass.create(undefined, undefined, [{end:data.duration, text:""}]);
-                        let hash = utils.md5(ass_text);
-                        let tmp = path.join(this.tmp_dir, `${hash}.ass`);
-                        if (!await fs.exists(tmp)) {
-                            await fs.writeFile(tmp, ass_text, "utf-8");
-                        }
-                        ffmpeg_args.push(
-                            "-i", tmp,
-                        );
-                    }
-                }
-                ffmpeg_args.push(
-                    `-crf`, `0`,
-                    `-tune`, `stillimage,zerolatency`,
-                    `-c:v`, `libx264`,
-                    `-preset:v`, `ultrafast`,
-                    `-pix_fmt`, `yuv420p`
-                );
-                if (filename && media_types.has("video")) {
-                    ffmpeg_args.push(
-                        `-vf`, `scale=${data.width}:${data.height}:force_original_aspect_ratio=decrease:force_divisible_by=2`
-                    );
-                }
-                ffmpeg_args.push(
-                    `-g`, `999999`,
-                    `-keyint_min`, `999999`,
-                    `-x264-params`, `ref=1:no-scenecut=1`,
-                    `-force_key_frames`, `0`,
-                    `-f`, `matroska`,
-                    "-t", `${data.duration}`,
-                    `-y`,
-                    `pipe:1`
-                );
+        //     if (!readable) {
+        //         // fs.writeFile(generated_filename, "").catch(utils.noop);
+        //         var ffmpeg_args = [
+        //             `-r`, `${data.fps}`
+        //         ];
+        //         for (var media_type of media_types) {
+        //             if (media_type === "video") {
+        //                 if (filename) {
+        //                     ffmpeg_args.push(
+        //                         `-loop`, `1`,
+        //                         "-i", filename,
+        //                     );
+        //                     // vf.push(`pad=width=${data.width}:height=${data.height}:x=(ow-iw)/2:y=(oh-ih)/2:color=${color_str}`);
+        //                 } else {
+        //                     ffmpeg_args.push(
+        //                         "-f", "lavfi",
+        //                         "-i", `color=c=${color_str}:s=${data.width}x${data.height}:r=${data.fps}`,
+        //                     );
+        //                 }
+        //             } else if (media_type === "audio") {
+        //                 ffmpeg_args.push(
+        //                     "-f", "lavfi",
+        //                     "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        //                     "-ar", "44100",
+        //                     "-c:a", "mp3",
+        //                     "-b:a", "320k",
+        //                     "-t", `${data.duration}`,
+        //                 );
+        //             } else if (media_type === "subtitle") {
+        //                 let ass_text = ass.create(undefined, undefined, [{end:data.duration, text:""}]);
+        //                 let hash = utils.md5(ass_text);
+        //                 let tmp = path.join(this.tmp_dir, `${hash}.ass`);
+        //                 if (!await fs.exists(tmp)) {
+        //                     await fs.writeFile(tmp, ass_text, "utf-8");
+        //                 }
+        //                 ffmpeg_args.push(
+        //                     "-i", tmp,
+        //                 );
+        //             }
+        //         }
+        //         ffmpeg_args.push(
+        //             `-crf`, `0`,
+        //             `-tune`, `stillimage,zerolatency`,
+        //             `-c:v`, `libx264`,
+        //             `-preset:v`, `ultrafast`,
+        //             `-pix_fmt`, `yuv420p`
+        //         );
+        //         if (filename && media_types.has("video")) {
+        //             ffmpeg_args.push(
+        //                 `-vf`, `scale=${data.width}:${data.height}:force_original_aspect_ratio=decrease:force_divisible_by=2`
+        //             );
+        //         }
+        //         ffmpeg_args.push(
+        //             `-g`, `999999`,
+        //             `-keyint_min`, `999999`,
+        //             `-x264-params`, `ref=1:no-scenecut=1`,
+        //             `-force_key_frames`, `0`,
+        //             `-f`, `matroska`,
+        //             "-t", `${data.duration}`,
+        //             `-y`,
+        //             `pipe:1`
+        //         );
 
-                var ffmpeg = child_process.spawn(globals.app.ffmpeg_path, ffmpeg_args);
+        //         var ffmpeg = new FFMPEGWrapper();
+        //         var temp_path = path.join(this.tmp_dir, `${hash}-${utils.uuid4()}`);
 
-                ffmpeg.stderr.on("data", (data)=>{
-                    console.log(data.toString());
-                });
-
-                var cleanup = ()=>{
-                    controller.abort();
-                    ffmpeg.kill();
-                    try { fs.unlinkSync(temp_path); } catch (e) {}
-                };
-
-                var temp_path = path.join(this.tmp_dir, `${hash}.mkv`);
+        //         ffmpeg.start(ffmpeg_args)
+        //             .then(async ()=>{
+        //                 var stat = await fs.stat(temp_path).catch(utils.noop);
+        //                 if (stat && stat.size) await fs.rename(temp_path, generated_filename);
+        //             })
+        //             .catch(async (e)=>{
+        //                 controller.abort();
+        //                 this.logger.error(new Error(`Failed to generate media: ${e.message}`));
+        //                 await fs.unlink(temp_path).catch(utils.noop);
+        //                 end(false);
+        //             });
                 
-                var success = true;
-                ffmpeg.on("error", (err)=>{
-                    success = false;
-                    cleanup();
-                });
-                ffmpeg.on("close", ()=>{
-                    cleanup();
-                });
-                req.on('close', cleanup);
-                req.on('end', cleanup);
-                req.on('error', cleanup);
+        //         readable = ffmpeg.stdout;
 
-                var fs_stream = fs.createWriteStream(temp_path);
-                ffmpeg.stdout.pipe(res, { end: false });
-                ffmpeg.stdout.pipe(fs_stream, { end: true });
-                fs_stream.on("finish", ()=>{
-                    var stat;
-                    try { stat = fs.statSync(temp_path); } catch (e) {}
-                    if (success && stat && stat.size) fs.renameSync(temp_path, generated_filename);
-                    res.end();
-                });
-                return;
-            }
+        //         var fs_stream = fs.createWriteStream(temp_path);
+        //         stream.promises.pipeline(
+        //             ffmpeg.stdout,
+        //             fs_stream
+        //         ).catch(utils.pipe_error_handler(this.logger, "generate media ffmpeg.stdout -> fs_stream"));
+        //     }
 
-            next();
+        //     // stream.pipeline(readable, res)
+        //     //     .catch(utils.pipe_error_handler(this.logger, "generate media readable -> res"));
+            
+		//     new StreamRangeServer(({start,end})=>{
+        //         return fs.createReadStream(generated_filename, {start, end});
+        //     }, {size, type:mime}).handleRequest(req, res);
 
-            // new StreamRangeServer(({start,end})=>{
-            //     return fs.createReadStream(filename, {start, end})
-            // }, {size: stat.size, type: stat.mime}).handleRequest(req, res);
-
-        });
+        // });
 
         exp.use("/screenshots", express.static(this.#screenshots_dir));
         
@@ -567,12 +556,129 @@ export class MainApp extends CoreFork {
     }
 
     /** @param {typeof DEFAULT_GENERATE_MEDIA_OPTS} data */
-    generate_media_url(data) {
-        var url = new URL("/generate/", this.get_urls().url);
-        for (var k in data) {
-            url.searchParams.set(k, data[k]);
+    // generate_media_url(data) {
+    //     var url = new URL("/generate/", this.get_urls().url);
+    //     for (var k in data) {
+    //         url.searchParams.set(k, data[k]);
+    //     }
+    //     return url.toString();
+    // }
+
+    /** @param {typeof DEFAULT_GENERATE_MEDIA_OPTS} data */
+    async generate_media(data) {
+        data = {
+            ...DEFAULT_GENERATE_MEDIA_OPTS,
+            ...data,
+        };
+        var {filename} = data;
+        if (filename) {
+            if (filename.match(/^https?:\/\//)) {
+                var local_path = path.join(this.tmp_dir, utils.md5(source));
+                if (!await fs.exists(local_path)) {
+                    try {
+                        let downloader = new utils.Downloader(source); // risky...
+                        await downloader.file(local_path);
+                    } catch (e) {
+                        this.logger.warn(`Failed to download '${source}': ${e}`);
+                        res.status(400).send(e.message);
+                        return;
+                    }
+                }
+                filename = local_path;
+            }
+            if (!(await fs.exists(filename))) {
+                res.status(400).send(`File not found: ${filename}`);
+                return;
+            }
         }
-        return url.toString();
+        let color_str = Color(data.background || 0x000000).hex();
+        var hash = utils.md5(JSON.stringify(data));
+        var media_types = new Set(data.type.split(/[^a-zA-Z0-9]/));
+        let [ext, mime] = ["mkv", "video/x-matroska"];
+        if (media_types.has("video")) [ext, mime] = ["mkv", "video/x-matroska"];
+        else if (media_types.has("audio")) [ext, mime] = ["mp3", "audio/mpeg"];
+        else if (media_types.has("subtitle")) [ext, mime] = ["ass", "text/plain"];
+        var generated_filename = path.join(this.tmp_dir, `${hash}.${ext}`);
+        var exists = !!(await fs.exists(generated_filename));
+
+        if (!exists) {
+            var tmp_path = path.join(this.tmp_dir, `${hash}-${utils.uuid4()}`);
+            let ffmpeg_args = [
+                `-r`, `${data.fps}`
+            ];
+            for (var media_type of media_types) {
+                if (media_type === "video") {
+                    if (filename) {
+                        ffmpeg_args.push(
+                            `-loop`, `1`,
+                            "-i", filename,
+                        );
+                        // vf.push(`pad=width=${data.width}:height=${data.height}:x=(ow-iw)/2:y=(oh-ih)/2:color=${color_str}`);
+                    } else {
+                        ffmpeg_args.push(
+                            "-f", "lavfi",
+                            "-i", `color=c=${color_str}:s=${data.width}x${data.height}:r=${data.fps}`,
+                        );
+                    }
+                } else if (media_type === "audio") {
+                    ffmpeg_args.push(
+                        "-f", "lavfi",
+                        "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                        "-ar", "44100",
+                        "-c:a", "mp3",
+                        "-b:a", "320k",
+                        "-t", `${data.duration}`,
+                    );
+                } else if (media_type === "subtitle") {
+                    let ass_text = ass.create(undefined, undefined, [{end:data.duration, text:""}]);
+                    let hash = utils.md5(ass_text);
+                    let tmp = path.join(this.tmp_dir, `${hash}.ass`);
+                    if (!await fs.exists(tmp)) {
+                        await fs.writeFile(tmp, ass_text, "utf-8");
+                    }
+                    ffmpeg_args.push(
+                        "-i", tmp,
+                    );
+                }
+            }
+            ffmpeg_args.push(
+                `-crf`, `0`,
+                `-tune`, `stillimage,zerolatency`,
+                `-c:v`, `libx264`,
+                `-preset:v`, `ultrafast`,
+                `-pix_fmt`, `yuv420p`
+            );
+            if (filename && media_types.has("video")) {
+                ffmpeg_args.push(
+                    `-vf`, `scale=${data.width}:${data.height}:force_original_aspect_ratio=decrease:force_divisible_by=2`
+                );
+            }
+            ffmpeg_args.push(
+                `-g`, `999999`,
+                `-keyint_min`, `999999`,
+                `-x264-params`, `ref=1:no-scenecut=1`,
+                `-force_key_frames`, `0`,
+                `-f`, `matroska`,
+                "-t", `${data.duration}`,
+                `-y`,
+                tmp_path
+            );
+
+            var ffmpeg = new FFMPEGWrapper();
+
+            await ffmpeg.start(ffmpeg_args)
+                .then(async ()=>{
+                    var stat = await fs.stat(tmp_path).catch(utils.noop);
+                    if (stat && stat.size) await fs.rename(tmp_path, generated_filename);
+                })
+                .catch(async (e)=>{
+                    // controller.abort();
+                    this.logger.error(new Error(`Failed to generate media: ${e.message}`));
+                    await fs.unlink(tmp_path).catch(utils.noop);
+                });
+        }
+
+        return generated_filename;
     }
 
     #setup_client_updaters() {
@@ -739,6 +845,7 @@ export class MainApp extends CoreFork {
 
     async #tick() {
         Object.values(this.sessions).forEach(s=>s.tick());
+        Object.values(this.session_streams).forEach(s=>s.tick());
         if (this.sysinfo_client_updater.has_clients) this.#update_sysinfo();
         if (this.#ticks % 60 === 0) {
             var root = path.parse(process.cwd()).root;
@@ -1169,7 +1276,7 @@ export class MainApp extends CoreFork {
     // }
 
     async ytdl_probe(uri) {
-        var proc = await utils.execa(this.conf["core.ytdl_path"] || "yt-dlp", [
+        const args = [
             uri,
             "--dump-json",
             "--no-warnings",
@@ -1182,16 +1289,16 @@ export class MainApp extends CoreFork {
             "--no-playlist",
             "--playlist-start", "1",
             "--playlist-end", "1"
-        ]);
+        ]
+        // var hash = utils.md5(JSON.stringify(args));
+        // var cached = this.#ytdlp_cache.get(hash);
+        // if (cached) return cached;
+
+        var proc = await utils.execa(this.conf["core.ytdl_path"] || "yt-dlp", args);
         var lines = proc.stdout.split("\n");
-        var arr = lines.map(line=>JSON.parse(line));
-        if (arr.length > 1) {
-            return {
-                is_playlist: true,
-                items: arr
-            };
-        }
-        return arr[0];
+        var item = lines.map(line=>JSON.parse(line))[0];
+        // this.#ytdlp_cache.set(hash, item);
+        return item;
     }
 
     /** @param {string} filename */
@@ -1242,13 +1349,13 @@ export class MainApp extends CoreFork {
         await this.ipc.request("media-server", "destroy_live", [id]);
     }
 
-    async ondestroy() {
+    async _destroy() {
         this.client_updater.destroy();
         this.admin_updater.destroy();
         this.logger.info("Saving all sessions before exit...");
         await this.save_sessions();
         this.web.destroy();
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 

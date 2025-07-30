@@ -7,7 +7,7 @@ import 'jquery-ui/dist/themes/base/jquery-ui.css';
 import noUiSlider from 'nouislider';
 import "nouislider/dist/nouislider.css";
 import Cookies from 'js-cookie';
-import flvjs from 'flv.js';
+import mpegts from 'mpegts.js';
 import {Chart} from 'chart.js/auto';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import Hammer from 'hammerjs';
@@ -34,7 +34,7 @@ import "./style.scss";
 /** @type {MainWebApp} */
 export let app;
 
-export { ui, utils, jQuery, $, noUiSlider, flvjs, Chart, Hammer, Sortable, MultiDrag }
+export { ui, utils, jQuery, $, noUiSlider, mpegts as flvjs, Chart, Hammer, Sortable, MultiDrag }
 
 const SessionTypes = {
     EXTERNAL: "ExternalSession",
@@ -67,6 +67,11 @@ export const UPLOAD_STATUS = { STARTED:1, FINISHED:2, CANCELLED:3, ERROR:4 };
 export const PLAYLIST_VIEW = { LIST: "list", TIMELINE: "timeline" };
 export const PLAYLIST_MODE = { NORMAL: 0, MERGED: 1, DUAL_TRACK: 2 };
 let disk_warn_shown = false;
+
+const default_request_opts = {
+    show_spinner: true,
+    show_loader: false,
+}
 
 const buffer_duration_opts = {
     "label": "Buffer Duration",
@@ -900,7 +905,7 @@ export class Media {
         var running = session._is_running;
         var loaded = running ? !!stream.player.loaded : true;
         var seeking = running ? !!(loaded && stream.player.seeking) : false;
-        var buffering = (seeking || !loaded || !!stream.player.props["paused-for-cache"]);
+        var buffering = (seeking || !loaded);
         var seekable = running ? !!stream.player.seekable : true;
 
         this.buffering = buffering;
@@ -909,8 +914,8 @@ export class Media {
 
         this.fps = running ? stream.player.current_fps : 0;
         this.playback_speed = running ? stream.player.playback_speed : 1;
-        this.time_pos = session.time_pos;
-        this.paused = running ? !!(stream.player.props.pause || stream.player.props["paused-for-cache"]) : false;
+        this.time_pos = loaded ? session.time_pos : 0;
+        this.paused = running ? !!stream.player.paused : false;
         this.duration = running ? stream.player.duration : session._current_playlist_item._duration;
         this.chapters = loaded ? session._current_playlist_item._userdata.chapters : EMPTY_CHAPTERS;
         this.seekable = loaded ? (this.duration != 0 && seekable) : false;
@@ -927,8 +932,7 @@ export class Media {
         return Math.max(0, this.duration - this.time_pos);
     }
     get do_live_seek(){
-        var stream = app.$._session._stream;
-        return stream._is_running && !stream.is_encoding; //  && !stream.ctx.is_special
+        return false;
     }
 }
 
@@ -1075,13 +1079,19 @@ class SessionPlayer$ extends utils.remote.Proxy$ {
     loaded = false;
     seeking = false;
     seekable = false;
+    paused = false;
     duration = 0;
     chapters = [];
     time_pos = 0;
     seekable_ranges = [];
-    props = {};
     playback_speed = 1;
     current_fps = 0;
+    avsync = 0;
+    fps = 0;
+    interpolation = false;
+    deinterlacing = false;
+    video_bitrate = 0;
+    audio_bitrate = 0;
 }
 
 export class Volume$ extends utils.remote.ProxyID$ {
@@ -1105,13 +1115,14 @@ export class Stream$ extends utils.remote.ProxyID$ {
     test = false;
     bitrate = 0;
     internal_path;
-    is_encoding = false;
     restart = 0;
+    /** @type {SessionPlayer$} */
     player = new SessionPlayer$().__proxy__;
     fps = 0;
     buffer_duration = 0;
     
     get _is_only_gui() {
+        this.player
         return !!(Object.keys(this.targets).length == 1 && this.targets.includes("gui"));
     }
     get _internal_nms_session() {
@@ -1136,10 +1147,11 @@ export class Stream$ extends utils.remote.ProxyID$ {
 /** @typedef {{username:string, access:string, suspended:boolean, password:string}} AccessControlUser */
 export class AccessControl$ extends utils.remote.Proxy$ {
     static ACCESS_ORDER = {"owner":1,"allow":2,"deny":3};
+    static get DEFAULT_VALUE() { return {"*": {"access":"allow"}}; }
 
     constructor(data) {
         super();
-        Object.assign(this.__proxy__, data);
+        Object.assign(this.__proxy__, AccessControl$.DEFAULT_VALUE, data);
     }
 
     get _users() {
@@ -1164,7 +1176,7 @@ export class AccessControl$ extends utils.remote.Proxy$ {
             Object.assign(this.__proxy__[username], data);
         }
         if (this._owners.length == 0) {
-            Object.assign(this.__proxy__, { "*": {"access":"allow"} });
+            Object.assign(this.__proxy__, AccessControl$.DEFAULT_VALUE);
         }
         return true;
     }
@@ -1259,6 +1271,7 @@ export class Session$ extends utils.remote.ProxyID$ {
     stream_id = "";
     files_dir = "";
     playlist_info = utils.remote.Collection$(()=>new PlaylistInfo$()).__proxy__;
+    /** @type {PlaylistHistory$} */
     playlist_history = new PlaylistHistory$().__proxy__;
 
     constructor() {
@@ -1289,6 +1302,7 @@ export class Session$ extends utils.remote.ProxyID$ {
                     }
                 });
                 
+                /** @type {PlaylistItem$} */
                 var root = new PlaylistItem$({ id:"0", parent_id:null }).__proxy__;
                 root._private.session = _this.__proxy__;
                 this["0"] = root;
@@ -1501,7 +1515,7 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
         return this._session.playlist_info[this.id];
     }
     get _filenames() {
-        return (this._info||{}).filenames || [];
+        return this._info?.filenames ?? [];
     }
     get _related_media_infos() {
         return this._filenames.filter(f=>!f.startsWith("livestreamer://")).map(f=>this._session.media_info[f]).filter(mi=>mi);
@@ -2546,6 +2560,7 @@ class FileManagerVolumeConfigurationMenu extends ui.EditModal {
         var opts = [];
         if (app.$._client.user.is_admin) opts.push(["LocalFileSystem", "Local File System"]);
         opts.push(["FTP", "FTP"]);
+        
         var driver = new ui.InputProperty(`<select></select>`, {
             "name": "driver",
             "label": "Type",
@@ -2553,9 +2568,7 @@ class FileManagerVolumeConfigurationMenu extends ui.EditModal {
             "default": opts[0][0],
         });
         driver.on("change", (e)=>{
-            if (e.trigger) {
-                rebuild();
-            }
+            if (e.trigger) rebuild();
         });
 
         var subprops = new ui.PropertyGroup();
@@ -2575,6 +2588,9 @@ class FileManagerVolumeConfigurationMenu extends ui.EditModal {
                     "options": YES_OR_NO,
                     "default": false,
                 });
+                sftp.on("change", (e)=>{
+                    if (e.trigger) port.set_value(sftp.value ? 22 : 21);
+                });
                 let host = new ui.InputProperty(`<input type="text">`, {
                     "name": "host",
                     "label": "Host",
@@ -2590,13 +2606,11 @@ class FileManagerVolumeConfigurationMenu extends ui.EditModal {
                     "name": "username",
                     "label": "Username",
                     "default": "",
-                    "valid": VALIDATORS.not_empty,
                 });
                 let password = new ui.InputProperty(`<input type="password">`, {
                     "name": "password",
                     "label": "Password",
                     "default": "",
-                    "valid": VALIDATORS.not_empty,
                 });
                 let path = new ui.InputProperty(`<input type="text">`, {
                     "name": "path",
@@ -2604,11 +2618,22 @@ class FileManagerVolumeConfigurationMenu extends ui.EditModal {
                     "default": "/",
                     "valid": VALIDATORS.not_empty,
                 });
-                subprops.append(sftp, host, port, username, password, path);
+                subprops.layout = [
+                    sftp,
+                    [host, port],
+                    [username, password],
+                    path
+                ];
             }
         }
 
         this.props.append(name, driver, new ui.Separator(), subprops);
+
+        var access_control = new AccessControlProperty({
+            "name": "access_control",
+            "label": "Access Control",
+        });
+        this.props.append(access_control);
 
         rebuild();
     }
@@ -2638,7 +2663,9 @@ export class FileManagerVolumesMenu extends ui.Modal {
                 "can_add": !locked,
                 "can_move": false,
                 "can_delete": can_edit,
+                "reset": false,
                 "readonly": locked,
+                "clipboard": false,
                 ui(list_item) {
                     list_item.buttons.prepend(
                         new ui.Button(`<button title="Edit"><i class="fas fa-wrench"></i></button>`, {
@@ -4193,12 +4220,11 @@ export class TargetsMenu extends ui.EditModal {
     constructor(prop) {
         super({
             "modal.title": "Targets",
-            "modal.close": !prop,
+            // "modal.close": !prop,
             "modal.footer": !!prop,
             "modal.ok": !!prop,
             "modal.cancel": !!prop,
             "modal.apply": ()=>{
-                console.log(prop);
                 if (prop) prop.set_value(this.targets.value, {trigger:true});
             },
             "modal.blocking": false,
@@ -4278,7 +4304,7 @@ class ExpandedTargetsPropertyItem extends ui.UI {
 
         var restart_button = new ui.Button(`<button class="icon button"><i class="fas fa-sync"></i></button>`, {
             "hidden": ()=>!is_restartable(),
-            "click_async": ()=>app.restart_stream([target.id]),
+            "click_async": ()=>app.restart_targets([target.id]),
             "title": "Restart",
         });
 
@@ -4845,7 +4871,7 @@ export class StreamConfigurationMenu extends ui.EditModal {
 
         var restart_button = new ui.Button(`<button><i class="fas fa-sync"></i></button>`, {
             "hidden": ()=>!app.$._session._stream._is_running,
-            "click_async": ()=>app.restart_stream(),
+            "click_async": ()=>app.restart_targets(),
             "title": "Restart Stream Targets",
             "flex": 0
         });
@@ -4861,6 +4887,13 @@ export class StreamConfigurationMenu extends ui.EditModal {
             "hidden": ()=>app.$._session.type == SessionTypes.EXTERNAL
         });
         this.props.append(buffer_duration);
+
+        var fps = new ui.InputProperty(`<input type="number">`, {
+            ..._get_property_opts("fps"),
+            "name": "fps",
+            "label": "Frame Rate",
+        });
+        this.props.append(fps);
     }
 }
 export class HandoverSessionMenu extends ui.EditModal {
@@ -5377,7 +5410,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             "name": "audio_delay",
             "label": "Audio Delay",
             "suffix": "secs",
-            "info": "Positive values delay the audio playback, while negative values make the audio play earlier relative to the video."
+            "info": "Positive values delay the audio playback, while negative values make the audio play earlier relative to the video.",
         });
         
         this.audio_channels = new ui.InputProperty(`<select></select>`, {
@@ -5400,7 +5433,6 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             "name": "sub_delay",
             "label": "Subtitle Delay",
             "suffix": `secs`,
-            "precision":3,
         });
         this.subtitle_delay.output_modifiers.push((v)=>Number(v).toFixed(2));
         
@@ -6181,14 +6213,14 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             // -------------------------------------
 
             this.macro_function = new ui.InputProperty(`<select>`, {
-                ..._get_property_opts("macro_function"),
+                ..._get_property_opts("function"),
                 "name": "function",
                 "label": "Function",
             });
             // this.macro_function.validators.push(VALIDATORS.not_empty);
 
             this.macro_handover_session = new ui.InputProperty(`<select>`, {
-                ..._get_property_opts("macro_handover_session"),
+                ..._get_property_opts("function_handover_session"),
                 "name": "function_handover_session",
                 "label": "Handover Session",
                 "options":()=>app.get_handover_sessions_options(),
@@ -6989,7 +7021,7 @@ export class StreamSettings extends Panel {
                 } else {
                     var msg = "Another stream is already running, playback of all streams may by slower than realtime.\nAre you sure you want to start streaming?";
                     if (Object.values(app.$.streams).filter(s=>s._is_running).length == 0 || confirm(msg)) {
-                        app.request("start_stream");
+                        app.request("start_stream", null, {});
                         // app.$.push([`sessions/${app.$.session.id}/core/state`, "starting"]);
                     }
                     // app.$.push([`sessions/${app.$.session.id}/core/state`, "stopping"]);
@@ -7123,8 +7155,10 @@ export class StreamSettings extends Panel {
             ..._get_property_opts("use_hardware"),
             "name": "use_hardware",
             "label": "Hardware Transcoding",
+            "visible": ()=>app.$.conf["mpv_hwdec"],
+            width: 140,
         });
-        this.stream_props_ui.append(this.use_hardware)
+        this.stream_props_ui.append(this.use_hardware);
 
         this.props.on("change", (e)=>{
             if (!e.name || !e.trigger) return;
@@ -7154,7 +7188,6 @@ export class StreamSettings extends Panel {
                 stream_info["Video Bitrate"] = `${stream["video_bitrate"]}Kbps`;
                 stream_info["Audio Bitrate"] = `${stream["audio_bitrate"]}Kbps`;
                 stream_info["Resolution"] = `${stream["resolution"]}`;
-                stream_info["Use Hardware"] = `${stream["use_hardware"]?"Yes":"No"}`;
                 if (stream["re"]) {
                     stream_info["Realtime"] =`${stream["re"]?"Yes":"No"}`;
                 }
@@ -7163,6 +7196,7 @@ export class StreamSettings extends Panel {
                 }
                 stream_info["Frame Rate"] = `${stream["fps"] || "Variable"}`;
                 stream_info["Buffer Duration"] = `${stream["buffer_duration"]} secs`;
+                stream_info["Hardware Transcoding"] = `${stream["use_hardware"]?"Yes":"No"}`;
             } else {
                 var nms_session = session._get_connected_nms_session_with_appname("livestream", "external");
                 if (nms_session) {
@@ -7192,9 +7226,7 @@ export class StreamSettings extends Panel {
                 // url.search = new URLSearchParams(internal_session.publishArgs);
                 stream_info["Internal URL"] = `<a href="${url.toString()}" target="_blank">${url}</a>`;
             }
-            if (stream.is_encoding) {
-                stream_info["Output Bit Rate"] = utils.format_bits(stream.bitrate, "k")+"ps";
-            }
+            stream_info["Output Bit Rate"] = utils.format_bits(stream.bitrate, "k")+"ps";
             stream_info["Run Time"] = session._is_running ? utils.ms_to_timespan_str(stream._run_time) : 0;
 
             dom.rebuild(stream_info_el, Object.keys(stream_info), {
@@ -7215,9 +7247,8 @@ export class StreamSettings extends Panel {
 }
 
 export class MediaPlayerPanel extends Panel {
-    _buffer_duration;
     get buffer_duration() {
-        return utils.try_catch(()=>(this.flv_player._mediaElement.buffered.end(0)-this.flv_player.currentTime));
+        return utils.try_catch(()=>(this.flv_player._media_element.buffered.end(0)-this.flv_player.currentTime));
     }
 
     constructor() {
@@ -7355,10 +7386,10 @@ video { width: 100% !important; height: 100% !important; }`;
         this.toggle_play_pause_button = new ui.Button(null, {
             "title":"Play/Pause",
             "class":"player-button",
-            "content": ()=>app.$._session._stream.player.props.pause ? `<i class="fas fa-play"></i>` : `<i class="fas fa-pause"></i>`,
+            "content": ()=>app.$._session._stream.player.paused ? `<i class="fas fa-play"></i>` : `<i class="fas fa-pause"></i>`,
             "click": (e)=>{
-                var new_pause = !app.$._session._stream.player.props.pause;
-                app.$._session._stream.player.props.pause = new_pause;
+                var new_pause = !app.$._session._stream.player.paused;
+                app.$._session._stream.player.paused = new_pause;
                 app.update();
                 if (new_pause) app.request("pause");
                 else app.request("resume");
@@ -7513,7 +7544,11 @@ video { width: 100% !important; height: 100% !important; }`;
         // var wrap = new dom.WrapDetector(player_inline_elem);
 
         var update_interval = setInterval(()=>{
-            this._buffer_duration = this.buffer_duration;
+            if (this.buffer_duration < 0) {
+                setTimeout(()=>{
+                    if (this.buffer_duration < 0) this.update_player(true);
+                }, 1000);
+            }
             this.update_player();
         }, 500);
         
@@ -7529,35 +7564,29 @@ video { width: 100% !important; height: 100% !important; }`;
             
             if (started) {
                 var stats = {};
-                var av = stream.player.props.avsync || 0;
+                var av = stream.player.avsync || 0;
                 stats["A/V"] = {
                     "value": (av>0?`+`:``)+av.toFixed(3),
                     "info": "Audio / Video Sync"
                 };
-                stats["V-FPS"] = {
-                    "value": (+stream.player.props["container-fps"] || +stream.player.props["estimated-vf-fps"] || app.media.fps || stream.fps || 0).toFixed(2),
-                    "info": "Video Frame Rate"
+                stats["FPS"] = {
+                    "value": (+stream.player.fps || app.media.fps || stream.fps || 0).toFixed(2),
+                    "info": "Frame Rate"
                 };
-                if (!stream.is_encoding) {
-                    stats["D-FPS"] = {
-                        "value": (+stream.player.props["estimated-display-fps"] || 0).toFixed(2),
-                        "info": "Display Frame Rate"
-                    }
-                }
                 stats["INTRP"] = {
                     "value": stream.player.interpolation ? "On" : "Off",
                     "info": "Interpolation"
                 };
                 stats["DEINT"] = {
-                    "value": stream.player.props.deinterlace ? "On" : "Off",
+                    "value": stream.player.deinterlacing ? "On" : "Off",
                     "info": "Deinterlacing"
                 };
                 stats["V-RATE"] = {
-                    "value": utils.format_bits((stream.player.props["video-bitrate"] || 0)/8, "k")+"ps",
+                    "value": utils.format_bits((stream.player.video_bitrate || 0)/8, "k")+"ps",
                     "info": "Video Bitrate"
                 };
                 stats["A-RATE"] = {
-                    "value": utils.format_bits((stream.player.props["audio-bitrate"] || 0)/8, "k")+"ps",
+                    "value": utils.format_bits((stream.player.audio_bitrate || 0)/8, "k")+"ps",
                     "info": "Audio Bitrate"
                 };
                 dom.rebuild(this.stats_elem, Object.entries(stats), {
@@ -7593,7 +7622,7 @@ video { width: 100% !important; height: 100% !important; }`;
         var is_popped_out = !!windows["test-"+session.id];
         var url = location.protocol === "https:" ? stream.wss_output_url : stream.ws_output_url;
         var has_started = session._is_running;
-        var is_playable = !!(has_started && stream.is_encoding && url);
+        var is_playable = !!(has_started && url);
         var buffer_duration = this.buffer_duration;
 
         dom.toggle_class(this.live_feed_elem, "live-feed-available", is_playable);
@@ -7638,7 +7667,8 @@ video { width: 100% !important; height: 100% !important; }`;
                 // set_style_property(this.live_feed_container_elem, "--aspect-ratio", this.video_el.videoWidth / this.video_el.videoHeight)
             });
             this.live_feed_video_wrapper.append(this.video_el);
-            this.flv_player = flvjs.createPlayer({
+
+            this.flv_player = mpegts.createPlayer({
                 type: "flv",
                 url,
                 hasAudio: true,
@@ -7646,16 +7676,26 @@ video { width: 100% !important; height: 100% !important; }`;
                 isLive: true,
                 // deferLoadAfterSourceOpen: false,
             },{
+                isLive: true,
+                // liveSync: true,
+                // liveSyncTargetLatency: 5,
+                // liveSyncMaxLatency: 10,
                 // enableStashBuffer: false,
-                accurateSeek: true,
+                // enableWorker: true,
+                // enableWorkerForMSE:true,
+                // accurateSeek: true,
+                // fixAudioTimestampGap:false,
+                // autoCleanupMaxBackwardDuration: 10,
+                // autoCleanupMaxForwardDuration: 10,
+                // autoCleanupSourceBuffer: true,
             });
             
-            this.flv_player.on(flvjs.Events.MEDIA_INFO, (s)=>{
+            /* this.flv_player.on(mpegts.Events.MEDIA_INFO, (s)=>{
                 this.flv_media_info = s;
                 // console.log(s);
-            })
-            var initialized = false;
-            this.flv_player.on(flvjs.Events.STATISTICS_INFO, (s)=>{
+            }) */
+            // var initialized = false;
+            /* this.flv_player.on(mpegts.Events.STATISTICS_INFO, (s)=>{
                 this.flv_statistics = s;
                 if (!initialized) {
                     if (this.buffer_duration > 1) {
@@ -7663,9 +7703,10 @@ video { width: 100% !important; height: 100% !important; }`;
                         initialized = true;
                     }
                 }
-            })
+            }) */
             this.flv_player.attachMediaElement(this.video_el);
             this.flv_player.load();
+            this.flv_player.play();
         }
     }
 }
@@ -9765,7 +9806,7 @@ class PlaylistItemUI extends ui.UI {
                 console.log("item not found", id);
                 return;
             }
-            var index = this.index;
+            // var index = this.index;
             var is_current = item._is_current;
             var is_currently_playing = item._is_currently_playing;
             var is_ancestor_of_current = item._is_ancestor_of_current;
@@ -9779,7 +9820,7 @@ class PlaylistItemUI extends ui.UI {
             var download = item._download;
             let children = item._children;
             
-            var _hash = JSON.stringify([item, index, is_current, is_currently_playing, is_ancestor_of_current, is_cutting, is_processing, is_buffering, is_rtmp_live, media_info_hash, upload, download, children.length]);
+            var _hash = JSON.stringify([item, /* index,  */is_current, is_currently_playing, is_ancestor_of_current, is_cutting, is_processing, is_buffering, is_rtmp_live, media_info_hash, upload, download, children.length]);
 
             if (last_hash === _hash) return;
 
@@ -9841,7 +9882,7 @@ class PlaylistItemUI extends ui.UI {
             } else if (is_current) {
                 play_icons.push(`<i class="fas fa-forward-step"></i>`);
             } else {
-                play_icons.push(`<span class="numbering">${String(index+1).padStart(2,"0")}</span>`);
+                play_icons.push(`<span class="numbering">${String(item.index+1).padStart(2,"0")}</span>`);
             }
             
             if (!upload) { // check upload queue ids
@@ -9923,7 +9964,9 @@ class PlaylistItemUI extends ui.UI {
                             badges["image"] = `${codec} ${default_video.width}x${default_video.height}`;
                         } else {
                             icons.push(`<i class="fas fa-film"></i>`);
-                            badges["video"] = `${codec} ${size.text}`;
+                            let parts = [codec, size.text];
+                            if (media_info.fps) parts[1]+="/"+(media_info.fps.toLocaleString({maximumFractionDigits: 2}));
+                            badges["video"] = parts.join(" ");
                         }
                     }
                     if (has_audio) {
@@ -11212,10 +11255,11 @@ export class MainWebApp extends utils.EventEmitter {
         options.start = start
         
         // this.media_player.seek.seek(options.start);
-        this.$._session.playlist_id = item.id;
-        this.$._session.time_pos = start;
         // this.$._session._stream.mpv.time = start; // necessary?
-        this.update();
+        
+        // this.$._session.playlist_id = item.id;
+        // this.$._session.time_pos = start;
+        // this.update();
         
         return this.request("playlist_play", [item.id, options]);
     }
@@ -11269,11 +11313,10 @@ export class MainWebApp extends utils.EventEmitter {
         if (include_none) options.unshift(["", "-"]);
         return options;
     }
-
+    /** @param {string} method @param {any[]} args @param {typeof default_request_opts} opts */
     request(method, args, opts) {
         opts = {
-            show_spinner: true,
-            show_loader: false,
+            ...this.default_request_opts,
             ...opts
         };
         if (args !== undefined && !Array.isArray(args)) args = [args];
@@ -11531,8 +11574,8 @@ export class MainWebApp extends utils.EventEmitter {
         }
     }
 
-    restart_stream(ids) {
-        app.request("restart_stream", [ids]);
+    restart_targets(ids) {
+        app.request("restart_targets", [ids]);
     }
 
     async new_session() {

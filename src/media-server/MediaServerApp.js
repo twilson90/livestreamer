@@ -14,7 +14,7 @@ import NodeRtmpSession from "node-media-server/src/node_rtmp_session.js";
 import stream from "node:stream";
 
 import {globals} from "./exports.js";
-import {utils, Blocklist, FFMPEGWrapper, WebServer, CoreFork, Logger, StopStartStateMachine, StopStartStateMachine$} from "../core/exports.js";
+import {utils, Blocklist, FFMPEGWrapper, WebServer, CoreFork, Logger, StopStartStateMachine, StopStartStateMachine$, constants} from "../core/exports.js";
 
 /** @import {Request, Response} from "express" */
 
@@ -184,26 +184,26 @@ export class MediaServerApp extends CoreFork {
             return Object.values(this.lives).map(l=>l.$);
         });
         this.ipc.respond("live", (id)=>{
-            return this.lives[id] ? this.lives[id].$ : null;
+            return this.lives[id]?.$;
         });
         this.ipc.respond("destroy_live", async (id)=>{
             var live = this.get_live(id);
             if (live) await live.destroy();
         });
 
-        this.ipc.on("main.stream-target.stopped", async ({id, reason})=>{
+        /* this.ipc.on("main.stream-target.stopped", async ({id, reason})=>{
             var live = this.get_live(id);
             if (live && reason !== "restart") {
                 await live.end();
             }
-        });
+        }); */
 
-        this.ipc.on("main.session.destroyed", (id)=>{
+        /* this.ipc.on("main.session.destroyed", (id)=>{
             var session = this.get_session_from_stream_path_id(id);
             if (session) {
                 session.stop();
             }
-        });
+        }); */
 
         var live_dirs = await glob("*/", {cwd: this.live_dir});
         for (let id of live_dirs) {
@@ -607,11 +607,10 @@ export class Live extends StopStartStateMachine {
         }
     }
     
-    async onstart() {
+    async _start() {
         this.$.is_live = true;
 
-        this.ffmpeg = new FFMPEGWrapper();
-        this.ffmpeg.on("error", (e)=>this.logger.error(e));
+        this.ffmpeg = new FFMPEGWrapper({log_filename: path.join(globals.app.logs_dir, `ffmpeg-live-${this.id}-${utils.date_to_string()}.log`)});
         
         var last_s;
         this.last_level.on("new_segment", ()=>{
@@ -642,17 +641,25 @@ export class Live extends StopStartStateMachine {
             // `-stream_loop`, `-1`,
         );
         
-        var fps = this.$.fps_passthrough ? 0 : (this.session?.videoFps || 30);
+        var fps = this.$.fps_passthrough ? 0 : this.session?.videoFps ?? 0;
+        var keyint = globals.app.conf["media-server.keyframe_interval"] || globals.app.conf["media-server.hls_segment_duration"] || 2;
         
         ffmpeg_args.push(
             // `-re`, // if enabled, whenever there is speedup live stream will be way behind.
             // `-noautoscale`,
+            "-fflags", "+autobsf+flush_packets+genpts+igndts",
+            `-flush_packets`, `1`,
+            // `-r`, `${fps || constants.DEFAULT_FPS}`, // this is fucked with passthrough.
             "-i", `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${this.session.publishStreamPath}`,
             `-ar`, `44100`,
             `-ac`, `2`,
             `-bsf:v`, this.$.use_hevc ? `hevc_mp4toannexb` : `h264_mp4toannexb`,
             `-bsf:a`, `aac_adtstoasc`,
             `-async`, `1`,
+            `-fps_mode`, fps ? `cfr` : "passthrough",
+            `-g`, `${(fps || constants.DEFAULT_FPS) * keyint}`,
+            `-force_key_frames`, `expr:gte(t,n_forced*${keyint})`, // keyframe every 2 seconds, this takes precedence over -g but apparently isn not working for some reason (vfr related)
+            // `-force_key_frames`, `expr:gte(n,n_forced*fps*${keyint})`,
             // `-movflags`,` +faststart`,
 
             // `-vf`, `setpts=PTS-STARTPTS`,
@@ -661,12 +668,7 @@ export class Live extends StopStartStateMachine {
             // `-fpsmax`, `60`, // max fps
             // `-avoid_negative_ts`, `make_zero`,
             // `-vsync`, `cfr`,
-            
-            `-fps_mode`, fps ? `cfr` : "vfr",
-            // `-vsync`, `0`,
 
-            "-force_key_frames", `expr:gte(t,n_forced*${globals.app.conf["media-server.keyframe_interval"]})`, // keyframe every 2 seconds, this takes precedence over -g
-            `-g`, `${(fps || 30) * globals.app.conf["media-server.keyframe_interval"]}`, // kind of like a backup, probably not necessary
 
             // -----------------
             
@@ -674,19 +676,27 @@ export class Live extends StopStartStateMachine {
             // `-video_track_timescale`, `1000`, // <-- and this seems to fix all dts errors
         );
 
-        if (fps) {
-            ffmpeg_args.push(`-r`, `${fps}`);
-        }
-        
         if (hwenc == "vaapi") {
-            ffmpeg_args.push(`-global_quality`, `24`);
-            ffmpeg_args.push(`-compression_level`, "4"); // 1-7 (1 = fastest, 7 = slowest)
+            ffmpeg_args.push(
+                `-global_quality`, `24`,
+                `-compression_level`, "5", // 1-7 (1 = fastest, 7 = slowest)
+                `-rc_mode`, "3",
+                `-bf`, "4",
+                `-refs`, "4"
+            );
         } else if (hwenc == "nvenc" || hwenc == "cuda") {
-            ffmpeg_args.push(`-cq`, `24`);
-            ffmpeg_args.push(`-preset`, "p4"); // p1-p7 (1 = fastest, 7 = slowest)
+            ffmpeg_args.push(
+                `-cq`, `24`,
+                `-preset`, "p5", // p1-p7 (1 = fastest, 7 = slowest)
+                `-spatial_aq`, "1",
+                `-temporal_aq`, "1"
+            );
         } else if (!hwenc) {
-            ffmpeg_args.push(`-preset`, "medium");
-            ffmpeg_args.push(`-pix_fmt`, `yuv420p`); // shouldn't be necessary
+            ffmpeg_args.push(
+                `-crf`, "23",
+                `-preset`, "medium",
+                `-pix_fmt`, `yuv420p` // shouldn't be necessary
+            );
         }
 
         var vid = `0:v:0`;
@@ -703,7 +713,7 @@ export class Live extends StopStartStateMachine {
                 `[${vid}]split=${video_heights.length}${video_heights.map((c,i)=>`[v${i}]`).join("")}`
             );
             video_heights.forEach((height,i)=>{
-                let width = Math.round(ar * height);
+                let width = Math.round(ar * height / 2) * 2;
                 let needs_scaling = this.session.videoHeight != height || this.session.videoWidth != width;
                 let out = `v${i}`;
                 let graph = [];
@@ -722,9 +732,7 @@ export class Live extends StopStartStateMachine {
         this.$.outputs.forEach((c,i)=>{
             ffmpeg_args.push("-map", video_height_map[c.resolution]);
             ffmpeg_args.push(
-                `-c:v:${i}`, hwenc ? `${this.$.use_hevc?"hevc":"h264"}_${hwenc}` : this.$.use_hevc ? `libx265` : `libx264`
-            );
-            ffmpeg_args.push(
+                `-c:v:${i}`, hwenc ? `${this.$.use_hevc?"hevc":"h264"}_${hwenc}` : this.$.use_hevc ? `libx265` : `libx264`,
                 `-b:v:${i}`, c.video_bitrate,
                 `-maxrate:v:${i}`, c.video_bitrate,
                 `-bufsize:v:${i}`, c.video_bitrate,
@@ -757,7 +765,7 @@ export class Live extends StopStartStateMachine {
             `-hls_segment_type`, this.$.use_hevc ? `fmp4` : `mpegts`,
             // `-hls_init_time`, `1`,
             `-hls_time`, `${this.$.segment_duration}`,
-            `-hls_flags`, `independent_segments+append_list+discont_start`,
+            `-hls_flags`, `independent_segments+append_list+discont_start+split_by_time`,
             `-master_pl_name`, `master.m3u8`,
             `-y`, `%v/stream.m3u8`
         );
@@ -769,7 +777,10 @@ export class Live extends StopStartStateMachine {
             l.start();
         }
         
-        this.ffmpeg.start(ffmpeg_args, {cwd: this.dir});
+        this.ffmpeg.start(ffmpeg_args, {cwd: this.dir})
+            .catch((e)=>{
+                this.logger.error(new Error(`Live [${this.id}] ffmpeg error: ${e.message}`));
+            });
         
         // this.ffmpeg.logger.on("log", (log)=>{
         //     this.logger.log(log);
@@ -782,17 +793,18 @@ export class Live extends StopStartStateMachine {
 
         globals.app.ipc.emit("media-server.live-publish", this.$);
 
-        return super.onstart();
+        return super._start();
     }
 
-    async onstop() {
+    async _stop() {
         console.info(`LIVE [${this.id}] has stopped.`);
         this.$.is_live = false;
         for (var k in this.levels) {
             await this.levels[k].stop();
         }
-        if (this.ffmpeg) await this.ffmpeg.stop();
-        return super.onstop();
+        if (this.ffmpeg) await this.ffmpeg.destroy();
+        await this.end();
+        return super._stop();
     }
     
     async create_thumbnail() {
@@ -819,8 +831,13 @@ export class Live extends StopStartStateMachine {
             "-y",
             thumbnail_path
         );
-        await utils.execa(globals.app.ffmpeg_path, ffmpeg_args, {cwd: level.dir});
-        this.$.thumbnail_url = `${this.url}/thumbnails/${thumbnail_name}`;
+        new FFMPEGWrapper().start(ffmpeg_args, {cwd: level.dir})
+            .then(()=>{
+                this.$.thumbnail_url = `${this.url}/thumbnails/${thumbnail_name}`;
+            })
+            .catch((e)=>{
+                // 1 bad thumbnail, whatever.
+            });
     };
 
     get last_level() {
@@ -865,11 +882,11 @@ export class Live extends StopStartStateMachine {
         this.$.is_vod = true;
     }
 
-    async ondestroy() {
+    async _destroy() {
         delete globals.app.lives[this.id];
         await fs.rm(this.dir, { recursive: true });
         globals.app.logger.info(`LIVE [${this.id}] has been destroyed.`);
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 
@@ -980,7 +997,7 @@ export class LiveLevel extends events.EventEmitter {
     /** @param {Segment} segment */
     #render_segment(segment) {
         var str = "";
-        str += `#EXTINF:${segment.duration.toFixed(3)},${segment.title || ""}\n`;
+        str += `#EXTINF:${segment.duration.toFixed(6)},${segment.title || ""}\n`;
         for (var k in segment.data) {
             var v = segment.data[k];
             if (typeof v == "boolean") {

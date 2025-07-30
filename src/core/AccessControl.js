@@ -1,8 +1,15 @@
 /** @typedef {{password:string, access:"allow"|"deny"|"password"}} AccessControlEntry */
 export class AccessControl {
-    ["*"] = {"access":"allow"};
+    #$;
+    /** @type {Record<string, AccessControlEntry>} */
+    get $() { return this.#$; }
     constructor(ac) {
-        var proxy = new Proxy(this, {
+        if (!ac) ac = {};
+        if (!ac["*"]) ac["*"] = {"access":"allow"};
+        this.#$ = new Proxy(ac, {
+            get: (target, prop) => {
+                return target[prop];
+            },
             set: (target, prop, value) => {
                 target[prop] = value;
                 return true;
@@ -13,8 +20,6 @@ export class AccessControl {
                 return true;
             }
         });
-        Object.assign(proxy, ac);
-        return proxy;
     }
 }
 

@@ -38,7 +38,7 @@ class IPC {
     async destroy() {
         if (this.#destroyed) return;
         this.#destroyed = true;
-        await this.ondestroy();
+        await this._destroy();
     }
 
     get_process(name) {
@@ -59,27 +59,26 @@ class IPC {
         sock.on("close", ()=>lines.close());
         lines.on("error", this._handle_socket_error);
         lines.on("line", (line)=>{
-            if (line) {
-                var json;
-                try {
-                    json = JSON.parse(line);
-                } catch (e) {
-                    console.error(e);
+            var json;
+            try {
+                json = JSON.parse(line);
+            } catch (e) {
+                console.error(e);
+                return;
+            }
+            var {event, args} = json;
+            if (event === "internal:request") {
+                let {rid, origin, request, args:request_args} = args[0];
+                if (this.#responses[request]) {
+                    Promise.resolve(this.#responses[request](...request_args))
+                        .then((result)=>[result, null])
+                        .catch((err)=>[null, err])
+                        .then(([result, error])=>{
+                            this.emit_to(origin, `internal:response:${rid}`, {result, error});
+                        });
                 }
-                var {event, args} = json;
-                if (event === "internal:request") {
-                    let {rid, origin, request, args:request_args} = args[0];
-                    if (this.#responses[request]) {
-                        Promise.resolve(this.#responses[request](...request_args))
-                            .then((result)=>[result, null])
-                            .catch((err)=>[null, err])
-                            .then(([result, error])=>{
-                                this.emit_to(origin, `internal:response:${rid}`, {result, error});
-                            });
-                    }
-                } else {
-                    cb(json);
-                }
+            } else {
+                cb(json);
             }
         });
     }
@@ -89,7 +88,7 @@ class IPC {
         console.error(e);
     }
 
-    async ondestroy() {}
+    async _destroy() {}
 }
 
 export class IPCMaster extends IPC {
@@ -190,7 +189,7 @@ export class IPCMaster extends IPC {
             });
         });
     }
-    async ondestroy() {
+    async _destroy() {
         await new Promise(r=>this.#server.close(r));
         for (var id of Object.keys(this.#socks)) {
             this.#socks[id].destroy();
@@ -255,8 +254,9 @@ export class IPCFork extends IPC {
         }
     }
 
+    // this doesnt actually emit to application but sends a signal to the master.
     async emit(event, ...args) {
-        this.emitter.emit(event, ...args);
+        // this.emitter.emit(event, ...args);
         await this.#ready;
         return write(this.#master_sock, event, ...args);
     }
@@ -310,7 +310,7 @@ export class IPCFork extends IPC {
         });
     }
 
-    ondestroy() {
+    _destroy() {
         this.#master_sock.destroy();
     }
 }

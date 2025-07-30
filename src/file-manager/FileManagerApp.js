@@ -40,16 +40,15 @@ export class FileManagerApp extends CoreFork {
         this.ipc.respond("add_volume", (...args)=>this.elFinder.add_volume(...args));
         this.ipc.respond("edit_volume", (...args)=>this.elFinder.edit_volume(...args));
         this.ipc.respond("delete_volume", (...args)=>this.elFinder.delete_volume(...args));
-        this.ipc.respond("update_volumes", (...args)=>this.elFinder.update_volumes(...args));
         this.ipc.emit("file-manager.volumes", this.elFinder.volume_configs);
 
         exp.use("/", await this.serve({
             root: path.resolve(dirname, `public_html`)
         }));
     }
-    async ondestroy(){
+    async _destroy(){
         await this.web.destroy();
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 

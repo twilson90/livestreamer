@@ -105,7 +105,7 @@ export class Driver extends events.EventEmitter {
 			// dirs = 1;
 			var items = await this.readdir(id);
 			for (var sid of items) {
-				if (((await this.stat(sid))||{}).mime === constants.DIRECTORY) {
+				if ((await this.stat(sid))?.mime === constants.DIRECTORY) {
 					dirs = 1;
 					break;
 				}

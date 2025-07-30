@@ -8,7 +8,7 @@ import {utils} from "./exports.js";
 class ClientInfo {
     /** @param {T} client */
     constructor(client) {
-        this.ondestroy = () => {
+        this._destroy = () => {
             client.destroy();
         };
     }
@@ -99,7 +99,7 @@ export class ClientUpdater extends events.EventEmitter {
         this.#new_clients.add(client);
         var info = new ClientInfo(client);
         this.#client_map.set(client, info);
-        client.on("destroy", info.ondestroy);
+        client.on("destroy", info._destroy);
         this.emit("subscribe", client);
         this.#debounced_update();
     }
@@ -110,7 +110,7 @@ export class ClientUpdater extends events.EventEmitter {
         var info = this.#client_map.get(client);
         this.#client_map.delete(client);
         this.#new_clients.delete(client);
-        client.off("destroy", info.ondestroy);
+        client.off("destroy", info._destroy);
         this.emit("unsubscribe", client);
     }
 

@@ -1,7 +1,7 @@
 import fs from "fs-extra";
 import path from "node:path";
-import {globals, SessionTypes, MediaProps, Download, Session, InternalSessionProps, PlaylistItemProps, PlaylistItemPropsProps, Session$, DEFAULT_PROBE_MEDIA_OPTS} from "./exports.js";
-import {utils, FFMPEGWrapper, MPVLoadFileError, History, History$, AccessControl} from "../core/exports.js";
+import {globals, SessionTypes, MediaProps, Download, Session, InternalSessionProps, PlaylistItemProps, PlaylistItemPropsProps, Session$, StreamSettings$, DEFAULT_PROBE_MEDIA_OPTS} from "./exports.js";
+import {utils, FFMPEGWrapper, MPVLoadFileError, History, History$, AccessControl, constants} from "../core/exports.js";
 /** @import {MediaInfo, Session$, ProbeMediaOpts, LoadFileOpts} from "./exports.js" */
 
 const video_exts = ["3g2","3gp","aaf","asf","avchd","avi","drc","flv","gif","m2v","m4p","m4v","mkv","mng","mov","mp2","mp4","mpe","mpeg","mpg","mpv","mxf","nsv","ogg","ogv","qt","rm","rmvb","roq","svi","vob","webm","wmv","yuv"];
@@ -15,6 +15,16 @@ export class PlaylistInfo$ {
 }
 
 export class InternalSession$ extends Session$ {
+    stream_settings = new class extends StreamSettings$ {
+        fps = 0;
+        resolution = "1280x720";
+        h264_preset = "veryfast";
+        video_bitrate = 5000;
+        audio_bitrate = 160;
+        buffer_duration = 5;
+        use_hardware = false;
+        test = false;
+    };
     /** @type {History$} */
     playlist_history;
     /** @type {Record<PropertyKey,PlaylistInfo$>} */
@@ -75,12 +85,13 @@ export class InternalSession extends Session {
     /** @type {Map<PlaylistItem$, number>} */
     #flat_playlist_playable_index_map = new Map();
     #next_parsed_playlist_item;
+    #loads = 0;
 
     get saves_dir() { return path.join(globals.app.curr_saves_dir, this.id); }
     get files_dir() { return this.$.files_dir ? this.$.files_dir : globals.app.files_dir; }
     get rtmp_key_without_args() { return this.$.rtmp_key.split("?")[0]; }
-    get player() { return (this.stream||{}).player; }
-    get is_running() { return !!(this.stream||{}).is_running; }
+    get player() { return this.stream?.player; }
+    get is_running() { return !!this.stream?.is_started; }
     get first_item_id() {
         var item = this.#flat_playlist[0];
         return item ? item.id : null;
@@ -97,6 +108,7 @@ export class InternalSession extends Session {
         
         fs.mkdirSync(this.saves_dir, {recursive:true});
         fs.mkdirSync(this.files_dir, {recursive:true});
+
         
         var dirty_ids = new Set();
         var media_props = new Set(["background_file", "files_dir"]);
@@ -510,8 +522,7 @@ export class InternalSession extends Session {
                 rects.push({pts, rect});
             }
         });
-        ffmpeg.on("error", (e)=>this.logger.error(e));
-        await ffmpeg.start([
+        var ffmpeg_args = [
             "-threads", "1",
             "-skip_frame", "nokey",
             '-noaccurate_seek',
@@ -525,7 +536,12 @@ export class InternalSession extends Session {
             "-vframes", String(n+2),
             "-y",
             `%d.jpg`,
-        ], {cwd: dir});
+        ];
+
+        await ffmpeg.start(ffmpeg_args, {cwd: dir}).catch((e)=>{
+            this.logger.error(new Error(`Failed to detect crop: ${e.message}`));
+        });
+
         var files = await fs.readdir(dir);
         rects = rects.slice(-n);
         var t1 = Date.now();
@@ -850,16 +866,24 @@ export class InternalSession extends Session {
     }
 
     async reload(remember_time_pos=false) {
-        return this.playlist_play(this.$.playlist_id, { start: remember_time_pos ? this.$.time_pos : 0, pause: this.player.is_paused });
+        return this.playlist_play(this.$.playlist_id, { start: remember_time_pos ? this.$.time_pos : 0, pause: this.player.$.paused });
     }
 
     /** @param {string} id @param {LoadFileOpts} opts */
     async playlist_play(id, opts) {
+        var current_load_id = ++this.#loads;
         this.#next_parsed_playlist_item = null;
+        
+        opts = {...opts};
+
+        if (id != null && !(id in this.$.playlist)) {
+            this.logger.warn(`Playlist item with id ${id} not found, starting from beginning of playlist...`);
+            id = this.first_item_id;
+            opts.start = 0;
+        }
 
         let item = fix_playlist_item(this.$.playlist[id]); // fixes nulls or 'fake' items
 
-        opts = {...opts}
         this.$.time_pos = opts.start || 0;
 
         if (!this.is_running) {
@@ -874,6 +898,7 @@ export class InternalSession extends Session {
         }
 
         let macro = item.filename === "livestreamer://macro" && item.props.function;
+        
         if (macro === "handover") {
             let session_id = item.props.function_handover_session;
             this.$.playlist_id = null;
@@ -885,22 +910,10 @@ export class InternalSession extends Session {
         }
 
         this.$.playlist_id = item.id;
-        var t0 = Date.now();
 
-        await this.player.loadfile(item, opts)
-            .then((success)=>{
-                var d = Date.now()-t0;
-                if (d > 1000) this.logger.warn(`loadfile '${item.filename}' took ${d}ms`);
-            })
-            .catch(e=>{
-                // if loadfile was overridden, we don't want to play the next item, we can assume it's just been called and triggered the override.
-                if (e instanceof MPVLoadFileError && e.name == "override") {
-                    this.logger.warn("loadfile failed (override)");
-                    return;
-                }
-                this.logger.error("loadfile failed:", e);
-                return this.playlist_next();
-            });
+        await this.player.loadfile(item, opts);
+        
+        if (this.is_running && current_load_id == this.#loads) this.playlist_next();
     }
 
     /** @param {LoadFileOpts} opts */
@@ -949,7 +962,7 @@ export class InternalSession extends Session {
         if (opts.volume_speed !== undefined) this.$.volume_speed = opts.volume_speed;
         if (opts.fade_out_speed !== undefined) this.$.fade_out_speed = opts.fade_out_speed;
         if (this.is_running) {
-            this.player.debounced_update_volume();
+            this.player?.mpv?.update_volume();
         }
     }
 
@@ -1004,7 +1017,7 @@ function fix_circular_playlist_items($, warn) {
 function fix_session($, warn) {
     $ = utils.json_copy($);
     delete $.id;
-    $.access_control = new AccessControl($.access_control);
+    $.access_control = new AccessControl($.access_control).$;
     var items = Object.values($.playlist);
     $.playlist = {};
     for (var item of items) $.playlist[item.id] = fix_playlist_item(item, $.playlist);

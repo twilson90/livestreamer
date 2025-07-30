@@ -20,6 +20,7 @@ export * from "../utils/exports.js";
 const speed_window = 16;
 
 /** @import { Path } from "glob"; */
+/** @import { Logger } from "../core/exports.js"; */
 
 //command: string, args: ReadonlyArray<string>, options: SpawnOptions
 // /** @param {string} command @param {readonly string[]} args @param {child_process.SpawnOptions} options */
@@ -304,19 +305,13 @@ export async function *find_symlinks(dir, broken=false) {
     }
 }
 
-export function ffmpeg_escape_file_path(str) {
-    // if (is_windows()) str = str.replace(/\\/g, "/");
-    return ffmpeg_escape(str);
-}
-
 export function ffmpeg_escape(str) {
     return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/,/g, '\\,'); // not sure about the comma
 }
 
-export function ffmpeg_escape_av_file_path(str) {
-    // if (is_windows()) str = str.replace(/\\/g, "/");
-    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'\\''").replace(/:/g, '\\:').replace(/,/g, '\\,'); // not sure about the comma
-}
+// export function ffmpeg_escape_av_file_path(str) {
+//     return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'\\''").replace(/:/g, '\\:').replace(/,/g, '\\,'); // not sure about the comma
+// }
 
 /* export function ffmpeg_escape_av_file_path(str) {
     if (is_windows()) str = str.replace(/\\/g, "/");
@@ -420,6 +415,13 @@ export function get_node_modules_dir(module) {
     var f = fileURLToPath(module ? import.meta.resolve(module) : import.meta.url);
     while(path.basename(f) != "node_modules" || path.basename(f) == f) f = path.dirname(f);
     return f;
+}
+
+/** @param {Logger} logger @param {string} msg */
+export function pipe_error_handler(logger, msg) {
+    return (e)=>{
+        logger.error(new Error(`pipe error [${msg}]: ${e.message}`));
+    }
 }
 
 export class StopWatchHR extends StopWatchBase {
@@ -547,8 +549,12 @@ export class Downloader extends events.EventEmitter {
     
     stream() {
         var out = new stream.PassThrough();
-        this.on('data', (chunk)=>out.write(chunk));
-        this.on("end", ()=>new Promise(resolve=>out.end(resolve)));
+        this.on('data', (chunk)=>{
+            out.write(chunk);
+        });
+        this.on("end", ()=>{
+            out.end()
+        });
         this.start();
         return out;
     }
@@ -565,6 +571,30 @@ export class Downloader extends events.EventEmitter {
         this.stream().pipe(out);
         return this.start();
     }
+}
+
+/** @param {stream.Writable} stream_out @param {Buffer} data @param {BufferEncoding} encoding */
+export function write_safe(stream_out, data, encoding) {
+    return new Promise((resolve, reject) => {
+        // Handle errors
+        let handler_error = (error) => {
+            stream_out.off("error", handler_error);
+            reject(error);
+        };
+        stream_out.on("error", handler_error);
+
+        if (stream_out.write(data, encoding)) {
+            // We're good to go
+            stream_out.off("error", handler_error);
+            resolve();
+        } else {
+            // We need to wait for the drain event before continuing
+            stream_out.once("drain", () => {
+                stream_out.off("error", handler_error);
+                resolve();
+            });
+        }
+    });
 }
 
 // prevents bad SSL being rejected.

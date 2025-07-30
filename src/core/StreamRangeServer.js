@@ -1,11 +1,12 @@
 import http from 'node:http';
-import { PassThrough, Readable, pipeline } from 'node:stream';
+import stream from 'node:stream';
 import fs from 'node:fs';
+/** @import {Readable} from 'node:stream'; */
   
 export class StreamRangeServer {
     /** @param {(({start: number, end: number}) => Readable)|Readable} readable @param {{size: number, type: string}} opts */
     constructor(readable, opts={}) {
-        this.stream = readable;
+        this.readable = readable;
         this.size = opts.size;
         this.type = opts.type || 'application/octet-stream';
     }
@@ -32,43 +33,49 @@ export class StreamRangeServer {
             'Connection': 'close',
         }
         /** @type {Readable} */
-        var stream;
+        var readable;
         var start = 0, end;
 
-        if (this.size != null && req.headers.range) {
+        if (req.headers.range) {
             const parts = req.headers.range.replace(/bytes=/, '').split('-');
             start = parseInt(parts[0], 10);
             end = parts[1] ? parseInt(parts[1], 10) : this.size - 1;
             if (isNaN(start) || isNaN(end) || start > end || end >= this.size) {
                 res.writeHead(416, {
-                    'Content-Range': `bytes */${this.size}`
+                    'Content-Range': `bytes */${this.size ?? "*"}`
                 });
                 return res.end();
             }
-            headers['Content-Length'] = end - start + 1;
-            headers['Content-Range'] = `bytes ${start}-${end}/${this.size}`;
-            res.writeHead(206, headers);
+            res.writeHead(206, {
+                'Content-Length': end - start + 1,
+                'Content-Range': `bytes ${start}-${end}/${this.size ?? "*"}`
+            });
         } else {
-            headers['Content-Length'] = this.size;
+            if (this.size != null) headers['Content-Length'] = this.size;
             res.writeHead(200, headers);
             end = this.size;
         }
         if (req.method === "HEAD") {
             return res.end();
         }
-        stream = await this.get_stream(start, end);
-        pipeline(stream, res, (err)=>{
+        readable = await this.get_readable(start, end);
+
+        stream.pipeline(readable, res, (err)=>{
             if (err === "Premature close") return;
             if (err) console.warn(err);
         });
-        stream.on('end', ()=>{
+
+        /* var handle_end = ()=>{
             res.end();
-        });
+        }
+        req.on('close', handle_end);
+        req.on('end', handle_end);
+        req.on('error', handle_end); */
     }
 
-    async get_stream(start, end) {
-        if (typeof this.stream === 'function') return this.stream({start, end});
-        return this.stream;
+    async get_readable(start, end) {
+        if (typeof this.readable === 'function') return this.readable({start, end});
+        return this.readable;
     }
 }
 

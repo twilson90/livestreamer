@@ -23,13 +23,13 @@ export class DataNode extends events.EventEmitter {
     async destroy() {
         if (this.#destroyed) return;
         this.#destroyed = true;
-        await this.ondestroy();
+        await this._destroy();
         this.emit("destroy");
         this.#observer.removeAllListeners();
         this.removeAllListeners();
     }
 
-    ondestroy(){}
+    _destroy(){}
 }
 
 export default DataNode;

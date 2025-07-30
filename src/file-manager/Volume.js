@@ -4,14 +4,13 @@ import upath from "upath";
 import * as uuid from "uuid";
 import express from "express";
 import encoding from "encoding-japanese";
-import axios from "axios";
 import sanitize from "sanitize-filename";
 import dataUriToBuffer from "data-uri-to-buffer";
 import sharp from "sharp";
 import mime from "mime";
 import https from "node:https";
 import {utils, errors, drivers, globals} from "./exports.js";
-import {constants} from "../core/exports.js";
+import {constants, AccessControl} from "../core/exports.js";
 
 /** @import { ElFinder, Driver } from './exports.js' */
 
@@ -55,7 +54,7 @@ export class Volume {
 			separator: null,
 			isPathBased: undefined,
 			locked: false,
-			access_control: { "*": { "access":"allow" } },
+			access_control: new AccessControl().$,
 			...config,
 		}
 		// if (!config.uid) config.uid = globals.app.generate_uid("volume");

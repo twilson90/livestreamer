@@ -117,7 +117,7 @@ export class Modal extends UI {
 
         this.close_button = new Button(`<button class="modal-close"><i class="fas fa-times"></i></button>`, {
             click: ()=>this.hide(),
-            hidden: !this.get_setting("modal.close"),
+            hidden: ()=>!this.get_setting("modal.close"),
         });
 
         this.modal_elem = $(`<div class="modal"></div>`)[0];
@@ -281,6 +281,7 @@ export class EditModal extends Modal {
             "modal.allow_invalid": true,
             "modal.ok": `OK`,
             "modal.cancel": "Cancel",
+            "modal.close": ()=>this.get_setting("modal.auto_apply"),
             ...settings,
         });
         this.on("before-show", ()=>{

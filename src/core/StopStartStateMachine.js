@@ -47,13 +47,15 @@ export class StopStartStateMachine extends DataNodeID {
             this.$.state = constants.State.STARTING;
             this.$.start_ts = Date.now();
             this.#start_promise = (async ()=>{
-                if (await this.onstart(...args)) {
+                if (await this._start(...args)) {
                     this.#timer.reset();
                     this.#timer.start();
                     this.$.state = constants.State.STARTED;
+                    this.emit("started");
                     return true;
                 } else {
                     this.$.state = constants.State.STOPPED;
+                    this.emit("stopped");
                     return false;
                 }
             })();
@@ -65,14 +67,14 @@ export class StopStartStateMachine extends DataNodeID {
         if (this.$.paused) return;
         this.$.paused = true;
         this.#timer.pause();
-        return this.onpause();
+        return this._pause();
     }
 
     async resume() {
         if (!this.$.paused) return;
         this.$.paused = false;
         this.#timer.resume();
-        return this.onresume();
+        return this._resume();
     }
 
     async stop(reason) {
@@ -83,8 +85,9 @@ export class StopStartStateMachine extends DataNodeID {
             this.#stop_promise = (async ()=>{
                 this.$.stop_reason = reason || "unknown";
                 this.$.stop_ts = Date.now();
-                if (await this.onstop()) {
+                if (await this._stop()) {
                     this.$.state = constants.State.STOPPED;
+                    this.emit("stopped");
                     return true;
                 } else {
                     return false;
@@ -99,17 +102,17 @@ export class StopStartStateMachine extends DataNodeID {
         await this.start();
     }
 
-    onstart(){ return true; }
+    _start(){ return true; }
 
-    onstop(){ return true; }
+    _stop(){ return true; }
 
-    onpause(){ return true; }
+    _pause(){ return true; }
 
-    onresume(){ return true; }
+    _resume(){ return true; }
 
-    async ondestroy() {
+    async _destroy() {
         await this.stop("destroy");
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 

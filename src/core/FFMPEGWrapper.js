@@ -1,4 +1,6 @@
 import os from "node:os";
+import fs from "fs-extra";
+import stream from "node:stream";
 import events from "node:events";
 import readline from "node:readline";
 import child_process from "node:child_process";
@@ -22,29 +24,34 @@ class FFMPEGInfo {
 }
 
 const default_opts = {
+    log_filename: null,
     info_interval: 1000,
 }
 
-/** @extends {events.EventEmitter<{info:[FFMPEGInfo]}>} */
+/** @extends {events.EventEmitter<{info:[FFMPEGInfo], line:string}>} */
 export class FFMPEGWrapper extends events.EventEmitter {
     /** @type {import("child_process").ChildProcessWithoutNullStreams} */
     #process;
     #logger;
-    #stopped;
+    #destroyed;
     #closed;
     #info_interval;
     #outputs = [];
     /** @type {FFMPEGInfo} */
     #last_info;
+    /** @type {Promise<void>} */
+    #done;
 
     get last_info() { return this.#last_info; }
     get process() { return this.#process; }
     get logger() { return this.#logger; }
     get outputs() { return this.#outputs; }
-    get stopped() { return this.#stopped; }
+    get destroyed() { return this.#destroyed; }
+    get closed() { return this.#closed; }
     get stderr() { return this.#process.stderr; }
     get stdin() { return this.#process.stdin; }
     get stdout() { return this.#process.stdout; }
+    get done() { return this.#done; }
 
     /** @param {typeof default_opts} opts */
     constructor(opts) {
@@ -58,47 +65,33 @@ export class FFMPEGWrapper extends events.EventEmitter {
 
     /** @param {string[]} args @param {child_process.SpawnOptionsWithoutStdio} spawn_opts */
     start(args, spawn_opts) {
-        return new Promise((resolve)=>{
+        if (this.#done) throw new Error("FFMPEGWrapper already started");
+        var res = new Promise((resolve, reject)=>{
                 
             this.#logger.info(`Starting ffmpeg...`);
             this.#logger.debug(`ffmpeg args:`, args);
             
             this.#process = child_process.spawn(globals.app.ffmpeg_path, args, {windowsHide: true, ...spawn_opts});
-
             // globals.app.set_priority(this.#process.pid, os.constants.priority.PRIORITY_HIGHEST);
 
-            var handle_error = (e)=>{
-                this.emit("error", e);
-                this.#logger.error(e);
-            }
-
             this.#process.on("error", (e) => {
-                // must consume errors! om nom nom
-                if (this.#closed) return;
-                if (e.message.match(/kill EPERM/)) return;
-                handle_error(e);
-                this.stop();
+                reject(new Error(`FFMPEGWrapper process error: ${e.message}`));
+                this.destroy();
             });
-            this.#process.on("close", (code) => {
+
+            this.#process.on("close", (code)=>{
                 if (this.#closed) return;
                 this.#closed = true;
+                listener.close();
                 clearInterval(this.#info_interval);
-                if (!this.#stopped && code) {
-                    handle_error(new Error(`Error code ${code}: ${globals.app.debug ? last_lines.join("\n") : last_lines[last_lines.length-1]}`));
+                if (!this.#destroyed && code) {
+                    reject(new Error(`Error code ${code}: ${globals.app.debug ? last_lines.join("\n") : last_lines[last_lines.length-1]}`));
+                } else {
+                    resolve();
                 }
-                this.emit("end");
-                resolve();
             });
-
-            // this.#process.on("exit", () => {});
-            // this.#process.stderr.on("error", (e)=>console.error("ffmpeg stderr error", e));
-            // this.#process.stdin.on("error",  (e)=>console.error("ffmpeg stdin error", e));
-            // this.#process.stdout.on("error", (e)=>console.error("ffmpeg stdout error", e));
-            // this.#process.stderr.on("close", (e)=>{});
-            // this.#process.stdin.on("close",  (e)=>{});
-            // this.#process.stdout.on("close", (e)=>{});
             
-            let last_ts, last_emitted_info;
+            let last_ts, last_hash;
             let listener = readline.createInterface(this.#process.stderr);
             var init_str = "", initialized = false;
             var last_lines = [];
@@ -110,7 +103,6 @@ export class FFMPEGWrapper extends events.EventEmitter {
                 last_lines.push(line);
                 if (last_lines.length > 64) last_lines.shift();
                 this.#logger.debug(line);
-                // console.info(line);
                 this.emit("line", line);
                 if (!initialized) init_str += line+"\n";
                 var m = line.match(/^(?:frame=\s*(.+?)\s+)?(?:fps=\s*(.+?)\s+)?(?:q=\s*(.+?)\s+)?(?:size=\s*(.+?)\s+)(?:time=\s*(.+?)\s+)(?:bitrate=\s*(.+?)\s+)(?:speed=(.+?)x\s+)/);
@@ -189,26 +181,37 @@ export class FFMPEGWrapper extends events.EventEmitter {
                     last_ts = ts;
                 }
             });
-            this.#process.on("close", ()=>listener.close());
             if (this.opts.info_interval) {
                 this.#info_interval = setInterval(()=>{
-                    if (this.#last_info == last_emitted_info) return;
+                    var hash = JSON.stringify(this.#last_info);
+                    if (hash == last_hash) return;
                     this.emit("info", this.#last_info);
-                    last_emitted_info = this.#last_info
+                    last_hash = hash;
                 }, this.opts.info_interval);
             }
+            if (this.opts.log_filename) {
+                var fs_stream = fs.createWriteStream(this.opts.log_filename);
+                stream.promises.pipeline(this.stderr, fs_stream).catch(utils.pipe_error_handler(this.logger, "ffmpeg.stderr -> fs_stream"));
+            }
         });
+        this.#done = res.catch(utils.noop);
+        return res;
     }
 
-    async stop() {
-        if (this.#stopped) return;
-        this.#stopped = true;
-        return new Promise(async (resolve)=>{
-            this.#process.on("close", resolve);
-            this.#process.kill("SIGINT");
-            await utils.timeout(2000);
-            this.#process.kill("SIGKILL");
-        })
+    async destroy() {
+        if (this.#destroyed) return;
+        this.#destroyed = true;
+        if (!this.#closed) {
+            this.#process.kill("SIGTERM");
+            // this.#process.stdin.write('q');
+        }
+        setTimeout(()=>{
+            if (!this.#closed) {
+                this.#logger.warn("Killing ffmpeg with force...");
+                this.#process.kill("SIGKILL");
+            }
+        }, 1000);
+        return this.#done;
     }
 }
 

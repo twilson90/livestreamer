@@ -5,7 +5,7 @@ import url from "node:url";
 import tree_kill from "tree-kill-promise";
 import {globals} from "./exports.js";
 import {utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger, MPVWrapper} from "../core/exports.js";
-/** @import { Target, Stream } from './exports.js' */
+/** @import { Target, SessionStream } from './exports.js' */
 
 export class StreamTarget$ extends StopStartStateMachine$ {
     stream_id = "";
@@ -30,7 +30,7 @@ export class StreamTarget extends StopStartStateMachine {
     #ffmpeg;
     /** @type {MPVWrapper} */
     #mpv;
-    /** @param {Stream} stream @param {Target} target */
+    /** @param {SessionStream} stream @param {Target} target */
     constructor(stream, target) {
         super(globals.app.generate_uid("stream-target"), new StreamTarget$());
 
@@ -90,79 +90,79 @@ export class StreamTarget extends StopStartStateMachine {
         this.$.title = this.stream.$.title;
     }
 
-    async onstart() {
-        if (!this.stream.is_only_gui) {
-            let input = this.stream.$.output_url;
-            let {opts, output_url, output_format} = this.$;
+    async _start() {
+        let input = this.stream.$.output_url;
+        let {opts, output_url, output_format} = this.$;
 
-            if (this.target.id === "gui") {
-                var mpv_args = [
-                    input,
-                    "--no-config",
-                    "--video-latency-hacks=yes",
-                    "--audio-buffer=0",
-                    "--demuxer-lavf-o-add=fflags=+nobuffer",
-                    "--vd-lavc-threads=1",
-                    "--stream-buffer-size=4k",
-                    "--interpolation=no",
-                    "--no-correct-pts",
-                    `--osc=${opts.osc?"yes":"no"}`
-                ];
-                this.#mpv = new MPVWrapper({ ipc: false });
-                this.#mpv.start(mpv_args);
-                this.#mpv.on("close",()=>{
-                    this._handle_end("mpv");
-                });
-            } else {
-                let is_file_output = utils.try_catch(()=>new URL(output_url).protocol === "file:");
-                let output = output_url;
-                if (is_file_output) {
-                    output = url.fileURLToPath(output_url);
-                    fs.mkdirSync(path.dirname(output), {recursive:true});
-                }
-                var ffmpeg_args = [];
-                if (this.stream.is_realtime) ffmpeg_args.push("-re");
-                ffmpeg_args.push(
-                    // `-noautoscale`,
-                    "-i", input,
-                    "-c", "copy",
-                    "-f", output_format,
-                    output
-                );
-                // this.ffmpeg.on("line", console.log);
-                this.#ffmpeg = new FFMPEGWrapper();
-                this.#ffmpeg.on("error", (e)=>this.logger.log(e));
-                this.#ffmpeg.on("info", (info)=>{
-                    this.$.speed = info.speed;
-                    this.$.bitrate = info.bitrate;
-                });
-                /* this.#ffmpeg.logger.on("log",(log)=>{
-                    // if (this.target.id === "gui") return;
-                    // log = {...log, level:Logger.TRACE};
-                    this.logger.log(log);
-                }); */
-                this.#ffmpeg.on("end",(e)=>{
+        if (this.target.id === "gui") {
+            var mpv_args = [
+                input,
+                "--no-config",
+                "--video-latency-hacks=yes",
+                "--audio-buffer=0",
+                "--demuxer-lavf-o-add=fflags=+nobuffer",
+                "--vd-lavc-threads=1",
+                "--stream-buffer-size=4k",
+                "--interpolation=no",
+                "--no-correct-pts",
+                `--osc=${opts.osc?"yes":"no"}`
+            ];
+            this.#mpv = new MPVWrapper({ ipc: false });
+            this.#mpv.start(mpv_args).finally(()=>{
+                this._handle_end("mpv");
+            });
+        } else {
+            let is_file_output = utils.try_catch(()=>new URL(output_url).protocol === "file:");
+            let output = output_url;
+            if (is_file_output) {
+                output = url.fileURLToPath(output_url);
+                fs.mkdirSync(path.dirname(output), {recursive:true});
+            }
+            var ffmpeg_args = [];
+            if (this.stream.is_realtime) ffmpeg_args.push("-re");
+            ffmpeg_args.push(
+                // `-noautoscale`,
+                "-i", input,
+                "-c", "copy",
+                "-f", output_format,
+                output
+            );
+            // this.ffmpeg.on("line", console.log);
+            this.#ffmpeg = new FFMPEGWrapper();
+            this.#ffmpeg.on("error", (e)=>this.logger.log(e));
+            this.#ffmpeg.on("info", (info)=>{
+                this.$.speed = info.speed;
+                this.$.bitrate = info.bitrate;
+            });
+            /* this.#ffmpeg.logger.on("log",(log)=>{
+                // if (this.target.id === "gui") return;
+                // log = {...log, level:Logger.TRACE};
+                this.logger.log(log);
+            }); */
+            this.#ffmpeg.start(ffmpeg_args)
+                .catch((e)=>{
+                    this.logger.error(new Error(`StreamTarget ffmpeg error: ${e.message}`));
+                })
+                .then(()=>{
                     this._handle_end("ffmpeg");
                 });
-                this.#ffmpeg.start(ffmpeg_args);
-            }
         }
         globals.app.ipc.emit("main.stream-target.started", this.$);
         
-        return super.onstart();
+        return super._start();
     }
 
-    async onstop() {
-        if (this.#mpv) await this.#mpv.quit();
-        if (this.#ffmpeg) await this.#ffmpeg.stop();
+    async _stop() {
+        if (this.#ffmpeg) await this.#ffmpeg.destroy();
+        if (this.#mpv) await this.#mpv.destroy();
         globals.app.ipc.emit("main.stream-target.stopped", {id:this.id, reason:this.$.stop_reason});
         
-        return super.onstop();
+        return super._stop();
     }
 
-    async ondestroy() {
+    async _destroy() {
         delete this.stream.stream_targets[this.target.id];
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 

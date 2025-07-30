@@ -53,6 +53,7 @@ export class PropertyList extends InputProperty {
             "can_add": true,
             "can_move": true,
             "can_delete": true,
+            "clipboard": ()=>!this.get_setting("readonly"),
             ...settings
         });
 
@@ -107,7 +108,7 @@ export class PropertyList extends InputProperty {
 
         var more_button = new Button(`<button class="icon button"><i class="fas fa-ellipsis-v"></i></button>`, {
             title: "More",
-            hidden: ()=>!list.list_items.every(i=>this.get_setting("can_add", i)) || this.get_setting("readonly"),
+            hidden: ()=>!this.get_setting("clipboard"),
         });
         more_button.elem.style.flex = "none";
         var more_dropdown = new DropdownMenu({

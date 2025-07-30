@@ -141,6 +141,7 @@ export * from './uniquify.js';
 export * from './urlify.js';
 export * from './walk.js';
 export * from './zip.js';
+export * from './create_queued_function.js';
 
 export * as reflect from './reflect.js';
 export * as easing from './easing.js';

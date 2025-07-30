@@ -135,13 +135,13 @@ export class Download extends DataNodeID {
         }
     }
 
-    ondestroy() {
+    _destroy() {
         this.#controller.abort();
         if (this.#ytdl_proc) this.#ytdl_proc.kill('SIGINT');
         delete globals.app.downloads[this.id];
         delete globals.app.$.downloads[this.id];
         this.#promise = null;
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 

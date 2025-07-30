@@ -18,7 +18,6 @@ import stringArgv from "string-argv";
 import {Logger, IPCMaster, IPCFork, utils, DataNode, globals, config_default} from "./exports.js";
 import basic_auth from "basic-auth";
 import Cookies from "cookies";
-import minimist from "minimist";
 import pidusage from "pidusage";
 import { createRequire } from 'node:module';
 import { createHttpTerminator } from 'http-terminator';
@@ -106,7 +105,7 @@ export class Core extends DataNode {
     get use_pm2() { return !!("pm_id" in process.env || this.conf["core.pm2"]); }
     get hostname() { return this.conf["core.hostname"] || os.hostname(); }
     get change_log_path() { return path.resolve(this.conf["core.changelog"]); }
-    get mpv_path() { return this.conf["core.mpv_path"] || "mpv"; }
+    get mpv_path() { return this.conf["core.mpv_path"] || (process.platform == "win32" ? "mpv.exe" : "mpv"); }
     get ffmpeg_path() { return this.conf["core.ffmpeg_path"] || "ffmpeg"; }
     get cwd() { return process.cwd(); }
     get appdata_dir() { return this.#appdata_dir; }
@@ -248,9 +247,9 @@ export class Core extends DataNode {
         process.exit(code);
     }
 
-    ondestroy() {
+    _destroy() {
         this.#cleanup_sockets();
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 
@@ -342,6 +341,8 @@ export class CoreMaster extends Core {
         fs.mkdirSync(this.clients_dir, { recursive:true });
         fs.mkdirSync(this.uids_dir, { recursive:true });
         fs.mkdirSync(this.sockets_dir, { recursive:true });
+        fs.mkdirSync(this.files_dir, { recursive:true });
+        fs.chmodSync(this.files_dir, "777");
         try { fs.emptyDirSync(this.tmp_dir, { recursive:true }); } catch (e) {}
         
         this.#ipc = new IPCMaster(this.name, this.get_socket_path(`ipc`, true));
@@ -713,7 +714,7 @@ export class CoreMaster extends Core {
         }
     }
 
-    async ondestroy() {
+    async _destroy() {
         console.info("Shutting down servers...");
         await Promise.all(this.#server_terminators.map(s=>s.terminate()));
         console.info("Shutting down modules...");
@@ -721,7 +722,7 @@ export class CoreMaster extends Core {
         console.info("Shutting down IPC...");
         await this.#ipc.destroy();
         console.info("Shutting down complete.");
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 
@@ -946,7 +947,7 @@ export class CoreFork extends Core {
     generate_uid(uid_key) {
         var id = 0;
         try {
-            id = +fs.readFileSync(path.join(this.uids_dir, uid_key), "utf8");
+            id = +fs.readFileSync(path.join(this.uids_dir, uid_key), "utf8") || 0;
         } catch (e) {}
         id = String(++id);
         fs.writeFileSync(path.join(this.uids_dir, uid_key), id);
@@ -1008,9 +1009,9 @@ export class CoreFork extends Core {
         return true;
     }
 
-    async ondestroy() {
+    async _destroy() {
         await this.#ipc.destroy();
-        return super.ondestroy();
+        return super._destroy();
     }
 }
     

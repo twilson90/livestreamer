@@ -114,6 +114,8 @@ export class Property extends UI {
         return this.#defaults;
     }
 
+    get default() { return this.defaults[0]; }
+
     #path;
     get path() {
         if (!this.#path) {

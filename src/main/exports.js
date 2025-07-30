@@ -13,7 +13,7 @@ export * from "./InternalSession.js";
 export * from "./InternalSessionPlayer.js";
 export * from "./MainClient.js";
 export * from "./MPVEDL.js";
-export * from "./Stream.js";
+export * from "./SessionStream.js";
 export * from "./StreamTarget.js";
 export * from "./Target.js";
 export * from "./Upload.js";

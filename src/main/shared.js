@@ -1,5 +1,3 @@
-import {sort} from "../utils/sort.js";
-
 /** @import {PlaylistItem$, MediaInfo, MediaInfoStreamEx, MediaInfoStreamType} from "./exports.js" */
 
 /** @param {PlaylistItem$} item @param {MediaInfo} media_info */

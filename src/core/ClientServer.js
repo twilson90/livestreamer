@@ -61,14 +61,14 @@ export class ClientServer extends events.EventEmitter {
                     ws.send("ping");
                     alive = true;
                 } else {
-                    client.onmessage(m);
+                    client._message(m);
                 }
             });
             ws.on('error',(e)=>{
-                client.onerror(e);
+                client._error(e);
             });
             ws.on("close", (code)=>{
-                client.onclose(code);
+                client._close(code);
                 clearInterval(heartbeat_interval);
                 this.emit("disconnect", client);
                 client.destroy();

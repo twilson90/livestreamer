@@ -31,8 +31,8 @@ export class Log {
 				this.ts = log.ts;
 			}
 		} else {
-			this.level = args[0];
-			this.message = args.slice(1).map(m=>{
+			this.level = (args[0] in levels_map) ? args.shift() : Logger.INFO;
+			this.message = args.map(m=>{
 				if (m instanceof Error) {
 					if (this.level === Logger.ERROR && m.stack && globals.app.debug) m = m.stack;
 					else m = m.message;
@@ -229,6 +229,22 @@ async function write_header_line(stream, str, len=64) {
 	var left = Math.floor(padding/2);
 	var right = Math.ceil(padding/2);
 	stream.write(`${"-".repeat(left)}${str}${"-".repeat(right)}\n`);
+}
+
+export const levels = [
+	Logger.TRACE,
+	Logger.DEBUG,
+	Logger.INFO,
+	Logger.WARN,
+	Logger.ERROR,
+]
+
+export const levels_map = {
+	[Logger.TRACE]: 0,
+	[Logger.DEBUG]: 1,
+	[Logger.INFO]: 2,
+	[Logger.WARN]: 3,
+	[Logger.ERROR]: 4,
 }
 
 export default Logger;

@@ -10,12 +10,11 @@ export class StopWatchBase extends EventEmitter {
 	#pause_ts = 0;
 	
 	start() {
+		if (!this.paused) return;
 		var now = this.__get_now();
-		if (this.paused) {
-			this.#start_ts += now - this.#pause_ts;
-			this.#pause_ts = 0;
-			this.emit("start");
-		}
+		this.#start_ts += now - this.#pause_ts;
+		this.#pause_ts = 0;
+		this.emit("start");
 	}
 	
 	resume() {

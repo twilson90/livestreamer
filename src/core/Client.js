@@ -33,8 +33,6 @@ export class Client extends DataNodeID {
         super(id, $);
     }
 
-    oninit() { throw new Error("not implemented"); }
-
     /** @param {ClientServer<Client>} server @param {http.IncomingMessage} req @param {WebSocket} ws */
     async init(server, ws, req) {
         this.server = server;
@@ -59,16 +57,18 @@ export class Client extends DataNodeID {
         this.logger.info(`${JSON.stringify(this.$)} connected`);
         
         this.client_history_path = path.join(this.server.clients_dir, `${this.ip_hash}.json`);
-        this.oninit();
+        this._init();
         await utils.append_line_truncate(this.client_history_path, JSON.stringify(this.$), 32);
     }
 
-    onclose(code) {
+    _init() { throw new Error("not implemented"); }
+
+    _close(code) {
         this.logger.info(`disconnected.`);
         this.destroy();
     }
 
-    async onmessage(m) {
+    async _message(m) {
         this.logger.debug(`message: ${m}`);
         var json;
         try {
@@ -99,7 +99,7 @@ export class Client extends DataNodeID {
         }
     }
 
-    onerror(error) {
+    _error(error) {
         this.logger.error(error);
     }
 
@@ -108,10 +108,10 @@ export class Client extends DataNodeID {
     }
     ping(){ return 1; }
 
-    ondestroy() {
+    _destroy() {
         delete this.server.clients[this.id];
         this.ws.close();
-        super.ondestroy();
+        super._destroy();
     }
 }
 

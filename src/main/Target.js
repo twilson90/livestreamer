@@ -24,16 +24,17 @@ export class Target$ extends DataNodeID$ {
     rtmp_key = "";
     title = "";
     url = "";
-    access_control = new AccessControl();
+    access_control = new AccessControl().$;
     ts = 0;
     locked = false;
     limit = 1;
+    opts = {};
 }
 
 /** @extends {DataNodeID<Target$>} */
 export class Target extends DataNodeID {
     #data;
-    get stream_targets() { return Object.values(globals.app.streams).map(s=>s.stream_targets[this.id]).filter(st=>st); }
+    get stream_targets() { return Object.values(globals.app.session_streams).map(s=>s.stream_targets[this.id]).filter(st=>st); }
     get streams() { return this.stream_targets.map(st=>st.stream); }
     get name() { return this.$.name; }
     get description() { return this.$.description; }
@@ -69,7 +70,7 @@ export class Target extends DataNodeID {
         delete data.stream_id;
         Object.assign(this.$, data);
         if (!this.$.locked || !this.$.ts) this.$.ts = Date.now();
-        if (!this.$.access_control) this.$.access_control = new AccessControl();
+        if (!this.$.access_control) this.$.access_control = new AccessControl().$;
     }
     
     /** @param {Target} data */
@@ -84,7 +85,7 @@ export class Target extends DataNodeID {
         await globals.app.safe_write_file(path.resolve(globals.app.targets_dir, this.id), JSON.stringify(data, null, 4));
     }
 
-    async ondestroy() {
+    async _destroy() {
         for (var st of this.stream_targets) {
             await st.destroy();
         }
@@ -93,7 +94,7 @@ export class Target extends DataNodeID {
         if (!this.locked) {
             await fs.unlink(path.resolve(globals.app.targets_dir, this.id)).catch(utils.noop);
         }
-        return super.ondestroy();
+        return super._destroy();
     }
 }
 
