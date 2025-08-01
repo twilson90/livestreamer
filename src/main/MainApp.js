@@ -847,13 +847,13 @@ export class MainApp extends CoreFork {
         Object.values(this.sessions).forEach(s=>s.tick());
         Object.values(this.session_streams).forEach(s=>s.tick());
         if (this.sysinfo_client_updater.has_clients) this.#update_sysinfo();
-        if (this.#ticks % 60 === 0) {
+        if (this.#ticks % 60 == 0) {
             var root = path.parse(process.cwd()).root;
             
-            const stats = fs.statfs(root);
+            const stats = await fs.statfs(root);
             const total = stats.blocks * stats.bsize;
             const free = stats.bsize * stats.bfree;
-            const used = stats.bsize * stats.bused;
+            const used = total - free;
             const percent = (used / total) * 100;
             var is_low = percent < this.conf["main.warn_disk_space"];
             this.$.disk = {

@@ -4,6 +4,7 @@ export default {
 	"core.title": "Core",
 	"core.description": "IPC, web proxies, process management.",
 	
+	"core.debug": false,
 	"core.appspace": "livestreamer",
 	"core.hostname": "livestreamer.localhost",
 	"core.logs_max_length": 64,
@@ -22,11 +23,7 @@ export default {
 	"core.changelog": resources.get_path(`changes.md`),
 	"core.ytdl_path": "yt-dlp",
 	"core.ytdl_format": "bestvideo[ext=mp4][height<=?1080][vcodec*=avc1]+bestaudio[ext=m4a][acodec*=mp4a]/bestvideo[ext=mp4][height<=?1080][vcodec*=avc1]/best[ext=mp4]/best",
-	
-	"file-manager.title": "File Manager",
-	"file-manager.description": "File manager server and interface.",
-	"file-manager.volumes": {},
-	"file-manager.inspect": "",
+	"core.inspect": 9229,
 	
 	"main.title": "Live Streamer",
 	"main.description": "Handles all sessions, playlists and most of the media processing.",
@@ -35,12 +32,17 @@ export default {
 	"main.autosaves_limit": 128,
 	"main.session_order_client": true,
 	"main.targets": [],
-	"main.inspect": "",
 	"main.test_stream_low_settings": true,
 	"main.stream_restart_delay": 5, // 5 seconds
 	"main.google_drive_credentials_path": "",
 	"main.google_drive_service_account_path": "",
 	"main.warn_disk_space": 0.2,
+	"main.inspect": 9230,
+	
+	"file-manager.title": "File Manager",
+	"file-manager.description": "File manager server and interface.",
+	"file-manager.volumes": {},
+	"file-manager.inspect": 9231,
 	
 	"media-server.title": "Local Media Server",
 	"media-server.description": "Handles network delivery of media streams and serves them publicly.",
@@ -55,37 +57,37 @@ export default {
 	"media-server.allow_hevc": false,
 	"media-server.logo_path": "",
 	"media-server.site_url": "",
-	"media-server.inspect": "",
 	"media-server.outputs": [
-		{
+		/* {
 			"name": "240p",
 			"resolution": 240,
-			"video_bitrate": 300,
+			"video_bitrate": 400, // recommended 300–500 kbps
 			"audio_bitrate": 64,
-		},
+		}, */
 		{
 			"name": "360p",
 			"resolution": 360,
-			"video_bitrate": 600,
+			"video_bitrate": 750, // recommended 600–900 kbps
 			"audio_bitrate": 128,
 		},
 		{
 			"name": "480p",
 			"resolution": 480,
-			"video_bitrate": 1200,
+			"video_bitrate": 1250, // recommended 1000–1500 kbps
 			"audio_bitrate": 128,
 		},
 		{
 			"name": "720p",
 			"resolution": 720,
-			"video_bitrate": 2000,
+			"video_bitrate": 2500, // recommended 2000–3000 kbps
 			"audio_bitrate": 160,
 		},
 		{
 			"name": "1080p",
 			"resolution": 1080,
-			"video_bitrate": 3000,
+			"video_bitrate": 4000, // recommended 3000–5000 kbps
 			"audio_bitrate": 160,
 		}
-	]
+	],
+	"media-server.inspect": 9232,
 }

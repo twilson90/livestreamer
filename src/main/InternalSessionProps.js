@@ -177,7 +177,14 @@ export const PlaylistItemPropsProps = {
     },
     background_mode: {
         __default__: "auto",
-        __options__: [["auto", "Auto"], ["none", "None"], ["default", "Default"], ["logo",`Logo`], ["embedded", "Embedded Artwork"], ["external", "External Artwork"]],
+        __options__: [
+            ["auto", "Auto"],
+            ["none", "None"],
+            ["default", "Default"],
+            ["logo",`Logo`],
+            ["embedded", "Embedded Artwork"],
+            ["external", "External Artwork"]
+        ],
     },
     background_color: {
         __default__: "",
@@ -321,7 +328,17 @@ export const InternalSessionProps = {
         ...SessionProps.stream_settings,
         fps: {
             __default__: 0,
-            __options__: [[0,"Variable"],[23.97,"23.97 fps"],[24,"24 fps"],[25,"25 fps"],[29.97,"29.97 fps"],[30,"30 fps"],[50,"50 fps"],[59.94,"59.94 fps"],[60,"60 fps"]]
+            __options__: [
+                [0,"Variable"],
+                [23.97,"23.97 fps"],
+                [24,"24 fps"],
+                [25,"25 fps"],
+                [29.97,"29.97 fps"],
+                [30,"30 fps"],
+                [50,"50 fps"],
+                [59.94,"59.94 fps"],
+                [60,"60 fps"]
+            ]
             // ["passthrough","Pass Through"],["vfr","Variable"],
         },
         resolution: {
@@ -342,10 +359,10 @@ export const InternalSessionProps = {
             __max__: 8000,
         },
         audio_bitrate: {
-            __default__: 160,
+            __default__: 192,
             __step__: 1,
             __min__: 64,
-            __max__: 1000,
+            __max__: 320,
         },
         buffer_duration: {
             __default__: 5,

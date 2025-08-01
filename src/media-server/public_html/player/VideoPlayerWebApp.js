@@ -309,12 +309,6 @@ class VideoPlayer {
 
         
     }
-    
-    get_preferred_level() {
-        var level = localStorage.getItem("level");
-        if (level == null) level = -1;
-        return +level;
-    }
 
     init(autoplay) {
         let _this = this;
@@ -391,12 +385,7 @@ class VideoPlayer {
                     var data = levels.find(l=>l.value == level);
                     this.q_label.innerHTML = data ? data.text : "-";
                 }
-                var levels = [];
                 app.player.hls.on(Hls.Events.MANIFEST_PARSED, (event, data)=>{
-                    levels = data.levels.map((l,i)=>{
-                        return {value:i, text:l.height+"p", bitrate:l.bitrate}
-                    }).filter(l=>l);
-                    levels.push({value:-1, text:"AUTO", bitrate:0});
                     this.options_.levels = levels;
                     this.update();
                     update_label(levels[1].level);
@@ -426,7 +415,7 @@ class VideoPlayer {
                 this.update_selection();
             }
             update_selection() {
-                var level = app.player.get_preferred_level();
+                var level = get_preferred_level();
                 var selected_item = this.items.find(i=>i.level == level);
                 if (!selected_item) selected_item = this.items[this.items.length-1];
                 for (var item of this.items) {
@@ -546,8 +535,22 @@ class VideoPlayer {
             // debug: true
         });
         
+        var levels = [];
+
+        var get_preferred_level = ()=>{
+            var level = localStorage.getItem("level");
+            level = levels.find(l=>l.value==level)?.value;
+            if (level == null) level = -1;
+            return +level;
+        };
+        
         this.hls.on(Hls.Events.MANIFEST_PARSED, (event, data)=>{
-            var level = this.get_preferred_level();
+            levels = data.levels.map((l,i)=>{
+                return {value:i, text:l.height+"p", bitrate:l.bitrate}
+            }).filter(l=>l);
+            levels.push({value:-1, text:"AUTO", bitrate:0});
+            
+            var level = get_preferred_level();
             if (level >= 0) this.hls.nextLevel = level;
         });
 

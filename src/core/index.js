@@ -24,8 +24,11 @@ import { createHttpTerminator } from 'http-terminator';
 import tree_kill from "tree-kill-promise";
 import * as resources from "./resources.js";
 
-const DEV_MODE = !(import.meta.env?.PRODUCTION);
-const BUILD_MODE = import.meta.env?.BUILD ?? false;
+// const DEV_MODE = !!import.meta.env?.MODE.match(/^dev/);
+// const PRODUCTION_MODE = !!import.meta.env?.MODE.match(/^prod/);
+
+const MODE = import.meta.env?.MODE ?? "production";
+const BUILD = import.meta.env?.BUILD ?? false;
 const BUILD_VERSION = import.meta.env?.BUILD_VERSION ?? utils.uuid4();
 
 function getCurrentUser() {
@@ -99,7 +102,7 @@ export class Core extends DataNode {
     get logger() { return this.#logger; }
     get appspace() { return (process.env.LIVESTREAMER_APPSPACE ?? this.conf["core.appspace"] ?? "livestreamer"); }
     get portable() { return !!(process.env.LIVESTREAMER_PORTABLE ?? portable_file); }
-    get debug() { return !!(process.env.LIVESTREAMER_DEBUG ?? DEV_MODE); }
+    get debug() { return !!(process.env.LIVESTREAMER_DEBUG ?? this.conf["core.debug"]); }
     get auth() { return !!(process.env.LIVESTREAMER_AUTH ?? this.conf["core.auth"]); }
     
     get use_pm2() { return !!("pm_id" in process.env || this.conf["core.pm2"]); }
@@ -473,8 +476,10 @@ export class CoreMaster extends Core {
             var proc = new Process(m);
             var args = [];
             var node_args = [];
-            if (this.debug && this.conf[`${m}.inspect`]) {
-                node_args.push(`--inspect=${this.conf[`${m}.inspect`]}`);
+            let inspect = `${this.conf[`${m}.inspect`]}`;
+            if (this.debug && inspect) {
+                if (inspect.match(/^\d+$/)) inspect = `0.0.0.0:${inspect}`;
+                node_args.push(`--inspect=${inspect}`);
             }
             this.#ipc.once(`${m}.ready`, ()=>{
                 this.logger.info(`Module '${m}' is ready.`);
@@ -882,7 +887,7 @@ export class CoreFork extends Core {
         plugins = plugins ?? [];
         root = path.resolve(root);
         var pages = await glob("**/*.html", {cwd: root});
-        if (BUILD_MODE) {
+        if (BUILD) {
             return express.static(root);
         } else {
             var ssl_certs = this.get_ssl_certs();
@@ -890,7 +895,7 @@ export class CoreFork extends Core {
             let vite = await import("vite");
             /** @type {import("vite").UserConfig} */
             var config = {
-                mode: DEV_MODE ? "development" : "production",
+                mode: MODE,
                 configFile: false,
                 base: `./`,
                 root,

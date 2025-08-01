@@ -296,7 +296,7 @@ export class SessionStream extends StopStartStateMachine {
 
     register_metric(key, y) {
         // if (this.disable_register_metric) return;
-        if (!this.$.metrics[key] && y == 0) return;
+        // if (!this.$.metrics[key] && y == 0) return;
         if (!this.$.metrics[key]) this.$.metrics[key] =  {min:0,max:0,data:{}};
         var d = this.$.metrics[key];
         d.data[d.max++] = y;

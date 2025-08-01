@@ -583,8 +583,6 @@ export class Live extends StopStartStateMachine {
             if (!outputs || !outputs.length) outputs = utils.json_copy(globals.app.conf["media-server.outputs"]);
             for (var c of outputs) {
                 c.resolution = +c.resolution || session.videoHeight;
-                if (typeof c.video_bitrate == "number") c.video_bitrate = `${c.video_bitrate}k`;
-                if (typeof c.audio_bitrate == "number") c.audio_bitrate = `${c.audio_bitrate}k`;
             }
             if (session) {
                 outputs = outputs.filter(c=>c.resolution <= session.videoHeight);
@@ -659,8 +657,11 @@ export class Live extends StopStartStateMachine {
             `-fps_mode`, fps ? `cfr` : "passthrough",
             `-g`, `${(fps || constants.DEFAULT_FPS) * keyint}`,
             `-force_key_frames`, `expr:gte(t,n_forced*${keyint})`, // keyframe every 2 seconds, this takes precedence over -g but apparently isn not working for some reason (vfr related)
+            `-profile:v`, `high`,
+
             // `-force_key_frames`, `expr:gte(n,n_forced*fps*${keyint})`,
-            // `-movflags`,` +faststart`,
+            `-movflags`,` +faststart`,
+            // `-rc_mode`, `vbr`,
 
             // `-vf`, `setpts=PTS-STARTPTS`,
             // `-af`, `asetpts=PTS-STARTPTS`,
@@ -678,15 +679,15 @@ export class Live extends StopStartStateMachine {
 
         if (hwenc == "vaapi") {
             ffmpeg_args.push(
-                `-global_quality`, `24`,
+                // `-qp`, `18`,
+                `-global_quality`, `18`,
                 `-compression_level`, "5", // 1-7 (1 = fastest, 7 = slowest)
-                `-rc_mode`, "3",
-                `-bf`, "4",
-                `-refs`, "4"
+                `-bf`, "3",
+                // `-refs`, "4"
             );
         } else if (hwenc == "nvenc" || hwenc == "cuda") {
             ffmpeg_args.push(
-                `-cq`, `24`,
+                `-cq`, `18`,
                 `-preset`, "p5", // p1-p7 (1 = fastest, 7 = slowest)
                 `-spatial_aq`, "1",
                 `-temporal_aq`, "1"
@@ -733,9 +734,9 @@ export class Live extends StopStartStateMachine {
             ffmpeg_args.push("-map", video_height_map[c.resolution]);
             ffmpeg_args.push(
                 `-c:v:${i}`, hwenc ? `${this.$.use_hevc?"hevc":"h264"}_${hwenc}` : this.$.use_hevc ? `libx265` : `libx264`,
-                `-b:v:${i}`, c.video_bitrate,
-                `-maxrate:v:${i}`, c.video_bitrate,
-                `-bufsize:v:${i}`, c.video_bitrate,
+                `-b:v:${i}`, `${c.video_bitrate}k`,
+                `-maxrate:v:${i}`, `${c.video_bitrate * 1}k`,
+                `-bufsize:v:${i}`, `${c.video_bitrate * 2}k`,
             );
             // if (hwenc) {
             //     ffmpeg_args.push(
@@ -749,7 +750,7 @@ export class Live extends StopStartStateMachine {
             // }
             ffmpeg_args.push("-map", "0:a:0");
             ffmpeg_args.push(`-c:a:${i}`, "aac");
-            ffmpeg_args.push(`-b:a:${i}`, c.audio_bitrate);
+            ffmpeg_args.push(`-b:a:${i}`, `${c.audio_bitrate}k`);
             // ffmpeg_args.push(
             //     `-filter:a:${i}`, `asetpts=PTS-STARTPTS`
             // );

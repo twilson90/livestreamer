@@ -1367,7 +1367,7 @@ class InternalSessionMPV extends MPVWrapper {
             pre_vf_graph.push(`setdar=${w}/${h}`);
         }
 
-        pre_vf_graph.push(`scale=width=(iw*sar)*min(${w}/(iw*sar)\\,${h}/ih):height=ih*min(${w}/(iw*sar)\\,${h}/ih):force_divisible_by=2:reset_sar=1`);
+        pre_vf_graph.push(`scale=width=(iw*sar)*min(${w}/(iw*sar)\\,${h}/ih):height=ih*min(${w}/(iw*sar)\\,${h}/ih):force_divisible_by=2`); // :reset_sar=1 does not exist on old ffmpeg versions.
 
         {
             let c = this.#props.contrast;

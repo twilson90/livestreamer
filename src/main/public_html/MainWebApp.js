@@ -2306,7 +2306,7 @@ export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
             "label": "Use Hardware",
             "options": YES_OR_NO,
             "default": this._get_default,
-            "info": "Use GPU to encode (much faster than using CPU)"
+            "info": "If enabled, hardware will be used for video transcoding. If there is no hardware decoding support, it will fallback to software.",
         });
         this.props.append(use_hardware);
         var use_hevc = new ui.InputProperty(`<select>`, {
@@ -2314,7 +2314,7 @@ export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
             "label": "Use HEVC",
             "options": YES_OR_NO,
             "default": this._get_default,
-            "info": "Use a modern video codec (incompatible with older browsers & firefox, not recommended)"
+            "info": "Use the modern HEVC video codec (incompatible with older browsers & firefox)"
         });
         this.props.append(use_hevc);
         var fps_passthrough = new ui.InputProperty(`<select>`, {
@@ -2324,49 +2324,6 @@ export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
             "default": this._get_default,
         });
         this.props.append(fps_passthrough);
-        /* var outputs = new ui.PropertyList({
-            "name": "outputs",
-            "label": "Outputs", 
-            // "item_size": 300,
-            "default": this._get_default,
-            ui(list_item) {
-                var name = new ui.InputProperty(`<input type="text">`, {
-                    "name": "name",
-                    "label": "Name",
-                    "placeholder": "Name of preset",
-                    "reset": false,
-                });
-                var resolution = new ui.InputProperty(`<select>`, {
-                    "name": "resolution",
-                    "label": "Resolution",
-                    "options": [[0, "Pass-through"], ...[1080, 720, 480, 360, 240].map(o=>[o,String(o)+"p"])],
-                    "reset": false,
-                });
-                var video_bitrate = new ui.InputProperty(`<input type="number">`, {
-                    "name": "video_bitrate",
-                    "label": "Video Bitrate",
-                    "suffix": `kbps`,
-                    "step": 50,
-                    "min": 100,
-                    "max": 5000,
-                    "reset": false,
-                });
-                var audio_bitrate = new ui.InputProperty(`<input type="number">`, {
-                    "name": "audio_bitrate",
-                    "label": "Audio Bitrate",
-                    "suffix": `kbps`,
-                    "step": 1,
-                    "min": 64,
-                    "max": 320,
-                    "reset": false,
-                });
-                list_item.props.append(name);
-                var row = new ui.FlexRow();
-                row.append(resolution, video_bitrate, audio_bitrate);
-                list_item.props.append(row);
-            },
-        });
-        this.props.append(outputs); */
     }
 }
 
@@ -4888,7 +4845,7 @@ export class StreamConfigurationMenu extends ui.EditModal {
         });
         this.props.append(buffer_duration);
 
-        var fps = new ui.InputProperty(`<input type="number">`, {
+        var fps = new ui.InputProperty(`<select></select>`, {
             ..._get_property_opts("fps"),
             "name": "fps",
             "label": "Frame Rate",
@@ -7154,8 +7111,9 @@ export class StreamSettings extends Panel {
         this.use_hardware = new ui.InputProperty(`<select></select>`, {
             ..._get_property_opts("use_hardware"),
             "name": "use_hardware",
-            "label": "Hardware Transcoding",
-            "visible": ()=>app.$.conf["mpv_hwdec"],
+            "label": "Hardware Decoding",
+            "hidden": ()=>!app.$.conf["mpv_hwdec"],
+            "info": "If enabled, hardware decoding will be used for video playback. If there is no hardware decoding support, it will fallback to software decoding.",
             width: 140,
         });
         this.stream_props_ui.append(this.use_hardware);
@@ -7196,7 +7154,7 @@ export class StreamSettings extends Panel {
                 }
                 stream_info["Frame Rate"] = `${stream["fps"] || "Variable"}`;
                 stream_info["Buffer Duration"] = `${stream["buffer_duration"]} secs`;
-                stream_info["Hardware Transcoding"] = `${stream["use_hardware"]?"Yes":"No"}`;
+                stream_info["Hardware Decoding"] = `${stream["use_hardware"]?"Yes":"No"}`;
             } else {
                 var nms_session = session._get_connected_nms_session_with_appname("livestream", "external");
                 if (nms_session) {
@@ -7248,7 +7206,7 @@ export class StreamSettings extends Panel {
 
 export class MediaPlayerPanel extends Panel {
     get buffer_duration() {
-        return utils.try_catch(()=>(this.flv_player._media_element.buffered.end(0)-this.flv_player.currentTime));
+        return (this.flv_player?._media_element?.buffered.end(0) || 0) - (this.flv_player?.currentTime || 0);
     }
 
     constructor() {
@@ -7546,7 +7504,7 @@ video { width: 100% !important; height: 100% !important; }`;
         var update_interval = setInterval(()=>{
             if (this.buffer_duration < 0) {
                 setTimeout(()=>{
-                    if (this.buffer_duration < 0) this.update_player(true);
+                    if (this.buffer_duration < 0 && this.flv_player) this.update_player(true);
                 }, 1000);
             }
             this.update_player();
