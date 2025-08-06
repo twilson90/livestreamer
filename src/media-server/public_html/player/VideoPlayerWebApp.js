@@ -116,6 +116,11 @@ export class MediaServerVideoPlayerWebApp {
 
     async init() {
 
+        this.container_el = $(`<div class="video-container"></div>`)[0];
+        this.play_button = new PlayButton();
+
+        document.body.append(this.container_el, this.play_button.el);
+
         if (IS_EMBED) document.body.classList.add("embedded");
         
         conf = await (await fetch("/conf")).json();
@@ -123,9 +128,6 @@ export class MediaServerVideoPlayerWebApp {
         var params = new URLSearchParams(location.search);
         var autoplay = params.get("autoplay") == "1"
         this.src = new URL(`/media/live/${params.get("id")}/master.m3u8`, window.location.origin+window.location.pathname).toString();
-
-        this.play_button = new PlayButton();
-        document.body.append(this.play_button.el);
 
         /* var menu = new dom.DropdownMenu({
             items: [
@@ -144,115 +146,100 @@ export class MediaServerVideoPlayerWebApp {
         }); */
         
         setInterval(()=>{
-            app.update()
+            this.update();
         }, VIDEO_UI_UPDATE_INTERVAL);
 
         this.init_player(autoplay);
     }
 
     init_player(autoplay) {
-        if (this.player) {
-            this.player.play().then(()=>{
-                this.player.update();
-            }).catch(e=>{
-                console.error(e);
-            });
-        } else {
-            this.player = new VideoPlayer(this.src);
-            this.player.init(autoplay);
-        }
+        console.log(`init_player [autoplay: ${autoplay}]`);
+        this.player?.destroy();
+        this.player = new VideoPlayer(this.src);
+        this.player.init(autoplay);
     }
+    
     update = dom.debounce_next_frame(()=>this.#update());
+    
     #update() {
-        if (this.player) this.player.update();
+        this.player?.update();
         this.play_button.update();
     }
 }
 
 class PlayButton {
-    constructor() {
+    was_just_seeking = false;
+
+    /** @param {VideoPlayer} player */
+    constructor(player) {
+        this.player = player;
+
         /** @type {HTMLElement} */
         this.el = $(
             `<div class="play-button">
                 <div class="play"><i class="fas fa-play"></i></div>
-                <div class="pause"><i class="fas fa-pause"></i></div>
                 <div class="ended"><div style="padding:10px">The stream has ended.</div><i class="fas fa-redo"></i></div>
             </div>`
         )[0];
-        this.el.onclick = (e)=>app.init_player(true);
-        document.body.append(this.el);
+        
+        // <div class="pause"><i class="fas fa-pause"></i></div>
+
+        this.el.onclick = async (e)=>{
+            if (this.player) {
+                await this.player.play();
+                this.update();
+            } else {
+                app.init_player(true);
+            }
+        };
         this.el = this.el;
+
         this.update();
     }
 
     update() {
+        var showing = false;
         var paused = false;
         var ended = false;
-        var seeking = false;
-        var was_just_seeking = false;
-        var was_just_seeking_timeout_id;
+        // var not_initialized = false;
 
-        if (app.player) {
-            var vjs = app.player.player;
-            seeking  = vjs.scrubbing() || vjs.seeking();
-            if (seeking) {
-                was_just_seeking = true;
-                clearTimeout(was_just_seeking_timeout_id);
-            } else {
-                was_just_seeking_timeout_id = setTimeout(()=>was_just_seeking = false, 500);
-            }
+        if (this.player) {
+            let vjs = this.player.player;
             ended = vjs.ended();
-            paused = !ended && vjs.hasStarted() && vjs.paused() && (!seeking && !was_just_seeking);
+            paused = !ended && vjs.paused()
+            // not_initialized = this.player.played;
+        } else {
+            paused = !app.player || app.player?.destroyed
         }
-        var initialized = app.player && app.player.initialized;
-        this.el.querySelector(".play").style.display = !initialized ? "" :  "none";
-        this.el.querySelector(".pause").style.display = paused ? "" : "none";
-        this.el.querySelector(".ended").style.display = ended ? "" : "none";
-
-        var showing = ended || paused || !initialized;
-        // this.el.style.display = showing ? "" : "none";
-        if (this._showing != showing) {
-            this._showing = showing;
-            if (showing) $(this.el).stop().fadeIn(200);
-            else $(this.el).stop().fadeOut(200);
-        }
+        
+        showing = !!(ended || paused);
+        this.el.querySelector(".play").classList.toggle("hidden", !paused);
+        this.el.querySelector(".ended").classList.toggle("hidden", !ended);
+        this.el.classList.toggle("hidden", !showing);
     }
 }
 
 class VideoPlayer {
-    /** @type {HTMLVideoElement} */
-    video_el;
     /** @type {Hls}*/
     hls;
-    /** @type {import("video.js/dist/types/player").default}*/
+    /** @type {import("video.js/dist/types/player").default & {liveTracker:import("video.js/dist/types/live-tracker").default}}*/
     player;
-    initialized = false;
     #update_ratio_interval_id;
+    destroyed = false;
+    levels = [];
 
     constructor(src) {
         this.src = src;
-        this.video_el = $(`<video class="video-js" preload="auto" width="1280" height="720"></video>`)[0];
-        this.crop_detect = new CropDetect(this.video_el);
-        this.crop_detect.ready.then(()=>{
-            this.update_ratio();
-        })
-
-        document.body.append(this.video_el);
-
-        this.video_el.addEventListener("error", (e)=>{
-            console.log(e);
-        });
-        new ResizeObserver(()=>{
-            this.update_ratio();
-        }).observe(this.video_el);
     }
 
-    update() {
-        if (!this.player) return;
+    async update() {
+        await this.ready;
+
+        if (this.destroyed) return;
 
         var d = this.get_time_until_live_edge_area(true);
-        var behindLiveEdge = this.liveTracker.behindLiveEdge();
-        var is_live = this.liveTracker.isLive();
+        var behindLiveEdge = this.player.liveTracker.behindLiveEdge();
+        var is_live = this.player.liveTracker.isLive();
         var rate = this.player.playbackRate();
         var at_live_edge = d <= 0;
         var new_rate = at_live_edge ? Math.min(1, rate) : rate;
@@ -260,27 +247,34 @@ class VideoPlayer {
             this.player.playbackRate(new_rate);
         }
 
-        var stl_text;
-        if (behindLiveEdge) {
-            // this.is_mobile && 
-            if (settings.get("time_display_mode") == 0) {
-                stl_text = "["+this.get_live_time(0, this.player.currentTime())+"]"
+        if (this.seekToLive) {
+            var stl_text;
+            if (behindLiveEdge) { // this.is_mobile && 
+                if (settings.get("time_display_mode") == 0) {
+                    stl_text = "["+this.get_live_time(0, this.player.currentTime())+"]"
+                } else {
+                    stl_text = `[-${videojs.time.formatTime(this.get_time_until_live_edge_area())}]`
+                }
             } else {
-                stl_text = `[-${videojs.time.formatTime(this.get_time_until_live_edge_area())}]`
+                stl_text = "LIVE";
             }
-        } else {
-            stl_text = "LIVE";
-        }
-        if (this.seekToLive.last_text != stl_text) {
-            this.seekToLive.last_text = stl_text
-            this.seekToLive.textEl_.innerHTML = stl_text;
+            if (this.seekToLive.last_text != stl_text) {
+                this.seekToLive.last_text = stl_text
+                this.seekToLive.textEl_.innerHTML = stl_text;
+            }
         }
         
-        if (is_live) this.timeDisplayToggle.show();
-        else this.timeDisplayToggle.hide();
+        if (this.timeDisplayToggle) {
+            if (is_live) this.timeDisplayToggle.show();
+            else this.timeDisplayToggle.hide();
+        }
+
+        this.play_button.update();
     }
 
     async update_ratio() {
+        await this.ready;
+        
         var crop_mode_index = settings.get("crop_mode");
         var crop_mode = crop_modes[crop_mode_index];
         let crop = crop_mode.crop || crops[0];
@@ -290,6 +284,7 @@ class VideoPlayer {
         if (crop_mode.value == "auto") {
             crop = this.crop_detect.nearest_crop;
         }
+        
         apply_crop(this.video_el, crop);
 
         // for (var c of crops) {
@@ -310,7 +305,8 @@ class VideoPlayer {
         
     }
 
-    init(autoplay) {
+    async init(autoplay) {
+        console.log(`VideoPlayer.init [autoplay: ${autoplay}]`);
         let _this = this;
         var Button = videojs.getComponent("Button");
         var MenuButton = videojs.getComponent("MenuButton");
@@ -366,7 +362,7 @@ class VideoPlayer {
                 this.controlText("Stop");
             }
             handleClick(event) {
-                app.player.destroy()
+                _this.destroy()
             }
             buildCSSClass() {
                 return `vjs-stop-control vjs-control vjs-button ${super.buildCSSClass()}`;
@@ -381,25 +377,10 @@ class VideoPlayer {
                     className: "", 
                     ...options,
                 });
-                var update_label = (level)=>{
-                    var data = levels.find(l=>l.value == level);
-                    this.q_label.innerHTML = data ? data.text : "-";
-                }
-                app.player.hls.on(Hls.Events.MANIFEST_PARSED, (event, data)=>{
-                    this.options_.levels = levels;
-                    this.update();
-                    update_label(levels[1].level);
-                });
-                app.player.hls.on(Hls.Events.LEVEL_SWITCHING, (event, data)=>{
-                    update_label(data.level);
-                });
-                app.player.hls.on(Hls.Events.LEVEL_UPDATED, (event, data)=>{
-                    update_label(data.level);
-                });
                 this.q_label = $(`<div>`)[0];
                 this.menuButton_.el_.prepend(this.q_label);
                 this.controlText("Quality");
-                update_label(-1);
+                this.update_label(-1);
             }
             buildWrapperCSSClass() {
                 return `vjs-level-select ${super.buildWrapperCSSClass()}`;
@@ -414,27 +395,36 @@ class VideoPlayer {
                 super.update();
                 this.update_selection();
             }
+            createItems() {
+                this.hideThreshold_ = 1;
+                var levels = utils.sort([..._this.levels], l=>-l.bitrate);
+                return levels.map((level)=>{
+                    var item = new MenuItem(this.player_, { label: level.text, selectable: true });
+                    item.level = level.value;
+                    item.handleClick = ()=>{
+                        _this.hls.nextLevel = level.value;
+                        localStorage.setItem("level", level.value);
+                        this.update_selection();
+                    };
+                    return item;
+                });
+            }
+
             update_selection() {
-                var level = get_preferred_level();
+                var level = _this.get_preferred_level();
                 var selected_item = this.items.find(i=>i.level == level);
                 if (!selected_item) selected_item = this.items[this.items.length-1];
                 for (var item of this.items) {
                     item.selected(selected_item.level === item.level);
                 }
             }
-            createItems() {
-                this.hideThreshold_ = 1;
-                var levels = utils.sort([...this.options_.levels], l=>-l.bitrate);
-                return levels.map((level)=>{
-                    var item = new MenuItem(this.player_, { label: level.text, selectable: true });
-                    item.level = level.value;
-                    item.handleClick = ()=>{
-                        app.player.hls.nextLevel = level.value;
-                        localStorage.setItem("level", level.value);
-                        this.update_selection();
-                    };
-                    return item;
-                });
+            update_label(level) {
+                var data = _this.levels.find(l=>l.value == level);
+                this.q_label.innerHTML = data ? data.text : "-";
+            }
+            update_levels() {
+                this.update();
+                this.update_label(_this.levels[1]?.level ?? 0);
             }
         }
         videojs.registerComponent("hlsSelectMenuButton", HLSSelectMenuButton);
@@ -465,7 +455,7 @@ class VideoPlayer {
         class CropToggle extends Button {
             constructor(player, options) {
                 super(player, options);
-                app.player.crop_button = this;
+                _this.crop_button = this;
                 this.icon = document.createElement("div");
                 this.icon.classList.add("icon");
                 this.el_.prepend(this.icon);
@@ -484,9 +474,9 @@ class VideoPlayer {
                     this.icon.innerHTML = d.icon;
                     this.icon.dataset.ratio = d.icon;
                     var ctext = d.label;
-                    if (d.value === "auto" && app.player.crop_detect.nearest_crop) {
-                        if (app.player.crop_detect.nearest_crop.name) {
-                            ctext += ` (${app.player.crop_detect.nearest_crop.name})`;
+                    if (d.value === "auto" && _this.crop_detect.nearest_crop) {
+                        if (_this.crop_detect.nearest_crop.name) {
+                            ctext += ` (${_this.crop_detect.nearest_crop.name})`;
                         }
                     }
                     this.controlText(ctext);
@@ -497,64 +487,14 @@ class VideoPlayer {
             }
         }
         videojs.registerComponent("cropToggle", CropToggle);
-        console.log("debug", import.meta.env.DEV)
-        this.hls = new Hls({
-            enableWorker: true,
-            lowLatencyMode: true,
-            debug: !!import.meta.env.DEV,
 
-            manifestLoadPolicy: {
-                default: {
-                    maxTimeToFirstByteMs: Infinity,
-                    maxLoadTimeMs: 20000,
-                    timeoutRetry: {
-                        maxNumRetry: 5,
-                        retryDelayMs: 0,
-                        maxRetryDelayMs: 0,
-                    },
-                    errorRetry: {
-                        maxNumRetry: 5,
-                        retryDelayMs: 1000,
-                        maxRetryDelayMs: 8000,
-                        shouldRetry: (retryConfig, retryCount, isTimeout, httpStatus,retry)=>{
-                            if (httpStatus.code == 404) return true;
-                            return retry;
-                        }
-                    },
-                },
-            },
-            maxBufferLength: 10, // minimum guaranteed buffer length
-            maxMaxBufferLength: 20, // max seconds to buffer
-            liveDurationInfinity: true,
-            liveSyncDurationCount: 2, // # of segments to buffer before playing
-            lowLatencyMode: false,
-            // progressive: true, // experimental
-            // maxLiveSyncPlaybackRate: 1.5,
-
-            // -----
-            // debug: true
-        });
+        console.log("Setting up video.js...");
         
-        var levels = [];
+        var video_el = $(`<video class="video-js" preload="auto" width="1280" height="720"></video>`)[0];
+        app.container_el.append(video_el);
 
-        var get_preferred_level = ()=>{
-            var level = localStorage.getItem("level");
-            level = levels.find(l=>l.value==level)?.value;
-            if (level == null) level = -1;
-            return +level;
-        };
-        
-        this.hls.on(Hls.Events.MANIFEST_PARSED, (event, data)=>{
-            levels = data.levels.map((l,i)=>{
-                return {value:i, text:l.height+"p", bitrate:l.bitrate}
-            }).filter(l=>l);
-            levels.push({value:-1, text:"AUTO", bitrate:0});
-            
-            var level = get_preferred_level();
-            if (level >= 0) this.hls.nextLevel = level;
-        });
-
-        this.player = videojs(this.video_el, {
+        this.player = videojs(video_el, {
+            // fluid: true,
             autoplay: autoplay && !isIOS,
             playsinline: isIOS,
             muted: autoplay && isIOS, 
@@ -566,6 +506,11 @@ class VideoPlayer {
             liveui: true,
             enableSmoothSeeking: true,
             inactivityTimeout: 1000,
+            html5: {
+                hls: {
+                    overrideNative: true
+                }
+            },
             
             // experimentalSvgIcons: true,
             liveTracker: {
@@ -616,6 +561,14 @@ class VideoPlayer {
                 } */
             }
         });
+
+        this.ready = new Promise(resolve=>this.player.ready(resolve));
+        await this.ready;
+
+        var container_el = this.player.el();
+        this.video_el = video_el = container_el.querySelector("video"); // may have changed... if iOS is to be believed.
+
+        console.log("video.js ready.");
         
         var c1 = $(`<div></div>`)[0];
         var c2 = $(`<div></div>`)[0];
@@ -625,11 +578,13 @@ class VideoPlayer {
             c.style.alignItems = "center"; 
             c.style.width = "100%";
             c.style.height = "100%";
+            // c.style.position = "relative";
         }
+        container_el.prepend(c2);
         c2.append(c1);
-        this.video_el.parentElement.insertBefore(c2, this.video_el);
-        c1.append(this.video_el);
-        c2.append(app.play_button.el);
+        c1.append(video_el);
+        this.play_button = new PlayButton(this);
+        c2.append(this.play_button.el);
         c2.style.background = "black";
         c1.style.background = "black";
 
@@ -648,14 +603,6 @@ class VideoPlayer {
                 if (rate !== -1) return player_playbackRate.apply(this, [rate]);
             }
         }
-
-        this.hls.loadSource(this.src);
-        this.hls.attachMedia(this.video_el);
-
-        // this.hls.media.srcObject.setLiveSeekableRange(0, 600)
-        this.hls.on(Hls.Events.ERROR, (...e)=>{
-            console.error(e);
-        })
 
         this.player.on('volumechange', ()=>{
             settings.set("volume", this.player.muted() ? 0 : this.player.volume())
@@ -688,8 +635,6 @@ class VideoPlayer {
         this.seekBarPlayProgressBar = this.seekBar.getChild('playProgressBar');
         /** @type {import("video.js/dist/types/control-bar/playback-rate-menu/playback-rate-menu-button").default}*/
         this.controlplaybackRateMenuButton = this.controlBar.getChild('playbackRateMenuButton');
-        /** @type {import("video.js/dist/types/live-tracker").default}*/
-        this.liveTracker = this.player.liveTracker;
 
         this.controlplaybackRateMenuButton.menu.contentEl_.prepend(...$(`<li class="vjs-menu-title" tabindex="-1">Speed</li>`))
 
@@ -755,39 +700,47 @@ class VideoPlayer {
                 this.el_.style.transform = `translateX(${cx}px)`;
             };
             timeTooltip.updateTime = function(seekBarRect, seekBarPoint, time) {
-                const liveWindow = _this.liveTracker.liveWindow();
+                const liveWindow = _this.player.liveTracker.liveWindow();
                 var time = seekBarPoint * liveWindow
                 let content = _this.get_live_time(settings.get("time_display_mode"), time);
                 this.update(seekBarRect, seekBarPoint, content);
             };
         }
 
-        /* this.player.ready(()=>{
-            if (autoplay) {
-                new Promise((resolve,reject)=>{
-                    this.player.play().then(resolve);
-                    setTimeout(()=>reject("Autoplay was disallowed."), 2000);
-                }).catch((e)=>console.error(e))
-            }
-        }); */
-        this.player.on("error", console.error);
-        this.player.on("pause",()=>app.update());
+        this.player.on("error", (e)=>{
+            console.error(e);
+        });
+        this.player.on("pause",()=>{
+            this.update()
+        });
         var was_seeking = false;
         this.player.on("seeking",()=>{
             was_seeking = true;
-            app.update()
+            this.update()
         });
         this.player.on("play",()=>{
-            this.initialized = true;
             if (was_seeking) {
                 was_seeking = false;
                 this.crop_detect.clear_buffer();
                 this.update_ratio();
             }
-            app.update()
+            this.update()
         });
-        this.player.on("ended",(e)=>app.update());
-        this.liveTracker.on("liveedgechange", ()=>app.update());
+        this.player.on("ended",(e)=>this.update());
+        this.player.liveTracker.on("liveedgechange", ()=>this.update());
+
+        this.crop_detect = new CropDetect(video_el);
+        this.crop_detect.ready.then(()=>{
+            this.update_ratio();
+        });
+
+        video_el.addEventListener("error", (e)=>{
+            console.log(e);
+        });
+
+        new ResizeObserver(()=>{
+            this.update_ratio();
+        }).observe(video_el);
 
         this.#update_ratio_interval_id = setInterval(()=>{
             this.update_ratio();
@@ -795,7 +748,23 @@ class VideoPlayer {
 
         this.update();
         this.update_ratio();
+
+        this.init_hls();
+
+        if (autoplay) {
+            return new Promise((resolve,reject)=>{
+                this.play().then(resolve);
+                setTimeout(()=>reject("Autoplay timedout."), 2000);
+            }).catch((e)=>console.error(e))
+        }
     }
+
+    get_preferred_level(){
+        var level = localStorage.getItem("level");
+        level = this.levels.find(l=>l.value==level)?.value;
+        if (level == null) level = -1;
+        return +level;
+    };
 
     seekToLiveEdge() {
         if (this.hls.media) {
@@ -807,15 +776,15 @@ class VideoPlayer {
     }
 
     get_time_until_live_edge_area(use_latency){
-        const liveCurrentTime = utils.try_catch(()=>this.liveTracker.liveCurrentTime(), 0);
+        const liveCurrentTime = utils.try_catch(()=>this.player.liveTracker.liveCurrentTime(), 0);
         const currentTime = this.player.currentTime();
-        return Math.max(0, Math.abs(liveCurrentTime - currentTime) - (use_latency ? this.hls.targetLatency : 0));
+        return Math.max(0, Math.abs(liveCurrentTime - currentTime) - (use_latency ? this.hls?.targetLatency : 0));
     };
 
     get_live_time(mode, time){
         const duration = this.player.duration();
-        if (this.liveTracker && this.liveTracker.isLive()) {
-            const liveWindow = this.liveTracker.liveWindow();
+        if (this.player.liveTracker && this.player.liveTracker.isLive()) {
+            const liveWindow = this.player.liveTracker.liveWindow();
             const secondsBehind = liveWindow - time;
             if (mode == 0) {
                 return new Date(Date.now()-secondsBehind*1000).toLocaleTimeString('en-GB', {hour: '2-digit', minute:'2-digit', second: "2-digit"}) // hour12: true
@@ -828,25 +797,89 @@ class VideoPlayer {
     }
 
     destroy() {
-        var player = this.player;
-        this.player = null;
-        if (player) player.dispose();
+        if (this.destroyed) return;
+        this.destroyed = true;
+        if (this.player) this.player.dispose();
         if (this.hls) this.hls.destroy();
-        this.hls = null;
-        this.crop_detect.destroy();
+        if (this.crop_detect) this.crop_detect.destroy();
         clearInterval(this.#update_ratio_interval_id);
-        app.player = null;
-        document.body.append(app.play_button.el);
-        app.update();
+    }
+
+    init_hls() { 
+        if (this.hls) return;
+        console.log("Setting up hls.js...");
+        this.hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: false,
+            // debug: !!import.meta.env.DEV,
+
+            manifestLoadPolicy: {
+                default: {
+                    maxTimeToFirstByteMs: Infinity,
+                    maxLoadTimeMs: 20000,
+                    timeoutRetry: {
+                        maxNumRetry: 5,
+                        retryDelayMs: 0,
+                        maxRetryDelayMs: 0,
+                    },
+                    errorRetry: {
+                        maxNumRetry: 5,
+                        retryDelayMs: 1000,
+                        maxRetryDelayMs: 8000,
+                        shouldRetry: (retryConfig, retryCount, isTimeout, httpStatus,retry)=>{
+                            if (httpStatus.code == 404) return true;
+                            return retry;
+                        }
+                    },
+                },
+            },
+            maxBufferLength: 10, // minimum guaranteed buffer length
+            maxMaxBufferLength: 20, // max seconds to buffer
+            liveDurationInfinity: true,
+            liveSyncDurationCount: 2, // # of segments to buffer before playing
+            lowLatencyMode: false,
+            // progressive: true, // experimental
+            // maxLiveSyncPlaybackRate: 1.5,
+
+            // -----
+            // debug: true
+        });
+        var hlsSelectMenuButton = this.player.controlBar.getChild("hlsSelectMenuButton");
+        this.hls.on(Hls.Events.MANIFEST_PARSED, (event, data)=>{
+            this.levels = data.levels.map((l,i)=>{
+                return {value:i, text:l.height+"p", bitrate:l.bitrate}
+            }).filter(l=>l);
+            this.levels.push({value:-1, text:"AUTO", bitrate:0});
+            
+            var level = this.get_preferred_level();
+            if (level >= 0) this.hls.nextLevel = level;
+            hlsSelectMenuButton.update_levels();
+        });
+        this.hls.on(Hls.Events.LEVEL_SWITCHING, (event, data)=>{
+            hlsSelectMenuButton.update_label(data.level);
+        });
+        this.hls.on(Hls.Events.LEVEL_UPDATED, (event, data)=>{
+            hlsSelectMenuButton.update_label(data.level);
+        });
+        this.hls.loadSource(this.src);
+        this.hls.attachMedia(this.video_el);
+
+        // this.hls.media.srcObject.setLiveSeekableRange(0, 600)
+        this.hls.on(Hls.Events.ERROR, (...e)=>{
+            console.error(e);
+        });
     }
 
     play() {
-        return this.player.play();
+        return this.player.play().then(()=>{
+            this.played = true;
+        })
     }
 }
+
 class CropDetect {
     /** @type {HTMLVideoElement} */
-    video_el;
+    #video_el;
     /** @type {HTMLCanvasElement} */
     canvas;
     /** @type {Crop[]} */
@@ -855,11 +888,11 @@ class CropDetect {
     nearest_crop = new Crop();
     #ready;
     get ready() { return this.#ready; }
-    get vw() { return this.video_el.videoWidth; }
-    get vh() { return this.video_el.videoHeight; }
+    get vw() { return this.#video_el.videoWidth; }
+    get vh() { return this.#video_el.videoHeight; }
 
     constructor(video_el) {
-        this.video_el = video_el;
+        this.#video_el = video_el;
         this.#ready = this.#init();
     }
 
@@ -869,13 +902,15 @@ class CropDetect {
 
     async #init() {
         await new Promise(resolve=>{
-            this.video_el.addEventListener("loadeddata", resolve)
-            if (this.video_el.readyState >= HTMLMediaElement.HAVE_METADATA) resolve();
+            this.#video_el.addEventListener("loadeddata", resolve)
+            if (this.#video_el.readyState >= HTMLMediaElement.HAVE_METADATA) resolve();
         });
     }
     
     async update() {
         await this.#ready;
+
+        if (this.destroyed) return;
 
         let {vw,vh} = this;
         if (vw == 0 || vh == 0) return;
@@ -901,7 +936,7 @@ class CropDetect {
         let tx, ty;
         let threshold = 0x11;
         this.ctx.filter = "grayscale(100%) contrast(1.05)";
-        this.ctx.drawImage(this.video_el, 0, 0, x1, y1);
+        this.ctx.drawImage(this.#video_el, 0, 0, x1, y1);
         this.ctx.filter = "none";
         let data = this.ctx.getImageData(0,0, x1, y1).data;
         var row = (y)=>{
@@ -961,32 +996,35 @@ class CropDetect {
     }
 
     async destroy() {
+        if (this.destroyed) return;
+        this.destroyed = true;
         await this.#ready;
         if (this.canvas) this.canvas.remove();
     }
 }
 
-/** @param {HTMLVideoElement} videoElement @param {Crop} crop */
-function apply_crop(videoElement, crop) {
-    var container = videoElement.parentElement;
+/** @param {HTMLVideoElement} video @param {Crop} crop */
+function apply_crop(video, crop) {
+    if (!video) return;
+    var container = video.parentElement;
     if (!container) return;
 
     const cropWidth = crop.x1 - crop.x0;
     const cropHeight = crop.y1 - crop.y0;
-    const videoAspect = videoElement.videoWidth / videoElement.videoHeight;
-    const cropAspect = (cropWidth * videoElement.videoWidth) / (cropHeight * videoElement.videoHeight);
+    const videoAspect = video.videoWidth / video.videoHeight;
+    const cropAspect = (cropWidth * video.videoWidth) / (cropHeight * video.videoHeight);
     const windowAspect = window.innerWidth / window.innerHeight;
 
     container.style.position = 'relative';
     // container.style.overflow = 'hidden';
-    videoElement.style.position = 'absolute';
-    videoElement.style.objectFit = 'cover';
+    video.style.position = 'absolute';
+    video.style.objectFit = 'cover';
 
-    videoElement.style.width = `${100/cropWidth}%`;
-    videoElement.style.height = `${100/cropHeight}%`;
-    videoElement.style.left = `50%`;
-    videoElement.style.top = `50%`;
-    videoElement.style.transform = 'translate(-50%, -50%)';
+    video.style.width = `${100/cropWidth}%`;
+    video.style.height = `${100/cropHeight}%`;
+    video.style.left = `50%`;
+    video.style.top = `50%`;
+    video.style.transform = 'translate(-50%, -50%)';
     // videoElement.style.transition = 'all 0.2s ease-in-out';
     // videoElement.style.transitionProperty = "width, height";
     

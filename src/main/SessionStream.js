@@ -1,7 +1,7 @@
 import fs from "fs-extra";
 import stream from "node:stream";
 import path from "node:path";
-import {globals, SessionTypes, StreamTarget, InternalSessionPlayer, InternalSessionPlayer$, FFMPEG_OUTPUT_FORMAT} from "./exports.js";
+import {globals, SessionTypes, StreamTarget, InternalSessionPlayer, InternalSessionPlayer$, OUTPUT_FORMAT} from "./exports.js";
 import {utils, constants, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, ClientUpdater} from "../core/exports.js";
 /** @import { Session, InternalSession, ExternalSession, Session$ } from './exports.js' */
 
@@ -159,8 +159,8 @@ export class SessionStream extends StopStartStateMachine {
             // `-copy_unknown`,
             "-err_detect", "ignore_err",
             `-strict`, `experimental`,
-            "-avoid_negative_ts", "1",
-            "-fflags", "+genpts+autobsf+flush_packets", // +discardcorrupt+nobuffer
+            // "-avoid_negative_ts", "1",
+            "-fflags", "+autobsf+flush_packets", //  +discardcorrupt+nobuffer
             "-flush_packets", "1",
             // ...(this.is_realtime ? ["-readrate", "1"] : []), // "-readrate_catchup", "1" // doesnt exist on my build of ffmpeg yet
         ];
@@ -172,20 +172,21 @@ export class SessionStream extends StopStartStateMachine {
             );
         } else {
             ffmpeg_args.push(
-                "-f", FFMPEG_OUTPUT_FORMAT,
+                "-f", OUTPUT_FORMAT,
                 "-i", "pipe:0",
             );
             // if (FFMPEG_OUTPUT_FORMAT === "mpegts") ffmpeg_args.push("-merge_pmt_versions", "1");
         }
         ffmpeg_args.push(
-            "-muxdelay", "0",
-            "-muxpreload", "0",
+            // "-muxdelay", "0",
+            // "-muxpreload", "0",
             `-fps_mode`, "passthrough",
             // "-r", `${this.$.fps || constants.DEFAULT_FPS}`, // if we do this after +genpts + passthrough, it will mess up all the timestamps
             "-c", "copy",
-            "-map_metadata", "-1",
-            "-bsf:a", "aac_adtstoasc",
-            "-bsf:v", "h264_mp4toannexb",
+            `-map_metadata`, `0`,
+            // "-map_metadata", "-1",
+            // "-bsf:a", "aac_adtstoasc",
+            // "-bsf:v", "h264_mp4toannexb",
             "-flvflags", "no_duration_filesize", // +aac_seq_header_detect+no_sequence_end
             "-f", "flv",
             `-y`,
@@ -247,8 +248,10 @@ export class SessionStream extends StopStartStateMachine {
                     st.start();
                 }
             }
-            this.stream_targets[target_id].update();
-            curr_targets.add(this.stream_targets[target_id]);
+            if (this.stream_targets[target_id]) {
+                this.stream_targets[target_id].update();
+                curr_targets.add(this.stream_targets[target_id]);
+            }
         }
 
         if (!this.is_paused) {
@@ -283,9 +286,9 @@ export class SessionStream extends StopStartStateMachine {
         if (this.player) await this.player.destroy();
         await this.#ffmpeg.destroy();
 
-        for (var target of Object.values(this.stream_targets)) {
+        /* for (var target of Object.values(this.stream_targets)) {
             await target.destroy();
-        }
+        } */
 
         globals.app.ipc.emit("main.stream.stopped", this.id);
         

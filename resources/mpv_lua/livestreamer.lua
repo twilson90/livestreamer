@@ -159,13 +159,11 @@ mp.add_hook("on_load", 50, function ()
         mp.set_property_native("stream-open-filename", filename)
     end
 
-    if o.keep_open then
-        mp.set_property("keep-open", "always") -- have to set it here because 'encoding' auto-profile will always change this to 'no' ...
-        mp.set_property_native("keep-open-pause", false)
-    end
-    -- if props.o then
-    --     mp.set_property("framedrop", "vo")
-    -- end
+    mp.set_property("keep-open", o.keep_open and "always" or "no") -- have to set it here because 'encoding' auto-profile will always change this to 'no' ...
+    mp.set_property_native("keep-open-pause", not o.keep_open)
+    --[[ if props.o then
+        mp.set_property("framedrop", "vo")
+    end ]]
 end)
 
 mp.add_hook("on_load_fail", 50, function ()

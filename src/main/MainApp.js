@@ -13,13 +13,13 @@ import stream from "node:stream";
 import {globals, SessionStream, Target, API, MainClient, ExternalSession, InternalSession, InternalSessionProps, Upload, Download, downloaders, ass } from "./exports.js";
 import {utils, WebServer, ClientUpdater, ClientServer, Cache, CoreFork, LogCollector, StreamRangeServer, FFMPEGWrapper } from "../core/exports.js";
 
-/** @import {StreamTarget, Session, Session$, MainClient$, Log$, Target$, Upload$, Download$, SessionStream$} from "./exports.js" */
+/** @import {StreamTarget, Session, Session$, MainClient$, Log$, Target$, Upload$, Download$, SessionStream$, Live$} from "./exports.js" */
 
 /** @typedef {"video"|"audio"|"subtitle"} MediaInfoStreamType */
 /** @typedef {{index:number, start:number, end:number, title:string}} MediaInfoChapter */
 /** @typedef {{type:MediaInfoStreamType, codec:string, bitrate:number, default:boolean, forced:boolean, title:string, language:string, width:number, height:number, albumart:boolean, channels:number, duration:number, fps:number, avg_fps:number}} MediaInfoStream */
 /** @typedef {{filename:string, type:MediaInfoStreamType, streams:MediaInfoStream[]}} MediaInfoExternalFile */
-/** @typedef {{name:string, filename:string, streams:MediaInfoStream[], external_files:MediaInfoExternalFile[], exists:boolean, duration:number, size:number, mtime:number, format:string, bitrate:number, chapters:MediaInfoChapter[], avg_fps:number, fps:number, interlaced:boolean, direct:boolean, ytdl:boolean, virtual_filename:string}} MediaInfo */
+/** @typedef {{name:string, filename:string, streams:MediaInfoStream[], external_files:MediaInfoExternalFile[], exists:boolean, duration:number, size:number, mtime:number, format:string, bitrate:number, chapters:MediaInfoChapter[], direct:boolean, ytdl:boolean, virtual_filename:string}} MediaInfo */
 /** @typedef {{cache:boolean, force:boolean, silent:boolean}} ProbeMediaOpts */
 
 const dirname = import.meta.dirname;
@@ -84,6 +84,8 @@ export class MainApp$ {
     uploads = {};
     /** @type {Record<PropertyKey,Download$>} */
     downloads = {};
+    /** @type {Record<PropertyKey,Live$>} */
+    lives = {}
     nms_sessions = {};
     processes = {};
     detected_crops = {};
@@ -146,11 +148,20 @@ export class MainApp extends CoreFork {
     }
 
     async init() {
+
+        this.$.hostname = this.hostname;
+        this.$.conf = {
+            // ["auth"]: this.auth,
+            ["debug"]: this.debug,
+            ["test_stream_low_settings"]: this.conf["main.test_stream_low_settings"],
+            ["rtmp_port"]: this.conf["media-server.rtmp_port"],
+            ["session_order_client"]: this.conf["main.session_order_client"],
+            ["media_expire_time"]: this.conf["media-server.media_expire_time"],
+            ["mpv_hwdec"]: this.conf["core.mpv_hwdec"],
+        };
         
         var log_collector = new LogCollector(this.$.logs);
-        // this.logger.on("log", (log)=>{
-        //     log_collector.register(log);
-        // });
+        
         this.ipc.on("internal:log", (log)=>{
             log_collector.register(log);
         });
@@ -204,53 +215,46 @@ export class MainApp extends CoreFork {
         this.ipc.respond("save-sessions", ()=>{
             this.save_sessions();
         });
-        this.ipc.on("media-server.post-publish", async (id)=>{
-            var session = await this.ipc.request("media-server", "get_session", id).catch(utils.noop);
-            if (!session) return;
-            this.$.nms_sessions[id] = session;
+        this.ipc.on("media-server.post-publish", async (session)=>{
+            this.$.nms_sessions[session.id] = session;
             if (session.rejected) return;
             if (session.appname.match(/^(external|livestream)$/)) {
                 new ExternalSession(session);
             }
         });
-        this.ipc.on("media-server.metadata-publish", async (id)=>{
-            var session = await this.ipc.request("media-server", "get_session", id).catch(utils.noop);
-            if (!session) return;
-            Object.assign(this.$.nms_sessions[id], session);
+        this.ipc.on("media-server.metadata-publish", async (session)=>{
+            Object.assign(this.$.nms_sessions[session.id], session);
         });
         this.ipc.on("media-server.done-publish", (id)=>{
             var sessions = Object.values(this.sessions).filter(s=>s instanceof ExternalSession && s.nms_session && s.nms_session.id == id);
             for (var s of sessions) s.destroy();
             delete this.$.nms_sessions[id];
         });
-        
         this.ipc.request("media-server", "published_sessions").then((nms_sessions)=>{
             Object.assign(this.$.nms_sessions, Object.fromEntries(nms_sessions.map(s=>[s.id,s])));
         }).catch(utils.noop);
 
-        this.ipc.request("file-manager", "volumes").then((volumes)=>{
-            this.$.volumes = volumes;
+        this.ipc.on("media-server.live.started", (d)=>{
+            this.$.lives[d.id] = d;
+        });
+        this.ipc.on("media-server.live.stopped", (id)=>{
+            delete this.$.lives[id];
+        });
+        this.ipc.request("media-server", "lives").then((lives)=>{
+            this.$.lives = Object.fromEntries(lives.map((live)=>[live.id, live]));
         }).catch(utils.noop);
 
         this.ipc.on("file-manager.volumes", (volumes)=>{
             this.$.volumes = volumes;
         });
+        this.ipc.request("file-manager", "volumes").then((volumes)=>{
+            this.$.volumes = volumes;
+        }).catch(utils.noop);
 
         this.on("update-conf", (conf)=>{
             this.logger.info("Config file updated.");
             on_update_conf();
         });
-
-        this.$.conf = {
-            // ["auth"]: this.auth,
-            ["debug"]: this.debug,
-            ["test_stream_low_settings"]: this.conf["main.test_stream_low_settings"],
-            ["rtmp_port"]: this.conf["media-server.rtmp_port"],
-            ["session_order_client"]: this.conf["main.session_order_client"],
-            ["media_expire_time"]: this.conf["media-server.media_expire_time"],
-            ["mpv_hwdec"]: this.conf["core.mpv_hwdec"],
-        };
-        this.$.hostname = this.hostname;
         
         var exp = express();
         this.web = new WebServer(exp, {
@@ -261,7 +265,6 @@ export class MainApp extends CoreFork {
             },
             allow_unauthorised: false,
         });
-        
         exp.use(bodyParser.urlencoded({
             extended: true,
             limit: '50mb',
@@ -746,7 +749,6 @@ export class MainApp extends CoreFork {
                     "use_hardware": true,
                     "use_hevc": false,
                     "fps_passthrough": true,
-                    "outputs": this.conf["media-server.outputs"]
                 },
                 "config": (data, st)=>{
                     return {
@@ -1081,6 +1083,8 @@ export class MainApp extends CoreFork {
                                 stream.field_order = s.field_order;
                                 let sar = calc_ratio(s.sample_aspect_ratio) ?? 1;
                                 let dar = calc_ratio(s.display_aspect_ratio);
+                                stream.sar = sar;
+                                stream.dar = dar;
                                 stream.aspect_ratio = dar || ((stream.width * sar) / (stream.height * sar));
                             } else if (s.codec_type === "audio") {
                                 stream.channels = +s.channels;
@@ -1095,12 +1099,6 @@ export class MainApp extends CoreFork {
                         mi.bitrate = +raw.format.bit_rate || 0;
                         mi.streams = [];
                         for (let s of raw.streams) mi.streams.push(parse_stream(s));
-                        let default_video_stream = mi.streams.find(s=>s.type === "video" && !s.albumart);
-                        if (default_video_stream) {
-                            mi.fps = default_video_stream.fps;
-                            mi.avg_fps = default_video_stream.avg_fps;
-                            mi.interlaced = default_video_stream.interlaced;
-                        }
                         
                         let dir = path.dirname(abspath);
                         let basename = path.basename(abspath);

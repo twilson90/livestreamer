@@ -959,9 +959,11 @@ export class Remote$ extends utils.remote.Proxy$ {
     uploads = utils.remote.Collection$(()=>new Progress$()).__proxy__;
     downloads = utils.remote.Collection$(()=>new Progress$()).__proxy__;
     volumes = utils.remote.Collection$(()=>new Volume$()).__proxy__;
+    nms_sessions = utils.remote.Collection$(()=>new NMSSession$()).__proxy__;
+    /** @type {Record<PropertyKey,Live$>} */
+    lives = {};
     change_log = {};
     logs = LogProxy$(()=>app.logger);
-    nms_sessions = {};
     fonts = {};
     processes = {};
     sysinfo = new class {
@@ -1101,6 +1103,12 @@ export class Volume$ extends utils.remote.ProxyID$ {
     access_control = new AccessControl$();
     locked = false;
     index = -1;
+}
+
+export class NMSSession$ extends utils.remote.ProxyID$ {
+    get _live() {
+        return Object.values(app.$.lives).find(live=>live.origin === this.publishArgs?.origin && live.is_live);
+    }
 }
 
 export class Stream$ extends utils.remote.ProxyID$ {
@@ -3018,6 +3026,7 @@ export class SystemManagerMenu extends ui.Modal {
 }
 
 /** @typedef {import("../../media-server/exports.js").Live$} Live$ */
+
 class LiveUI extends ui.Box {
     /** @param {Live$} live */
     constructor(live) {
@@ -4813,7 +4822,7 @@ export class StreamConfigurationMenu extends ui.EditModal {
         });
 
         function _get_property_opts(name, cb) {
-            var p = SessionProps.stream_settings[name];
+            var p = InternalSessionProps.stream_settings[name];
             return get_property_opts(p, cb);
         }
 
@@ -7170,9 +7179,14 @@ export class StreamSettings extends Panel {
             // }
             var live_nms_session = stream._live_nms_session;
             if (live_nms_session) {
-                var {live} = live_nms_session;
-                if (live && live.url) {
-                    stream_info["Live URL"] = `<a href="${live.url}" target="_blank">${live.url}</a>`;
+                var live = live_nms_session._live;
+                if (live) {
+                    if (live.url) {
+                        stream_info["Live URL"] = `<a href="${live.url}" target="_blank">${live.url}</a>`;
+                    }
+                    if (live.manifest_url) {
+                        stream_info["Live Manifest URL"] = `<a href="${live.manifest_url}" target="_blank">${live.manifest_url}</a>`;
+                    }
                 }
                 /* if (live.thumbnail_url) {
                     stream_info["Thumbnail"] = `<a href="${live.thumbnail_url}" target="_blank">${new URL(live.thumbnail_url).pathname}</a>`;
@@ -7182,7 +7196,7 @@ export class StreamSettings extends Panel {
             if (internal_nms_session) {
                 let url = new URL(`${app.get_media_server_base_url()}${internal_nms_session.publishStreamPath}`);
                 // url.search = new URLSearchParams(internal_session.publishArgs);
-                stream_info["Internal URL"] = `<a href="${url.toString()}" target="_blank">${url}</a>`;
+                stream_info["Internal RTMP URL"] = `<a href="${url.toString()}" target="_blank">${url}</a>`;
             }
             stream_info["Output Bit Rate"] = utils.format_bits(stream.bitrate, "k")+"ps";
             stream_info["Run Time"] = session._is_running ? utils.ms_to_timespan_str(stream._run_time) : 0;
@@ -7206,7 +7220,11 @@ export class StreamSettings extends Panel {
 
 export class MediaPlayerPanel extends Panel {
     get buffer_duration() {
-        return (this.flv_player?._media_element?.buffered.end(0) || 0) - (this.flv_player?.currentTime || 0);
+        try {
+            return (this.flv_player._media_element.buffered.end(0) || 0) - (this.flv_player.currentTime || 0);
+        } catch (e) {
+            return 0;
+        }
     }
 
     constructor() {
@@ -9903,19 +9921,15 @@ class PlaylistItemUI extends ui.UI {
             
             if (!download) {
                 if (media_info.streams) {
-                    var default_video = utils.sort(media_info.streams.filter(s=>s.type === "video"),
-                        (s)=>s.albumart,
-                        (s)=>[s.default | s.forced * 2, "DESCENDING"]
-                    )[0];
-                    var default_audio = utils.sort(media_info.streams.filter(s=>s.type === "audio"),
-                        (s)=>[s.default | s.forced * 2, "DESCENDING"]
-                    )[0];
+                    var default_video = get_default_stream(media_info.streams, "video");
+                    var default_audio = get_default_stream(media_info.streams, "audio");
+
                     let has_video = default_video && default_video.codec && !default_video.albumart;
                     let has_audio = default_audio && default_audio.codec;
 
                     if (has_video) {
                         var codec = default_video.codec.replace(/video$/, "").split(".")[0];
-                        var size = get_video_size(default_video.width, default_video.height, media_info.interlaced);
+                        var size = get_video_size(default_video.width, default_video.height, default_video.interlaced);
                 
                         if (!media_info.duration || media_info.duration <= IMAGE_DURATION) {
                             icons.push(`<i class="fas fa-image"></i>`);
@@ -9923,7 +9937,7 @@ class PlaylistItemUI extends ui.UI {
                         } else {
                             icons.push(`<i class="fas fa-film"></i>`);
                             let parts = [codec, size.text];
-                            if (media_info.fps) parts[1]+="/"+(media_info.fps.toLocaleString({maximumFractionDigits: 2}));
+                            if (default_video.fps) parts[1]+="/"+(default_video.fps.toLocaleString({maximumFractionDigits: 2}));
                             badges["video"] = parts.join(" ");
                         }
                     }
@@ -10105,6 +10119,8 @@ export class MainWebApp extends utils.EventEmitter {
         super();
         
         app = this;
+
+        console.log("init");
 
         /** @type {HTMLElement} */
         this.elem = document.querySelector("#livestreamer");

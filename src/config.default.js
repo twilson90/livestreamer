@@ -57,37 +57,5 @@ export default {
 	"media-server.allow_hevc": false,
 	"media-server.logo_path": "",
 	"media-server.site_url": "",
-	"media-server.outputs": [
-		/* {
-			"name": "240p",
-			"resolution": 240,
-			"video_bitrate": 400, // recommended 300–500 kbps
-			"audio_bitrate": 64,
-		}, */
-		{
-			"name": "360p",
-			"resolution": 360,
-			"video_bitrate": 750, // recommended 600–900 kbps
-			"audio_bitrate": 128,
-		},
-		{
-			"name": "480p",
-			"resolution": 480,
-			"video_bitrate": 1250, // recommended 1000–1500 kbps
-			"audio_bitrate": 128,
-		},
-		{
-			"name": "720p",
-			"resolution": 720,
-			"video_bitrate": 2500, // recommended 2000–3000 kbps
-			"audio_bitrate": 160,
-		},
-		{
-			"name": "1080p",
-			"resolution": 1080,
-			"video_bitrate": 4000, // recommended 3000–5000 kbps
-			"audio_bitrate": 160,
-		}
-	],
 	"media-server.inspect": 9232,
 }

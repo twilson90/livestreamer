@@ -4,7 +4,7 @@ import child_process from "node:child_process";
 import url from "node:url";
 import tree_kill from "tree-kill-promise";
 import {globals} from "./exports.js";
-import {utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger, MPVWrapper} from "../core/exports.js";
+import {utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger, MPVWrapper, constants} from "../core/exports.js";
 /** @import { Target, SessionStream } from './exports.js' */
 
 export class StreamTarget$ extends StopStartStateMachine$ {
@@ -94,6 +94,22 @@ export class StreamTarget extends StopStartStateMachine {
         let input = this.stream.$.output_url;
         let {opts, output_url, output_format} = this.$;
 
+        var handle_end = (type)=>{
+            return ()=>{
+                if (this.stream.state === constants.State.STOPPED || this.stream.state === constants.State.STOPPING) {
+                    this.logger.info(`${type} ended after stream was stopped.`);
+                    this.destroy();
+                } else {
+                    this._handle_end(type);
+                }
+            }
+        }
+        var handle_error = (type)=>{
+            return (e)=>{
+                this.logger.error(new Error(`Stream Target ${type} error: ${e.message}`));
+            }
+        }
+
         if (this.target.id === "gui") {
             var mpv_args = [
                 input,
@@ -108,9 +124,9 @@ export class StreamTarget extends StopStartStateMachine {
                 `--osc=${opts.osc?"yes":"no"}`
             ];
             this.#mpv = new MPVWrapper({ ipc: false });
-            this.#mpv.start(mpv_args).finally(()=>{
-                this._handle_end("mpv");
-            });
+            this.#mpv.start(mpv_args)
+                .catch(handle_error("mpv"))
+                .then(handle_end("mpv"));
         } else {
             let is_file_output = utils.try_catch(()=>new URL(output_url).protocol === "file:");
             let output = output_url;
@@ -140,12 +156,8 @@ export class StreamTarget extends StopStartStateMachine {
                 this.logger.log(log);
             }); */
             this.#ffmpeg.start(ffmpeg_args)
-                .catch((e)=>{
-                    this.logger.error(new Error(`StreamTarget ffmpeg error: ${e.message}`));
-                })
-                .then(()=>{
-                    this._handle_end("ffmpeg");
-                });
+                .catch(handle_error("ffmpeg"))
+                .then(handle_end("ffmpeg"));
         }
         globals.app.ipc.emit("main.stream-target.started", this.$);
         

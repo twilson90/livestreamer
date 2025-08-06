@@ -18,9 +18,9 @@ import { get_default_stream, get_stream_by_id, get_auto_background_mode } from "
 // const FORCE_NEXT_ITEM_TIMEOUT = 5 * 1000;
 // const FORCE_NEXT_ITEM_TIMEOUT = Number.MAX_SAFE_INTEGER;
 // const FORCE_ABORT_TIMEOUT = 10 * 1000;
-const EDL_TRACK_TYPES = ["video", "audio", "sub"];
 /** @type {MediaInfoStreamType[]} */
 const MEDIA_INFO_STREAM_TYPES = ["video", "audio", "subtitle"];
+const EDL_TRACK_TYPES = ["video", "audio", "sub"];
 // const DEFAULT_WIDTH = 1280;
 // const DEFAULT_HEIGHT = 720;
 const NULL_STREAM_DURATION = 60;
@@ -32,8 +32,10 @@ const AUDIO_SAMPLERATE = 44100;
 const SINGLE_MPV = true;
 const VF_FORMAT = "colorspace=all=bt709:format=yuv420p:fast=1";
 
-export const MPV_OUTPUT_FORMAT = "mpegts";
-export const FFMPEG_OUTPUT_FORMAT = "mpegts";
+export const MPV_OUTPUT_FORMAT = "matroska";
+export const OUTPUT_FORMAT = "mpegts";
+
+export const ASPECT_RATIO_SEI_KEY = "9c3ad59b-c383-47e7-8758-1361701cf788";
 
 /* const MPV_LOCAL_FILE_OPTIONS = {
     "start": 1,
@@ -262,7 +264,7 @@ export class InternalSessionPlayer extends DataNode {
         if (!opts.reload_props) item.props = {...item.props, ...this.parsed_item.props};
         if (this.#mpv?.fading) {
             item.props.fade_in = this.session.$.fade_in_speed;
-            this.#mpv.fading = false;
+            this.#mpv.fading = null;
         }
 
         let start = +(opts.start||0);
@@ -295,6 +297,10 @@ export class InternalSessionPlayer extends DataNode {
                 this.$.duration = parsed_item.duration;
                 this.$.seekable = parsed_item.seekable;
                 this.$.loaded = true;
+                globals.app.ipc.emit("main.session-player.loadfile", {
+                    session_id: this.session.id,
+                    playlist_item_id: parsed_item.id,
+                });
                 return true;
             })
             .catch(e=>{
@@ -324,6 +330,7 @@ export class InternalSessionPlayer extends DataNode {
                     };
                     this.#mpv.on("idle", resolve_wrapper);
                     this.#mpv.on("eof-reached", resolve_wrapper);
+                    this.#mpv.done.then(resolve_wrapper);
                 });
             })
     }
@@ -360,7 +367,7 @@ export class InternalSessionPlayer extends DataNode {
         let {filename, id, props} = item;
         let {offset, duration, media_type, loop, root} = opts;
         duration = duration || props.duration || 0;
-        let is_clipped = props.clip_start || props.clip_end || props.clip_offset || props.clip_loops != 1;
+        let is_clipped = !!(props.clip_start || props.clip_end || props.clip_offset || props.clip_loops != 1);
         let map = new StreamMap();
         let is_empty = filename === "livestreamer://empty";
         let is_playlist = this.session.is_item_playlist(item.id);
@@ -554,7 +561,7 @@ export class InternalSessionPlayer extends DataNode {
                 }
                 if (track.entries.length && track.type) {
                     edl.append("!new_stream");
-                    edl.append(new MPVEDLEntry("!delay_open", {media_type: track.type}));
+                    edl.append(new MPVEDLEntry("!delay_open", {media_type: edl_track_type(track.type) }));
                 }
                 edl.append(...track.entries);
             }
@@ -569,7 +576,7 @@ export class InternalSessionPlayer extends DataNode {
                 let edl = new MPVEDL();
                 edl.append("!new_stream");
                 edl.append("!no_chapters");
-                if (media_type) edl.append(new MPVEDLEntry("!delay_open", {media_type}));
+                if (media_type) edl.append(new MPVEDLEntry("!delay_open", {media_type: edl_track_type(media_type) }));
                 if (exists) {
                     if (duration_mismatch) {
                         if (loop) {
@@ -700,7 +707,7 @@ export class InternalSessionPlayer extends DataNode {
             }
         }
         
-        if (is_clipped) {
+        if (is_clipped && !(is_root && !exists)) { // if is root, we do not want to wrap in EDL if it doesn't exist, just ignore.
             let repeat_opts = {
                 start: props.clip_start || 0,
                 end: props.clip_end || duration,
@@ -782,7 +789,7 @@ class InternalSessionMPV extends MPVWrapper {
     #player;
     /** @type {ParsedItem} */
     #parsed_item;
-    #fading;
+    fading;
     #preloaded = false;
     #playing = false;
     #seeking = false;
@@ -795,7 +802,6 @@ class InternalSessionMPV extends MPVWrapper {
     #last_session_stream_fps = 0;
     
     get loaded() { return this.#preloaded; }
-    get fading() { return this.#fading; }
     get session() { return this.#player.session; }
     get session_stream() { return this.#player.session.stream; }
     get parsed_item() { return this.#parsed_item; }
@@ -886,11 +892,11 @@ class InternalSessionMPV extends MPVWrapper {
         
         this.#mpv_log_file = path.join(globals.app.logs_dir, `mpv-${utils.date_to_string()}-${this.id}.log`);
 
-        var x264opts = {
+        var x264_params = {
             "nal-hrd": `cbr`, // VERY IMPORTANT, maintains constant bitrate
         };
         
-        Object.assign(x264opts, {
+        Object.assign(x264_params, {
             // "force-cfr": `1`, // not necessary?
             // "scenecut": `0`,
             "keyint": Math.ceil((this.#parsed_item?.media_info?.fps || constants.DEFAULT_FPS) * KEYFRAMES_PER_SECOND),
@@ -902,7 +908,7 @@ class InternalSessionMPV extends MPVWrapper {
             "--cache=no",
             `--demuxer-thread=no`,
             "--demuxer-readahead-secs=0.1",
-            "--demuxer-hysteresis-secs=0.1",
+            // "--demuxer-hysteresis-secs=0.1",
             // `--demuxer-max-bytes=1`,
             // `--demuxer-max-back-bytes=0`,
             // `--demuxer-lavf-probesize=32`,
@@ -916,16 +922,25 @@ class InternalSessionMPV extends MPVWrapper {
             `--autoload-files=no`,
             `--idle=${SINGLE_MPV ? "yes" : "once"}`,
 
+            // `--correct-pts=no`,
             "--audio-buffer=0",
             // "--vd-lavc-threads=1",
-            "--demuxer-lavf-o-add=fflags=+flush_packets", // +nobuffer // +igndts+genpts
+            "--demuxer-lavf-o-add=fflags=+autobsf+flush_packets+igndts+genpts", // +nobuffer // 
             "--demuxer-lavf-o-add=flush_packets=1",
+            `--demuxer-lavf-o-add=avoid_negative_ts=make_zero`,
+            // `--demuxer-lavf-o-add=mpegts_copyts=1`,
             // "--demuxer-lavf-probe-info=nostreams",
             // "--demuxer-lavf-analyzeduration=0.1",
             // "--demuxer-lavf-buffersize=1024",
             // "--demuxer-readahead-secs=0.1",
 
+            // `--vd-lavc-skiploopfilter=all`,
+            // `--vd-lavc-skipidct=all`,
+            // `--vd-lavc-show-all=yes`,
+            // `--vd-lavc-fast=yes`,
+
             "--video-sync=audio",
+            // `--hr-seek-framedrop=no`,
             // "--stream-buffer-size=1k",
             // "--stream-buffer-size=4096",
             // "--demuxer-max-bytes=1024",
@@ -940,7 +955,8 @@ class InternalSessionMPV extends MPVWrapper {
             "--audio-format=float",
             `--audio-samplerate=${AUDIO_SAMPLERATE}`,
             `--audio-channels=stereo`,
-            "--ocopy-metadata=no",
+            // "--ocopy-metadata=no",
+            `--oset-metadata=title="livestreamer",comment="livestreamer"`,
             "--ovc=libx264",
             `--ovcopts-add=profile=main`,
             `--ovcopts-add=preset=${this.session_stream.$.h264_preset}`,
@@ -952,7 +968,7 @@ class InternalSessionMPV extends MPVWrapper {
             // `--ovcopts-add=tune=fastdecode`, // this reduces quality to big wet arses
             // `--ovcopts-add=tune=zerolatency`, // <-- new
             `--ovcopts-add=strict=+experimental`,
-            ...(Object.keys(x264opts).length ? [`--ovcopts-add=x264opts=${Object.entries(x264opts).map(([k,v])=>`${k}=${v}`).join(":")}`] : []),
+            ...(Object.keys(x264_params).length ? [`--ovcopts-add=x264-params=${Object.entries(x264_params).map(([k,v])=>`${k}=${v}`).join(":")}`] : []),
             `--oac=aac`,
             `--oacopts-add=b=${this.session_stream.$.audio_bitrate}k`,
             // `--oacopts-add=aac_coder=twoloop`,
@@ -965,14 +981,14 @@ class InternalSessionMPV extends MPVWrapper {
             // `--ofopts-add=preload=${100000}`, // 0.1 seconds
 
             // none of this appears to do jack shit
-            `--ofopts-add=fflags=+flush_packets+igndts+genpts`, // +autobsf
+            `--ofopts-add=strict=+experimental`,
+            `--ofopts-add=fflags=+autobsf+flush_packets+igndts+genpts`,
             `--ofopts-add=avoid_negative_ts=make_zero`,
-            `--ofopts-add=mpegts_copyts=1`,
             `--ofopts-add=flush_packets=1`,
-            // `--orawts`,
+            // `--ofopts-add=muxrate=${this.session_stream.$.video_bitrate+this.session_stream.$.audio_bitrate}k`, // causes tons of 'mpegts: dts < pcr, TS is invalid'
+            // `--ofopts-add=pes_payload_size=0`,
             // `--ofopts-add=output_ts_offset=${pts}`,
-            // `--ofopts-add=strict=+experimental`,
-            // `--ofopts-add=mpegts_flags=+initial_discontinuity`, // +resend_headers
+            // `--ofopts-add=mpegts_flags=+initial_discontinuity+resend_headers`,
             `--o=-`,
         ];
 
@@ -985,13 +1001,16 @@ class InternalSessionMPV extends MPVWrapper {
         });
 
         var res = super.start(mpv_args);
+
+
         this.process.stdout._handle.setBlocking(true);
         stream.promises.pipeline(
             this.process.stdout,
-            new Demuxer(this.#player),
-            new RealTimeBuffer(this.#player),
-            ...((SINGLE_MPV) ? [] : [new PTSFixer(this)]),
-            // new PTSFixer(this),
+            // new FFprobePassThrough(),
+            new RealTimeBufferTransform(this.#player),
+            new StreamFixerTransform(this.#player),
+            // ...((SINGLE_MPV) ? [] : [new StreamFixerTransform(this)]),
+            new MpegTsDemuxerTransform(this.#player),
             this.#player.out,
             {end:false}
         ).catch(utils.pipe_error_handler(this.logger, "mpv.stdout -> ... -> out"));
@@ -1059,7 +1078,7 @@ class InternalSessionMPV extends MPVWrapper {
 
     fade_out() {
         this.set_property("end", String(this.time + this.session.$.fade_out_speed + 0.5));
-        this.#fading = { time: this.time };
+        this.fading = { time: this.time };
         this.#rebuild_filters();
     }
     
@@ -1251,9 +1270,6 @@ class InternalSessionMPV extends MPVWrapper {
         if (this.destroyed) return;
         if (!this.#parsed_item) return;
 
-        let [w, h] = [this.#player.width, this.#player.height];
-        let fps = this.session_stream.fps;
-
         let vid_auto = this.#parsed_item.map.video.force_id ?? this.#parsed_item.map.video.auto_id ?? 1;
         let aid_auto = this.#parsed_item.map.audio.force_id ?? this.#parsed_item.map.audio.auto_id ?? 1;
         let sid_auto = this.#parsed_item.map.subtitle.force_id ?? this.#parsed_item.map.subtitle.auto_id ?? false;
@@ -1285,6 +1301,10 @@ class InternalSessionMPV extends MPVWrapper {
         let a_stream = this.#parsed_item.map.audio.streams[aid-1];
         let s_stream = this.#parsed_item.map.subtitle.streams[sid-1];
 
+        let [w, h] = [this.#player.width, this.#player.height];
+        let fps = this.session_stream.fps;
+        // let fps = v_stream.fps ?? constants.DEFAULT_FPS;
+
         let interpolation;
         {
             let dfps = this.session_stream.fps || constants.DEFAULT_FPS;
@@ -1307,7 +1327,7 @@ class InternalSessionMPV extends MPVWrapper {
         var ctx = new FilterContext({
             aid: `aid${aid}`,
             vid: `vid${vid}`,
-            fps: fps || constants.DEFAULT_FPS,
+            fps: fps,
             width: w,
             height: h,
             color: this.#parsed_item.background_color,
@@ -1326,7 +1346,7 @@ class InternalSessionMPV extends MPVWrapper {
         let pre_vf_graph = [];
         let pre_af_graph = [];
 
-        // pre_vf_graph.push(`setpts=N/FRAME_RATE/TB`); // fixes bad PTS for MPEG-TS
+        // pre_vf_graph.push(`setpts=N/${fps}/TB`); // fixes bad PTS for MPEG-TS
         // pre_af_graph.push(`asetpts=N/SR/TB`);
 
         // let fps = +(this.props.force_fps || this.stream.fps);
@@ -1340,6 +1360,8 @@ class InternalSessionMPV extends MPVWrapper {
             pre_vf_graph.push(`yadif=mode=${mode}`);
         }
 
+        var predicted_aspect_ratio = v_stream.width / v_stream.height;
+
         {
             let left = utils.clamp(Math.abs(this.#props.crop[0] || 0));
             let top = utils.clamp(Math.abs(this.#props.crop[1] || 0));
@@ -1352,6 +1374,8 @@ class InternalSessionMPV extends MPVWrapper {
             let min_x = 1 / w;
             let min_y = 1 / h;
 
+            predicted_aspect_ratio = (cw*v_stream.width) / (ch*v_stream.height);
+
             if ((cw != 1 || ch != 1) && cw >= min_x && ch >= min_y) {
                 pre_vf_graph.push(
                     `crop=w=iw*${cw}:h=ih*${ch}:x=iw*${cx}:y=ih*${cy}`
@@ -1362,9 +1386,19 @@ class InternalSessionMPV extends MPVWrapper {
         if (this.#props.aspect_ratio != "auto") {
             let ar = this.#props.aspect_ratio;
             let parts = ar.split(":");
-            let w = parts[0];
-            let h = parts[1];
+            let [w,h] = parts;
             pre_vf_graph.push(`setdar=${w}/${h}`);
+            predicted_aspect_ratio = w/h;
+        }
+
+        predicted_aspect_ratio *= (+v_stream.sar || 1);
+        if (this.predicted_aspect_ratio != predicted_aspect_ratio) {
+            this.predicted_aspect_ratio = predicted_aspect_ratio;
+            globals.app.ipc.emit("main.session-player.predicted_aspect_ratio", {
+                session_id: this.session.id,
+                aspect_ratio: predicted_aspect_ratio,
+                pts: this.#player.pts,
+            });
         }
 
         pre_vf_graph.push(`scale=width=(iw*sar)*min(${w}/(iw*sar)\\,${h}/ih):height=ih*min(${w}/(iw*sar)\\,${h}/ih):force_divisible_by=2`); // :reset_sar=1 does not exist on old ffmpeg versions.
@@ -1376,7 +1410,12 @@ class InternalSessionMPV extends MPVWrapper {
             let g = this.#props.gamma;
             let h = this.#props.hue;
             if (b || s || g || c) {
-                pre_vf_graph.push(`eq=${[b && `brightness=${utils.map_range(b, -100, 100, -1, 1)}`, c && `contrast=${utils.map_range(c, -100, 100, 0, 2)}`, s && `saturation=${utils.map_range(s, -100, 100, 0, 2)}`, g && `gamma=${utils.map_range(g, -100, 100, 0, 2)}`].filter(s=>s).join(":")}`);
+                pre_vf_graph.push(`eq=${[
+                    b && `brightness=${utils.map_range(b, -100, 100, -1, 1)}`,
+                    c && `contrast=${utils.map_range(c, -100, 100, 0, 2)}`,
+                    s && `saturation=${utils.map_range(s, -100, 100, 0, 2)}`,
+                    g && `gamma=${utils.map_range(g, -100, 100, 0, 2)}`
+                ].filter(s=>s).join(":")}`);
             }
             if (h) {
                 pre_vf_graph.push(`hue=${utils.map_range(h, -100, 100, -180, 180)}`);
@@ -1481,9 +1520,9 @@ class InternalSessionMPV extends MPVWrapper {
                 afades.push(`afade=enable='between(t\\,${offset},${offset+dur})':t=${dir}:st=${offset}:d=${dur}`);
             }
         }
-        if (this.#fading) {
-            vfades.push(`fade=t=out:st=${this.#fading.time+0.25}:d=${this.session.$.fade_out_speed}`);
-            afades.push(`afade=t=out:st=${this.#fading.time+0.25}:d=${this.session.$.fade_out_speed}`);
+        if (this.fading) {
+            vfades.push(`fade=t=out:st=${this.fading.time+0.25}:d=${this.session.$.fade_out_speed}`);
+            afades.push(`afade=t=out:st=${this.fading.time+0.25}:d=${this.session.$.fade_out_speed}`);
         } else if (this.#parsed_item.props.fade_out && this.duration) {
             vfades.push(`fade=t=out:st=${this.duration-this.#parsed_item.props.fade_out-0.25}:d=${this.#parsed_item.props.fade_out}`);
             afades.push(`afade=t=out:st=${this.duration-this.#parsed_item.props.fade_out-0.25}:d=${this.#parsed_item.props.fade_out}`);
@@ -1503,6 +1542,8 @@ class InternalSessionMPV extends MPVWrapper {
         }
         
         vf_graph.push(VF_FORMAT);
+
+        // vf_graph.push(`metadata=mode=insert:key=user_data_unregistered:value='${ASPECT_RATIO_SEI_KEY}+${predicted_aspect_ratio}'`);
 
         /* if (this.session_stream.is_realtime) {
             vf_graph.push(`realtime=speed=2.0:limit=1.0`);
@@ -1526,14 +1567,11 @@ class InternalSessionMPV extends MPVWrapper {
         // also it mucks up EDLs if used in lavfi-complex and there is an audio format change between segments.
 
         // let vf = [...(this.#props.vf||[])];
-
-        let af = af_graph.filter(is_filter_allowed).map(make_lavfi_filter);
-        let vf = vf_graph.filter(is_filter_allowed).map(make_lavfi_filter);
     
         let lavfi_complex_str = ctx.toString();
         this.set_property("lavfi-complex", lavfi_complex_str);
-        this.set_property("af", af);
-        this.set_property("vf", vf);
+        this.set_property("af", af_graph.map(make_lavfi_filter));
+        this.set_property("vf", vf_graph.map(make_lavfi_filter));
         this.set_property("sid", sid);
     }
 
@@ -1638,7 +1676,7 @@ async function get_ass_subtitle_as_path(ass_str) {
     });
 }
 
-class PTSFixer extends BridgeTransform {
+class StreamFixerTransform extends BridgeTransform {
     /** @type {FFMPEGWrapper} */
     #ffmpeg;
     /** @param {InternalSessionPlayer} player @param {stream.TransformOptions} options */
@@ -1646,20 +1684,21 @@ class PTSFixer extends BridgeTransform {
         var ffmpeg = new FFMPEGWrapper();
         ffmpeg.start([
             "-err_detect", "ignore_err",
-            "-fflags", "autobsf+flush_packets", // +discardcorrupt+genpts // +nobuffer FUCKS US UP and skips the first 17-ish seconds
+            "-fflags", "+igndts+genpts", // +discardcorrupt+genpts // +nobuffer FUCKS US UP and skips the first 17-ish seconds
             //+igndts+genpts+
-            "-flush_packets", "1",
-            // `-avoid_negative_ts`, `make_zero`,
+            `-avoid_negative_ts`, `make_zero`,
             "-f", MPV_OUTPUT_FORMAT,
             "-i", "pipe:0",
             "-c", "copy",
-            "-f", MPV_OUTPUT_FORMAT,
-            "-muxdelay", "0",
-            "-muxpreload", "0",
+            "-f", OUTPUT_FORMAT,
+            // "-muxdelay", "0",
+            // "-muxpreload", "0",
             // `-fps_mode`, "vfr",
             `-fps_mode`, "passthrough",
             // `-async`, `1`,
             `-output_ts_offset`, `${player.pts}`,
+            `-map_metadata`, `0`,
+            // `-enc_time_base`, `1/90000`, // 90000 is a common timescale used in mpegts that works well for both 25fps and 60fps
             "pipe:1",
         ]).catch((e)=>{
             player.logger.error(new Error(`PTSFixer error: ${e.message}`));
@@ -1672,7 +1711,7 @@ class PTSFixer extends BridgeTransform {
         callback(err);
     }
 }
-class Demuxer extends stream.Transform {
+class MpegTsDemuxerTransform extends stream.Transform {
     /** @type {MpegTsDemuxer} */
     #demuxer;
     #pts = 0;
@@ -1711,7 +1750,7 @@ class Demuxer extends stream.Transform {
     }
 }
 
-class RealTimeBuffer extends stream.Transform {
+class RealTimeBufferTransform extends stream.Transform {
     /** @type {InternalSessionPlayer} */
     #player;
     #total_bytes = 0;
@@ -1767,76 +1806,48 @@ var make_lavfi_filter = (graph) => ({
 function get_default_vf() {
     let font_path = globals.app.resources.get_path("fonts/RobotoMono-Regular.ttf");
     let vf_graph = [
-        `drawtext=text='Invalid Media':fontfile='${utils.ffmpeg_escape(font_path)}':fontsize=20:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2`,
+        make_lavfi_filter(`drawtext=text='Invalid Media':fontfile='${utils.ffmpeg_escape(font_path)}':fontsize=20:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2`),
         VF_FORMAT
     ];
-    return vf_graph.map(make_lavfi_filter);
+    return vf_graph;
+}
+
+function edl_track_type(t) {
+    if (t === "video") return "video";
+    if (t === "audio") return "audio";
+    if (t === "subtitle") return "sub";
 }
 
 
-
-/* class FFprobePassThrough extends stream.Transform {
-    pts_time = 0;
-    dts_time = 0;
-    pts = 0;
-    dts = 0;
+class FFprobePassThrough extends stream.Transform {
     #ffprobe;
     #rl;
 
     constructor() {
-        super({ highWaterMark: 1 });
-        // super();
+        super();
 
         this.#ffprobe = child_process.spawn('ffprobe', [
-            "-f", FFMPEG_OUTPUT_FORMAT,
             "-i", "pipe:0",
-            "-show_packets",
-            "-select_streams", "v:0",
-            "-analyzeduration", "500k",
-            "-probesize", "100k",
+            "-show_frames", "-show_entries", "frame",
             "-v", "quiet"
         ]);
         
-        // Setup readline interface for FFprobe output
         this.#rl = readline.createInterface(this.#ffprobe.stdout);
-        // Process each line of FFprobe output
         this.#rl.on('line', (line) => {
-            let m;
-            if (m = line.match(/^pts_time=(.+)$/)) {
-                this.pts_time = Math.max(this.pts_time, +m[1]);
-            } else if (m = line.match(/^dts_time=(.+)$/)) {
-                this.dts_time = Math.max(this.dts_time, +m[1]);
-            } else if (m = line.match(/^pts=(.+)$/)) {
-                this.pts = Math.max(this.pts, +m[1]);
-            } else if (m = line.match(/^dts=(.+)$/)) {
-                this.dts = Math.max(this.dts, +m[1]);
-            }
-            debounced_update();
+            if (line.match(/^\[\/?FRAME\]$/)) return;
+            if (line.match(/livestreamer_blah/i)) debugger;
+            console.log(line);
         });
-
-        var debounced_update = utils.debounce(()=>{
-            this.emit("update", this);
-        }, 10);
-        
-        // Handle process errors
         this.#ffprobe.on('error', (err) => this.emit('error', err));
         this.#ffprobe.stdin.on('error', (err) => this.emit('error', err));
-        this.on("data", (chunk)=>{
-            this.#ffprobe.stdin.write(chunk);
-        });
     }
-
-    _final(callback) {
-        this.#ffprobe.stdin.end();
-        this.#ffprobe.on('close', ()=>callback());
+    
+    _transform(chunk, encoding, callback) {
+        this.push(chunk);
+        this.#ffprobe.stdin.write(chunk);
+        callback();
     }
-
-    _destroy(err, callback) {
-        this.#ffprobe.kill();
-        this.#rl.close();
-        callback(err);
-    }
-} */
+}
 
 /* cache-speed
 Current I/O read speed between the cache and the lower layer (like network). This gives the number bytes per seconds over a 1 second window (using the type MPV_FORMAT_INT64 for the client API).

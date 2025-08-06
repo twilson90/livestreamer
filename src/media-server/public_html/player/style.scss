@@ -18,6 +18,13 @@ body {
   height: 100%;
   position:relative;
 }
+.video-container {
+  position: absolute;
+  top:0;
+  left:0;
+  width: 100%;
+  height: 100%;
+}
 .play-button {
   width: 100%;
   height: 100%;
@@ -36,6 +43,14 @@ body {
     font-size: 1rem;
     .fas {
       font-size: 2rem;
+    }
+  }
+  &, &>* {
+    transition: opacity 0.2s, visibility 0.2s;
+    position:absolute;
+    &.hidden {
+      opacity: 0;
+      visibility: hidden;
     }
   }
 }

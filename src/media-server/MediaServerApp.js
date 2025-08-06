@@ -7,6 +7,7 @@ import bodyParser from "body-parser";
 import compression from "compression";
 import {glob} from "glob";
 import NodeMediaServer from "node-media-server";
+import readline from "node:readline";
 import nms_core_logger from "node-media-server/src/node_core_logger.js";
 import nms_ctx from "node-media-server/src/node_core_ctx.js";
 import NodeFlvSession from "node-media-server/src/node_flv_session.js";
@@ -18,7 +19,7 @@ import {utils, Blocklist, FFMPEGWrapper, WebServer, CoreFork, Logger, StopStartS
 
 /** @import {Request, Response} from "express" */
 
-/** @typedef {{video_bitrate:Number, audio_bitrate:Number, resolution:Number, name:string}} Config */
+/** @typedef {(NodeRtmpSession | NodeFlvSession) & {live: Live}} Session */
 
 const dirname = import.meta.dirname;
 
@@ -98,8 +99,6 @@ const SESSION_VARS = [
     "players",
     "numPlayCache",
     "startTimestamp",
-
-    "live"
 ];
 
 const APPNAMES = new Set([
@@ -108,10 +107,10 @@ const APPNAMES = new Set([
     "private", "session", // session playlist items
     "internal", // internal session
 ]);
+
 export class MediaServerApp extends CoreFork {
     /** @type {Record<PropertyKey,Live>} */
     lives = {};
-    sessions = {};
 
     constructor() {
         super("media-server", {});
@@ -175,7 +174,7 @@ export class MediaServerApp extends CoreFork {
         }
 
         this.ipc.respond("get_session", (id)=>{
-            return this.sessions[id];
+            return session_json(this.get_session(id));
         });
         this.ipc.respond("published_sessions", ()=>{
             return [...nms_ctx.sessions.values()].filter(s=>s.isPublishing).map(s=>session_json(s));
@@ -187,19 +186,24 @@ export class MediaServerApp extends CoreFork {
             return this.lives[id]?.$;
         });
         this.ipc.respond("destroy_live", async (id)=>{
-            var live = this.get_live(id);
+            var live = this.lives[id];
             if (live) await live.destroy();
         });
+        
+        this.aspect_ratio_cache = {};
+        this.ipc.on("main.session-player.predicted_aspect_ratio", ({session_id, aspect_ratio, pts})=>{
+            this.aspect_ratio_cache[session_id] = {aspect_ratio, pts};
+        })
 
         /* this.ipc.on("main.stream-target.stopped", async ({id, reason})=>{
-            var live = this.get_live(id);
+            var live = this.get_session(id)?.live;
             if (live && reason !== "restart") {
                 await live.end();
             }
         }); */
 
         /* this.ipc.on("main.session.destroyed", (id)=>{
-            var session = this.get_session_from_stream_path_id(id);
+            var session = this.get_session(id);
             if (session) {
                 session.stop();
             }
@@ -269,7 +273,7 @@ export class MediaServerApp extends CoreFork {
         this.media_router = Router();
         this.media_router.get("/live/:id/:v/stream.m3u8", async (req, res, next)=>{
             var {id} = req.params;
-            var live = this.get_live(id);
+            var live = this.lives[id];
             if (live) {
                 if (await live.fetch(req, res)) return;
             }
@@ -361,10 +365,10 @@ export class MediaServerApp extends CoreFork {
         this.nms.on('prePublish', async (id, StreamPath, args)=>{
             log_event('prePublish', {id, StreamPath, args});
             if (!precheck_session(id, StreamPath)) return;
-            let live_id = StreamPath.split("/").pop();
             var session = this.get_session(id);
             if (session.appname === "live") {
-                let live = this.get_live(live_id);
+                let live_id = StreamPath.split("/").pop();
+                let live = this.lives[live_id];
                 if (live && live.is_started) {
                     session_reject(session, `live is already running: ${StreamPath}`);
                 }
@@ -374,8 +378,7 @@ export class MediaServerApp extends CoreFork {
         this.nms.on('postPublish', async (id, StreamPath, args)=>{
             log_event('postPublish', {id, StreamPath, args});
             var session = this.get_session(id);
-            this.sessions[id] = session_json(session);
-            this.ipc.emit("media-server.post-publish", id);
+            this.ipc.emit("media-server.post-publish", session_json(session));
             await session_ready(session).catch(()=>{
                 this.logger.error("No video and audio stream detected.");
                 return;
@@ -387,21 +390,19 @@ export class MediaServerApp extends CoreFork {
 
             // /** @type {string} */
             if (session.appname === "live") {
-                let live_id = StreamPath.split("/").pop();
+                let live_id = StreamPath.split("/").pop() || "";
                 let data = args.opts ? utils.try_catch(()=>JSON.parse(args.opts)) : undefined;
-                let live = this.get_live(live_id) || new Live(live_id);
+                let live = this.lives[live_id] || new Live(live_id);
                 await live.init(data, session);
                 await live.restart();
             }
-            this.sessions[id] = session_json(session);
-            this.ipc.emit("media-server.metadata-publish", id);
+            this.ipc.emit("media-server.metadata-publish", session_json(session));
         });
 
         this.nms.on('donePublish', async(id, StreamPath, args)=>{
             log_event('donePublish', {id, StreamPath, args});
-            var live = this.get_live(id);
-            if (live) await live.stop();
-            delete this.sessions[id];
+            var session = this.get_session(id);
+            if (session?.live) await session.live.stop();
             this.ipc.emit("media-server.done-publish", id);
         });
 
@@ -419,33 +420,9 @@ export class MediaServerApp extends CoreFork {
         if (session) session.stop();
     }
 
-    /** @returns {(NodeRtmpSession | NodeFlvSession)} */
+    /** @returns {Session} */
     get_session(id) {
-        return this.nms.getSession(id);
-    }
-
-    /** @returns {(NodeRtmpSession | NodeFlvSession)} */
-    get_session_from_stream_path(path) {
-        for (var session of nms_ctx.sessions.values()) {
-            if (session.publishStreamPath === path) {
-                return session;
-            }
-        }
-    }
-
-    get_session_from_stream_path_id(id) {
-        for (var session of nms_ctx.sessions.values()) {
-            var s_id = session.publishStreamPath.split("/").pop();
-            if (s_id == id) {
-                return session;
-            }
-        }
-    }
-
-    get_live(id) {
-        if (this.lives[id]) return this.lives[id];
-        var session = this.get_session(id);
-        if (session && session.live) return this.lives[session.live.id];
+        return this.nms.getSession(id) || [...nms_ctx.sessions.values()].find(s=>s.publishStreamPath == id);
     }
 
     async destroy() {
@@ -487,13 +464,47 @@ export class Live extends StopStartStateMachine {
     metadata = {};
     /** @type {NodeRtmpSession} */
     session;
+    #base_url = "";
+    
+	configs = [
+		{
+			"name": "240p",
+			"resolution": 240,
+			"video_bitrate": 400, // recommended 300–500 kbps
+			"audio_bitrate": 64,
+		},
+		/* {
+			"name": "360p",
+			"resolution": 360,
+			"video_bitrate": 750, // recommended 600–900 kbps
+			"audio_bitrate": 128,
+		}, */
+		{
+			"name": "480p",
+			"resolution": 480,
+			"video_bitrate": 1250, // recommended 1000–1500 kbps
+			"audio_bitrate": 128,
+		},
+		{
+			"name": "720p",
+			"resolution": 720,
+			"video_bitrate": 2500, // recommended 2000–3000 kbps
+			"audio_bitrate": 160,
+		},
+		{
+			"name": "1080p",
+			"resolution": 1080,
+			"video_bitrate": 4000, // recommended 3000–5000 kbps
+			"audio_bitrate": 160,
+		}
+	]
 
     constructor(id) {
 
         super(id, new Live$());
         globals.app.lives[this.id] = this;
 
-        /** @type {{ts:Number, duration:Number, start_ts:Number, ended:boolean, segment:Number, hls_list_size:Number, hls_max_duration:Number, segment_duration:Number, outputs:Config[]}} */ this.$;
+        /** @type {{ts:Number, duration:Number, start_ts:Number, ended:boolean, segment:Number, hls_list_size:Number, hls_max_duration:Number, segment_duration:Number}} */ this.$;
 
         this.dir = path.join(globals.app.live_dir, this.id);
         this.thumbnails_dir = path.join(this.dir, "thumbnails");
@@ -502,9 +513,14 @@ export class Live extends StopStartStateMachine {
         fs.mkdirSync(this.dir, {recursive:true});
         fs.mkdirSync(this.thumbnails_dir, {recursive:true});
 
-        this.url = `${globals.app.get_urls("media-server").url}/media/live/${this.id}`;
+        var base = `${globals.app.get_urls("media-server").url}`;
+        this.#base_url = `${base}/media/live/${this.id}`;
+        var player_url = `${base}/player/index.html?id=${this.id}`;
+        var manifest_url = `${this.#base_url}/master.m3u8`;
+
         Object.assign(this.$, {
-            url: `${globals.app.get_urls("media-server").url}/player/index.html?id=${this.id}`
+            url: player_url,
+            manifest_url,
         });
         
         this.logger = new Logger(`live-${this.id}`);
@@ -553,7 +569,7 @@ export class Live extends StopStartStateMachine {
     }
     
     /** @param {any} opts */
-    /** @param {NodeRtmpSession} session */
+    /** @param {Session} session */
     async init(data, session) {
         data = {
             ...data
@@ -572,26 +588,16 @@ export class Live extends StopStartStateMachine {
             this.session = session;
             this.$.origin = session.publishArgs.origin;
             this.$.title = session.publishArgs.title;
-            session.live = this.$;
+            session.live = this;
         }
         
         if (!globals.app.conf["media-server.allow_hardware"]) this.$.use_hardware = false;
         if (!globals.app.conf["media-server.allow_hevc"]) this.$.use_hevc = false;
         
-        /** @param {any[]} outputs */
-        var fix_outputs = (outputs)=>{
-            if (!outputs || !outputs.length) outputs = utils.json_copy(globals.app.conf["media-server.outputs"]);
-            for (var c of outputs) {
-                c.resolution = +c.resolution || session.videoHeight;
-            }
-            if (session) {
-                outputs = outputs.filter(c=>c.resolution <= session.videoHeight);
-            }
-            return outputs;
+        
+        if (session) {
+            this.configs = this.configs.filter(c=>c.resolution <= session.videoHeight);
         }
-
-        this.$.outputs = fix_outputs(this.$.outputs);
-        if (!this.$.outputs.length) throw new Error("No outputs found.");
         
         this.$.hls_list_size = globals.app.conf["media-server.hls_list_size"];
         this.$.hls_max_duration = globals.app.conf["media-server.hls_max_duration"];
@@ -600,8 +606,8 @@ export class Live extends StopStartStateMachine {
         for (var l of Object.values(this.levels)) {
             await l.stop();
         }
-        for (var c of this.$.outputs) {
-            new LiveLevel(this, c);
+        for (var c of this.configs) {
+            new LiveLevel(this, c.name);
         }
     }
     
@@ -624,8 +630,12 @@ export class Live extends StopStartStateMachine {
             "-strict", "experimental"
         ];
         
-        const hwaccel = this.$.use_hardware ? globals.app.conf["core.ffmpeg_hwaccel"] : null;
-        const hwenc = this.$.use_hardware ? globals.app.conf["core.ffmpeg_hwenc"] : null;
+        let hwaccel = this.$.use_hardware ? globals.app.conf["core.ffmpeg_hwaccel"] : null;
+        let hwenc = this.$.use_hardware ? globals.app.conf["core.ffmpeg_hwenc"] : null;
+
+        // hwaccel = null;
+        // hwenc = null;
+
         if (hwaccel) {
             ffmpeg_args.push(
                 "-hwaccel", hwaccel,
@@ -633,155 +643,232 @@ export class Live extends StopStartStateMachine {
                 // `-extra_hw_frames`, `10` // fucks up
             );
         }
-        ffmpeg_args.push(
-            "-fflags", "+igndts+genpts",
-            `-dts_delta_threshold`, `0`,
-            // `-stream_loop`, `-1`,
-        );
         
         var fps = this.$.fps_passthrough ? 0 : this.session?.videoFps ?? 0;
+        if (hwenc) fps = 60; // VERY ANNOYING, but a builtin limitation of nvenc (and it looks like VAAPI too) is rate control with variable frame rate is not possible. it will take the container fps and that's that. If it varies, so will the bitrate... potentially massively, so we must fix it.
         var keyint = globals.app.conf["media-server.keyframe_interval"] || globals.app.conf["media-server.hls_segment_duration"] || 2;
+        var use_hevc = this.$.use_hevc;
+        var encoder = use_hevc ? `libx265` : `libx264`;
+        if (hwenc) {
+            encoder = `${use_hevc?"hevc":"h264"}_${hwenc}`;
+        }
         
         ffmpeg_args.push(
+            // `-use_wallclock_as_timestamps`, `1`,
             // `-re`, // if enabled, whenever there is speedup live stream will be way behind.
             // `-noautoscale`,
-            "-fflags", "+autobsf+flush_packets+genpts+igndts",
-            `-flush_packets`, `1`,
-            // `-r`, `${fps || constants.DEFAULT_FPS}`, // this is fucked with passthrough.
+            // `-ignore_unknown`,
+            "-fflags", "+genpts+igndts", // +discardcorrupt +autobsf
+            // `-copyts`, // necessary to read the overall pts of the stream...
+            `-avoid_negative_ts`, `make_zero`,
+            // `-flush_packets`, `1`,
+            // ...(fps ? [`-r`, `${fps || constants.DEFAULT_FPS}`] : []), // this is fucked with passthrough.
             "-i", `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${this.session.publishStreamPath}`,
             `-ar`, `44100`,
             `-ac`, `2`,
-            `-bsf:v`, this.$.use_hevc ? `hevc_mp4toannexb` : `h264_mp4toannexb`,
+            `-bsf:v`, use_hevc ? `hevc_mp4toannexb` : `h264_mp4toannexb`,
             `-bsf:a`, `aac_adtstoasc`,
-            `-async`, `1`,
-            `-fps_mode`, fps ? `cfr` : "passthrough",
+            "-fps_mode", fps ? "cfr" : "vfr",
+            "-r", `${fps || constants.DEFAULT_FPS}`,
             `-g`, `${(fps || constants.DEFAULT_FPS) * keyint}`,
             `-force_key_frames`, `expr:gte(t,n_forced*${keyint})`, // keyframe every 2 seconds, this takes precedence over -g but apparently isn not working for some reason (vfr related)
-            `-profile:v`, `high`,
-
-            // `-force_key_frames`, `expr:gte(n,n_forced*fps*${keyint})`,
-            `-movflags`,` +faststart`,
-            // `-rc_mode`, `vbr`,
-
-            // `-vf`, `setpts=PTS-STARTPTS`,
-            // `-af`, `asetpts=PTS-STARTPTS`,
-            // `-vsync`, `2`,
-            // `-fpsmax`, `60`, // max fps
-            // `-avoid_negative_ts`, `make_zero`,
-            // `-vsync`, `cfr`,
-
-
-            // -----------------
-            
-            // `-enc_time_base`, `-1`, //           <-- this
-            // `-video_track_timescale`, `1000`, // <-- and this seems to fix all dts errors
+            ...(fps ? [] : [`-enc_time_base`, `1/90000`]),
         );
 
-        if (hwenc == "vaapi") {
+        if (encoder == "h264_vaapi") {
             ffmpeg_args.push(
-                // `-qp`, `18`,
-                `-global_quality`, `18`,
                 `-compression_level`, "5", // 1-7 (1 = fastest, 7 = slowest)
-                `-bf`, "3",
-                // `-refs`, "4"
+                `-rc_mode`, `CBR`,
+                `-profile`, `main`,
+                `-level`, `4.1`,
             );
-        } else if (hwenc == "nvenc" || hwenc == "cuda") {
+        } else if (hwenc == "h264_qsv") {
             ffmpeg_args.push(
-                `-cq`, `18`,
+                `-preset`, `slow`,
+                `-level`, `4.1`,
+                `-forced_idr`, `1`,
+                `-profile`, `main`,
+            );
+        } else if (hwenc == "h264_vulkan") {
+            ffmpeg_args.push(
+                `-rc_mode`, `cbr`,
+                `-profile`, `main`,
+                `-level`, `4.1`,
+                `-tune`, `ll`
+            );
+        } else if (hwenc == "h264_amf") {
+            ffmpeg_args.push(
+                `-rc`, `cbr`,
+                `-profile`, `main`,
+                `-preset`, `quality`,
+                `-quality`, `quality`,
+                `-level`, `4.1`,
+            );
+        } else if (hwenc == "h264_nvenc") {
+            ffmpeg_args.push(
                 `-preset`, "p5", // p1-p7 (1 = fastest, 7 = slowest)
-                `-spatial_aq`, "1",
-                `-temporal_aq`, "1"
+                `-rc`, `vbr`,
+                `-profile`, `main`,
+                `-level`, `4.1`,
+                `-forced-idr`, `1`,
+                `-tune`, `ll`
             );
-        } else if (!hwenc) {
+        } else if (encoder == "libx264") {
             ffmpeg_args.push(
-                `-crf`, "23",
                 `-preset`, "medium",
-                `-pix_fmt`, `yuv420p` // shouldn't be necessary
+                `-profile`, `main`,
+                `-level`, `4.1`,
+                `-forced-idr`, `1`,
+                `-tune`, `zerolatency`,
+            );
+        } else if (encoder == "hevc_vaapi") {
+            ffmpeg_args.push(
+                `-compression_level`, "5", // 1-7 (1 = fastest, 7 = slowest)
+                `-rc_mode`, `CBR`,
+                `-profile`, `main`,
+                `-level`, `3.1`,
+            );
+        } else if (hwenc == "hevc_qsv") {
+            ffmpeg_args.push(
+                `-preset`, `slow`,
+                `-level`, `3.1`,
+                `-forced_idr`, `1`,
+                `-profile`, `main`,
+            );
+        } else if (hwenc == "hevc_vulkan") {
+            ffmpeg_args.push(
+                `-rc_mode`, `cbr`,
+                `-profile`, `main`,
+                `-level`, `3.1`,
+                `-tune`, `ll`
+            );
+        } else if (hwenc == "hevc_amf") {
+            ffmpeg_args.push(
+                `-rc`, `cbr`,
+                `-profile`, `main`,
+                `-preset`, `quality`,
+                `-quality`, `quality`,
+                `-level`, `3.1`,
+            );
+        } else if (hwenc == "hevc_nvenc") {
+            ffmpeg_args.push(
+                `-preset`, "p5", // p1-p7 (1 = fastest, 7 = slowest)
+                `-rc`, `vbr`,
+                `-profile`, `main`,
+                `-level`, `3.1`,
+                `-forced-idr`, `1`,
+                `-tune`, `ll`
+            );
+        } else if (encoder == "hevc") {
+            ffmpeg_args.push(
+                `-preset`, "medium",
+                `-profile`, `main`,
+                `-level`, `3.1`,
+                `-forced-idr`, `1`,
+                `-tune`, `zerolatency`,
             );
         }
 
-        var vid = `0:v:0`;
-        var filter_complex = [];
-        var video_height_map = {};
-        var video_heights = [...new Set(this.$.outputs.filter(c=>c.resolution).map(c=>c.resolution))];
+        let _vi = 0;
+        let _ai = 0;
+        let genvid = ()=>`v${++_vi}`;
+        let genaid = ()=>`a${++_ai}`;
+
+        let filter_complex = [];
         let ar = this.session.videoWidth /this.session.videoHeight;
         ffmpeg_args.push(`-aspect`, `${ar.toFixed(6)}`);
-
-        if (video_heights.length == 1 && video_heights[0] == this.session.videoHeight) {
-            video_height_map[video_heights[0]] = vid;
-        } else if (video_heights.length) {
+        
+        // filter_complex.push(`[${vid}]setpts=PTS-STARTPTS[fixed]`);
+        // vid = "fixed";
+        let vid = "0:v:0";
+        let aid = "0:a:0";
+        /* {
+            let tmp1 = genvid();
+            let tmp2 = genvid();
             filter_complex.push(
-                `[${vid}]split=${video_heights.length}${video_heights.map((c,i)=>`[v${i}]`).join("")}`
-            );
-            video_heights.forEach((height,i)=>{
-                let width = Math.round(ar * height / 2) * 2;
-                let needs_scaling = this.session.videoHeight != height || this.session.videoWidth != width;
-                let out = `v${i}`;
-                let graph = [];
-                if (needs_scaling) {
-                    let s = `${width}:${height}`;
-                    if (hwenc) graph.push(`scale_${globals.app.conf["core.ffmpeg_hwaccel"]}=${s}`);
-                    else graph.push(`scale=${s}`);
-                    out = `vscaled${i}`;
-                }
-                if (graph.length) filter_complex.push(`[v${i}]${graph.join(",")}[${out}]`);
-                video_height_map[height] = `[${out}]`;
-            });
-        }
-        ffmpeg_args.push("-filter_complex", filter_complex.join(";"));
-
-        this.$.outputs.forEach((c,i)=>{
-            ffmpeg_args.push("-map", video_height_map[c.resolution]);
+                `[${vid}]split[${tmp1}][${tmp2}]`,
+                `[${tmp1}]showinfo`,
+            )
+            vid = tmp2;
+        } */
+        let vids = this.configs.map(c=>genvid());
+        let aids = this.configs.map(c=>genaid());
+        filter_complex.push(
+            // setpts=PTS-STARTPTS,
+            // asetpts=PTS-STARTPTS,
+            `[${vid}]split=${vids.length}${vids.map((vid)=>`[${vid}]`).join("")}`,
+            `[${aid}]aresample=async=1:min_hard_comp=0.100000:first_pts=0,asplit=${aids.length}${aids.map((aid)=>`[${aid}]`).join("")}`,
+        );
+        for (let i = 0; i < this.configs.length; i++) {
+            let c = this.configs[i];
+            let height = c.resolution;
+            let width = Math.round(ar * height / 2) * 2;
+            let needs_scaling = this.session.videoHeight != height || this.session.videoWidth != width;
+            let vid = vids[i];
+            let aid = aids[i];
+            let graph = [];
+            if (needs_scaling) {
+                let s = `${width}:${height}`;
+                if (hwaccel) graph.push(`scale_${hwaccel}=${s}`);
+                else graph.push(`scale=${s}`);
+            }
+            if (graph.length) {
+                let tmp = genvid();
+                filter_complex.push(`[${vid}]${graph.join(",")}[${tmp}]`);
+                vid = tmp;
+            }
+            if (hwaccel && !hwenc) {
+                let tmp = genvid();
+                filter_complex.push(`[${vid}]hwdownload,format=nv12[${tmp}]`);
+                vid = tmp;
+            }
+            ffmpeg_args.push("-map", `[${vid}]`);
             ffmpeg_args.push(
-                `-c:v:${i}`, hwenc ? `${this.$.use_hevc?"hevc":"h264"}_${hwenc}` : this.$.use_hevc ? `libx265` : `libx264`,
+                `-c:v:${i}`, encoder,
                 `-b:v:${i}`, `${c.video_bitrate}k`,
-                `-maxrate:v:${i}`, `${c.video_bitrate * 1}k`,
-                `-bufsize:v:${i}`, `${c.video_bitrate * 2}k`,
+                // `-minrate:v:${i}`, `${c.video_bitrate}k`,
+                `-maxrate:v:${i}`, `${c.video_bitrate}k`,
+                `-bufsize:v:${i}`, `${c.video_bitrate*2}k`,
             );
-            // if (hwenc) {
-            //     ffmpeg_args.push(
-            //         // "-copyts",
-            //         // `-crf`, `22`,
-            //         // `-cq:v:${i}`, c.cq,
-            //         // `-qmin:v:${i}`, c.cq,
-            //         // `-qmax:v:${i}`, c.cq,
-            //         // `-qp:v:${i}`, c.qp
-            //     );
-            // }
-            ffmpeg_args.push("-map", "0:a:0");
+            ffmpeg_args.push("-map", `[${aid}]`);
             ffmpeg_args.push(`-c:a:${i}`, "aac");
             ffmpeg_args.push(`-b:a:${i}`, `${c.audio_bitrate}k`);
-            // ffmpeg_args.push(
-            //     `-filter:a:${i}`, `asetpts=PTS-STARTPTS`
-            // );
-        });
+        }
+        ffmpeg_args.push("-filter_complex", filter_complex.join(";"));
         // var fix_name = /** @param {string} s */(s)=>s.trim().replace(/\s+/g, "-").toLowerCase();
         ffmpeg_args.push(
-            `-var_stream_map`, this.$.outputs.map((c,i)=>`v:${i},a:${i},name:${encodeURIComponent(c.name)}`).join(" "),
+            `-var_stream_map`, this.configs.map((c,i)=>`v:${i},a:${i},name:${encodeURIComponent(c.name)}`).join(" "),
             `-hls_list_size`, this.$.hls_list_size,
-            `-hls_segment_filename`, `%v/%03d.${this.$.use_hevc?"m4s":"ts"}`,
+            `-hls_segment_filename`, `%v/%03d.${use_hevc?"m4s":"ts"}`,
             // `-hls_playlist_type`, `event`,
             `-threads`, `0`,
             `-f`, `hls`,
-            `-hls_segment_type`, this.$.use_hevc ? `fmp4` : `mpegts`,
+            `-hls_segment_type`, use_hevc ? `fmp4` : `mpegts`,
             // `-hls_init_time`, `1`,
             `-hls_time`, `${this.$.segment_duration}`,
-            `-hls_flags`, `independent_segments+append_list+discont_start+split_by_time`,
+            `-hls_flags`, `independent_segments+append_list+split_by_time`, // +discont_start
             `-master_pl_name`, `master.m3u8`,
             `-y`, `%v/stream.m3u8`
         );
 
-        this.logger.debug(ffmpeg_args);
         this.logger.info(`ffmpeg command:\n ffmpeg ${ffmpeg_args.join(" ")}`);
 
         for (var l of Object.values(this.levels)) {
             l.start();
         }
-        
         this.ffmpeg.start(ffmpeg_args, {cwd: this.dir})
             .catch((e)=>{
                 this.logger.error(new Error(`Live [${this.id}] ffmpeg error: ${e.message}`));
             });
+        
+        var rl = readline.createInterface(this.ffmpeg.stderr);
+        rl.on("line", (line)=>{
+            let m;
+            if (m = line.match(/pts_time:([\d\.]+)/)) {
+                this.pts = +m[1];
+                console.log("PTS: ",this.pts);
+            }
+        });
         
         // this.ffmpeg.logger.on("log", (log)=>{
         //     this.logger.log(log);
@@ -792,7 +879,7 @@ export class Live extends StopStartStateMachine {
             this.stop();
         });
 
-        globals.app.ipc.emit("media-server.live-publish", this.$);
+        globals.app.ipc.emit("media-server.live.started", this.$);
 
         return super._start();
     }
@@ -800,6 +887,7 @@ export class Live extends StopStartStateMachine {
     async _stop() {
         console.info(`LIVE [${this.id}] has stopped.`);
         this.$.is_live = false;
+        globals.app.ipc.emit("media-server.live.stopped", this.id);
         for (var k in this.levels) {
             await this.levels[k].stop();
         }
@@ -834,7 +922,7 @@ export class Live extends StopStartStateMachine {
         );
         new FFMPEGWrapper().start(ffmpeg_args, {cwd: level.dir})
             .then(()=>{
-                this.$.thumbnail_url = `${this.url}/thumbnails/${thumbnail_name}`;
+                this.$.thumbnail_url = `${this.#base_url}/thumbnails/${thumbnail_name}`;
             })
             .catch((e)=>{
                 // 1 bad thumbnail, whatever.
@@ -901,20 +989,21 @@ export class LiveLevel extends events.EventEmitter {
     /** @type {Segment[]} */
     #segments = [];
     // #bitrates = [];
+    /** @type {Live} */
+    #live;
     #stopped = false;
     #ended = false;
     #started = false;
     #interval;
     #update_deferred = new utils.Deferred();
 
-    /** @param {Live} live @param {Config} config */
-    constructor(live, config) {
+    /** @param {Live} live @param {string} name */
+    constructor(live, name) {
         super();
-        this.live = live;
-        this.config = config;
-        this.live.levels[config.name] = this;
+        this.#live = live;
+        this.#live.levels[name] = this;
         
-        this.dir = path.join(this.live.dir, config.name);
+        this.dir = path.join(this.#live.dir, name);
         fs.mkdirSync(this.dir, {recursive:true}) // just incase...
         this.live_filename = path.join(this.dir, "stream.m3u8");
         this.filename = path.join(this.dir, "vod.m3u8");
@@ -1038,18 +1127,26 @@ export class LiveLevel extends events.EventEmitter {
     /** @param {Segment} segment */
     async #add_segment(segment, append_to_vod=false) {
         segment.i = this.#segments.length;
+        if (this.#live.session) {
+            let ar;
+            try {
+                let id = this.#live.session.publishArgs.origin.split("/").pop();
+                ar = globals.app.aspect_ratio_cache[id].aspect_ratio;
+            } catch (e) {}
+            if (ar) segment.data["ASPECT"] = ar.toFixed(6);
+        }
         this.#segments.push(segment);
         var segment_str = this.#render_segment(segment);
         if (append_to_vod) await this.#append(segment_str);
         fs.stat(path.join(this.dir, segment.uri)).then((s)=>{
-            this.live.$.size += s.size;
+            this.#live.$.size += s.size;
         });
         this.emit("new_segment", segment);
     }
 
     async #append(str) {
         await fs.appendFile(this.filename, str, "utf8");
-        this.live.emit("update");
+        this.#live.emit("update");
         this.emit("update");
         this.#update_deferred.resolve();
         this.#update_deferred.reset();
@@ -1058,7 +1155,7 @@ export class LiveLevel extends events.EventEmitter {
     #render_header(media_sequence) {
         var str = `#EXTM3U\n`;
         str += `#EXT-X-VERSION:9\n`;
-        str += `#EXT-X-TARGETDURATION:${this.live.$.segment_duration.toFixed(6)}\n`;
+        str += `#EXT-X-TARGETDURATION:${this.#live.$.segment_duration.toFixed(6)}\n`;
         str += `#EXT-X-MEDIA-SEQUENCE:${media_sequence||0}\n`;
         if (this.init_uri) {
             str += `#EXT-X-MAP:URI="${this.init_uri}"\n`;
@@ -1066,14 +1163,14 @@ export class LiveLevel extends events.EventEmitter {
         return str;
     }
     #render(_HLS_msn, _HLS_skip) {
-        var min_segments = this.live.$.hls_list_size;
-        var max_segments = Math.max(min_segments, Math.ceil(this.live.$.hls_max_duration / this.live.$.segment_duration));
+        var min_segments = this.#live.$.hls_list_size;
+        var max_segments = Math.max(min_segments, Math.ceil(this.#live.$.hls_max_duration / this.#live.$.segment_duration));
         var end = this.#segments.length;
         var start = Math.max(0, end - max_segments);
         
         var lines = this.#render_header(start);
         
-        lines += `#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.0,CAN-SKIP-UNTIL=${(this.live.$.segment_duration*6).toFixed(1)}\n`;
+        lines += `#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.0,CAN-SKIP-UNTIL=${(this.#live.$.segment_duration*6).toFixed(1)}\n`;
 
         if (_HLS_skip) {
             let skipped_segments = utils.clamp(end - min_segments, 0, (max_segments-min_segments));

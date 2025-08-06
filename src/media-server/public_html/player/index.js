@@ -1,2 +1,4 @@
 import MediaServerVideoPlayerWebApp from "./VideoPlayerWebApp.js";
-window.app = new MediaServerVideoPlayerWebApp();
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new MediaServerVideoPlayerWebApp();
+});
