@@ -1,5 +1,5 @@
 import path from "node:path";
-import fs from "fs-extra";
+import fs from "node:fs";
 import readline from "node:readline";
 import cron from "node-cron";
 import os from "node:os";
@@ -105,7 +105,7 @@ export class Core extends DataNode {
     get debug() { return !!(process.env.LIVESTREAMER_DEBUG ?? this.conf["core.debug"]); }
     get auth() { return !!(process.env.LIVESTREAMER_AUTH ?? this.conf["core.auth"]); }
     
-    get use_pm2() { return !!("pm_id" in process.env || this.conf["core.pm2"]); }
+    get use_pm2() { return !!(this.conf["core.pm2"]); }
     get hostname() { return this.conf["core.hostname"] || os.hostname(); }
     get change_log_path() { return path.resolve(this.conf["core.changelog"]); }
     get mpv_path() { return this.conf["core.mpv_path"] || (process.platform == "win32" ? "mpv.exe" : "mpv"); }
@@ -173,15 +173,17 @@ export class Core extends DataNode {
     get_socket_path(sock_name, register=false) {
         var p = utils.is_windows() ? `\\\\.\\pipe\\${this.appspace}_${sock_name}` : path.join(this.sockets_dir, `${this.appspace}_${sock_name}.sock`);
         if (register) {
-            this.#socket_files.add(p);
-            try { fs.unlinkSync(p); } catch (e) {}
+            if (!this.#socket_files.has(p)) {
+                this.#socket_files.add(p);
+                try { fs.unlinkSync(p); } catch (e) {}
+            }
         }
         return p;
     }
 
     get_ssl_certs() {
-        var ssl_key_path = this.conf["core.ssl_key"] || path.resolve(this.appdata_dir, "ssl", `${this.appspace}.key`);
-        var ssl_cert_path = this.conf["core.ssl_cert"] || path.resolve(this.appdata_dir, "ssl", `${this.appspace}.pem`);
+        var ssl_key_path = this.conf["core.ssl_key"];
+        var ssl_cert_path = this.conf["core.ssl_cert"];
         if (!ssl_key_path || !ssl_cert_path) return null;
         try {
             return {
@@ -213,12 +215,6 @@ export class Core extends DataNode {
         }
     }
 
-    async safe_write_file(filename, data, encoding="utf-8") {
-        var tmp_filename = path.join(this.tmp_dir, `${utils.md5(filename)}_${utils.uuid4()}.tmp`);
-        await fs.writeFile(tmp_filename, data, encoding);
-        await fs.rename(tmp_filename, filename);
-    }
-
     /* set_priority(pid, pri) {
         try {
             if (pid) os.setPriority(pid, pri);
@@ -245,7 +241,7 @@ export class Core extends DataNode {
     async exit(signal, code=0) {
         if (this.#exiting) return;
         this.#exiting = true;
-        this.logger.info(`Received signal ${signal}, exiting with code ${code}.`);
+        this.logger.info(`Received signal ${signal||"-"}, exiting with code ${code}.`);
         await this.destroy();
         process.exit(code);
     }
@@ -306,7 +302,8 @@ export class CoreMaster extends Core {
             .option(`-m --modules [string...]`, "Module paths", [])
             .option(`-c --configs [string...]`, "Config paths", [])
 
-        program.parse();
+        var argv = process.env.LIVESTREAMER_ARGS ? stringArgv(process.env.LIVESTREAMER_ARGS) : undefined;
+        program.parse(argv, {from: argv ? "user" : undefined});
         
         this.#opts = Object.assign({}, program.opts(), opts);
 
@@ -336,9 +333,10 @@ export class CoreMaster extends Core {
 
         this.__init();
         
+        fs.rmdirSync(this.tmp_dir, { recursive: true });
+        fs.mkdirSync(this.tmp_dir, { recursive: true });
         fs.mkdirSync(this.appdata_dir, { recursive: true });
         fs.mkdirSync(this.bin_dir, { recursive: true });
-        fs.mkdirSync(this.tmp_dir, { recursive: true });
         fs.mkdirSync(this.logs_dir, { recursive: true });
         fs.mkdirSync(this.cache_dir, { recursive: true });
         fs.mkdirSync(this.clients_dir, { recursive:true });
@@ -346,7 +344,6 @@ export class CoreMaster extends Core {
         fs.mkdirSync(this.sockets_dir, { recursive:true });
         fs.mkdirSync(this.files_dir, { recursive:true });
         fs.chmodSync(this.files_dir, "777");
-        try { fs.emptyDirSync(this.tmp_dir, { recursive:true }); } catch (e) {}
         
         this.#ipc = new IPCMaster(this.name, this.get_socket_path(`ipc`, true));
         
@@ -388,7 +385,7 @@ export class CoreMaster extends Core {
             if (!this.#opts.auth) return null;
             return Promise.resolve(this.#opts.auth(...args)).catch(utils.noop);
         });
-        this.#ipc.respond("electron-data", ()=>({
+        this.#ipc.respond("electron_data", ()=>({
             appdata_dir: this.appdata_dir,
             conf: this.conf,
             debug: this.debug,
@@ -439,10 +436,6 @@ export class CoreMaster extends Core {
                 }
             }
         }
-
-        for (let m in this.modules) {
-            this.module_start(m);
-        }
         
         this.logger.info(`Initializing ${this.name}...`);
         this.logger.info(`  user: ${os_username}`);
@@ -462,6 +455,10 @@ export class CoreMaster extends Core {
             process.send('ready');
         }
         this.ipc.emit(`${this.name}.ready`);
+
+        for (let m in this.modules) {
+            this.module_start(m);
+        }
     }
 
     async module_start(m) {
@@ -485,8 +482,7 @@ export class CoreMaster extends Core {
                 this.logger.info(`Module '${m}' is ready.`);
                 resolve();
             });
-            if (this.use_pm2) {
-                
+            if (this.use_pm2 && USE_PM2_CHILD_PROCESSES) {
                 let p = {
                     "wait_ready": true,
                     "namespace": this.appspace,
@@ -505,7 +501,8 @@ export class CoreMaster extends Core {
             } else {
                 let p = child_process.fork(run_path, args, {
                     execArgv: node_args,
-                    stdio: ["ignore", "inherit", "inherit", "ipc"]
+                    stdio: ["ignore", "inherit", "inherit", "ipc"],
+                    windowsHide: true, // undocumented but works!
                 });
                 proc.init(p);
             }
@@ -587,7 +584,7 @@ export class CoreMaster extends Core {
                 if (req.url == "/favicon.ico") {
                     let f = resources.get_path("icon.ico");
                     res.writeHead(200, { 'Content-Type': "image/x-icon" });
-                    res.end(await fs.readFile(f));
+                    res.end(await fs.promises.readFile(f));
                     return;
                 }
                 let {proxy,target} = await get_proxy(req, res);
@@ -650,13 +647,19 @@ export class CoreMaster extends Core {
         var new_conf = utils.json_copy(config_default);
         console.log(`Loading confs [${this.#conf_paths.join(", ")}]...`);
         for (let conf_path of this.#conf_paths) {
-            if (!(await fs.exists(conf_path))) {
+            if (!(await utils.file_exists(conf_path))) {
                 console.error(`Conf file '${conf_path}' does not exist.`)
             }
             let conf_json = require_no_cache(path.resolve(conf_path));
             console.info(`Conf file '${conf_path}' successfully loaded.`);
             for (var k in conf_json) {
-                new_conf[k] = conf_json[k];
+                let v = conf_json[k];
+                if (typeof v === "string") {
+                    v = v.replace(/\{RESOURCE\}(.+?)\{\/RESOURCE\}/g, (m, p1)=>{
+                        return resources.get_path(p1);
+                    });
+                }
+                new_conf[k] = v;
             }
         }
         if (this.#opts.config) {
@@ -748,11 +751,13 @@ class Process extends events.EventEmitter {
         }
     }
 
-    /** @param {import("child_process").ChildProcess | import("pm2").ProcessDescription} p */
+    /** @param {import("child_process").ChildProcess | import("pm2").Proc} p */
     init(p) {
         if (this.is_expired) return;
         this.#pid = p.pid;
-        if (globals.app.use_pm2) {
+        this.#is_pm2 = !!(p.pm2_env || p.pm_id);
+        if (this.#is_pm2) {
+            // -
         } else {
             p.on("error", (err)=>{
                 console.error(err);
@@ -769,7 +774,7 @@ class Process extends events.EventEmitter {
         this.#stopping = true;
         return new Promise((resolve)=>{ 
             var timeout;
-            if (globals.app.use_pm2) {
+            if (this.#is_pm2) {
                 pm2.stop(`${globals.app.appspace}.${this.#name}`);
             } else {
                 globals.app.ipc.emit_to(this.#name, "core:shutdown");
@@ -862,9 +867,8 @@ export class CoreFork extends Core {
 
         await this.init();
 
-        if (this.use_pm2) {
-            process.send('ready');
-        }
+        // if (this.use_pm2) process.send('ready');
+        
         this.ipc.emit(`${this.name}.ready`);
     }
 

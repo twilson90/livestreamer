@@ -4,5 +4,3 @@ export class TimeoutError extends Error {
 		this.type = "TimeoutError";
 	}
 }
-
-export default TimeoutError;

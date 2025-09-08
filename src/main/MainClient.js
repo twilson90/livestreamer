@@ -1,6 +1,5 @@
-import fs from "fs-extra";
-import {globals, InternalSession, SessionTypes} from "./exports.js";
-import {utils, Client, Client$} from "../core/exports.js";
+import {globals, InternalSession} from "./exports.js";
+import {utils, Client, Client$, constants} from "../core/exports.js";
 
 export class MainClient$ extends Client$ {
     session_id = "";
@@ -17,72 +16,181 @@ export class MainClient extends Client {
     api = {
         ...super.api,
         // "analyze_local_file_system_volume": (...args)=>globals.app.analyze_local_file_system_volume(...args),
-        "module_restart": (...args)=>globals.app.module_restart(...args),
-        "module_stop": (...args)=>globals.app.module_stop(...args),
-        "module_start": (...args)=>globals.app.module_start(...args),
-        "create_target": (...args)=>globals.app.create_target(...args),
-        "update_target": (...args)=>globals.app.update_target(...args),
-        "delete_target": (...args)=>globals.app.delete_target(...args),
-        "get_lives": (...args)=>globals.app.get_lives(...args),
-        "destroy_live": (...args)=>globals.app.destroy_live(...args),
-        // "delete_font": (...args)=>globals.app.delete_font(...args),
-        // "get_font": (...args)=>globals.app.get_font(...args),
-        "handover": (...args)=>this.internal_session.handover(...args),
-        "get_autosave_history": (...args)=>this.internal_session.get_autosave_history(...args),
-        "detect_crop": (...args)=>this.internal_session.detect_crop(...args),
-        "stop_stream": (...args)=>{
-            this.internal_session.stop_stream(...args)
+        "module_restart": (...args) => {
+            return globals.app.module_restart(...args)
         },
-        "start_stream": (...args)=>{
-            this.internal_session.start_stream(...args)
+        "module_stop": (...args) => {
+            return globals.app.module_stop(...args)
         },
-        "reload": (...args)=>this.internal_session.reload(...args),
-        "set_player_default_override": (...args)=>this.internal_session.set_player_default_override(...args),
-        "update_media_info_from_ids": (...args)=>this.internal_session.update_media_info_from_ids(...args),
-        "playlist_add": (...args)=>this.internal_session.playlist_add(...args),
-        "playlist_remove": (ids, session_id, opts)=>{
+        "module_start": (...args) => {
+            return globals.app.module_start(...args)
+        },
+        "create_target": (...args) => {
+            return globals.app.create_target(...args)
+        },
+        "update_target": (...args) => {
+            return globals.app.update_target(...args)
+        },
+        "delete_target": (...args) => {
+            return globals.app.delete_target(...args)
+        },
+        "get_lives": (...args) => {
+            return globals.app.get_lives(...args)
+        },
+        "destroy_live": (...args) => {
+            return globals.app.destroy_live(...args)
+        },
+        "handover": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.handover(...args)
+        },
+        "get_autosave_history": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.get_autosave_history(...args)
+        },
+        "detect_crop": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.detect_crop(...args)
+        },
+        "stop_stream": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.stop_stream(...args)
+        },
+        "start_stream": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.start_stream(...args)
+        },
+        "reload": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.reload(...args)
+        },
+        "set_player_default_override": (...args) => {
+            if (!this.internal_session) return;
+            this.internal_session.set_player_default_override(...args)
+        },
+        "update_media_info_from_ids": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.update_media_info_from_ids(...args)
+        },
+        "playlist_add": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.playlist_add(...args)
+        },
+        "playlist_remove": (ids, session_id, opts) => {
             /** @type {InternalSession} */
             var session = globals.app.sessions[session_id] || this.internal_session;
+            if (!session) return;
             return session.playlist_remove(ids, opts);
         },
-        "playlist_update": (...args)=>this.internal_session.playlist_update(...args),
-        "playlist_undo": (...args)=>this.internal_session.playlist_undo(...args),
-        "playlist_redo": (...args)=>this.internal_session.playlist_redo(...args),
-        "playlist_register_history": (...args)=>this.internal_session.playlist_history.push(...args),
-        "download_and_replace": (...args)=>this.internal_session.download_and_replace(...args),
-        "cancel_download": (...args)=>this.internal_session.cancel_download(...args),
-        "cancel_upload": (...args)=>this.internal_session.cancel_upload(...args),
-        "playlist_play": (...args)=>{
+        "playlist_update": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.playlist_update(...args)
+        },
+        "playlist_undo": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.playlist_undo(...args)
+        },
+        "playlist_redo": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.playlist_redo(...args)
+        },
+        "playlist_register_history": (...args) => {
+            if (!this.internal_session) return;
+            this.internal_session.playlist_history.push(...args)
+        },
+        "download_and_replace": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.download_and_replace(...args)
+        },
+        "cancel_download": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.cancel_download(...args)
+        },
+        "cancel_upload": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.cancel_upload(...args)
+        },
+        "playlist_play": (...args) => {
+            if (!this.internal_session) return;
             this.internal_session.playlist_play(...args)
         },
-        "seek": (...args)=>this.internal_session.seek(...args),
-        "update_player_controls": (...args)=>this.internal_session.update_player_controls(...args),
-        "fade_out_in": (...args)=>this.internal_session.fade_out_in(...args),
-        "load_session": (...args)=>this.internal_session.load(...args),
-        "load_session_autosave": (...args)=>this.internal_session.load_autosave(...args),
-        "get_user_save_data": (...args)=>this.internal_session.get_user_save_data(...args),
-        "pause": (...args)=>this.session_stream.pause(...args),
-        "resume": (...args)=>this.session_stream.resume(...args),
-        "session_update_values": (...args)=>{
+        "seek": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.seek(...args)
+        },
+        "update_player_controls": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.update_player_controls(...args)
+        },
+        "fade_out_in": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.fade_out_in(...args)
+        },
+        "load_session": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.load(...args)
+        },
+        "load_session_autosave": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.load_autosave(...args)
+        },
+        "get_user_save_data": (...args) => {
+            if (!this.internal_session) return;
+            return this.internal_session.get_user_save_data(...args)
+        },
+        "pause": (...args) => {
+            if (!this.session_stream) return;
+            return this.session_stream.pause(...args)
+        },
+        "resume": (...args) => {
+            if (!this.session_stream) return;
+            return this.session_stream.resume(...args)
+        },
+        "session_update_values": (...args) => {
+            if (!this.session) return;
             utils.merge(this.session.$, args[0], {delete_nulls:true})
         },
-        "stream_update_values": (...args)=>{
+        "stream_update_values": (...args) => {
+            if (!this.session_stream) return;
             utils.merge(this.session_stream.$, args[0], {delete_nulls:true})
         },
-        "stream_settings_update_values": (...args)=>{
-            utils.merge(this.internal_session.$.stream_settings, args[0], {delete_nulls:true})
+        "stream_settings_update_values": (...args) => {
+            if (!this.session) return;
+            utils.merge(this.session.$.stream_settings, args[0], {delete_nulls:true})
         },
-        "restart_targets": (...args)=>this.session_stream.restart_targets(...args),
-        "new_session": (...args)=>this.new_session(...args),
-        "get_media_info": (...args)=>this.get_media_info(...args),
-        "save_file": (...args)=>this.save_file(...args),
-        "rearrange_sessions": (...args)=>this.rearrange_sessions(...args),
-        "destroy_session": (...args)=>this.destroy_session(...args),
-        "subscribe_session": (...args)=>this.subscribe_session(...args),
-        "subscribe_sysinfo": (...args)=>this.subscribe_sysinfo(...args),
-        "add_volume": (...args)=>globals.app.ipc.request("file-manager", "add_volume", args),
-        "edit_volume": (...args)=>globals.app.ipc.request("file-manager", "edit_volume", args),
-        "delete_volume": (...args)=>globals.app.ipc.request("file-manager", "delete_volume", args),
+        "restart_targets": (...args) => {
+            return this.session_stream.restart_targets(...args)
+        },
+        "new_session": (...args) => {
+            return this.new_session(...args)
+        },
+        "get_media_info": (...args) => {
+            return this.get_media_info(...args)
+        },
+        "save_file": (...args) => {
+            return this.save_file(...args)
+        },
+        "rearrange_sessions": (...args) => {
+            return this.rearrange_sessions(...args)
+        },
+        "destroy_session": (...args) => {
+            return this.destroy_session(...args)
+        },
+        "subscribe_session": (...args) => {
+            return this.subscribe_session(...args)
+        },
+        "subscribe_sysinfo": (...args) => {
+            return this.subscribe_sysinfo(...args)
+        },
+        "add_volume": (...args) => {
+            return globals.app.ipc.request("file-manager", "add_volume", args)
+        },
+        "edit_volume": (...args) => {
+            return globals.app.ipc.request("file-manager", "edit_volume", args)
+        },
+        "delete_volume": (...args) => {
+            return globals.app.ipc.request("file-manager", "delete_volume", args)
+        },
     }
 
     _init() {
@@ -99,7 +207,7 @@ export class MainClient extends Client {
     async destroy_session(session_id, move_autosave_dir=true) {
         var s = globals.app.sessions[session_id];
         if (!s) return;
-        if (move_autosave_dir && s.type === SessionTypes.INTERNAL) {
+        if (move_autosave_dir && s.type === constants.SessionTypes.INTERNAL) {
             await s.move_autosave_dir();
         }
         await s.destroy();
@@ -130,7 +238,7 @@ export class MainClient extends Client {
 
     async save_file(file, data) {
         var fullpath = this.session.evaluate_and_sanitize_filename(file);
-        if (fullpath) await globals.app.safe_write_file(fullpath, data, "utf-8");
+        if (fullpath) await utils.safe_write_file(fullpath, data, "utf-8");
     }
 
     get_media_info(filename, opts) {

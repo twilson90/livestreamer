@@ -1,6 +1,11 @@
 export const DIRECTORY = "directory";
 
-export const DEFAULT_FPS = 25;
+export const DEFAULT_FPS = 30;
+
+export const SessionTypes = {
+    EXTERNAL: "ExternalSession",
+    INTERNAL: "InternalSession",
+}
 
 export const State = new class {
     STARTED = "started";

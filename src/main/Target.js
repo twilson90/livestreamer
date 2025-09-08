@@ -1,4 +1,4 @@
-import fs from "fs-extra";
+import fs from "node:fs";
 import path from "node:path";
 import {globals} from "./exports.js";
 import {utils, DataNodeID, DataNodeID$, AccessControl} from "../core/exports.js";
@@ -47,7 +47,6 @@ export class Target extends DataNodeID {
     get limit() { return this.$.limit; } // number of streams that can be done concurrently
     get locked() { return this.$.locked; }
     /** @param {StreamTarget} st */
-    config(data, st) { return (this.#data.config || utils.noop)(data, st); }
 
     constructor(data) {
         data = {
@@ -82,7 +81,7 @@ export class Target extends DataNodeID {
     async save() {
         if (this.locked) return;
         var data = {...this.$};
-        await globals.app.safe_write_file(path.resolve(globals.app.targets_dir, this.id), JSON.stringify(data, null, 4));
+        await utils.safe_write_file(path.resolve(globals.app.targets_dir, this.id), JSON.stringify(data, null, 4));
     }
 
     async _destroy() {
@@ -92,7 +91,7 @@ export class Target extends DataNodeID {
         delete globals.app.targets[this.id];
         delete globals.app.$.targets[this.id];
         if (!this.locked) {
-            await fs.unlink(path.resolve(globals.app.targets_dir, this.id)).catch(utils.noop);
+            await fs.promises.unlink(path.resolve(globals.app.targets_dir, this.id)).catch(utils.noop);
         }
         return super._destroy();
     }

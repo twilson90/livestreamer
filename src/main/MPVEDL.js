@@ -1,6 +1,8 @@
 import * as utils from "../core/utils.js";
 import path from "node:path";
 
+/** @typedef {{start:number, end:number, duration:number, offset:number, loops:number}} ClipOpts */
+
 const delim_map = Object.fromEntries(["\n", ",", "%", "=", ";"].map(c=>[c, Buffer.from(c, 'utf8')[0]]));
 
 export const MAX_EDL_REPEATS = 1024;
@@ -77,8 +79,8 @@ export class MPVEDL {
         return str;
     }
 
-    /** @param {string} filename @param {{start:number, end:number, duration:number, offset:number, loops:number}} opts */
-    static repeat(filename, opts) {
+    /** @param {string} filename @param {ClipOpts} opts */
+    static clip(filename, opts) {
         /** @type {MPVEDLEntry[]} */
         let entries = [];
         let clip_start = Math.max(0, opts.start || 0);
@@ -96,7 +98,7 @@ export class MPVEDL {
             } else {
                 let d_left = duration;
                 let i = 0;
-                while (d_left > 0 && i < MAX_EDL_REPEATS) {
+                while (d_left >= 0.001 && i < MAX_EDL_REPEATS) {
                     let e = Math.min(t + clip_length, t + d_left, clip_end)
                     let d = e - t;
                     entries.push(new MPVEDLEntry(filename, {
@@ -106,6 +108,9 @@ export class MPVEDL {
                     d_left -= d;
                     i++;
                     if (e == clip_end) t = clip_start;
+                }
+                if (i >= MAX_EDL_REPEATS) {
+                    console.warn(`EDL entry ${filename} has too many repeats (${i})`);
                 }
             }
         }
@@ -190,16 +195,12 @@ export class MPVEDL {
 
     /** @param {any[]} entries */
     append(...entries) {
-        for (let e of entries) {
-            this.#entries.push(e instanceof MPVEDLEntry ? e : new MPVEDLEntry(e));
-        }
+        this.#entries.push(...entries.map(e=>e instanceof MPVEDLEntry ? e : new MPVEDLEntry(e)));
     }
 
     /** @param {any[]} entries */
     prepend(...entries) {
-        for (let e of entries) {
-            this.#entries.unshift(e instanceof MPVEDLEntry ? e : new MPVEDLEntry(e));
-        }
+        this.#entries.unshift(...entries.map(e=>e instanceof MPVEDLEntry ? e : new MPVEDLEntry(e)));
     }
 
     toString(full=false) {

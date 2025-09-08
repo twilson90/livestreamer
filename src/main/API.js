@@ -1,5 +1,5 @@
 import {program, Command} from "commander";
-import fs from "fs-extra";
+import fs from "node:fs";
 import {globals} from "./exports.js";
 import {utils} from "../core/exports.js";
 
@@ -70,8 +70,8 @@ export class API {
                     let new_linkpath = old_linkpath.replace(find, replace);
                     if (old_linkpath != new_linkpath) {
                         console.log(`${abspath} [${old_linkpath} => ${new_linkpath}]`);
-                        await fs.unlink(abspath);
-                        await fs.symlink(new_linkpath, abspath);
+                        await fs.promises.unlink(abspath);
+                        await fs.promises.symlink(new_linkpath, abspath);
                     }
                 }
             })
@@ -83,7 +83,7 @@ export class API {
                 for (let f of files) {
                     let old_linkpath = await f.readlink();
                     console.log(`Deleting ${abspath} [${old_linkpath}]`);
-                    await fs.unlink(f.fullpath());
+                    await fs.promises.unlink(f.fullpath());
                 }
             })
         

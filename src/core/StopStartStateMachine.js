@@ -1,7 +1,6 @@
 import {DataNodeID, DataNodeID$, constants, globals, utils} from "./exports.js";
 
 export class StopStartStateMachine$ extends DataNodeID$ {
-    restart = 0;
     state = constants.State.STOPPED;
     start_ts = 0;
     stop_ts = 0;
@@ -12,7 +11,6 @@ export class StopStartStateMachine$ extends DataNodeID$ {
 /** @template {StopStartStateMachine$} T @template Events @extends {DataNodeID<T, Events>} */
 export class StopStartStateMachine extends DataNodeID {
     
-    #restart_interval;
     #stop_promise;
     #start_promise;
     #timer = new utils.StopWatchHR();
@@ -28,21 +26,7 @@ export class StopStartStateMachine extends DataNodeID {
         super(id, $);
     }
 
-    async _handle_end(source) {
-        if (this.state === constants.State.STOPPING || this.state === constants.State.STOPPED) return;
-        this.logger.warn(`${source} ended unexpectedly, attempting restart soon...`);
-        await this.stop("restart");
-        this.$.restart = globals.app.conf["main.stream_restart_delay"];
-        this.#restart_interval = setInterval(()=>{
-            this.$.restart--;
-            if (this.$.restart <= 0) {
-                this.start();
-            }
-        }, 1000);
-    }
-
     start(...args) {
-        clearInterval(this.#restart_interval);
         if (this.state !== constants.State.STARTING && this.state !== constants.State.STARTED) {
             this.$.state = constants.State.STARTING;
             this.$.start_ts = Date.now();
@@ -78,8 +62,6 @@ export class StopStartStateMachine extends DataNodeID {
     }
 
     async stop(reason) {
-        clearInterval(this.#restart_interval);
-        this.$.restart = 0;
         if (this.state !== constants.State.STOPPING && this.state !== constants.State.STOPPED) {
             this.$.state = constants.State.STOPPING;
             this.#stop_promise = (async ()=>{
@@ -97,9 +79,9 @@ export class StopStartStateMachine extends DataNodeID {
         return this.#stop_promise;
     }
     
-    async restart() {
+    async restart(...args) {
         await this.stop("restart");
-        await this.start();
+        await this.start(...args);
     }
 
     _start(){ return true; }

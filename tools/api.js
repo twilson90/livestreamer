@@ -1,7 +1,7 @@
 import * as vite from 'vite';
 import {defineConfig} from "vite";
 import path from "node:path";
-import fs from "fs-extra";
+import fs from "node:fs";
 import { glob } from 'glob';
 import { builtinModules } from 'module';
 import { viteStaticCopy } from "vite-plugin-static-copy";
@@ -22,6 +22,20 @@ export const format = "esm";
 export const platforms = ["linux", "win32"];
 export const js_exts = [`js`,`ts`,`cjs`,`mjs`,`cts`,`mts`];
 export const js_exts_str = js_exts.join(",");
+
+const default_opts = {
+    input: [],
+    external: [],
+    entry: path.resolve(src, "index.js"),
+    root: src,
+    mode: "development",
+    plugins: [],
+    /** @type {vite.Plugin[]} */
+    vite_plugins: [],
+    platform: "windows",
+    copy: [],
+    define: {},
+};
 
 export function get_index_file(src, dir) {
     var p = glob.sync(`${dir.replace(/\\/g, "/")}/index*.{${js_exts_str}}`, {absolute:true, cwd:src}).sort()[0];
@@ -69,7 +83,7 @@ export class API {
         if (!Array.isArray(srcs)) srcs = [srcs];
         for (var src of srcs) {
             var name = path.basename(src);
-            await fs.copy(src, path.join(dir, name));
+            await fs.promises.copy(src, path.join(dir, name));
         }
     }
 
@@ -89,23 +103,11 @@ export class API {
         // process.env.DEBUG = 1;
     }
 
-    /** @returns {Promise<vite.InlineConfig[]>} */
+    /** @param {typeof default_opts} opts @returns {Promise<vite.InlineConfig[]>} */
     async generate_configs(opts) {
-        opts = {
-            input: [],
-            external: [],
-            entry: path.resolve(src, "index.js"),
-            root: src,
-            mode: "development",
-            plugins: [],
-            /** @type {vite.Plugin[]} */
-            vite_plugins: [],
-            production: false,
-            platform: "windows",
-            copy: [],
-            define: {},
-            ...opts,
-        };
+        opts = { ...default_opts, ...opts };
+        
+        let is_production = opts.mode === "production";
         let pkg = { ...finder(src).next().value };
         
         const dist = this.dist;
@@ -136,9 +138,7 @@ export class API {
         delete pkg.exports;
         delete pkg.bin;
         
-        var minify = (opts.production) ? true : false;
-        // var sourcemap = (opts.production) ? false : 'inline';
-        var sourcemap = 'inline';
+        var minify = (is_production) ? true : false;
 
         // relative to src
         let input = {
@@ -172,11 +172,11 @@ export class API {
                 viteStaticCopy({
                     targets: [
                         {
-                            src: [normalizePath(root, "resources"), ...platforms.filter(p=>p!=platform).map(p=>`!**/${p}`)],
+                            src: [normalizePath(src, "resources"), ...platforms.filter(p=>p!=platform).map(p=>`!**/${p}`)],
                             dest: path.resolve(dist)
                         },
                         {
-                            src: [normalizePath(root, "pm2.config.cjs")],
+                            src: [normalizePath(src, "pm2.config.cjs")],
                             dest: path.resolve(dist)
                         },
                         ...opts.copy,
@@ -191,8 +191,8 @@ export class API {
                         delete new_pkg.__path;
                         new_pkg.dependencies = Object.fromEntries(Object.entries(pkg.dependencies).filter(([k,v])=>external.includes(k)));
                         delete new_pkg.scripts;
-                        await fs.writeFile(dist_package_path, JSON.stringify(new_pkg, null, "  "), "utf8");
-                        // await fs.rm(glob.sync("dist/bundle.*"));
+                        await fs.promises.writeFile(dist_package_path, JSON.stringify(new_pkg, null, "  "), "utf8");
+                        // await fs.promises.rm(glob.sync("dist/bundle.*"));
                     },
                 },
                 ...opts.vite_plugins
@@ -222,7 +222,7 @@ export class API {
                 // modulePreload: false,
                 target,
                 ssr: true,
-                sourcemap,
+                sourcemap: "inline",
                 outDir: dist,
                 lib: {
                     name: "livestreamer",

@@ -1,5 +1,5 @@
 import events from "node:events";
-import fs from "fs-extra";
+import fs from "node:fs";
 import path from "node:path";
 import {globals, utils} from "./exports.js";
 
@@ -27,7 +27,7 @@ export class Log {
 			} else {
 				this.level = log.level;
 				this.message = log.message;
-				this.prefix = typeof log.prefix === "string" ? [log.prefix] : [...log.prefix];
+				this.prefix = Array.isArray(log.prefix) ? [...log.prefix] : [`${log.prefix}`];
 				this.ts = log.ts;
 			}
 		} else {
@@ -52,15 +52,10 @@ export class Log {
 		this.level = this.level || Logger.INFO;
 	}
 
-	static format_prefix(prefix) {
-		if (!Array.isArray(prefix)) prefix = [prefix];
-		return prefix.map(p=>`[${p}]`).join("");
-	}
-
 	toString() {
 		var now = new Date();
 		let t = `${now.toLocaleTimeString(undefined, {hour12:false})}.${now.getMilliseconds().toString().padStart(3,"0")}`;
-		return `${Log.format_prefix([t, this.level[0], ...this.prefix])} ${this.message}`;
+		return `${format_prefix([t, this.level[0], ...this.prefix])} ${this.message}`;
 	}
 
 	toJSON() {
@@ -99,6 +94,18 @@ export class Logger extends events.EventEmitter {
 		var log = new Log(...args);
 		if (this.#settings.prefix) log.prefix = [this.#settings.prefix, ...log.prefix];
 		return log;
+	}
+
+	/** @param {Logger} logger @param {(log:Log)=>Log} cb */
+	add(logger, cb) {
+		var on_log = (log)=>{
+			if (cb) log = cb(log);
+			this.log(log);
+		};
+		logger.on("log", on_log);
+		logger.once("destroy", ()=>{
+			logger.off("log", on_log);
+		})
 	}
 
 	warn() { return this.log(Logger.WARN, ...arguments); }
@@ -245,6 +252,11 @@ export const levels_map = {
 	[Logger.INFO]: 2,
 	[Logger.WARN]: 3,
 	[Logger.ERROR]: 4,
+}
+
+function format_prefix(prefix) {
+	if (!Array.isArray(prefix)) prefix = [prefix];
+	return prefix.map(p=>`[${p}]`).join("");
 }
 
 export default Logger;

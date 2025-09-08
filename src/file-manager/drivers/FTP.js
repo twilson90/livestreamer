@@ -1,6 +1,6 @@
 import upath from "upath";
 import mime from "mime-types";
-import fs from "fs-extra";
+import fs from "node:fs";
 import stream from "node:stream";
 import ftp from "basic-ftp"
 import {Driver} from "../exports.js";
@@ -76,10 +76,10 @@ export class FTP extends Driver {
     async __copy(src, dir, name) {
         var dst = upath.join(dir, name);
         var tmp = upath.join(this.elfinder.tmpdir, uuid.v4());
-        await fs.mkdir(tmp)
+        await fs.promises.mkdir(tmp)
         await this.client.downloadToDir(src, tmp);
         await this.client.uploadFromDir(tmp, dst);
-        await fs.rm(tmp, {recursive:true});
+        await fs.promises.rm(tmp, {recursive:true});
         return dst;
     }
     async __chmod(src, mode) {

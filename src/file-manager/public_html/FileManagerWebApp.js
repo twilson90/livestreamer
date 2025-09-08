@@ -46,7 +46,7 @@ export class FileManagerWebApp {
 		elFinder.prototype.commands.downloadtree = function() {
 			this.exec = function(hashes) {
 				var dfds = hashes.map(hash=>{
-					return this.request({
+					return this.fm.request({
 						data : {cmd : 'listtree', targets : [hash]},
 						notify : {type : 'listtree', cnt : hashes.length, hideCnt : hashes.length==1, msg : `Traversing file tree...`},
 						cancel : true,
@@ -61,17 +61,8 @@ export class FileManagerWebApp {
 						}
 						if (i < datas.length-1) lines.push("-".repeat(64));
 					}
-					/* for (var data of datas) {
-						const process = (node, parent=undefined, i=0, depth=-1)=>{
-							lines.push("│  ".repeat(Math.max(depth,0)) + (parent ? (((i == parent.children.length-1) ? "└" : "├") + "─ ") : "") + node.name + (node.isdir?"/":""));
-							if (node.children) node.children.forEach((n,i)=>process(n, node, i, depth+1));
-						};
-						data.trees.forEach(tree=>process(tree));
-						lines.push("-".repeat(64));
-					} */
-					
-					var text = lines.join(`\r\n`)
-					var filename = `${hashes.map(h=>fm.file(h).name).join(", ")}.txt`;
+					var text = lines.join(`\r\n`);
+					var filename = `${hashes.map(h=>this.fm.file(h).name).join(", ")}.txt`;
 					var file = new File([text], filename, {type:"text/plain;charset=utf-8"});
 					saveAs(file);
 				});

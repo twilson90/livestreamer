@@ -1,7 +1,7 @@
 import express from "express";
 import path from "node:path";
 import compression from "compression";
-import {ElFinderEx, globals} from "./exports.js";
+import {ElFinder, globals} from "./exports.js";
 import {CoreFork, WebServer} from "../core/exports.js";
 
 const dirname = import.meta.dirname;
@@ -24,7 +24,7 @@ export class FileManagerApp extends CoreFork {
         
         exp.use(compression({threshold:0}));
         
-        this.elFinder = new ElFinderEx(exp, {
+        this.elFinder = new ElFinder(exp, {
             volumes: {
                 "files": {
                     "name": "Files",

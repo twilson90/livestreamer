@@ -1,5 +1,3 @@
-import fs from "fs-extra";
-import path from "node:path";
 import {utils, DataNode, DataNode$, globals} from "./exports.js";
 
 export class DataNodeID$ extends DataNode$ {

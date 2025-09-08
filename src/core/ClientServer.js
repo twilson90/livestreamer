@@ -1,6 +1,6 @@
-import WebSocket from "ws";
+import {WebSocketServer} from "ws";
 import path from "node:path";
-import fs from "fs-extra";
+import fs from "node:fs";
 import events from "events";;
 import {globals, Logger, utils} from "./exports.js";
 /** @import { Client } from './exports.js' */
@@ -21,16 +21,17 @@ import {globals, Logger, utils} from "./exports.js";
 export class ClientServer extends events.EventEmitter {
     /** @type {Record<PropertyKey,T>} */
     clients = {};
+    #destroyed = false;
 
-    /** @param {WebSocket.Server} wss  @param {new () => T} ClientClass */
+    get destroyed() { return this.#destroyed; }
+
+    /** @param {WebSocketServer} wss  @param {new () => T} ClientClass */
     constructor(name, wss, ClientClass) {
         super();
         this.name = name;
         this.clients_dir = path.join(globals.app.clients_dir, name);
         this.logger = new Logger(`client-server`);
-        this.logger.on("log", (log)=>{
-            globals.app.logger.log(log)
-        });
+        globals.app.logger.add(this.logger);
         this.wss = wss;
         this.ClientClass = ClientClass;
         
@@ -78,11 +79,17 @@ export class ClientServer extends events.EventEmitter {
 
     async get_client_info(ip_hash) {
         var filename = path.join(this.clients_dir, `${ip_hash}.json`);
-        var lines = (await fs.exists(filename)) ? (await utils.read_last_lines(filename, 512, "utf8")) : [];
+        var lines = (await utils.file_exists(filename)) ? (await utils.read_last_lines(filename, 512, "utf8")) : [];
         return Object.fromEntries(lines.map((line)=>{
             var data = JSON.parse(line.trim());
             return [data.id, data];
         }));
+    }
+
+    destroy() {
+        if (this.#destroyed) return;
+        this.#destroyed = true;
+        this.logger.destroy();
     }
 }
 

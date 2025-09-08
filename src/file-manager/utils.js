@@ -1,7 +1,7 @@
 import path from "node:path";
 import stream from "node:stream";
 import crypto from "node:crypto";
-import fs from "fs-extra";
+import fs from "node:fs";
 import MultiStream from "multistream";
 import { Writable } from "node:stream";
 

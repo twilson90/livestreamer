@@ -1,9 +1,7 @@
-import fs from "fs-extra";
+import fs from "node:fs";
 import path from "node:path";
 import child_process from "node:child_process";
-import url from "node:url";
-import tree_kill from "tree-kill-promise";
-import {globals} from "./exports.js";
+import {codec_to_ext, globals} from "./exports.js";
 import {utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger, MPVWrapper, constants} from "../core/exports.js";
 /** @import { Target, SessionStream } from './exports.js' */
 
@@ -18,8 +16,6 @@ export class StreamTarget$ extends StopStartStateMachine$ {
     rtmp_key;
     /** @type {Record<PropertyKey,any>} */
     opts = {};
-    speed = 0;
-    bitrate = 0;
     url = "";
     key = utils.uuidb64();
 }
@@ -30,60 +26,95 @@ export class StreamTarget extends StopStartStateMachine {
     #ffmpeg;
     /** @type {MPVWrapper} */
     #mpv;
+    /** @type {child_process.ChildProcess} */
+    #ffplay;
+    #restart_timeout;
+
     /** @param {SessionStream} stream @param {Target} target */
     constructor(stream, target) {
         super(globals.app.generate_uid("stream-target"), new StreamTarget$());
 
-        this.logger = new Logger(`stream-target-${target.id}`);
-        this.logger.on("log", (log)=>{
-            this.stream.logger.log(log)
-        });
-
         this.stream = stream;
         this.target = target;
 
+        this.logger = new Logger(`stream-target-${target.id}`);
+        this.stream.logger.add(this.logger);
+
         stream.stream_targets[target.id] = this;
         stream.$.stream_targets[target.id] = this.$;
-        
-        var data = utils.json_copy({
-            stream_id: stream.id,
-            target_id: target.id,
-            rtmp_host: target.rtmp_host,
-            rtmp_key: target.rtmp_key,
-            opts: stream.get_target_opts(target.id),
-        });
 
-        Object.assign(data, target.config(data, this));
+        this.ready = this.#init();
+    }
 
-        if (data.rtmp_host) {
-            data.output_url = data.rtmp_key ? data.rtmp_host.replace(/\/+$/, "") + "/" + data.rtmp_key.replace(/^\/+/, "") : data.rtmp_host;
-        }
-        if (data.output_url) {
-            let _url = new URL(data.output_url);
-            if (_url.protocol.match(/^(rtmp|http)s?:$/)) {
-                if (!data.output_format) {
-                    data.output_format = "flv";
-                }
-                if (stream.$.internal_path) {
-                    _url.searchParams.append("origin", stream.$.internal_path);
-                }
-                if (stream.$.title) {
-                    _url.searchParams.append("title", stream.$.title);
-                }
-                _url.searchParams.append("opts", JSON.stringify(data.opts));
-            }
-            data.output_url = _url.toString();
-        }
-        Object.assign(this.$, data);
+    async #init() {
+        let stream_id = this.stream.id;
+        let target_id = this.target.id;
+        let rtmp_host = this.target.rtmp_host;
+        let rtmp_key = this.target.rtmp_key;
+        let opts = this.stream.get_target_opts(this.target.id);
+        let origin = this.stream.$.publish_stream_path;
+        let title = this.stream.$.title;
+        let output_format = "";
+        let output = "";
+        let input = globals.app.get_socket_path(`stream-${this.stream.id}`);
+        if (!utils.is_windows()) input = `unix://${input}`;
+        let input_format = "mpegts";
 
-        let key = this.target.name
+        let key_base = this.target.name
             .toLowerCase() // Convert to lowercase
             .replace(/\s+/g, '-') // Replace spaces with dashes
             .replace(/[^\w\-\.]+/g, ''); // Remove non-word characters except dashes
         
-        if (!this.stream.keys[key]) this.stream.keys[key] = 0;
-        this.stream.keys[key]++;
-        this.$.key = `${key}-${this.stream.keys[key]+1}`;
+        if (!this.stream.keys[key_base]) this.stream.keys[key_base] = 0;
+        this.stream.keys[key_base]++;
+        let key = `${key_base}-${this.stream.keys[key_base]+1}`;
+        
+        if (this.target.id === "local") {
+            this.live_id = await globals.app.ipc.request("media-server", "create_live", this.$);
+        } else if (this.target.id === "file") {
+            let format = opts.format;
+            let filename = this.stream.session.evaluate_and_sanitize_filename(path.resolve(globals.app.files_dir, opts.filename));
+            let ext = path.extname(filename);
+            if (!ext) {
+                ext = codec_to_ext(format);
+                filename += ext;
+            }
+            // filename = filename.split(path.sep).join("/");
+            output_format =  format;
+            output =  filename;
+        } else if (this.target.id === "gui") {
+            input = this.stream.$.rtmp_url;
+            input_format = "flv";
+        }
+
+        if (rtmp_host) {
+            output = rtmp_key ? rtmp_host.replace(/\/+$/, "") + "/" + rtmp_key.replace(/^\/+/, "") : rtmp_host;
+        }
+        if (utils.is_uri(output)) {
+            let _url = new URL(output);
+            if (_url.protocol.match(/^(rtmp|http)s?:$/)) {
+                if (!output_format) output_format = "flv";
+            }
+            output = _url.toString();
+        }
+
+        Object.assign(this.$, {
+            stream_id,
+            target_id,
+            rtmp_host,
+            rtmp_key,
+            opts,
+            origin,
+            title,
+            output,
+            output_format,
+            input,
+            input_format,
+            width: this.stream.width,
+            height: this.stream.height,
+            fps: this.stream.$.fps,
+            key,
+        });
     }
 
     update() {
@@ -91,53 +122,76 @@ export class StreamTarget extends StopStartStateMachine {
     }
 
     async _start() {
-        let input = this.stream.$.output_url;
-        let {opts, output_url, output_format} = this.$;
+        clearTimeout(this.#restart_timeout);
+        await this.ready;
+        
+        this.ffmpeg_speed = 0;
+        this.ffmpeg_bitrate = 0;
 
-        var handle_end = (type)=>{
-            return ()=>{
-                if (this.stream.state === constants.State.STOPPED || this.stream.state === constants.State.STOPPING) {
-                    this.logger.info(`${type} ended after stream was stopped.`);
-                    this.destroy();
-                } else {
-                    this._handle_end(type);
-                }
-            }
-        }
-        var handle_error = (type)=>{
-            return (e)=>{
-                this.logger.error(new Error(`Stream Target ${type} error: ${e.message}`));
-            }
-        }
+        let output = this.$.output;
+        let output_format = this.$.output_format;
+        let input = this.$.input;
+        let input_format = this.$.input_format;
+        let ended = false;
 
-        if (this.target.id === "gui") {
-            var mpv_args = [
-                input,
-                "--no-config",
-                "--video-latency-hacks=yes",
-                "--audio-buffer=0",
-                "--demuxer-lavf-o-add=fflags=+nobuffer",
-                "--vd-lavc-threads=1",
-                "--stream-buffer-size=4k",
-                "--interpolation=no",
-                "--no-correct-pts",
-                `--osc=${opts.osc?"yes":"no"}`
-            ];
-            this.#mpv = new MPVWrapper({ ipc: false });
-            this.#mpv.start(mpv_args)
-                .catch(handle_error("mpv"))
-                .then(handle_end("mpv"));
+        var handle_end = async (e)=>{
+            if (ended) return;
+            ended = true;
+            if (this.stream.state === constants.State.STOPPED || this.stream.state === constants.State.STOPPING) {
+                this.logger.info(`${this.toString()} ended after stream was stopped.`);
+                this.destroy();
+            } else {
+                if (this.state === constants.State.STOPPING || this.state === constants.State.STOPPED) return;
+                var delay = globals.app.conf["main.stream_restart_delay"]
+                await this.stop("restart");
+                this.logger.warn(`${this} ended unexpectedly, attempting restart in ${delay}s...`);
+                this.#restart_timeout = setTimeout(()=>{
+                    this.start();
+                }, 1000 * delay);
+            }
+        };
+
+        var handle_error = (e)=>{
+            this.logger.error(new Error(`${this.toString()} error: ${e.message}`));
+            handle_end();
+        };
+
+        if (this.target.id === "local") {
+            globals.app.ipc.once(`media-server.live.stopped.${this.live_id}`, handle_end);
+            await globals.app.ipc.request("media-server", "start_live", [this.live_id, this.$]);
+        } else if (this.target.id === "gui") {
+            var title = this.stream.name || "";
+            this.#ffplay = child_process.spawn("ffplay", [
+                `-autoexit`,
+                "-fflags", "nobuffer",
+                "-flags", "low_delay",
+                "-framedrop",
+                "-window_title", title,
+                // "-avioflags", "direct",
+                input
+            ]);
+            this.#ffplay.on("error", handle_error);
+            this.#ffplay.on("close", handle_end);
+            
+            // var mpv_args = [
+            //     input,
+            //     "--no-config",
+            //     `--force-window=immediate`
+            //     `--title=${title}`
+            // ];
+            // this.#mpv = new MPVWrapper({ ipc: false });
+            // this.#mpv.start(mpv_args)
+            //     .catch(handle_error)
+            //     .then(handle_end);
         } else {
-            let is_file_output = utils.try_catch(()=>new URL(output_url).protocol === "file:");
-            let output = output_url;
-            if (is_file_output) {
-                output = url.fileURLToPath(output_url);
-                fs.mkdirSync(path.dirname(output), {recursive:true});
+            if (this.target.id === "file") {
+                await fs.promises.mkdir(path.dirname(output), {recursive:true});
             }
             var ffmpeg_args = [];
             if (this.stream.is_realtime) ffmpeg_args.push("-re");
             ffmpeg_args.push(
                 // `-noautoscale`,
+                ...(input_format ? ["-f", input_format] : []),
                 "-i", input,
                 "-c", "copy",
                 "-f", output_format,
@@ -147,26 +201,33 @@ export class StreamTarget extends StopStartStateMachine {
             this.#ffmpeg = new FFMPEGWrapper();
             this.#ffmpeg.on("error", (e)=>this.logger.log(e));
             this.#ffmpeg.on("info", (info)=>{
-                this.$.speed = info.speed;
-                this.$.bitrate = info.bitrate;
+                this.ffmpeg_speed = info.speed;
+                this.ffmpeg_bitrate = info.bitrate;
             });
-            /* this.#ffmpeg.logger.on("log",(log)=>{
-                // if (this.target.id === "gui") return;
-                // log = {...log, level:Logger.TRACE};
-                this.logger.log(log);
-            }); */
             this.#ffmpeg.start(ffmpeg_args)
-                .catch(handle_error("ffmpeg"))
-                .then(handle_end("ffmpeg"));
+                .catch(handle_error)
+                .then(handle_end);
         }
+        
         globals.app.ipc.emit("main.stream-target.started", this.$);
         
         return super._start();
     }
 
+    tick() {
+        if (this.#ffmpeg) {
+            this.stream.register_metric(`${this.$.key}:speed`, this.ffmpeg_speed);
+            this.stream.register_metric(`${this.$.key}:bitrate`, this.ffmpeg_bitrate);
+        }
+    }
+
     async _stop() {
+        clearTimeout(this.#restart_timeout);
+        if (this.#ffplay) this.#ffplay.kill();
+        if (this.live_id) await globals.app.ipc.request("media-server", "stop_live", this.live_id);
         if (this.#ffmpeg) await this.#ffmpeg.destroy();
         if (this.#mpv) await this.#mpv.destroy();
+
         globals.app.ipc.emit("main.stream-target.stopped", {id:this.id, reason:this.$.stop_reason});
         
         return super._stop();

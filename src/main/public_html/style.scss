@@ -568,13 +568,14 @@ table.files {
 
 .player-interface-wrapper {
 	width: 100%; // THIS IS THE ONLY THING THAT WORKS FOR FIXING ASPECT RATIO OUTGROWING CONTAINER BUG.
+	--aspect-ratio: 16/9;
 	
 	.live-feed-container {
 		display: flex;
 		justify-content: center;
 		position: relative;
 		.live-feed {
-			aspect-ratio: 16 / 9;
+			aspect-ratio: var(--aspect-ratio)
 		}
 	}
 
@@ -1085,7 +1086,7 @@ table.files {
 		margin-right:3px;
 	}
 }
-.stream-settings {
+.session-stream-settings {
 	width: 100% !important;
 	flex-direction: row !important;
 	// gap:var(--ui-gap);
@@ -1096,7 +1097,7 @@ table.files {
 	}
 }
 @media all and (max-width: 640px) {
-	.stream-settings {
+	.session-stream-settings {
 		flex-direction: column;
 		&>*:nth-child(2)>* {
 			flex: 1;
@@ -1304,6 +1305,9 @@ table.system_table {
 	gap: 5px;
 	width: 100%;
 	position: relative;
+	justify-content: center;
+	border: var(--ui-border);
+	padding: 5px;
 	&>*{
 		flex: 0 1 120px;
 		cursor: pointer;
@@ -2886,6 +2890,14 @@ table.keyboard-shortcuts {
 	border:var(--ui-border);
 }
 .stream-info {
+	&>* {
+		.key {
+			font-weight: bold;
+		}
+		.value {
+			user-select: all;
+		}
+	}
 	&>*:not(:last-child) {
 		&:after {
 			content: " | ";
@@ -2911,11 +2923,12 @@ table.keyboard-shortcuts {
 	border-radius: 5px;
 	text-align: center;
 	position: relative;
-	--progress: 0%;
 	overflow: hidden;
 	background:#b6b6b6;
 	color:black;
 	padding:2px;
+	--progress: 0%;
+	--bar-color: rgb(80, 224, 80);
 	span {
 		position: relative;
 		z-index:1;
@@ -2934,7 +2947,11 @@ table.keyboard-shortcuts {
 		height: 100%;
 		top:0;
 		left: 0;
-		background: rgb(80, 224, 80);
+		background: var(--bar-color);
+	}
+	&.incomplete {
+		background: red;
+		color: white;
 	}
 }
 
@@ -3074,5 +3091,31 @@ table.keyboard-shortcuts {
 ._ui_.range-property {
 	.property-input-wrapper {
 		outline: none !important;
+	}
+}
+
+.playlist-item-info {
+	gap: var(--ui-gap);
+	display: flex;
+	flex-direction: column;
+	.media-info-line {
+		display:flex;
+		&:not(:last-child) {
+			margin-bottom:2px;
+		}
+		&>* {
+			&:first-child {
+				flex: none;
+				margin-right: 5px;
+			}
+			&:last-child {
+				margin-left: auto;
+			}
+		}
+	}
+	._ui_.inner {
+		gap: 5px;
+		display: flex;
+		flex-direction: column;
 	}
 }

@@ -465,6 +465,7 @@ label._ui_ {
 ._ui_.modal-container {
 	--modal-width: 600px;
 	--modal-max-width: 100%;
+	--modal-min-width: 0;
 	--modal-padding: 15px;
 	--modal-close-size: 40px;
 	background: var(--ui-modal-background-color);
@@ -473,7 +474,6 @@ label._ui_ {
 	display: flex;
 	justify-content: center;
 	align-items: center; /* Centers when possible */
-	z-index: 9999;
 	overflow: auto; /* Scrolls entire overlay */
 	padding: 20px;
 	opacity: 0;
@@ -503,7 +503,7 @@ label._ui_ {
 		margin: auto; /* Helps with centering */
 		// white-space: normal;
 		flex: 0 1 var(--modal-width);
-		min-width: 0;
+		min-width: var(--modal-min-width);
 		max-width: var(--modal-max-width);
 		margin: auto;
 		// max-width: 90%;

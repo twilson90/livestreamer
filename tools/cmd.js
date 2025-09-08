@@ -8,7 +8,7 @@ program.name('Live Streamer Builder')
 program.command("build")
     .option(`--mode <string>`, "Mode", "development")
     .option(`--platform <string>`, "Platform", "windows")
-    .action(()=>build());
+    .action(build);
 // program.command("start").action(()=>api.start());
 // program.command("package").action(()=>api.package());
 // program.command("make").action(()=>api.make());
@@ -21,8 +21,7 @@ program.command("generate_google_drive_offline_refresh_token")
 
 program.parse();
 
-async function build() {
-    var opts = {...program.opts()};
+async function build(opts) {
     var configs = await api.generate_configs(opts);
     for (var c of configs) {
         await vite.build(c);

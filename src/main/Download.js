@@ -1,6 +1,6 @@
 import path from "node:path";
 import os from "node:os";
-import fs from "fs-extra";
+import fs from "node:fs";
 import readline from "node:readline";
 import child_process from "node:child_process";
 import {globals} from "./exports.js";
@@ -51,7 +51,7 @@ export class Download extends DataNodeID {
             var name = utils.sanitize_filename_advanced(path.basename(mi.filename || mi.name || this.filename));
             var dest_path = path.join(this.dest_dir, name);
             this.$.dest_path = dest_path;
-            var exists = await fs.stat(dest_path).catch(utils.noop);
+            var exists = await fs.promises.stat(dest_path).catch(utils.noop);
             var tmp_download_path = path.join(globals.app.tmp_dir, utils.md5(this.filename) + (path.extname(mi.filename) || ".mp4"));
             if (exists) {
                 this.emit("info", `'${this.filename}' already exists.`);
@@ -113,7 +113,7 @@ export class Download extends DataNodeID {
                     });
                     await downloader.file(tmp_download_path, true);
                 }
-                await fs.rename(tmp_download_path, dest_path);
+                await fs.promises.rename(tmp_download_path, dest_path);
                 this.emit("info", `Download finished [${this.filename}]`);
             }
             return dest_path;
@@ -131,7 +131,7 @@ export class Download extends DataNodeID {
         }
         if ((now - this.#last_progress_log) > progress_log_interval) {
             this.#last_progress_log = now;
-            this.emit("info", `Downloading '${this.filename}', ${this.bytes}/${this.total}, ${(this.bytes/this.total*100).toFixed(2)}%, ${utils.format_bytes(this.speed)}ps...`)
+            this.emit("info", `Downloading '${this.filename}', ${this.bytes}/${this.total}, ${(this.bytes/this.total*100).toFixed(2)}%, ${utils.format_bytes(this.speed, true)}ps...`);
         }
     }
 

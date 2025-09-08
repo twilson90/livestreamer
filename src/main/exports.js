@@ -7,7 +7,6 @@ export * from "./shared.js";
 export * from "./API.js";
 export * from "./Download.js";
 export * from "./Session.js";
-export * from "./SessionTypes.js";
 export * from "./ExternalSession.js";
 export * from "./InternalSession.js";
 export * from "./InternalSessionPlayer.js";

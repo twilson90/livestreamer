@@ -83,7 +83,7 @@ if (electron.app) {
                 super("electron");
             }
             async init() {
-                this.data = await this.ipc.request("core", "electron-data");
+                this.data = await this.ipc.request("core", "electron_data");
             }
         }
         var app = new ElectronApp();
@@ -97,7 +97,7 @@ if (electron.app) {
                     {
                         label:'Save', 
                         accelerator: 'CommandOrControl+S',
-                        click: ()=>app.ipc.request("main", "save-sessions")
+                        click: ()=>app.ipc.request("main", "save_sessions")
                     },
                     { type: 'separator' },
                     {

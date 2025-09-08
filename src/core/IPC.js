@@ -1,8 +1,8 @@
 import events from "node:events";
 import net from "node:net";
 import readline from "node:readline";
-import fs from "fs-extra";
-import {utils} from "./exports.js";
+import fs from "node:fs";
+import {utils, errors, Logger, globals} from "./exports.js";
 
 /** @typedef {{name:string,pid:number,sock:net.Socket}} ProcessDefinition */
 
@@ -16,12 +16,15 @@ class IPC {
     #emitter = new events.EventEmitter();
     /** @type {ProcessDefinition} */
     #process;
+    /** @type {Logger} */
+    #logger;
 
     /** @protected */
     get emitter() { return this.#emitter; }
     get processes() { return this.#processes; }
     get process() { return this.#process; }
     get name() { return this.#process.name; }
+    get logger() { return this.#logger; }
 
     constructor(name, socket_path) {
         this.socket_path = socket_path;
@@ -31,6 +34,7 @@ class IPC {
             sock: null
         };
         this.#processes[name] = this.#process;
+        this.#logger = new Logger(`ipc`);
     }
 
     get destroyed() { return this.#destroyed; }
@@ -57,13 +61,13 @@ class IPC {
     digest_sock_messages(sock, cb) {
         var lines = readline.createInterface(sock);
         sock.on("close", ()=>lines.close());
-        lines.on("error", this._handle_socket_error);
+        lines.on("error", utils.noop);
         lines.on("line", (line)=>{
             var json;
             try {
                 json = JSON.parse(line);
             } catch (e) {
-                console.error(e);
+                this.#logger.error(e);
                 return;
             }
             var {event, args} = json;
@@ -71,10 +75,8 @@ class IPC {
                 let {rid, origin, request, args:request_args} = args[0];
                 if (this.#responses[request]) {
                     Promise.resolve(this.#responses[request](...request_args))
-                        .then((result)=>[result, null])
-                        .catch((err)=>[null, err])
-                        .then(([result, error])=>{
-                            this.emit_to(origin, `internal:response:${rid}`, {result, error});
+                        .then((result)=>{
+                            this.emit_to(origin, `internal:response:${rid}`, result);
                         });
                 }
             } else {
@@ -84,8 +86,8 @@ class IPC {
     }
 
     _handle_socket_error(e) {
-        if (this.destroyed) return;
-        console.error(e);
+        if (this.destroyed || globals.app.destroyed) return;
+        this.#logger.error(e);
     }
 
     async _destroy() {}
@@ -151,9 +153,9 @@ export class IPCMaster extends IPC {
             });
         });
         this.#server.listen(socket_path);
-        console.log(`Listening on socket ${socket_path}`);
+        this.logger.info(`Listening on socket ${socket_path}`);
         if (!fs.existsSync(socket_path)) {
-            console.log(`Socket ${socket_path} does not exist?`);
+            this.logger.info(`Socket ${socket_path} does not exist?`);
         }
     }
     on(event, listener) {
@@ -172,9 +174,9 @@ export class IPCMaster extends IPC {
         }
     }
     async emit_to(name, event, ...args) {
-        if (name == "core") console.warn("Cannot emit to core");
+        if (name == "core") this.logger.warn("Cannot emit to core");
         let p = await this.wait_for_process(name);
-        return write(p.sock, event, ...args);
+        write(p.sock, event, ...args);
     }
     async wait_for_process(name) {
         var p = this.get_process(name);
@@ -190,9 +192,11 @@ export class IPCMaster extends IPC {
         });
     }
     async _destroy() {
-        await new Promise(r=>this.#server.close(r));
+        this.#server.close((err)=>{
+            if (err) this.logger.error(err);
+        });
         for (var id of Object.keys(this.#socks)) {
-            this.#socks[id].destroy();
+            this.#socks[id].end();
         }
     }
 }
@@ -244,12 +248,12 @@ export class IPCFork extends IPC {
     #handleDisconnect() {
         if (!max_reconnect_attempts || reconnect_attempts < max_reconnect_attempts) {
             reconnect_attempts++;
-            console.log(`Attempting to reconnect (${reconnect_attempts}/${max_reconnect_attempts||"-"})...`);
+            this.logger.info(`Attempting to reconnect (${reconnect_attempts}/${max_reconnect_attempts||"-"})...`);
             setTimeout(()=>{
                 this.#init().catch(utils.noop);
             }, RETRY_INTERVAL);
         } else {
-            console.log('Max reconnection attempts reached. Giving up.');
+            this.logger.info('Max reconnection attempts reached. Giving up.');
             process.exit(1);
         }
     }
@@ -258,7 +262,7 @@ export class IPCFork extends IPC {
     async emit(event, ...args) {
         // this.emitter.emit(event, ...args);
         await this.#ready;
-        return write(this.#master_sock, event, ...args);
+        write(this.#master_sock, event, ...args);
     }
 
     async on(event, listener) {
@@ -267,7 +271,7 @@ export class IPCFork extends IPC {
         if (!this.#listener_id_map[event]) this.#listener_id_map[event] = 0;
         var id = this.#listener_id_map[event]++;
         this.#listeners.push({listener, id});
-        return write(this.#master_sock, `internal:on`, {name:this.name, event, id});
+        write(this.#master_sock, `internal:on`, {name:this.name, event, id});
     }
 
     async off(event, listener) {
@@ -276,37 +280,43 @@ export class IPCFork extends IPC {
         var i = this.#listeners.findIndex((l)=>listener === l.listener);
         if (i >= 0) {
             var {id} = this.#listeners.splice(i, 1)[0];
-            return write(this.#master_sock, `internal:off`, {name:this.name, event, id});
+            write(this.#master_sock, `internal:off`, {name:this.name, event, id});
         }
+    }
+
+    async once(event, listener) {
+        var _this = this;
+        var wrapper = function(...args){
+            _this.off(event, wrapper);
+            listener.apply(this, args);
+        };
+        return this.on(event, wrapper);
     }
 
     async emit_to(name, event, ...args) {
         await this.#ready;
         if (name === "core") {
-            return write(this.#master_sock, event, ...args);
+            write(this.#master_sock, event, ...args);
         } else {
-            return write(this.#master_sock, `internal:emit_to`, {name, event, args});
+            write(this.#master_sock, `internal:emit_to`, {name, event, args});
         }
     }
 
-    async request(pid, request, args=undefined, timeout=10000) {
-        var listener;
+    async request(pid, request, args=undefined, timeout=0) {
         let rid = ++this.#rid;
-        return new Promise(async (resolve,reject)=>{
+        let resolve;
+        return new Promise(async (_resolve,reject)=>{
+            resolve = _resolve;
             await this.#ready;
             if (!args) args = [];
             else if (!Array.isArray(args)) args = [args];
             if (timeout) {
-                setTimeout(()=>reject(`internal:request ${rid} ${request} timed out.`), timeout);
+                setTimeout(()=>reject(new errors.TimeoutError(`internal:request ${rid} ${request} timed out.`)), timeout);
             }
-            listener = ({result, err})=>{
-                if (err) reject(err);
-                else resolve(result);
-            }
-            this.emitter.on(`internal:response:${rid}`, listener);
+            this.emitter.on(`internal:response:${rid}`, resolve);
             this.emit_to(pid, "internal:request", { rid, request, args, origin: this.name });
         }).finally(()=>{
-            this.emitter.off(`internal:response:${rid}`, listener);
+            this.emitter.off(`internal:response:${rid}`, resolve);
         });
     }
 
@@ -315,21 +325,10 @@ export class IPCFork extends IPC {
     }
 }
 
-/** @param {net.Socket} sock @param {any} packet */
+/** @param {net.Socket} sock @param {string} event @param {any} packet */
 function write(sock, event, ...args) {
-    return new Promise((resolve, reject)=>{
-        if (sock.closed || sock.destroyed || !sock.writable) {
-            return reject(new Error(`Socket not writable: ${event} ${JSON.stringify(args)}`));
-        }
+    if (sock.writable) {
         let payload = JSON.stringify({event, args})+"\n";
-        try {
-            if (!sock.destroyed && sock.writable) {
-                sock.write(payload, (err)=>{
-                    if (sock.closed || err) return;
-                    // if (err) console.error(err); // maybe just write error?
-                    resolve();
-                });
-            }
-        } catch (e) {}
-    });
+        try { sock.write(payload); } catch (e) {}
+    }
 }

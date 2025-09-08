@@ -1,5 +1,4 @@
-import os from "node:os";
-import fs from "fs-extra";
+import fs from "node:fs";
 import stream from "node:stream";
 import events from "node:events";
 import readline from "node:readline";
@@ -24,8 +23,54 @@ class FFMPEGInfo {
 }
 
 const default_opts = {
+    executable: "ffmpeg",
     log_filename: null,
     info_interval: 1000,
+}
+
+const features_cache = {};
+/** @return {Promise<{version:{config:{}},filters:{}}} */
+async function get_features(executable) {
+    features_cache[executable] = features_cache[executable] || (async()=>{
+        var features = {
+            version: {
+                config: {}
+            },
+            filters: {}
+        };
+        let get_version = async ()=>{
+            var str = (await utils.execa(executable, ["-version"])).stdout;
+            features.version.full = str;
+            features.version.ffmpeg = str.match(/^ffmpeg version (\S+)/)?.[1];
+            var config = str.match(/^configuration: (.+)$/)?.[1];
+            if (config) {
+                let flags = config.split(/\s+/);
+                for (let flag of flags) {
+                    let m = flag.match(/^--(enable|disable)-(\S+)$/);
+                    if (m) {
+                        features.config[m[2]] = (m[1] == "enable");
+                    } else {
+                        features.config[flag] = true;
+                    }
+                }
+            }
+            for (var m of str.matchAll(/^(\S+)\s+(\d+\.)\s+(\d+\.\d+)\s+\/\s+(\d+\.)\s+(\d+\.\d+)/gm)) {
+                features.version[m[1]] = `${m[2]}.${m[3]}/${m[4]}.${m[5]}`;
+            }
+        };
+        let get_filters = async (type)=>{
+            let str = (await utils.execa(executable, [`-filters`])).stdout;
+            for (var m of str.matchAll(/^\s...\s(\w+)\s+(\S+)->(\S+)\s+(.+)$/gm)) {
+                features.filters[m[1]] = true;
+            }
+        };
+        await Promise.all([
+            get_version(),
+            get_filters(),
+        ]);
+        return features;
+    })();
+    return features_cache[executable];
 }
 
 /** @extends {events.EventEmitter<{info:[FFMPEGInfo], line:string}>} */
@@ -41,6 +86,8 @@ export class FFMPEGWrapper extends events.EventEmitter {
     #last_info;
     /** @type {Promise<void>} */
     #done;
+    /** @type {typeof default_opts} */
+    #opts;
 
     get last_info() { return this.#last_info; }
     get process() { return this.#process; }
@@ -51,22 +98,26 @@ export class FFMPEGWrapper extends events.EventEmitter {
     get stderr() { return this.#process.stderr; }
     get stdin() { return this.#process.stdin; }
     get stdout() { return this.#process.stdout; }
+    get stdio() { return this.#process.stdio; }
     get done() { return this.#done; }
 
     /** @param {typeof default_opts} opts */
     constructor(opts) {
         super();
-        this.opts = {
+        this.#opts = {
             ...default_opts,
+            executable: globals.app.ffmpeg_path,
             ...opts
         }
         this.#logger = new Logger("ffmpeg");
     }
 
+    features() { return get_features(this.#opts.executable); }
+
     /** @param {string[]} args @param {child_process.SpawnOptionsWithoutStdio} spawn_opts */
     start(args, spawn_opts) {
         if (this.#done) throw new Error("FFMPEGWrapper already started");
-        var res = new Promise((resolve, reject)=>{
+        this.#done = new Promise((resolve, reject)=>{
                 
             this.#logger.info(`Starting ffmpeg...`);
             this.#logger.debug(`ffmpeg args:`, args);
@@ -176,26 +227,25 @@ export class FFMPEGWrapper extends events.EventEmitter {
                     if (this.#last_info) {
                         info.speed_alt = (info.time - this.#last_info.time) / (ts - last_ts);
                     }
-                    if (!this.opts.info_interval) this.emit("info", this.#last_info);
+                    if (!this.#opts.info_interval) this.emit("info", this.#last_info);
                     this.#last_info = info;
                     last_ts = ts;
                 }
             });
-            if (this.opts.info_interval) {
+            if (this.#opts.info_interval) {
                 this.#info_interval = setInterval(()=>{
                     var hash = JSON.stringify(this.#last_info);
                     if (hash == last_hash) return;
                     this.emit("info", this.#last_info);
                     last_hash = hash;
-                }, this.opts.info_interval);
+                }, this.#opts.info_interval);
             }
-            if (this.opts.log_filename) {
-                var fs_stream = fs.createWriteStream(this.opts.log_filename);
+            if (this.#opts.log_filename) {
+                var fs_stream = fs.createWriteStream(this.#opts.log_filename);
                 stream.promises.pipeline(this.stderr, fs_stream).catch(utils.pipe_error_handler(this.logger, "ffmpeg.stderr -> fs_stream"));
             }
         });
-        this.#done = res.catch(utils.noop);
-        return res;
+        return this.#done;
     }
 
     async destroy() {

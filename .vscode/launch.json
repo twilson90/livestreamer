@@ -59,8 +59,9 @@
             "request": "launch",
             "runtimeExecutable": "pm2",
             "runtimeArgs": [
-                "start", "pm2.config.cjs",
+                "start", "src/pm2.config.cjs",
             ],
+            "cwd": "${workspaceFolder}/src",
             "skipFiles": [
                 "<node_internals>/**"
             ],
@@ -131,7 +132,7 @@
             }
         },
         {
-            "name": "docker-media-server",
+            "name": "docker-main",
             "type": "node",
             "request": "attach",
             "localRoot": "${workspaceFolder}",
@@ -153,7 +154,7 @@
             },
         },
         {
-            "name": "docker-main",
+            "name": "docker-media-server",
             "type": "node",
             "request": "attach",
             "localRoot": "${workspaceFolder}",

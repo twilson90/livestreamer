@@ -432,7 +432,6 @@ export class Box extends UI {
     constructor(settings) {
         
         super(null, {
-            header: undefined,
             ...settings
         });
         if ("header" in this.settings) {

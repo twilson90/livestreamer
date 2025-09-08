@@ -1,11 +1,10 @@
-import fs from "fs-extra";
-import stream from "node:stream";
 import path from "node:path";
-import {globals, SessionTypes, StreamTarget, InternalSessionPlayer, InternalSessionPlayer$, OUTPUT_FORMAT} from "./exports.js";
-import {utils, constants, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, ClientUpdater} from "../core/exports.js";
+import {globals, StreamTarget, InternalSessionPlayer, InternalSessionPlayer$, OUTPUT_FORMAT} from "./exports.js";
+import {utils, constants, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, ClientUpdater, StreamServer} from "../core/exports.js";
 /** @import { Session, InternalSession, ExternalSession, Session$ } from './exports.js' */
 
 const MAX_METRICS_SAMPLES = 1000;
+const META_TRACK = false;
 
 export class SessionStream$ extends StopStartStateMachine$ {
     metrics = {};
@@ -13,7 +12,7 @@ export class SessionStream$ extends StopStartStateMachine$ {
     bitrate = 0;
     speed = 0;
     scheduled = false;
-    internal_path = "";
+    publish_stream_path = "";
     player = new InternalSessionPlayer$();
     // Stream settings
     targets = [];
@@ -47,9 +46,12 @@ export class SessionStream extends StopStartStateMachine {
     get is_started() { return this.$.state === constants.State.STARTED; }
     get fps() { return this.$.fps; }
     /** @type {InternalSession} */
-    get internal_session() { return this.session.type === SessionTypes.INTERNAL ? this.session : null; }
+    get internal_session() { return this.session.type === constants.SessionTypes.INTERNAL ? this.session : null; }
     /** @type {ExternalSession} */
-    get external_session() { return this.session.type === SessionTypes.EXTERNAL ? this.session : null; }
+    get external_session() { return this.session.type === constants.SessionTypes.EXTERNAL ? this.session : null; }
+    get width() { return +this.$.resolution.split("x")[0]; }
+    get height() { return +this.$.resolution.split("x")[1]; }
+    get aspect_ratio() { return utils.nearest_aspect_ratio(this.width/this.height).value; }
 
     get_target_opts(target_id) {
         return {
@@ -69,17 +71,16 @@ export class SessionStream extends StopStartStateMachine {
     keys = {};
     #ticks = 0;
 
-    /** @param {Session} session */
-    constructor(session) {
-        super(globals.app.generate_uid("stream"), new SessionStream$());
+    constructor() {
+        super(globals.app.generate_uid("session-stream"), new SessionStream$());
         globals.app.session_streams[this.id] = this;
         globals.app.$.session_streams[this.id] = this.$;
-        this.logger = new Logger("stream");
+        this.logger = new Logger("session-stream");
         this.logger.on("log", (log)=>{
-            (this.session||session).logger.log(log);
+            if (this.session) this.session.logger.log(log);
         });
         
-        this.client_updater = new ClientUpdater(this.observer, ["streams", this.id], {
+        this.client_updater = new ClientUpdater(this.observer, ["session_streams", this.id], {
             filter: (c)=>{
                 if (c.type === "delete" && c.path[0] === "metrics") return false;
                 return true;
@@ -91,6 +92,17 @@ export class SessionStream extends StopStartStateMachine {
             session.clients.forEach(c=>this.client_updater.subscribe(c));
             session.client_updater.on("subscribe", onsubscribe);
             session.client_updater.on("unsubscribe", onunsubscribe);
+
+            if (!this.$.publish_stream_path) {
+                // we only do this once, if we detach / attach to another session the urls remain the same.
+                let publish_stream_path = `/internal/${this.id}`;
+                this.$.publish_stream_path = publish_stream_path;
+                this.$.rtmp_url = `rtmp://media-server.${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}${publish_stream_path}`;
+                this.$.ws_url = `ws://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${publish_stream_path}.flv`;
+                this.$.wss_url = `wss://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${publish_stream_path}.flv`;
+                this.$.http_url = `http://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${publish_stream_path}.flv`;
+                this.$.https_url = `https://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${publish_stream_path}.flv`;
+            }
         });
         this.on("detach", (session)=>{
             session.clients.forEach(c=>this.client_updater.unsubscribe(c));
@@ -100,7 +112,7 @@ export class SessionStream extends StopStartStateMachine {
 
         this.on("started", ()=>{
             this.try_start_playlist();
-            globals.app.ipc.emit("main.stream.started", this.id);
+            globals.app.ipc.emit("main.stream.started", this.$);
             this.tick();
         });
     }
@@ -119,8 +131,14 @@ export class SessionStream extends StopStartStateMachine {
                 this.$.audio_bitrate = 128;
                 this.$.video_bitrate = 2000;
                 this.$.h264_preset = "veryfast";
-                this.$.resolution = "854x480";
-                // this.$.buffer_duration = 0;
+                let [w, h] = [this.width, this.height];
+                let ar = this.aspect_ratio;
+                if (h > 480) {
+                    h = 480;
+                    w = Math.round(h * ar / 2) * 2;
+                    this.$.resolution = `${w}x${h}`;
+                }
+                // this.$.buffer_duration = 0; // this actually makes the test stream take a while longer to appear because it needs a few seconds of video before it starts streaming
             }
             this.$.targets = [];
         }
@@ -130,22 +148,6 @@ export class SessionStream extends StopStartStateMachine {
         this.$.stream_targets = {};
         this.$.bitrate = 0;
         this.$.speed = 0;
-
-        let internal_path = `/internal/${this.session.id}`;
-        this.$.internal_path = internal_path;
-        this.$.output_url = `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${internal_path}`;
-        this.$.rtmp_output_url = `rtmp://${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}${internal_path}`;
-        this.$.ws_output_url = `ws://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${internal_path}.flv`;
-        this.$.wss_output_url = `wss://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${internal_path}.flv`;
-        this.$.http_output_url = `http://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${internal_path}.flv`;
-        this.$.https_output_url = `https://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${internal_path}.flv`;
-
-        let ffmpeg_output_url = this.$.output_url;
-        if (this.is_test) {
-            let url = new URL(ffmpeg_output_url);
-            url.searchParams.append("test", 1);
-            ffmpeg_output_url = url.toString();
-        }
     
         let ffmpeg_args = [
             // `-re`,
@@ -157,18 +159,23 @@ export class SessionStream extends StopStartStateMachine {
             // "-probesize", `${1024*1024}`,
             // `-ignore_unknown`,
             // `-copy_unknown`,
+            // "-avioflags", "direct",
             "-err_detect", "ignore_err",
             `-strict`, `experimental`,
             // "-avoid_negative_ts", "1",
-            "-fflags", "+autobsf+flush_packets", //  +discardcorrupt+nobuffer
+            `-flags`, "+global_header", // +low_delay
+            "-fflags", "+autobsf+flush_packets", //  +nobuffer
             "-flush_packets", "1",
+            // `-tag:v`, `7`, // needed for tee muxer
+            // `-tag:a`, `10`, // needed for tee muxer
             // ...(this.is_realtime ? ["-readrate", "1"] : []), // "-readrate_catchup", "1" // doesnt exist on my build of ffmpeg yet
         ];
-        if (this.session.type === SessionTypes.EXTERNAL) {
+        
+        if (this.session.type === constants.SessionTypes.EXTERNAL) {
             ffmpeg_args.push(
                 `-f`, `flv`,
                 `-stream_loop`, `-1`,
-                "-i", `rtmp://127.0.0.1:${globals.app.conf["media-server.rtmp_port"]}${this.external_session.nms_session.publishStreamPath}`,
+                "-i", `rtmp://media-server.${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}${this.external_session.nms_session.publishStreamPath}`,
             );
         } else {
             ffmpeg_args.push(
@@ -177,49 +184,79 @@ export class SessionStream extends StopStartStateMachine {
             );
             // if (FFMPEG_OUTPUT_FORMAT === "mpegts") ffmpeg_args.push("-merge_pmt_versions", "1");
         }
+        /* if (META_TRACK) {
+            ffmpeg_args.push(
+                "-f", "webvtt",
+                `-analyzeduration`, `0`,
+                `-probesize`, `32`,
+                "-i", "pipe:4",
+            );
+        } */
         ffmpeg_args.push(
-            // "-muxdelay", "0",
-            // "-muxpreload", "0",
+            "-muxdelay", "0",
+            "-muxpreload", "0",
             `-fps_mode`, "passthrough",
             // "-r", `${this.$.fps || constants.DEFAULT_FPS}`, // if we do this after +genpts + passthrough, it will mess up all the timestamps
-            "-c", "copy",
-            `-map_metadata`, `0`,
-            // "-map_metadata", "-1",
             // "-bsf:a", "aac_adtstoasc",
             // "-bsf:v", "h264_mp4toannexb",
-            "-flvflags", "no_duration_filesize", // +aac_seq_header_detect+no_sequence_end
-            "-f", "flv",
-            `-y`,
-            ffmpeg_output_url
         );
-        this.#ffmpeg = new FFMPEGWrapper({log_filename: path.join(globals.app.logs_dir, `ffmpeg-stream-${this.id}-${utils.date_to_string()}.log`)});
+        
+        this.server = new StreamServer(`stream-${this.id}`);
+        this.$.socket = this.server.socket;
+
+        var c_args = [
+            "-map", "0:v:0",
+            "-c:v", "copy",
+            "-map", "0:a:0",
+            "-c:a", "copy",
+            // `-map_metadata`, `0`,
+        ];
+
+        ffmpeg_args.push(
+            ...c_args,
+            "-f", "flv",
+            "-flvflags", "+no_duration_filesize", // +aac_seq_header_detect+no_sequence_end
+            `-y`,
+            this.$.rtmp_url
+        );
+
+        ffmpeg_args.push(
+            ...c_args,
+        );
+        /* if (META_TRACK) {
+            ffmpeg_args.push(
+                "-map", "1:s:0",
+                "-c:s", "copy",
+            );
+        } */
+        ffmpeg_args.push(
+            "-f", "mpegts",
+            "-mpegts_flags", "+resend_headers",
+            `-y`,
+            "pipe:1"
+        );
+
+        this.#ffmpeg = new FFMPEGWrapper({
+            log_filename: path.join(globals.app.logs_dir, `ffmpeg-stream-${this.id}-${utils.date_to_string()}.log`)
+        });
+
         this.#ffmpeg.start(ffmpeg_args).catch(e=>{
             this.logger.error(new Error(`SessionStream ffmpeg error: ${e.message}`));
             this.stop("error");
         });
-        this.#ffmpeg.on("line", (line)=>{
-            if (line.match(/non-monotonic/i)) {
-                this.logger.warn(line);
-            }
-        });
+        
+        this.#ffmpeg.stdout.pipe(this.server);
 
-        if (this.session.type === SessionTypes.INTERNAL) {
+        if (this.session.type === constants.SessionTypes.INTERNAL) {
             this.player = new InternalSessionPlayer(this);
-            
-            this.player.out.pipe(this.#ffmpeg.stdin)
-
+            this.player.out.pipe(this.#ffmpeg.stdin);
             this.#ffmpeg.stdin.on('error', (e)=>{
                 // we always get a complaint about premature closure, EOF, etc. Just ignore it.
                 if (this.player.destroyed) return;
                 this.logger.error('FFmpeg stdin error:', e)
             });
             
-            // stream.promises.pipeline(this.player.out, this.#ffmpeg.stdin)
-            //     .catch(utils.pipe_error_handler(this.logger, "player.out -> ffmpeg.stdin"));
-            
-            this.player.logger.on("log", (log)=>{
-                this.logger.log(log);
-            });
+            this.logger.add(this.player.logger);
         }
 
         return super._start();
@@ -258,14 +295,11 @@ export class SessionStream extends StopStartStateMachine {
             // if (this.player) this.register_metric(`decoder:speed`, this.player.$.playback_speed);
             this.$.speed = this.#ffmpeg.last_info ? this.#ffmpeg.last_info.speed_alt : 0;
             this.$.bitrate = this.#ffmpeg.last_info ? this.#ffmpeg.last_info.bitrate : 0;
-            let key = (this.session.type === SessionTypes.EXTERNAL) ? "upstream" : "trans";
-            if (this.#ffmpeg) {
-                this.register_metric(`${key}:speed`, this.$.speed);
-                this.register_metric(`${key}:bitrate`, this.$.bitrate);
-            }
+            let key = (this.session.type === constants.SessionTypes.EXTERNAL) ? "upstream" : "trans";
+            this.register_metric(`${key}:speed`, this.$.speed);
+            this.register_metric(`${key}:bitrate`, this.$.bitrate);
             for (let st of Object.values(this.stream_targets)) {
-                this.register_metric(`${st.$.key}:speed`, st.$.speed);
-                this.register_metric(`${st.$.key}:bitrate`, st.$.bitrate);
+                st.tick();
             }
         }
 
@@ -284,11 +318,8 @@ export class SessionStream extends StopStartStateMachine {
         // this is the order of destruction (sounds like metal lyrics)
         // player + mpv has to be destroyed before ffmpeg, ffmpeg is consuming mpv's output, which is what keeps it running. if we try to destroy ffmpeg first, then mpv is left out a consumer and hangs indefinitely.
         if (this.player) await this.player.destroy();
-        await this.#ffmpeg.destroy();
-
-        /* for (var target of Object.values(this.stream_targets)) {
-            await target.destroy();
-        } */
+        if (this.#ffmpeg) await this.#ffmpeg.destroy();
+        if (this.server) this.server.destroy();
 
         globals.app.ipc.emit("main.stream.stopped", this.id);
         
@@ -345,7 +376,7 @@ export class SessionStream extends StopStartStateMachine {
     }
     
     try_start_playlist() {
-        if (this.session.type == SessionTypes.INTERNAL) {
+        if (this.session.type == constants.SessionTypes.INTERNAL) {
             this.internal_session.playlist_play(this.internal_session.$.playlist_id || this.internal_session.first_item_id, { start: this.internal_session.$.time_pos });
         }
     }

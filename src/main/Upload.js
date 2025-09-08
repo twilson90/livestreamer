@@ -1,4 +1,4 @@
-import fs from "fs-extra";
+import fs from "node:fs";
 import path from "node:path";
 import {globals} from "./exports.js";
 import {utils, DataNodeID, DataNodeID$} from "../core/exports.js";
@@ -69,17 +69,17 @@ export class Upload extends DataNodeID {
         globals.app.logger.info(`Starting upload '${this.unique_dest_path}'...`);
 
         this.ready = (async ()=>{
-            await fs.mkdir(dir, {recursive:true});
-            // await fs.mkdir(chunks_dir, {recursive:true});
+            await fs.promises.mkdir(dir, {recursive:true});
+            // await fs.promises.mkdir(chunks_dir, {recursive:true});
             this.$.dest_path = await utils.unique_filename(dest_path);
             if (dest_path !== this.unique_dest_path) {
                 globals.app.logger.info(`Upload (${dir}) '${path.basename(dest_path)}' -> '${path.basename(this.unique_dest_path)}'...`);
             }
 
             // this should force the file to be written sequentially even if chunks arrive out of order by reserving the space on disk first.
-            // await utils.reserve_disk_space(this.unique_dest_path, filesize);
+            await utils.reserve_disk_space(this.unique_dest_path, filesize);
 
-            await fs.truncate(this.unique_dest_path, filesize);
+            // await fs.promises.truncate(this.unique_dest_path, filesize);
 
             this.#last_log = Date.now();
             
@@ -151,10 +151,8 @@ export class Upload extends DataNodeID {
                     if (this.finished && this.$.status !== Upload.Status.FINISHED) {
                         this.$.status = Upload.Status.FINISHED;
                         globals.app.logger.info(`Upload finished '${this.unique_dest_path}'`);
-                        writestream.on("close", ()=>{
-                            // this.sync_mtime();
-                            this.emit("complete");
-                        });
+                        // this.sync_mtime();
+                        this.emit("complete");
                     }
                     if (this.status === Upload.Status.FINISHED) {
                         this.destroy();
@@ -165,8 +163,8 @@ export class Upload extends DataNodeID {
 
     /* async sync_mtime() {
         if (!this.mtime) return;
-        var stat = await fs.stat(this.unique_dest_path);
-        await fs.utimes(this.unique_dest_path, stat.atime, new Date(this.mtime));
+        var stat = await fs.promises.stat(this.unique_dest_path);
+        await fs.promises.utimes(this.unique_dest_path, stat.atime, new Date(this.mtime));
     } */
 
     /* get first_last_parts_uploaded() {

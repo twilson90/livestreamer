@@ -1,5 +1,5 @@
 import path from "node:path";
-import fs from "fs-extra";
+import fs from "node:fs";
 import events from "events";
 import {globals, utils} from "./exports.js";
 
@@ -38,14 +38,14 @@ export class Cache extends events.EventEmitter {
     }
 
     async #init() {
-        await fs.mkdir(this.#dir, {recursive:true});
-        for (let key of await fs.readdir(this.#dir)) {
+        await fs.promises.mkdir(this.#dir, {recursive:true});
+        for (let key of await fs.promises.readdir(this.#dir)) {
             let filepath = path.join(this.#dir, key);
             try {
-                let d = JSON.parse(await fs.readFile(filepath, "utf8"));
+                let d = JSON.parse(await fs.promises.readFile(filepath, "utf8"));
                 this.#set(key, d);
             } catch {
-                await fs.rm(filepath).catch(utils.noop);
+                await fs.promises.rm(filepath).catch(utils.noop);
             }
         }
     }
@@ -91,7 +91,7 @@ export class Cache extends events.EventEmitter {
         clearTimeout(this.#timeouts[key]);
         this.#delete(key);
         var filename = this.#get_cache_filename(key);
-        await fs.rm(filename).catch(utils.noop);
+        await fs.promises.rm(filename).catch(utils.noop);
     }
 
     /** @param {string} key @param {any} data @param {number} ttl @description ttl if explicitly set to 0 or false will have infinite ttl, undefined or null will use the default ttl set in the constructor */
@@ -103,7 +103,7 @@ export class Cache extends events.EventEmitter {
         var d = {data, expires};
         this.#set(key, d);
         var filename = this.#get_cache_filename(key);
-        await globals.app.safe_write_file(filename, JSON.stringify(d));
+        await utils.safe_write_file(filename, JSON.stringify(d));
     }
 }
 export default Cache;

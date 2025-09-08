@@ -1,5 +1,5 @@
-import {globals, SessionTypes, Session, SessionProps, Session$} from "./exports.js";
-import {utils} from "../core/exports.js";
+import {globals, Session, SessionProps, Session$} from "./exports.js";
+import {utils, constants} from "../core/exports.js";
 
 class ExternalSession$ extends Session$ {
     client_ip = "";
@@ -18,20 +18,22 @@ export class ExternalSession extends Session {
         var name = nms_session.publishArgs["name"] || `[${ip}]`;
         
 
-        super(id, new ExternalSession$(), SessionTypes.EXTERNAL, utils.get_defaults(SessionProps));
+        super(`${id}`, new ExternalSession$(), constants.SessionTypes.EXTERNAL, utils.get_defaults(SessionProps));
         
         this.$.name = name;
 
         this.nms_session = nms_session;
         
         this.$.client_ip = ip;
+        this.$.publish_stream_path = nms_session.publishStreamPath;
         this.$.stream_settings.test = ("test" in nms_session.publishArgs);
         this.$.stream_settings.targets = (nms_session.publishArgs["targets"]||"").split(/,\s*/).map(s=>s.trim()).filter(t=>t);
         this.$.stream_settings.target_opts = utils.try_catch(()=>JSON.parse(nms_session.publishArgs["target_opts"]));
         
-        this.start_stream();
+        this.start_stream()
 
         this.stream.on("stopped", ()=>{
+            globals.app.ipc.request("media-server", "stop_session", [nms_session.id]);
             this.destroy();
         });
     }

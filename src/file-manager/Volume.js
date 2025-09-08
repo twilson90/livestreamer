@@ -1,4 +1,4 @@
-import fs from "fs-extra";
+import fs from "node:fs";
 import path from "node:path";
 import upath from "upath";
 import * as uuid from "uuid";
@@ -31,6 +31,7 @@ export class Volume {
 	get isPathBased() { return this.config.isPathBased; }
 	/** @type {typeof Driver} */
 	get driver_class() { return drivers[this.driver_name]; }
+	get elf_id() { return this.config.elf_id; }
 
 	/** @callback driverCallback @param {Driver} driver */
 	/** @param {driverCallback} cb */
@@ -66,7 +67,7 @@ export class Volume {
 		/** @type {ElFinder} */
 		this.elfinder = elfinder;
 		this.config = config;
-		this.elf_id = `v${VOLUME_ID++}_`;
+		this.config.elf_id = `v${VOLUME_ID++}_`;
 		
 		var temp_driver = new this.driver_class(this);
 		var isPathBased = !!this.driver_class.separator;
@@ -79,11 +80,11 @@ export class Volume {
 
 	async save() {
 		if (this.config.locked) throw new Error("Volume is locked");
-		await globals.app.safe_write_file(path.join(this.elfinder.volumes_dir, this.id), JSON.stringify(this.config));
+		await utils.safe_write_file(path.join(this.elfinder.volumes_dir, this.id), JSON.stringify(this.config));
 	}
 
 	async destroy() {
-		await fs.rm(path.join(this.elfinder.volumes_dir, this.id)).catch(utils.noop);
+		await fs.promises.rm(path.join(this.elfinder.volumes_dir, this.id)).catch(utils.noop);
 	}
 
 	// -------------------------------------------------------------
@@ -232,7 +233,7 @@ export class Volume {
 				var id = driver.unhash(opts.target).id;
 				var stat = await driver.stat(id);
 				if (opts.download) {
-					res.setHeader("Content-Disposition", `attachment;filename="${stat.name.replace(/"/g,'\\"')}"`);
+					res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(stat.name)}"`);
 				}
 				if (opts.cpath && opts.reqid) {
 					res.cookie(`elfdl${opts.reqid}`, '1', {
@@ -507,9 +508,9 @@ export class Volume {
 							} else if (both_localfilesystem) {
 								newfile = upath.join(dst.id, name);
 								if (opts.cut == 1) {
-									await fs.rename(srcdriver.abspath(src.id), dstdriver.abspath(newfile));
+									await fs.promises.rename(srcdriver.abspath(src.id), dstdriver.abspath(newfile));
 								} else {
-									await fs.copy(srcdriver.abspath(src.id), dstdriver.abspath(newfile));
+									await fs.promises.copy(srcdriver.abspath(src.id), dstdriver.abspath(newfile));
 								}
 							}
 							if (opts.cut == 1) removed.push(srcdriver.hash(src.id));
@@ -850,12 +851,12 @@ export class Volume {
 					var uploads = this.elfinder.uploads;
 					var cid = utils.md5(JSON.stringify([opts.cid, filename, total, opts.mtime, opts.upload_path]));
 					var chunkdir = path.join(this.elfinder.uploads_dir, `${cid}_chunks`);
-					await fs.mkdir(chunkdir, {recursive:true});
+					await fs.promises.mkdir(chunkdir, {recursive:true});
 					var tmpchunkpath = path.join(chunkdir, String(ci));
-					await fs.rename(files[0].path, tmpchunkpath);
+					await fs.promises.rename(files[0].path, tmpchunkpath);
 					if (!uploads[cid]) {
 						uploads[cid] = Array(cn).fill(false);
-						(await fs.readdir(chunkdir)).forEach(c=>uploads[cid][c] = true);
+						(await fs.promises.readdir(chunkdir)).forEach(c=>uploads[cid][c] = true);
 					}
 					uploads[cid][ci] = true;
 					if (uploads[cid].length == cn && uploads[cid].every(c=>c)) {
@@ -863,12 +864,12 @@ export class Volume {
 						var mergedpath = path.join(this.elfinder.uploads_dir, cid);
 						var chunks = uploads[cid].map((_,i)=>path.join(chunkdir, String(i)));
 						await utils.mergefiles(chunks, mergedpath);
-						var stat = await fs.stat(mergedpath);
+						var stat = await fs.promises.stat(mergedpath);
 						if (stat.size != total) {
 							result._chunkfailure = true;
 							result.error = `Chunked Upload failed. Size mismatch (${stat.size} != ${total})`;
 						}
-						await fs.rm(chunkdir, {recursive:true}).catch(utils.noop);
+						await fs.promises.rm(chunkdir, {recursive:true}).catch(utils.noop);
 						result._chunkmerged = mergedname;
 						result._name = filename;
 						delete uploads[cid];
@@ -902,7 +903,7 @@ export class Volume {
 							filename = await driver.unique(dstdir, file.originalname, opts.suffix);
 						}
 						var dstid = await driver.upload(tmpfile, dstdir, filename);
-						await fs.unlink(tmpfile).catch(utils.noop);
+						await fs.promises.unlink(tmpfile).catch(utils.noop);
 						added.push(await driver.file(dstid));
 						f++;
 					}
@@ -945,13 +946,13 @@ export class Volume {
 				if (opts.download) {
 					var [hash, tmp, name, mime] = opts.targets;
 					res.setHeader("Content-Type", mime);
-					res.setHeader("Content-Disposition", `attachment;filename="${name.replace(/"/g,'\\"')}"`);
+					res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(name)}"`);
 					res.setHeader("Accept-Ranges", "none");
 					res.setHeader("Connection", "close");
-					tmp = path.join(this.elfinder.tmp_dir, tmp)
+					tmp = path.join(this.elfinder.tmp_dir, tmp);
 					await new Promise((resolve,reject)=>{
 						res.sendFile(tmp, async (e)=>{
-							await fs.unlink(tmp);
+							await fs.promises.unlink(tmp);
 							if (e) reject(e);
 							else resolve();
 						});
@@ -969,6 +970,25 @@ export class Volume {
 				}
 			});
 		},
+		
+        /**
+         * @param {object} opts
+         * @param {string[]} opts.targets
+         * @param {boolean} opts.download
+         * @param {express.Response} res
+         */
+		listtree: async (opts, res)=>{
+            return this.driver(opts.reqid, async (driver)=>{
+                var targets = opts.targets.map(t=>driver.unhash(t).id);
+                var ids = [];
+                for (var target of targets) {
+                    await driver.walk(target, (id, stat, parents=[])=>{
+                        ids.push(id)
+                    });
+                }
+                return { ids };
+            });
+        }
 	}
 }
 export default Volume;

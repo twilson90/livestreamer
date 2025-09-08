@@ -17,7 +17,7 @@ import { terminalCodesToHtml } from "terminal-codes-to-html";
 import ResizeObserver from 'resize-observer-polyfill';
 
 import * as constants from "../../core/constants.js" ;
-import { get_default_stream, get_auto_background_mode } from "../shared.js";
+import { get_default_stream, get_auto_background_mode, get_streams } from "../shared.js";
 import filters from "../filters/exports.js";
 import { InternalSessionProps, PlaylistItemProps, PlaylistItemPropsProps, SessionProps } from "../InternalSessionProps.js";
 import { ResponsiveSortable, CancelSortPlugin, RememberScrollPositionsPlugin, MyAutoScrollPlugin } from './ResponsiveSortable.js';
@@ -35,11 +35,6 @@ import "./style.scss";
 export let app;
 
 export { ui, utils, jQuery, $, noUiSlider, mpegts as flvjs, Chart, Hammer, Sortable, MultiDrag }
-
-const SessionTypes = {
-    EXTERNAL: "ExternalSession",
-    INTERNAL: "InternalSession",
-}
 
 // if (window.videojs) window.videojs.options.autoplay = true;
 // export const WS_MIN_WAIT = 1000;
@@ -551,27 +546,34 @@ function background_mode_info() {
     if (this.value == "external") return `Shows the external artwork relative to the audio file (a file named AlbumArt.jpg, Cover.jpg, etc.)`;
 }
 
-export function create_video_file_start_end_properties(settings) {
+export function create_file_start_end_properties(settings) {
     settings = {
+        type: "video",
         name: "video",
         label: "Video File",
         hidden: false,
         default: undefined,
         ...settings,
     }
-    var get_file_duration = ()=>app.$._session.media_info[file.value] ? app.$._session.media_info[file.value].duration : 0;
+    var get_file_duration = ()=>(app.media_info[file.value] ?? app.$._session.media_info[file.value])?.duration ?? 0;
     var is_file_image = ()=>get_file_duration()<=IMAGE_DURATION;
 
+    var filter = ["image", "video"]
+    if (settings.type == "audio") filter = ["audio", "video"];
     var file = new FileProperty({
         "name": `${settings.name}`,
         "label": `${settings.label}`,
-        "file.options": { files: true, filter: ["image", "video"] },
+        "file.options": { files: true, filter },
         "file.check_media": true,
         "hidden": settings.hidden,
         "default": settings.default,
     });
+    file.on("media_info", ()=>{
+        start.update();
+        end.update();
+    })
 
-    var file_start = new ui.TimeSpanProperty({
+    var start = new ui.TimeSpanProperty({
         "name": `${settings.name}_start`,
         "label": `${settings.label} Loop Start Time`,
         "timespan.format": "h:mm:ss.SSS",
@@ -580,7 +582,7 @@ export function create_video_file_start_end_properties(settings) {
         "default": settings.default || 0,
     });
     
-    var file_end = new ui.TimeSpanProperty({
+    var end = new ui.TimeSpanProperty({
         "name": `${settings.name}_end`,
         "label": `${settings.label} Loop End Time`,
         "timespan.format": "h:mm:ss.SSS",
@@ -589,7 +591,7 @@ export function create_video_file_start_end_properties(settings) {
         "default": settings.default || get_file_duration,
     });
 
-    return [file, file_start, file_end];
+    return {file, start, end};
 }
 
 function get_file_manager_url(opts) {
@@ -955,11 +957,11 @@ export class Remote$ extends utils.remote.Proxy$ {
     clients = utils.remote.Collection$(()=>new Client$()).__proxy__;
     sessions = utils.remote.Collection$(()=>new Session$()).__proxy__;
     targets = utils.remote.Collection$(()=>new Target$()).__proxy__;
-    streams = utils.remote.Collection$(()=>new Stream$()).__proxy__;
+    session_streams = utils.remote.Collection$(()=>new SessionStream$()).__proxy__;
     uploads = utils.remote.Collection$(()=>new Progress$()).__proxy__;
     downloads = utils.remote.Collection$(()=>new Progress$()).__proxy__;
     volumes = utils.remote.Collection$(()=>new Volume$()).__proxy__;
-    nms_sessions = utils.remote.Collection$(()=>new NMSSession$()).__proxy__;
+    nms_sessions = {};
     /** @type {Record<PropertyKey,Live$>} */
     lives = {};
     change_log = {};
@@ -1040,7 +1042,7 @@ export class Target$ extends utils.remote.ProxyID$ {
     opts = {};
     
     get _stream_targets() {
-        return Object.values(app.$.streams).map(st=>st.stream_targets[this.id]).filter(st=>st);
+        return Object.values(app.$.session_streams).map(st=>st.stream_targets[this.id]).filter(st=>st);
     }
     get _active_stream_targets() {
         return this._stream_targets.filter(s=>s._is_running);
@@ -1069,7 +1071,7 @@ export class StreamTarget$ extends utils.remote.ProxyID$ {
         return this._stream._session;
     }
     get _stream() {
-        return app.$.streams[this.stream_id] || app.$.streams[utils.remote.Null$];
+        return app.$.session_streams[this.stream_id] || app.$.session_streams[utils.remote.Null$];
     }
     get _target() {
         return app.$.targets[this.target_id] || app.$.targets[utils.remote.Null$];
@@ -1094,6 +1096,7 @@ class SessionPlayer$ extends utils.remote.Proxy$ {
     deinterlacing = false;
     video_bitrate = 0;
     audio_bitrate = 0;
+    aspect_ratio = 0;
 }
 
 export class Volume$ extends utils.remote.ProxyID$ {
@@ -1105,13 +1108,7 @@ export class Volume$ extends utils.remote.ProxyID$ {
     index = -1;
 }
 
-export class NMSSession$ extends utils.remote.ProxyID$ {
-    get _live() {
-        return Object.values(app.$.lives).find(live=>live.origin === this.publishArgs?.origin && live.is_live);
-    }
-}
-
-export class Stream$ extends utils.remote.ProxyID$ {
+export class SessionStream$ extends utils.remote.ProxyID$ {
     start_ts = 0;
     stop_ts = 0;
     state = "stopped";
@@ -1122,19 +1119,20 @@ export class Stream$ extends utils.remote.ProxyID$ {
     stream_targets = utils.remote.Collection$(()=>new StreamTarget$()).__proxy__;
     test = false;
     bitrate = 0;
-    internal_path;
+    publish_stream_path;
     restart = 0;
     /** @type {SessionPlayer$} */
     player = new SessionPlayer$().__proxy__;
     fps = 0;
     buffer_duration = 0;
+    resolution = "1280x720";
     
     get _is_only_gui() {
         this.player
         return !!(Object.keys(this.targets).length == 1 && this.targets.includes("gui"));
     }
     get _internal_nms_session() {
-        return Object.values(app.$.nms_sessions).find(s=>s.publishStreamPath == this.internal_path);
+        return Object.values(app.$.nms_sessions).find(s=>s.publishStreamPath == this.publish_stream_path);
     }
     get _connected_nms_sessions() {
         return Object.values(this.stream_targets).map(st=>st._connected_nms_session).filter(s=>s);
@@ -1145,12 +1143,14 @@ export class Stream$ extends utils.remote.ProxyID$ {
     get _is_running() {
         return this.state !== "stopped";
     }
-    get _live_nms_session() {
-        return Object.values(app.$.nms_sessions).find(s=>s.appname === "live" && this.internal_path === s.publishArgs.origin);
+    get _live() {
+        return Object.values(app.$.lives).find(live=>live.settings.stream_id == this.id);
     }
     get _run_time() {
         return app.$._now - this.start_ts;
     }
+    get _width() { return +this.resolution.split("x")[0]; }
+    get _height() { return +this.resolution.split("x")[1]; }
 }
 /** @typedef {{username:string, access:string, suspended:boolean, password:string}} AccessControlUser */
 export class AccessControl$ extends utils.remote.Proxy$ {
@@ -1345,7 +1345,7 @@ export class Session$ extends utils.remote.ProxyID$ {
         return Object.values(app.$.nms_sessions).find(s=>appnames.includes(s.appname) && s.publishStreamPath.split("/").pop() === this.id);
     }
     get _stream() {
-        return app.$.streams[this.stream_id] || app.$.streams[utils.remote.Null$];
+        return app.$.session_streams[this.stream_id] || app.$.session_streams[utils.remote.Null$];
     }
 }
 
@@ -1379,6 +1379,7 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
     index = 0;
     track_index = 0;
     props = {};
+    upload_id = null;
     /** @type {PlaylistItem$[]} In very specific case, playlist item can embed children */
     _embedded_children;
     _session_id = "";
@@ -1595,7 +1596,7 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
         return app.$.downloads[this.id];
     }
     get _upload() {
-        return app.$.uploads[this.id];
+        return app.$.uploads[this.upload_id];
     }
     get _is_downloadable() {
         return !this._download && this._url.protocol.match(/^https?:$/) && !this._is_playlist;
@@ -2166,14 +2167,13 @@ class JSONElement {
         return false;
     }
 
-    constructor(data, key, parent) {
+    constructor(key, data, parent) {
+        this.key = key;
         this.data = data;
         this.type = typeof this.data;
-        this.key = key;
         var is_array = Array.isArray(this.data);
         if (is_array) this.type = "array";
         else if (this.data === null) this.type = "null";
-
         this.elem = document.createElement("div");
         dom.add_class(this.elem, "json-node");
         this.value_elem = document.createElement("div");
@@ -2200,7 +2200,7 @@ class JSONElement {
         if (this.type == "array" || this.type == "object") {
             empty = true;
             for (var k in this.data) {
-                var child = new JSONElement(data[k], is_array ? null : k, this);
+                var child = new JSONElement(is_array ? null : k, data[k], this);
                 this.value_elem.append(child.elem);
                 this.children[k] = child;
                 empty = false;
@@ -2216,9 +2216,9 @@ class JSONElement {
             dom.add_class(placeholder_elem, "json-placeholder");
             placeholder_elem.innerText = `${children.length} items`;
             if (collapsible) {
-                placeholder_elem.onclick=()=>this.collapse();
-                prefix_elem.onclick=()=>this.collapse();
-                suffix_elem.onclick=()=>this.collapse();
+                placeholder_elem.onclick=()=>this.toggle();
+                prefix_elem.onclick=()=>this.toggle();
+                suffix_elem.onclick=()=>this.toggle();
             }
         }
 
@@ -2237,13 +2237,9 @@ class JSONElement {
             "word-break": "break-all"
         });
     }
-    toggle() {
+    toggle(value) {
         if (!this.has_children) return;
-        dom.toggle_class(this.elem, "collapsed");
-    }
-    collapse(value) {
-        if (!this.has_children) return;
-        dom.toggle_class(this.elem, "collapsed", value)
+        dom.toggle_class(this.elem, "collapsed", value);
     }
     find(path) {
         if (!Array.isArray(path)) path = [path];
@@ -2254,9 +2250,10 @@ class JSONElement {
         return c;
     }
 }
+
 class JSONRoot extends JSONElement {
-    constructor(data, collapsed_children=false) {
-        super(data);
+    constructor(key, data, collapsed_children=false) {
+        super(key, data);
         if (collapsed_children) {
             for (var c of Object.values(this.children)) {
                 c.toggle();
@@ -2266,7 +2263,7 @@ class JSONRoot extends JSONElement {
 }
 export class JSONContainer extends ui.UI {
     constructor(data, collapsed_children=false) {
-        var json_root = new JSONRoot(data, collapsed_children);
+        var json_root = new JSONRoot(null, data, collapsed_children);
         super(json_root.elem);
         this._json_root = json_root;
     }
@@ -2325,13 +2322,13 @@ export class LocalMediaServerTargetConfigMenu extends TargetConfigMenu {
             "info": "Use the modern HEVC video codec (incompatible with older browsers & firefox)"
         });
         this.props.append(use_hevc);
-        var fps_passthrough = new ui.InputProperty(`<select>`, {
+        /* var fps_passthrough = new ui.InputProperty(`<select>`, {
             "name": "fps_passthrough",
             "label": "FPS Passthrough",
             "options": YES_OR_NO,
             "default": this._get_default,
         });
-        this.props.append(fps_passthrough);
+        this.props.append(fps_passthrough); */
     }
 }
 
@@ -2799,7 +2796,7 @@ export class FileManagerVolumesMenu extends ui.Modal {
 
 //             var size_el = document.createElement("td");
 //             dom.add_class(size_el, "size");
-//             size_el.innerText = utils.format_bytes(node.size);
+//             size_el.innerText = utils.format_bytes(node.size, true);
 //             var files_el = document.createElement("td");
 //             dom.add_class(files_el, "files");
 //             files_el.innerText = node.isdir ? node.files.toLocaleString() : "-";
@@ -2951,12 +2948,12 @@ class Process extends ui.Column {
             }
             var pinfo = app.$.sysinfo.processes[p.pid] || {};
             var cpu = Number((pinfo.cpu||0)*100).toLocaleString(undefined, {minimumFractionDigits:2,maximumFractionDigits:2})+"%";
-            var mem = utils.format_bytes(pinfo.memory||0);
+            var mem = utils.format_bytes(pinfo.memory||0, true);
             var uptime = utils.ms_to_human_readable_str(pinfo.elapsed||0);
             var s = {
                 "CPU": cpu,
                 "Memory": mem,
-                "Transfer rate": `↑ ${utils.format_bytes(pinfo.sent||0)}ps ↓ ${utils.format_bytes(pinfo.received||0)}ps`,
+                "Transfer rate": `↑ ${utils.format_bytes(pinfo.sent||0, true)}ps ↓ ${utils.format_bytes(pinfo.received||0, true)}ps`,
                 "Uptime": uptime,
             };
             dom.set_inner_html(stats_ui.elem, Object.entries(s).map(([k,v])=>`${k}: ${v}`).join(" | "));
@@ -2968,7 +2965,6 @@ export class SystemManagerMenu extends ui.Modal {
     constructor() {
         super({
             "modal.title": "System Manager",
-            "modal.blocking": false,
         });
         var uptime = this.props.append(new ui.UI(null, {
             "update":()=>{
@@ -2977,20 +2973,20 @@ export class SystemManagerMenu extends ui.Modal {
         }));
         var transfer = this.props.append(new ui.UI(null, {
             "update":()=>{
-                dom.set_inner_html(transfer.elem, `Transfer rate: ↑ ${utils.format_bytes(app.$.sysinfo.sent)}ps ↓ ${utils.format_bytes(app.$.sysinfo.received)}ps`);
+                dom.set_inner_html(transfer.elem, `Transfer rate: ↑ ${utils.format_bytes(app.$.sysinfo.sent, true)}ps ↓ ${utils.format_bytes(app.$.sysinfo.received, true)}ps`);
             }
         }));
         this.props.append(new Bar({
             label: "Disk",
             value: ()=>app.$.disk.used,
             total: ()=>app.$.disk.total,
-            format: (x)=>utils.format_bytes(x)
+            format: (x)=>utils.format_bytes(x, true)
         }));
         this.props.append(new Bar({
             label:"Memory",
             value: ()=>app.$.sysinfo.memory.total-app.$.sysinfo.memory.free,
             total: ()=>app.$.sysinfo.memory.total,
-            format: (x)=>utils.format_bytes(x)
+            format: (x)=>utils.format_bytes(x, true)
         }));
         this.props.append(new Bar({
             label:"CPU Usage",
@@ -3064,7 +3060,7 @@ class LiveUI extends ui.Box {
                 "Segments": `${live.segment || 0}`,
                 "Last Active": live.ts ? new Date(live.ts).toLocaleString() : "",
                 "Expires In": live.ts ? utils.ms_to_human_readable_str(live.ts + (app.$.conf["media_expire_time"]*1000) - ts) : "",
-                "Size on Disk": utils.format_bytes(live.size),
+                "Size on Disk": utils.format_bytes(live.size, true),
                 "Link": `<a href="${live.url}" target="_blank">${live.url}</a>`,
             };
             if (destroyed) {
@@ -3080,7 +3076,6 @@ export class LiveManagerMenu extends ui.Modal {
     constructor() {
         super({
             "modal.title": "Live Manager",
-            "modal.blocking": false,
             "modal.load": ()=>{
                 refresh();
             }
@@ -3576,7 +3571,7 @@ export class ScheduleStreamMenu extends ui.EditModal {
         super({
             "modal.title": "Schedule Stream Start",
             "modal.apply": ()=>{
-                app.request("session_update_values", [this.props.raw_value]);
+                app.request("session_update_values", [this.props.value]);
             },
             "modal.items": [app.$._session],
         });
@@ -3650,7 +3645,7 @@ export class SessionConfigurationMenu extends ui.EditModal {
             "readonly": true,
             "copy": true,
             "info": "Connect and stream to dynamic RTMP playlist items. Use this RTMP host and key in OBS or your streaming software of preference",
-            "default": ()=>app.get_media_server_base_url(),
+            "default": ()=>app.$.conf["rtmp_server_url"],
         });
 
         this.stream_key = new ui.TextAreaProperty({
@@ -3674,12 +3669,16 @@ export class SessionConfigurationMenu extends ui.EditModal {
             "label": "Background Color",
         });
         
-        [this.video_file, this.video_file_start, this.video_file_end] = create_video_file_start_end_properties({
+        var video_file_props = create_file_start_end_properties({
+            "type": "video",
             ..._get_property_opts("video_file"),
             "name": "video_file",
             "label": "Background File",
             "hidden": ()=>this.background_mode.value !== "file",
         })
+        this.video_file = video_file_props.file;
+        this.video_file_start = video_file_props.start;
+        this.video_file_end = video_file_props.end;
 
         this.files_dir = new FileProperty({
             ..._get_property_opts("files_dir"),
@@ -3704,7 +3703,7 @@ export class SessionConfigurationMenu extends ui.EditModal {
                 // [this.default_stream_title],
                 [this.create_ts]
             ];
-            if (this.props.item.type === SessionTypes.INTERNAL) {
+            if (this.props.item.type === constants.SessionTypes.INTERNAL) {
                 layout.push(
                     [this.stream_host], [this.stream_key],
                     [this.background_mode, this.background_color],
@@ -3759,7 +3758,7 @@ export class UploadsDownloadsMenu extends ui.Modal {
         var types = ["uploads", "downloads"];
         this.on("update", ()=>{
             var content = new ui.UI();
-            var stats = types.map(t=>`Total ${t.slice(0,-1)} rate: ${utils.format_bytes(utils.sum(Object.values(app.$[t]).map(u=>u.speed)))+"ps"}`).join(" | ");
+            var stats = types.map(t=>`Total ${t.slice(0,-1)} rate: ${utils.format_bytes(utils.sum(Object.values(app.$[t]).map(u=>u.speed)), true)+"ps"}`).join(" | ");
             content.append(...$(`<div>${stats}</div>`));
             Object.assign(this.props.elem.style, {"white-space": "pre-wrap", "word-break": "break-all", "font-family":"monospace" });
             for (var type of types) {
@@ -3789,9 +3788,9 @@ export class UploadsDownloadsMenu extends ui.Modal {
                     rows.push({
                         id,
                         ...u,
-                        rate: utils.format_bytes(u.speed)+"ps",
-                        bytes: utils.format_bytes(u.bytes),
-                        total: utils.format_bytes(u.total),
+                        rate: utils.format_bytes(u.speed, true)+"ps",
+                        bytes: utils.format_bytes(u.bytes, true),
+                        total: utils.format_bytes(u.total, true),
                         progress: `${((u.bytes/u.total)*100).toLocaleString(undefined, {maximumFractionDigits:2,minimumFractionDigits:2})}%`
                     });
                 }
@@ -3803,24 +3802,34 @@ export class UploadsDownloadsMenu extends ui.Modal {
     }
 }
 
+export class MediaInfoLine extends ui.UI{
+    constructor(key,value,type) {
+        super();
+        if (type == "bitrate") {
+            value = utils.format_bits(+value, true) + "ps";
+        } else if (type == "boolean") {
+            value = value ? "Yes" : "No";
+        } else if (type == "format") {
+            value = String(value).split(/,\s*/).join(", ");
+        } else if (type == "timespan") {
+            value = utils.seconds_to_timespan_str(+value);
+        } else if (type == "datetime") {
+            value = new Date(+value).toLocaleString();
+        } else if (type == "fps") {
+            value = (+value).toFixed(3).replace(/\.?0+$/, "");
+        }
+        this.elem.classList.add("media-info-line");
+        this.elem.innerHTML = `<span class="key">${key}:</span><span class="value">${value}</span>`
+    }
+}
+
 export class PlaylistItemInfoMenu extends ui.Modal {
     /** @param {PlaylistItem$[]} items */
     constructor(items, all_collapsed=false) {
 
         var name;
-        var special_keys = ["_media_info", "_info", "_userdata"];
-        var data = items.map(item=>{
-            var copy = {};
-            for (var k in item) {
-                if (k.startsWith("_")) continue;
-                copy[k] = item[k];
-            }
-            for (var k of special_keys) copy[k] = item[k];
-            return copy;
-        })
         if (items.length == 1) {
             name = `<i>${items[0]._get_pretty_name()}</i>`;
-            data = data[0]
         } else {
             name = `[${items.length} Items]`
         }
@@ -3828,16 +3837,129 @@ export class PlaylistItemInfoMenu extends ui.Modal {
             "modal.title": name,
         });
 
-        var json = new JSONContainer(data, all_collapsed);
-        var json_root = json._json_root;
-        dom.set_style_property(this.props.elem, "margin-bottom", 0);
+        var simple = true;
+        var simple_toggle = new ui.Button("<button>Simple</button>", {
+            click: ()=>{
+                simple = !simple;
+                update();
+            }
+        })
+        this.props.append(simple_toggle);
+        
+        var container = new ui.UI();
+        container.elem.classList.add("playlist-item-info");
+        this.props.append(container);
 
-        for (var k of special_keys) {
-            var n = json_root.find(k);
-            if (n) n.collapse(true);
+        var update = ()=>{
+            container.empty();
+
+            if (simple) {
+                for (var item of items) {
+                    let mi = item._media_info;
+                    var box = new ui.Box({header: mi.filename});
+                    // box.content.append(new MediaInfoLine(`File Name`, mi.filename));
+                    box.content.append(new MediaInfoLine(`File Exists`, mi.exists, "boolean"))
+                    if (mi.exists) {
+                        box.content.append(new MediaInfoLine(`Last Modified`, mi.mtime, "datetime"))
+                        box.content.append(new MediaInfoLine(`Duration`, mi.duration, "timespan"))
+                        box.content.append(new MediaInfoLine(`Format`, mi.format, "format"));
+                        box.content.append(new MediaInfoLine(`Bit Rate`, mi.bitrate, "bitrate"));
+                        if (mi.chapters && mi.chapters.length) {
+                            let chapters = new ui.Box({ header: `Chapters` })
+                            for (var c of mi.chapters) {
+                                chapters.content.append(new MediaInfoLine(c.title, utils.seconds_to_timespan_str(c.start)));
+                            }
+                            box.content.append(chapters);
+                        }
+                        if (mi.streams && mi.streams.length) {
+                            let streams = new ui.Box({ header: `Streams` })
+                            for (var s of mi.streams) {
+                                let box = new ui.Box()
+                                let flags = {forced:s.forced,default:s.default,albumart:s.albumart, interlaced:s.interlaced};
+                                let flags_arr = Object.entries(flags).filter(([k,v])=>v).map(([k,v])=>utils.capitalize(k));
+                                if (s.title) {
+                                    box.content.append(new MediaInfoLine(`Title`, utils.capitalize(s.title)));
+                                }
+                                box.content.append(new MediaInfoLine(`Type`, utils.capitalize(s.type)));
+                                box.content.append(new MediaInfoLine(`Codec`, s.codec));
+                                box.content.append(new MediaInfoLine(`Bit Rate`, s.bitrate, "bitrate"));
+                                if (s.fps) {
+                                    box.content.append(new MediaInfoLine(`Frame Rate`, s.fps, "fps"));
+                                }
+                                if (s.duration) {
+                                    box.content.append(new MediaInfoLine(`Duration`, s.duration, "timespan"));
+                                }
+                                if (flags_arr.length) {
+                                    box.content.append(new MediaInfoLine(`Flags`, flags_arr.join(", ")));
+                                }
+                                // autocomplete 
+                                if (s.width && s.height) {
+                                    box.content.append(new MediaInfoLine(`Resolution`, `${s.width}x${s.height}`));
+                                }
+                                if (s.field_order) {
+                                    box.content.append(new MediaInfoLine(`Field Order`, utils.capitalize(s.field_order)));
+                                }
+                                if (s.sar && s.sar != 1) {
+                                    box.content.append(new MediaInfoLine(`Sample Aspect Ratio`, utils.float_to_fraction(s.sar)));
+                                }
+                                if (s.dar) {
+                                    box.content.append(new MediaInfoLine(`Display Aspect Ratio`, utils.float_to_fraction(s.dar)));
+                                }
+                                if (s.channels) {
+                                    box.content.append(new MediaInfoLine(`Audio Channels`, s.channels.toLocaleString()));
+                                }
+                                streams.content.append(box);
+                            }
+                            box.content.append(streams);
+                        }
+                    }
+                    container.append(box);
+                }
+            } else {
+
+                var special_keys = {
+                    "_media_info":{
+                        label:"media_info",
+                        expanded:true
+                    },
+                    "_info":"info",
+                    "_userdata":"userdata"
+                };
+                special_keys = Object.fromEntries(Object.entries(special_keys).map(([k,o])=>(typeof o === "object") ? [k,o] : [k, { label: o, expanded:false }]));
+                
+                let data = items.map(item=>{
+                    var copy = {};
+                    for (var k in item) {
+                        if (k.startsWith("_")) continue;
+                        copy[k] = item[k];
+                    }
+                    for (var k in special_keys) {
+                        var o = special_keys[k];
+                        copy[o.label] = item[k];
+                    }
+                    return copy;
+                })
+
+                if (data.length == 1) {
+                    data = data[0];
+                }
+
+                var json = new JSONContainer(data, all_collapsed);
+                var json_root = json._json_root;
+
+                for (let k in special_keys) {
+                    let o = special_keys[k];
+                    let n = json_root.find(o.label);
+                    if (n && !o.expanded) {
+                        n.toggle(true);
+                    }
+                }
+                container.append(json);
+            }
+            simple_toggle.settings.content = simple ? "Simple Mode" : "Advanced Mode";
+            simple_toggle.update();
         }
-
-        this.props.append(json);
+        update();
     }
 }
 
@@ -4065,7 +4187,7 @@ export class ExternalSessionConfigurationMenu extends ui.Modal {
             params.set("targets", this.stream_targets.value.join(","));
             params.set("target_opts", JSON.stringify(this.stream_targets.opts.value));
             var query_str = params.toString();
-            host = app.get_media_server_base_url();
+            host = app.$.conf["rtmp_server_url"];
             key = `external/${app.$._client.ip_hash}`;
             if (query_str) key += "?"+query_str;
 
@@ -4187,13 +4309,13 @@ export class TargetsMenu extends ui.EditModal {
         super({
             "modal.title": "Targets",
             // "modal.close": !prop,
+            "modal.auto_apply": !prop,
             "modal.footer": !!prop,
             "modal.ok": !!prop,
             "modal.cancel": !!prop,
             "modal.apply": ()=>{
                 if (prop) prop.set_value(this.targets.value, {trigger:true});
             },
-            "modal.blocking": false,
         });
 
         this.targets = new ExpandedTargetsProperty(prop);
@@ -4800,12 +4922,13 @@ export class MediaSeekBar extends SeekBar {
     }
 }
 
-/** @extends {EditModal<Stream$>} */
+/** @extends {EditModal<SessionStream$>} */
 export class StreamConfigurationMenu extends ui.EditModal {
     constructor(){
         super({
             "modal.title": "Stream Configuration",
             "modal.items": [app.$._session._stream],
+            "modal.auto_apply": false,
             "modal.apply": ()=>{
                 app.request("stream_update_values", [this.props.value]);
             },
@@ -4850,7 +4973,7 @@ export class StreamConfigurationMenu extends ui.EditModal {
             ..._get_property_opts("buffer_duration"),
             ...buffer_duration_opts,
             "name": "buffer_duration",
-            "hidden": ()=>app.$._session.type == SessionTypes.EXTERNAL
+            "hidden": ()=>app.$._session.type == constants.SessionTypes.EXTERNAL
         });
         this.props.append(buffer_duration);
 
@@ -5067,7 +5190,6 @@ export class HistoryMenu extends ui.Modal {
             "modal.title": ()=>`History [${history.length}]`,
             "modal.min-width": "900px",
             "modal.load": load,
-            // "modal.blocking": false,
         });
 
         wrapper_elem.append(table_col, info_col);
@@ -5163,6 +5285,7 @@ export class PlaylistItemModifyMenu extends ui.EditModal {
     constructor(items) {
         var is_new = items.length == 1 && !items[0].id;
         super({
+            "modal.width": 640,
             "modal.title": ()=>is_new ? `New Playlist Item` : `Modify ${get_items_title_html(this.props.items)}`,
             "modal.auto_apply": !is_new,
             "modal.apply": ()=>{
@@ -5185,7 +5308,6 @@ export class PlaylistItemModifyMenu extends ui.EditModal {
                 }
             },
             "modal.items": items,
-            "modal.blocking": false,
         });
         
         /** @type {FileProperty<PlaylistItemUI>} */
@@ -5254,12 +5376,15 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
 
         var _this = this;
 
+        /** @param {MediaInfoStreamEx} s */
         let stream_to_text = (s,i, use_prefix=true)=>{
             if (!s) return "None";
             var parts = [];
-            var name = `${s.title||`Track ${i}`}`;
-            if (use_prefix) name = `${i}. ${name}`;
-            parts.push(name);
+            var title = s.title;
+            if (s.albumart) title = "Album Art";
+            if (!title) title = `Track ${i}`
+            if (use_prefix) title = `${i}. ${title}`;
+            parts.push(title);
             if (s.language && s.language != "und") parts.push(s.language);
             return parts.join(" | ")
         }
@@ -5270,7 +5395,23 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             return (item)=>{
                 if (mode == MediaSettingsMode.all) return [];
                 item = item || this.item;
-                var streams = get_streams(item, type);
+
+                var extra_map = {
+                    "video": this.video_file?.value ?? item?.props.video_file,
+                    "audio": this.audio_file?.value ?? item?.props.audio_file,
+                    "subtitle": this.subtitle_file?.value ?? item?.props.subtitle_file,
+                }
+
+                var extra_media_infos = Object.entries(extra_map)
+                    .map(([k,v])=>[k,app.$._session.media_info[v]])
+                    .filter(([k,v])=>v)
+
+                var streams = get_streams(item._media_info, extra_media_infos).filter(s=>s.type == type && !s.albumart);
+                
+                if (!streams.length) {
+		            streams.push({type, title:"Generated"});
+                }
+
                 let default_stream = get_default_stream(streams, type);
                 var options = [];
                 let indeterminate_option = {value:"", text:"-", hidden:true};
@@ -5281,19 +5422,13 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 }
                 for (let s of streams) {
                     let value = s ? i : false;
-                    let text = stream_to_text(s,i);
-                    options.push({value,text});
+                    let text = stream_to_text(s,i,false);
+                    let hidden = !!s?.albumart;
                     if (s == default_stream) {
-                        var video_file = this.video_file?.value ?? item?.props.video_file;
-                        var audio_file = this.audio_file?.value ?? item?.props.audio_file;
-                        var subtitle_file = this.subtitle_file?.value ?? item?.props.subtitle_file;
-
-                        if (type == "video" && video_file) text = pretty_uri_basename(video_file);
-                        else if (type == "audio" && audio_file) text = pretty_uri_basename(audio_file);
-                        else if (type == "subtitle" && subtitle_file) text = pretty_uri_basename(subtitle_file);
-
                         options.unshift({value:"auto", text:`Auto [${text}]`});
                     }
+                    text = stream_to_text(s,i, true);
+                    options.push({value,text,hidden});
                     if (s != null) i++;
                 }
                 if (options.length == 1 && options[0] === indeterminate_option) {
@@ -5301,27 +5436,6 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 }
                 return options;
             }
-        };
-        /** @param {PlaylistItem$} item @param {string} type */
-        let get_streams = (item, type)=>{
-            /** @type {MediaInfoStreamEx[]} */
-            var streams;
-            let mi = item._media_info;
-            streams = mi ? mi.streams : null;
-            if (item._is_special) {
-                streams = [
-                    {type:"video", title:"Generated Video"},
-                    {type:"audio", title:"Generated Audio"},
-                    {type:"subtitle", title:"Generated Subtitle"},
-                ]
-            }
-            /* if (item._is_currently_playing) {
-                streams = app.$._stream.ctx.streams;
-            } */
-            if (!streams) streams = [];
-            if (type) streams = streams.filter(s=>s.type == type);
-            streams = streams.filter(s=>!s.albumart);
-            return streams;
         };
 
         let _get_property_opts = function(name, cb) {
@@ -5400,7 +5514,6 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             "label": "Subtitle Delay",
             "suffix": `secs`,
         });
-        this.subtitle_delay.output_modifiers.push((v)=>Number(v).toFixed(2));
         
         this.subtitle_scale = new ui.InputProperty(`<input type="text">`, {
             ..._get_property_opts("sub_scale"),
@@ -5410,17 +5523,15 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             "suffix": "%",
         });
         this.subtitle_scale.input_modifiers.push((v)=>+v/100);
-        this.subtitle_scale.output_modifiers.push((v)=>Math.round(+v*100));
+        this.subtitle_scale.output_modifiers.push((v)=>+v*100);
 
         this.subtitle_pos = new ui.InputProperty(`<input type="number">`, {
             ..._get_property_opts("sub_pos"),
             "name": "sub_pos",
             "label": "Subtitle Position",
-            "precision":2,
             "suffix": "%",
             "info": `The vertical position of the subtitle in % of the screen height. 100 is the original position, which is often not the absolute bottom of the screen, but with some margin between the bottom and the subtitle. Values above 100 move the subtitle further down.`
         });
-        this.subtitle_pos.output_modifiers.push((v)=>Math.round(+v));
 
         /* this.playback_speed = new ui.Property(`<input type="number">`, {
             "name": "speed",
@@ -5453,7 +5564,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
             "precision":2,
         });
         this.volume_multiplier.input_modifiers.push((v)=>v/100);
-        this.volume_multiplier.output_modifiers.push((v)=>Math.round(v*100).toString());
+        this.volume_multiplier.output_modifiers.push((v)=>v*100);
 
         this.interpolation = new ui.InputProperty(`<select></select>`, {
             ..._get_property_opts("interpolation_mode"),
@@ -5723,7 +5834,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                     /** @param {PlaylistItem$} item */
                     opts.options = function(item) {
                         if (item._is_special) {
-                            options = options.filter(o=>!["embedded","external"].includes(o[0]));
+                            options = options.filter(o=>!["embedded", "external"].includes(o[0]));
                         }
                         // } else {
                         // utils.sort(options, o=>o[0]==background_mode_prop().__default__ ? 0 : 1);
@@ -5751,22 +5862,25 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 "name": `background_color`,
                 "label": "Background Color",
             });
-            var [video_file, video_file_start, video_file_end] = create_video_file_start_end_properties({
+            var video_file_props = create_file_start_end_properties({
+                "type": "video",
                 ..._get_property_opts("video_file"),
                 "name": "video_file",
                 "label": "Video File",
             });
-            this.video_file = video_file;
-            this.video_file_start = video_file_start;
-            this.video_file_end = video_file_end;
-
-            this.audio_file = new FileProperty({
+            this.video_file = video_file_props.file;
+            this.video_file_start = video_file_props.start;
+            this.video_file_end = video_file_props.end;
+            
+            var audio_file_props = create_file_start_end_properties({
+                "type": "audio",
                 ..._get_property_opts("audio_file"),
                 "name": "audio_file",
                 "label": "Audio File",
-                "file.options": { files: true, filter: ["audio", "video"] },
-                "file.check_media": true,
             });
+            this.audio_file = audio_file_props.file;
+            this.audio_file_start = audio_file_props.start;
+            this.audio_file_end = audio_file_props.end;
             this.audio_file.validators.push(VALIDATORS.media_audio);
 
             this.subtitle_file = new FileProperty({
@@ -5795,7 +5909,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                         "suffix": `%`,
                     });
                     p.input_modifiers.push((v)=>v/100);
-                    p.output_modifiers.push((v)=>(v*100).toFixed(2));
+                    p.output_modifiers.push((v)=>v*100);
                     return p;
                 })
             });
@@ -5809,11 +5923,11 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 "flex": 0,
                 "content": ()=>this.auto_crop_button.async_click_promise ? `Detecting <i class="fas fa-sync fa-spin"></i>` : `Detect`,
                 "click_async":async ()=>{
-                    last_detected_crop = await app.request("detect_crop", [_this.item.id], {
+                    last_detected_crop = await app.request("detect_crop", [_this.item.id, _this.clip_start.value], {
                         show_spinner: false,
                         timeout: 0
                     }).catch(utils.noop);
-
+                    if (!last_detected_crop) return;
                     var r = new utils.Rectangle(last_detected_crop.combined);
                     this.crop.set_value([r.left, r.top, 1-r.right, 1-r.bottom], {trigger:true});
                     this.update();
@@ -6277,9 +6391,6 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 layout.push(...get_default_layout());
             } else {
                 var info = get_info();
-                var add_video_layout = [
-                    [this.video_file, this.video_file_start, this.video_file_end]
-                ];
                 var clip_layout = [
                     [this.clip_start, this.clip_end, ...(this.clip_length ? [this.clip_length] : [])],
                     [this.start_end_time_range],
@@ -6288,6 +6399,12 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                 var crop_layout = [
                     [this.crop]
                 ];
+                let add_files_layout = [
+                    [this.background_mode, this.background_color],
+                    [this.video_file, this.video_file_start, this.video_file_end],
+                    [this.audio_file, this.audio_file_start, this.audio_file_end],
+                    [this.subtitle_file]
+                ]
                 if (info.is_normal && !info.is_remote) {
                     crop_layout.push(this.detected_crops_images);
                 }
@@ -6301,9 +6418,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                     }
                     layout.push([this.fade_in_time, this.fade_out_time]);
                     if (!info.is_parent_merged) {
-                        layout.push([this.background_mode, this.background_color]);
-                        layout.push(...add_video_layout);
-                        layout.push([this.audio_file, this.subtitle_file]);
+                        layout.push(...add_files_layout);
                         layout.push(...crop_layout);
                         layout.push("---");
                         layout.push(...get_default_layout())
@@ -6316,9 +6431,7 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
                         layout.push(...clip_layout);
                         layout.push("---");
                         layout.push([this.fade_in_time, this.fade_out_time]);
-                        layout.push([this.background_mode, this.background_color]);
-                        layout.push(...add_video_layout);
-                        layout.push([this.audio_file, this.subtitle_file]);
+                        layout.push(...add_files_layout);
                         layout.push(...crop_layout);
                         layout.push("---");
                         layout.push(...get_default_layout());
@@ -6375,9 +6488,6 @@ export class MediaPropertyGroup extends ui.PropertyGroup {
  * @extends {ui.InputProperty<ItemType,ValueType,Settings,Events>} 
  */
 export class FileProperty extends ui.InputProperty {
-    /** @type {MediaInfo} */
-    #media_info;
-    get media_info() { return this.#media_info; }
 
     /** @param {Settings} settings */
     constructor(settings = {}) {
@@ -6410,7 +6520,10 @@ export class FileProperty extends ui.InputProperty {
         this.on("change", async(e)=>{
             if (!this.get_setting("file.check_media")) return;
             if (e.trigger) {
-                app.get_media_info(this.value).then(info=>this.update_next_frame());
+                app.get_media_info(this.value).then(info=>{
+                    this.emit("media_info", info);
+                    this.update_next_frame()
+                });
             }
         });
         /* this.on("render", ()=>{
@@ -6936,9 +7049,9 @@ export class Panel extends ui.UI {
     }
 }
 
-export class StreamSettings extends Panel {
+export class SessionStreamSettings extends Panel {
     constructor() {
-        super("stream-settings", {
+        super("session-stream-settings", {
             "panel.title": "Stream Settings",
         });
         this.props = new ui.PropertyGroup({
@@ -6946,7 +7059,7 @@ export class StreamSettings extends Panel {
             // "disabled": ()=>app.$.session.is_running,
         });
         this.body.append(this.props);
-        dom.add_class(this.props.elem, "stream-settings");
+        dom.add_class(this.props.elem, "session-stream-settings");
 
         var restart_elem = $(`<span>Restarting... [<span class="restart-time"></span>] <a class="restart-cancel" href="javascript:void(0)">Cancel</a></span>`)[0];
         restart_elem.querySelector(".restart-cancel").onclick =()=>{
@@ -6956,7 +7069,7 @@ export class StreamSettings extends Panel {
         this.stream_props_ui = new ui.Row({
             "class":"stream-properties",
             "align":"end",
-            "hidden": ()=>app.$._session._is_running || app.$._session.type !== SessionTypes.INTERNAL
+            "hidden": ()=>app.$._session._is_running || app.$._session.type !== constants.SessionTypes.INTERNAL
         })
         this.info_ui = new ui.UI(null, {
             "class":"stream-info",
@@ -6986,7 +7099,7 @@ export class StreamSettings extends Panel {
                     app.request("stop_stream");
                 } else {
                     var msg = "Another stream is already running, playback of all streams may by slower than realtime.\nAre you sure you want to start streaming?";
-                    if (Object.values(app.$.streams).filter(s=>s._is_running).length == 0 || confirm(msg)) {
+                    if (Object.values(app.$.session_streams).filter(s=>s._is_running).length == 0 || confirm(msg)) {
                         app.request("start_stream", null, {});
                         // app.$.push([`sessions/${app.$.session.id}/core/state`, "starting"]);
                     }
@@ -7011,14 +7124,14 @@ export class StreamSettings extends Panel {
                 new ScheduleStreamMenu().show();
             },
             "disabled":()=>!this.props.is_valid,
-            "hidden":()=>app.$._session._is_running || app.$._session.type == SessionTypes.EXTERNAL
+            "hidden":()=>app.$._session._is_running || app.$._session.type == constants.SessionTypes.EXTERNAL
         });
         this.handover_button = new ui.Button(`<button class="mini">Handover</button>`, {
             "id": "handover-button",
             "click": async (e)=>{
                 new HandoverSessionMenu().show();
             },
-            "hidden":()=>!app.$._session._is_running || app.$._session.type == SessionTypes.EXTERNAL
+            "hidden":()=>!app.$._session._is_running || app.$._session.type == constants.SessionTypes.EXTERNAL
         });
         this.config_button = new ui.Button(`<button class="mini icon"><i class="fas fa-cog"></i></button>`, {
             "id": "config-button",
@@ -7099,6 +7212,7 @@ export class StreamSettings extends Panel {
             ..._get_property_opts("resolution"),
             "name": "resolution",
             "label": "Resolution",
+            width: 140,
         });
         this.stream_props_ui.append(this.stream_resolution)
 
@@ -7150,7 +7264,8 @@ export class StreamSettings extends Panel {
             dom.set_text(restart_elem.querySelector(".restart-time"), `${restart_time}s`);
 
             var stream_info = {};
-            if (session.type === SessionTypes.INTERNAL) {
+            stream_info["ID"] = `${stream.id}`;
+            if (session.type === constants.SessionTypes.INTERNAL) {
                 stream_info["h264 Preset"] = `${stream["h264_preset"]}`;
                 stream_info["Video Bitrate"] = `${stream["video_bitrate"]}Kbps`;
                 stream_info["Audio Bitrate"] = `${stream["audio_bitrate"]}Kbps`;
@@ -7177,28 +7292,21 @@ export class StreamSettings extends Panel {
                 stream_info["Title"] = stream.title;
             }
             // }
-            var live_nms_session = stream._live_nms_session;
-            if (live_nms_session) {
-                var live = live_nms_session._live;
-                if (live) {
-                    if (live.url) {
-                        stream_info["Live URL"] = `<a href="${live.url}" target="_blank">${live.url}</a>`;
-                    }
-                    if (live.manifest_url) {
-                        stream_info["Live Manifest URL"] = `<a href="${live.manifest_url}" target="_blank">${live.manifest_url}</a>`;
-                    }
+            var live = stream._live;
+            if (live) {
+                if (live.url) {
+                    stream_info["Live URL"] = `<a href="${live.url}" target="_blank">${live.url}</a>`;
+                }
+                if (live.manifest_url) {
+                    stream_info["Live Manifest URL"] = `<a href="${live.manifest_url}" target="_blank">${live.manifest_url}</a>`;
                 }
                 /* if (live.thumbnail_url) {
                     stream_info["Thumbnail"] = `<a href="${live.thumbnail_url}" target="_blank">${new URL(live.thumbnail_url).pathname}</a>`;
                 } */
             }
-            var internal_nms_session = stream._internal_nms_session;
-            if (internal_nms_session) {
-                let url = new URL(`${app.get_media_server_base_url()}${internal_nms_session.publishStreamPath}`);
-                // url.search = new URLSearchParams(internal_session.publishArgs);
-                stream_info["Internal RTMP URL"] = `<a href="${url.toString()}" target="_blank">${url}</a>`;
-            }
-            stream_info["Output Bit Rate"] = utils.format_bits(stream.bitrate, "k")+"ps";
+            if (stream.rtmp_url) stream_info["RTMP URL"] = `<a href="${stream.rtmp_url.toString()}" target="_blank">${stream.rtmp_url}</a>`;
+            if (stream.socket) stream_info["Socket"] = stream.socket;
+            stream_info["Output Bit Rate"] = utils.format_bits(stream.bitrate * 8) + "ps";
             stream_info["Run Time"] = session._is_running ? utils.ms_to_timespan_str(stream._run_time) : 0;
 
             dom.rebuild(stream_info_el, Object.keys(stream_info), {
@@ -7208,7 +7316,7 @@ export class StreamSettings extends Panel {
                     var v = stream_info[k];
                     if (elem.__hash !== v) {
                         elem.__hash = v;
-                        elem.innerHTML = `${k}: ${v}`;
+                        elem.innerHTML = `<span class="key">${k}</span>: <span class="value">${v}</span>`;
                     }
                     return elem;
                 }
@@ -7270,7 +7378,7 @@ export class MediaPlayerPanel extends Panel {
         this.props.append(this.toggle_live_feed_button);
 
         var media_ui = new ui.UI(`<div class="ui-wrapper"></div>`, {
-            "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL,
+            "hidden": ()=>app.$._session.type === constants.SessionTypes.EXTERNAL,
         });
         this.props.append(media_ui);
 
@@ -7558,12 +7666,16 @@ video { width: 100% !important; height: 100% !important; }`;
                     "info": "Deinterlacing"
                 };
                 stats["V-RATE"] = {
-                    "value": utils.format_bits((stream.player.video_bitrate || 0)/8, "k")+"ps",
+                    "value": utils.format_bits((stream.player.video_bitrate || 0)) + "ps",
                     "info": "Video Bitrate"
                 };
                 stats["A-RATE"] = {
-                    "value": utils.format_bits((stream.player.audio_bitrate || 0)/8, "k")+"ps",
+                    "value": utils.format_bits((stream.player.audio_bitrate || 0)) + "ps",
                     "info": "Audio Bitrate"
+                };
+                stats["ASPECT"] = {
+                    "value": utils.nearest_aspect_ratio(stream.player.aspect_ratio).name,
+                    "info": "Aspect Ratio"
                 };
                 dom.rebuild(this.stats_elem, Object.entries(stats), {
                     add:([k,v], elem, index)=>{
@@ -7578,6 +7690,8 @@ video { width: 100% !important; height: 100% !important; }`;
             }
             dom.toggle_display(this.stats_elem, started);
 
+            var ar = stream._width / stream._height;
+            this.elem.style.setProperty("--aspect-ratio", ar)
             dom.toggle_display(this.live_feed_info_elem, app.settings.get("show_player_info"));
             dom.toggle_class(this.elem, "chapters-available", app.media.chapters.length > 0);
             
@@ -7596,7 +7710,7 @@ video { width: 100% !important; height: 100% !important; }`;
         var stream = session._stream;
         var show = app.settings.get("show_live_feed");
         var is_popped_out = !!windows["test-"+session.id];
-        var url = location.protocol === "https:" ? stream.wss_output_url : stream.ws_output_url;
+        var url = location.protocol === "https:" ? stream.wss_url : stream.ws_url;
         var has_started = session._is_running;
         var is_playable = !!(has_started && url);
         var buffer_duration = this.buffer_duration;
@@ -7606,12 +7720,12 @@ video { width: 100% !important; height: 100% !important; }`;
         dom.toggle_display(this.live_feed_popout_button, !is_popped_out);
 
         dom.toggle_display(this.live_feed_empty_elem, !is_playable);
-        dom.set_inner_html(this.live_feed_empty_elem, has_started ? "No live feed is available" : "Stream has not started");
+        dom.set_inner_html(this.live_feed_empty_elem, "Stream has not started");
         // this.live_feed_popout_button.dataset.toggled = is_popped_out;
         
         dom.set_inner_html(this.live_feed_info_elem, `Buffered: ${buffer_duration ? buffer_duration.toFixed(2) : "-"} secs`);
 
-        // if (buffer_duration < -2) force_reinit = true;
+        if (url !== this.live_feed_url) force_reinit = true;
 
         var init_flv_video = is_playable && show;
 
@@ -7643,7 +7757,8 @@ video { width: 100% !important; height: 100% !important; }`;
                 // set_style_property(this.live_feed_container_elem, "--aspect-ratio", this.video_el.videoWidth / this.video_el.videoHeight)
             });
             this.live_feed_video_wrapper.append(this.video_el);
-
+            
+            this.live_feed_url = url;
             this.flv_player = mpegts.createPlayer({
                 type: "flv",
                 url,
@@ -7713,7 +7828,7 @@ export class MediaSettingsPanel extends Panel {
     constructor() {
         super("media-settings", {
             "panel.title": "Media Settings",
-            "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL,
+            "hidden": ()=>app.$._session.type === constants.SessionTypes.EXTERNAL,
         });
 
         var mode_info = {
@@ -8251,7 +8366,7 @@ export class StreamMetricsPanel extends Panel {
         var type = this.#mode;
         // var type = ds.label.split(":").pop();
         if (type == "speed") return `${value.toFixed(3)}x`;
-        if (type == "bitrate") return utils.format_bits(value, "k")+"ps";
+        if (type == "bitrate") return utils.format_bits(value * 8) + "ps";
     }
     #update_pan(reset=false) {
         if (!this.chart.scales.x) return;
@@ -8340,7 +8455,7 @@ export class PlaylistPanel extends Panel {
             "panel.title": "Playlist",
             "panel.collapsible": false,
             "panel.draggable": ()=>!this.#is_fullscreen,
-            "hidden": ()=>app.$._session.type === SessionTypes.EXTERNAL,
+            "hidden": ()=>app.$._session.type === constants.SessionTypes.EXTERNAL,
             // "update_children": false,
         });
 
@@ -9951,9 +10066,13 @@ class PlaylistItemUI extends ui.UI {
                 }
             }
 
-            if (upload || download) {
-                let t = upload ? "upload" : "download";
-                this.progress = this.progress || new ProgressBar(t, upload || download);
+            if (item.upload_id || download) {
+                let t = download ? "download" : "upload";
+                if (item.upload_id && !upload) {
+                    problems.push({level: 2, text: "Upload failed."});
+                }
+                this.progress = this.progress || new ProgressBar(t);
+                this.progress.progress = upload || download;
                 icons.push(`<i class="fas fa-${t}"></i>`);
                 dom.set_children(extra_elem, [this.progress.elem]);
             } else {
@@ -10010,22 +10129,27 @@ class PlaylistItemUI extends ui.UI {
 }
 
 class ProgressBar extends ui.UI {
-    /** @param {"upload"|"download"} t @param {Progress$} data */
-    constructor(t, data) {
+    /** @param {"upload"|"download"} t */
+    constructor(t) {
         super(`<div class="progress-bar"><span class="percent"></span><span class="speed"></span></div>`);
 
         let percent_el = this.elem.querySelector(".percent");
         let speed_el = this.elem.querySelector(".speed");
         this.on("render", ()=>{
-            let is_cancelled = data.status == UPLOAD_STATUS.CANCELLED;
-            let p = data.total ? (data.bytes / data.total) : 0;
-            this.elem.title = is_cancelled ? "Cancelled" : `${utils.capitalize(t)}ing [${utils.format_bytes(data.bytes || 0)} / ${utils.format_bytes(data.total || 0)}]`;
+            var {bytes, total, speed, stage, stages} = this.progress ?? {};
+            bytes = bytes ?? 0;
+            total = total ?? 0;
+            speed = speed ?? 0;
+            let incomplete = !this.progress;
+            let p = total ? (bytes / total) : 0;
+            this.elem.classList.toggle("incomplete", incomplete);
+            this.elem.title = incomplete ? "Incomplete" : `${utils.capitalize(t)}ing [${utils.format_bytes(bytes, true)} / ${utils.format_bytes(total, true)}]`;
             dom.set_style_property(this.elem, "--progress",`${p*100}%`);
             let percent_text = [];
-            if (data.stages) percent_text.push(`${data.stage+1}/${data.stages}`);
+            if (stages) percent_text.push(`${stage+1}/${stages}`);
             percent_text.push(`${(p * 100).toFixed(2)}%`);
-            dom.set_inner_html(percent_el, is_cancelled ? "Cancelled" : percent_text.join(" | "));
-            dom.set_inner_html(speed_el, is_cancelled ? "Cancelled" : `${utils.format_bytes(data.speed || 0)}ps`);
+            dom.set_inner_html(percent_el, incomplete ? "Incomplete" : percent_text.join(" | "));
+            dom.set_inner_html(speed_el, incomplete ? "Incomplete" : `${utils.format_bytes(speed, true)}ps`);
         });
     }
 }
@@ -10338,7 +10462,7 @@ export class MainWebApp extends utils.EventEmitter {
 
         this.toast_container = this.elem.querySelector(".toast-container");
         new ui.UI(this.load_session_save_elem, {
-            "hidden": ()=>this.$._session.type === SessionTypes.EXTERNAL
+            "hidden": ()=>this.$._session.type === constants.SessionTypes.EXTERNAL
         })
         
         var right_elem = this.elem.querySelector(".session-header>.right");
@@ -10463,7 +10587,7 @@ export class MainWebApp extends utils.EventEmitter {
         /** @type {Record<PropertyKey,Panel>} */
         this.panels = {};
         
-        this.stream_settings = new StreamSettings();
+        this.stream_settings = new SessionStreamSettings();
         this.areas[0].append(this.stream_settings);
 
         this.playlist = new PlaylistPanel();
@@ -10841,7 +10965,6 @@ export class MainWebApp extends utils.EventEmitter {
         if (this.#updating) return;
         this.#updating = true;
         await this.blocking_updates.ready;
-        await ui.Modal.blocking_updates.ready;
         this.#update();
         this.#updating = false;
     }
@@ -10883,7 +11006,7 @@ export class MainWebApp extends utils.EventEmitter {
 
         if (this.$.disk.is_low && !disk_warn_shown) {
             disk_warn_shown = true;
-                new Toast(`<span>Disk space is low: ${(this.$.disk.free / this.$.disk.total * 100).toFixed(1)}% remaining, ${utils.format_bytes(this.$.disk.free)} free.</span>`).show();
+                new Toast(`<span>Disk space is low: ${(this.$.disk.free / this.$.disk.total * 100).toFixed(1)}% remaining, ${utils.format_bytes(this.$.disk.free, true)} free.</span>`).show();
         }
         
         document.body.dataset.playlist_id = this.playlist.id;
@@ -10893,13 +11016,6 @@ export class MainWebApp extends utils.EventEmitter {
 
         this.media.update();
         for (var root of this.roots) root.update();
-    }
-
-    get_media_server_base_url() {
-        var host = this.$.hostname;
-        var port = this.$.conf["rtmp_port"];
-        if (port != 1935) host += `:${port}`;
-        return `rtmp://${host}`;
     }
 
     load_font(id) {
@@ -11068,12 +11184,14 @@ export class MainWebApp extends utils.EventEmitter {
         if (!Array.isArray(items)) items = [items];
         if (!items.length) return;
         let {track_index, insert_pos, parent, register_history} = this.get_playlist_insert_options(opts);
+        var files = [];
 
         /** @type {PlaylistItem$[]} */
         var new_items = [];
-        var add_file = (data, index, parent_id, track_index)=>{
+        var add_item = (data, index, parent_id, track_index)=>{
             let id = dom.uuid4();
             let filename, props, children;
+            let upload_id;
             if (typeof data === "string") {
                 filename = data;
                 props = {};
@@ -11087,12 +11205,9 @@ export class MainWebApp extends utils.EventEmitter {
                         filename = electron.getPathForFile(file);
                     } else {
                         filename = file.name;
-                        file.id = id;
-                        this.upload_queue.add(file, {
-                            first_and_last_pieces_first: !!file.name.match(/\.mp4$/i),
-                            media: true,
-                            session: this.$._session.id,
-                        });
+                        upload_id = dom.uuid4();
+                        file.id = upload_id;
+                        files.push(file);
                     }
                 }
                 if (data instanceof PlaylistItem$) children = data._children;
@@ -11100,24 +11215,38 @@ export class MainWebApp extends utils.EventEmitter {
             } else {
                 throw new Error("Invalid playlist item data");
             }
-            var item = new PlaylistItem$({filename, id, index, track_index, parent_id, props});
+            var item = new PlaylistItem$({filename, id, index, track_index, parent_id, props, upload_id});
             new_items.push(item);
             if (children) {
-                children.forEach((c,i)=>add_file(c, i, item.id, c.track_index||0));
+                children.forEach((c,i)=>add_item(c, i, item.id, c.track_index||0));
             }
             return item;
         }
 
         items.forEach((c,i)=>{
-            add_file(c, insert_pos+i, parent.id, track_index);
+            add_item(c, insert_pos+i, parent.id, track_index);
         });
 
         parent._get_track(track_index).slice(insert_pos).forEach((item,i)=>{
             item.index = insert_pos+items.length+i;
         });
-        for (var item of new_items) this.$._session.playlist[item.id] = item;
+        for (var item of new_items) {
+            this.$._session.playlist[item.id] = item;
+        }
+        for (var file of files) {
+            this.$.uploads[file.id] = {}; // indicate that there is an upload so the progress bar doesnt flash red.
+        }
         
-        this.request("playlist_add", [new_items, {insert_pos, parent_id:parent.id, track_index, register_history}]);
+        this.request("playlist_add", [new_items, {insert_pos, parent_id:parent.id, track_index, register_history}])
+            .then(()=>{
+                for (var file of files) {
+                    this.upload_queue.add(file, {
+                        first_and_last_pieces_first: !!file.name.match(/\.mp4$/i),
+                        media: true,
+                        session: this.$._session.id,
+                    });
+                }
+            });
 
         this.update().then(()=>{
             this.playlist.set_selection(new_items);
@@ -11211,7 +11340,7 @@ export class MainWebApp extends utils.EventEmitter {
         items.forEach(i=>app.upload_queue.cancel(i.id));
         if (items.length == 0) return;
         // this also cancels it for other users:
-        this.request("cancel_upload", [items.map(item=>item.id)], {
+        this.request("cancel_upload", [items.map(item=>item.upload_id)], {
             show_spinner: false
         });
     }
@@ -11282,7 +11411,7 @@ export class MainWebApp extends utils.EventEmitter {
     // ---------------
 
     get_handover_sessions_options(include_none=true) {
-        var sessions = this.sessions_ordered.filter(s=>s.type===SessionTypes.INTERNAL && !s._is_running);
+        var sessions = this.sessions_ordered.filter(s=>s.type===constants.SessionTypes.INTERNAL && !s._is_running);
         var options = sessions.map(s=>s.name).map((n,i)=>[sessions[i].id,n])
         if (include_none) options.unshift(["", "-"]);
         return options;
@@ -11534,7 +11663,7 @@ export class MainWebApp extends utils.EventEmitter {
             var relpath = uri.slice(volume.uri.length);
             relpath = decodeURIComponent(relpath);
             if (!relpath.startsWith("/")) relpath = "/"+relpath;
-            return volume.id + btoa(unescape(encodeURIComponent(relpath))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'.').replace(/\.+$/,'');
+            return volume.elf_id + btoa(unescape(encodeURIComponent(relpath))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'.').replace(/\.+$/,'');
         }
     }
 

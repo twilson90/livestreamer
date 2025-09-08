@@ -1,6 +1,5 @@
 import http from "node:http";
 import WebSocket from "ws";
-import fs from "fs-extra";
 import path from "node:path";
 import {globals, utils, Logger, DataNodeID, DataNodeID$} from "./exports.js";
 /** @import { ClientServer } from './exports.js' */
@@ -45,7 +44,7 @@ export class Client extends DataNodeID {
         var ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress).split(",")[0];
 
         this.logger = new Logger(`client-${this.id}`);
-        this.logger.on("log", (log)=>this.server.logger.log(log));
+        this.server.logger.add(this.logger);
         
         this.$.user = req.user;
         this.$.ip = ip;
@@ -111,6 +110,7 @@ export class Client extends DataNodeID {
     _destroy() {
         delete this.server.clients[this.id];
         this.ws.close();
+        this.logger.destroy();
         super._destroy();
     }
 }

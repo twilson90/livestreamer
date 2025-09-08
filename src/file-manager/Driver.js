@@ -1,4 +1,4 @@
-import fs from "fs-extra";
+import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import stream from "node:stream";
@@ -73,7 +73,7 @@ export class Driver extends events.EventEmitter {
 	}
 
 	async init() {
-		await fs.mkdir(this.thumbnails_dir, {recursive:true});
+		await fs.promises.mkdir(this.thumbnails_dir, {recursive:true});
 		return this.__init();
 	}
 
@@ -242,14 +242,14 @@ export class Driver extends events.EventEmitter {
 	async archive(ids, dir, name) {
 		var tmp = await this.archivetmp(ids);
 		var dstid = await this.write(dir, name, this.register_stream(fs.createReadStream(tmp)));
-		await fs.rm(tmp);
+		await fs.promises.rm(tmp);
 		return dstid;
 	}
 
 	/** @param {ID} dstid */
 	async extracttmp(archiveid) {
 		var tmpdst = path.join(this.elfinder.tmp_dir, uuid.v4());
-		await fs.mkdir(tmpdst)
+		await fs.promises.mkdir(tmpdst)
 		var archivestream = await this.read(archiveid);
 		await new Promise(resolve=>{
 			var unzipperstream = unzipper.Extract({path:tmpdst});
@@ -263,14 +263,14 @@ export class Driver extends events.EventEmitter {
 	async extract(archiveid, dstid) {
 		var tmpdir = await this.extracttmp(archiveid);
 		var newids = [];
-		for (var tmp of await fs.readdir(tmpdir)) {
+		for (var tmp of await fs.promises.readdir(tmpdir)) {
 			var tmprel = upath.relative(this.elfinder.tmpvolume.root, upath.join(tmpdir, tmp));
 			var tree = await this.elfinder.tmpvolume.driver(null, async (d)=>{
 				return this.elfinder.copytree(d, tmprel, this, dstid);
 			})
 			newids.push(tree.id);
 		}
-		await fs.rm(tmpdir, {recursive:true});
+		await fs.promises.rm(tmpdir, {recursive:true});
 		return newids;
 	}
 
@@ -280,7 +280,7 @@ export class Driver extends events.EventEmitter {
 		if (stat.parent == this.thumbnails_dir) return id; // I am a thumbnail!
 		var tmbname = utils.md5([id, stat.size, stat.ts].join("_")) + ".webp";
 		var tmbpath = path.join(this.thumbnails_dir, tmbname);
-		if (!await fs.lstat(tmbpath).then((s)=>s.isFile()).catch(()=>null)) {
+		if (!await fs.promises.lstat(tmbpath).then((s)=>s.isFile()).catch(()=>null)) {
 			if (create) {
 				const buffer = await utils.streamToBuffer(await this.read(id)).catch(utils.noop); // catch if cannot read file (e.g. psds)
 				if (buffer) {
@@ -292,7 +292,7 @@ export class Driver extends events.EventEmitter {
 						.toFile(tmbpath)
 						.catch(() => null); // catch if cannot save (e.g. path too long)
 				} else {
-					await fs.writeFile(tmbpath, Buffer.from([]));
+					await fs.promises.writeFile(tmbpath, Buffer.from([]));
 				}
 			} else {
 				return "1";

@@ -1,14 +1,13 @@
 import events from "node:events";
 import net from "node:net";
 import path from "node:path";
-import fs from "fs-extra";
+import fs from "node:fs";
 import readline from "node:readline";
 import child_process from "node:child_process";
 import tree_kill from "tree-kill-promise";
-import {globals, utils, Logger} from "./exports.js";
+import {globals, utils, Logger, Cache} from "./exports.js";
 // import which from "which";
 
-const TIMEOUT = 10 * 1000;
 const default_observes = [
     "playlist",
     "playlist-count",
@@ -26,6 +25,59 @@ const default_options = {
     cwd: ".",
     ipc: false,
 };
+
+const features_cache = {};
+/** @return {Promise<{version:{},args:{},props:{},filters:{},libavfilters:{}}>} */
+async function get_features(executable) {
+    features_cache[executable] = features_cache[executable] || (async()=>{
+        var features = {
+            version: {},
+            args: {},
+            props: {},
+            filters: {},
+            libavfilters: {}
+        };
+        let get_version = async ()=>{
+            var str = (await utils.execa(executable, ["--version"])).stdout;
+            features.version.full = str;
+            features.version.mpv = str.match(/^mpv (\S+)/m)?.[1];
+            features.version.libplacebo = str.match(/^libplacebo version: (\S+)/m)?.[1];
+            features.version.ffmpeg = str.match(/^FFmpeg version: (\S+)/m)?.[1];
+            var libs = str.split(/^FFmpeg library versions:$/m)?.[1] ?? "";
+            for (let [_, lib, v] of libs.matchAll(/^\s+(\S+)\s+(\S+)$/gm)) {
+                features.version[lib] = v;
+            }
+        };
+        let get_options = async ()=>{
+            var str = (await utils.execa(executable, ["--list-options"])).stdout;
+            for (var m of str.matchAll(/^\s*--(\S+)(?:\s+(.+))?$/gm)) {
+                features.args[m[1]] = true;
+                features.props[m[1]] = true;
+                if (m[2]?.match(/^Flag /)) {
+                    features.args["no-" + m[1]] = true;
+                }
+            }
+        };
+        let get_filters = async (type)=>{
+            let str = (await utils.execa(executable, [`--${type}=help`])).stdout;
+            str.split(/^Available libavfilter filters:/m).forEach((str, i)=>{
+                var list = [...str.matchAll(/^\s*(\S+)/gm)].map(m=>m[1]);
+                for (let filter of list) {
+                    ((i==0)?features.filters:features.libavfilters)[filter] = true;
+                }
+            })
+        };
+        await Promise.all([
+            get_version(),
+            get_options(),
+            get_filters("vf"),
+            get_filters("af"),
+        ]);
+        return features;
+    })();
+
+    return features_cache[executable];
+}
 
 export class MPVWrapper extends events.EventEmitter {
     #message_id;
@@ -47,7 +99,7 @@ export class MPVWrapper extends events.EventEmitter {
     #args;
     #is_piped = false;
     #ended = false;
-    #id = utils.uuid4();
+    #id = "";
     #logger;
     /** @type {Promise<void>} */
     #done;
@@ -93,21 +145,23 @@ export class MPVWrapper extends events.EventEmitter {
     constructor(options) {
         super();
 
+        this.#id = utils.uuid4();
+
         this.#options = {
             ...default_options,
             executable: globals.app.mpv_path,
             ...options,
         };
-        
-        this.#socket_path = globals.app.get_socket_path(`mpv-${this.#id}`, true);
 
         this.#logger = new Logger("mpv");
     }
 
+    features() { return get_features(this.#options.executable); }
+
     /** @param {string[]} args */
     start(args) {
         if (this.#done) throw new Error("MPVWrapper already started");
-        var res = new Promise((resolve, reject)=>{
+        this.#done = new Promise((resolve, reject)=>{
             args = [
                 ...(args||[]),
                 // "--idle",
@@ -117,6 +171,7 @@ export class MPVWrapper extends events.EventEmitter {
                 // "--msg-level=ipc=v"
             ];
             if (this.#options.ipc) {
+                this.#socket_path = globals.app.get_socket_path(`mpv-${this.#id}`, true);
                 args.push(`--input-ipc-server=${this.#socket_path}`);
             }
             this.#is_piped = !!args.find(a=>a.match(/^--o=(-|pipe:)/));
@@ -127,7 +182,7 @@ export class MPVWrapper extends events.EventEmitter {
             this.#observed_prop_id_map = {};
             this.#observed_props = {};
             
-            // this.#logger.info("Starting MPV...");
+            this.#logger.debug("Starting MPV...");
             // this.#logger.debug("MPV args:", args);
             
             this.#process = child_process.spawn(this.#options.executable, args, {
@@ -153,7 +208,7 @@ export class MPVWrapper extends events.EventEmitter {
 
             this.#process.on("close", (e)=>{
                 this.#closed = true;
-                this.#socket.end(()=>this.#socket.destroy());
+                if (this.#socket) this.#socket.end(()=>this.#socket.destroy());
                 try { fs.unlinkSync(this.#socket_path); } catch { }
                 resolve();
             });
@@ -187,11 +242,11 @@ export class MPVWrapper extends events.EventEmitter {
                 })();
             }
         });
-        this.#done = res.catch(utils.noop);
-        return res;
+        return this.#done;
     }
 
     stop() {
+        if (!this.#socket) return;
         return Promise.race([
             this.#done,
             new Promise((resolve, reject)=>{
@@ -199,14 +254,18 @@ export class MPVWrapper extends events.EventEmitter {
                 this.once("idle", ()=>resolve());
                 this.command("stop").catch(reject);
             }),
-        ]);
+        ]).then(()=>true);
     }
 
     async destroy() {
         if (this.#destroyed) return;
         this.#destroyed = true;
-        await this.stop().catch(utils.noop);
+        await Promise.race([
+            utils.timeout(5000), 
+            this.stop().catch(utils.noop)
+        ]);
         await this.#kill();
+        this.logger.destroy();
     }
 
     #kill() {
@@ -226,10 +285,6 @@ export class MPVWrapper extends events.EventEmitter {
     #init_socket() {
         return new Promise(async (resolve, reject)=>{
             var giveup = false;
-            setTimeout(()=>{
-                giveup = true;
-                reject(new Error("socket timeout"));
-            }, TIMEOUT);
             var connected, onerror;
             while (!connected) {
                 if (this.#closed) reject(new Error("MPV process closed"));
@@ -286,7 +341,7 @@ export class MPVWrapper extends events.EventEmitter {
                 }
             });
             // this.version = await this.command("get_version");
-            this.#logger.info("MPV IPC successfully binded");
+            this.#logger.debug("MPV IPC successfully binded");
             resolve();
         });
     }
@@ -294,6 +349,7 @@ export class MPVWrapper extends events.EventEmitter {
     // ----------------------------------------------
 
     load_next(mode = "weak") {
+        if (!this.#socket) return;
         if ((this.#observed_props["playlist-pos"]+1) >= this.#observed_props["playlist-count"]) {
             if (mode === "weak") return false;
             return this.command("stop");
@@ -303,6 +359,7 @@ export class MPVWrapper extends events.EventEmitter {
     }
 
     playlist_prev(mode = "weak") {
+        if (!this.#socket) return;
         if (this.#observed_props["playlist-pos"] == 0) {
             if (mode === "weak") return false;
             return this.command("stop").then(()=>true);
@@ -311,12 +368,14 @@ export class MPVWrapper extends events.EventEmitter {
     }
     
     playlist_jump(position, force_play=true) {
+        if (!this.#socket) return;
         if (position < 0 || position >= this.#observed_props["playlist-count"]) return false;
         var prom = (force_play) ? this.command("playlist-play-index", position) : this.set_property("playlist-current-pos", position);
         return this.on_load_promise(prom);
     }
     
     async playlist_remove(position) {
+        if (!this.#socket) return;
         if (position < 0 || position >= this.#observed_props["playlist-count"]) return false;
         var item = this.#observed_props["playlist"][position];
         await this.on_playlist_change_promise(this.command("playlist-remove", position));
@@ -324,31 +383,37 @@ export class MPVWrapper extends events.EventEmitter {
     }
     
     playlist_move(index1, index2) {
+        if (!this.#socket) return;
         return this.on_playlist_change_promise(this.command("playlist-move", index1, index2));
     }
     
     // removes every file from playlist EXCEPT currently played file.
     playlist_clear() {
+        if (!this.#socket) return;
         if (this.#observed_props["playlist-count"] == 0) return;
         var n = (this.#observed_props["playlist-pos"] > -1) ? 1 : 0;
         return this.on_playlist_change_promise(this.command("playlist-clear"), n);
     }
     
     loadlist(url, flags = "replace") {
+        if (!this.#socket) return;
         var prom = this.command("loadlist", url, flags);
         if (flags == "append") return this.on_playlist_change_promise(prom);
         return this.on_load_promise(prom);
     }
 
     set_property(property, value) {
+        if (!this.#socket) return;
         return this.command("set_property", property, value);
     }
 
     get_property(property) {
+        if (!this.#socket) return;
         return this.command("get_property", property);
     }
 
     add_property(property, value) {
+        if (!this.#socket) return;
         return this.command("add", property, value);
     }
 
@@ -357,10 +422,12 @@ export class MPVWrapper extends events.EventEmitter {
     }
 
     cycle_property(property) {
+        if (!this.#socket) return;
         return this.command("cycle", property);
     }
 
     observe_property(property) {
+        if (!this.#socket) return;
         if (this.#observed_prop_id_map[property] !== undefined) return;
         const prop_id = ++this.#observed_id;
         this.#observed_prop_id_map[property] = prop_id;
@@ -368,6 +435,7 @@ export class MPVWrapper extends events.EventEmitter {
     }
 
     unobserve_property(property) {
+        if (!this.#socket) return;
         if (this.#observed_prop_id_map[property] === undefined) return;
         const prop_id = this.#observed_prop_id_map[property];
         delete this.#observed_prop_id_map[property];
@@ -375,10 +443,12 @@ export class MPVWrapper extends events.EventEmitter {
     }
 
     request_log_messages(level) {
+        if (!this.#socket) return;
         return this.command("request_log_messages", level);
     }
 
     async seek(seconds, flags="absolute+exact") {
+        if (!this.#socket) return;
         var msg_handler;
         let seek_event_started = false;
         return new Promise((resolve,reject)=>{
@@ -400,7 +470,8 @@ export class MPVWrapper extends events.EventEmitter {
 
     // need to figurte out if mpv is version 0.38 or later, then we can add index as 3rd  param.
     /** @returns {Promise<any,MPVLoadFileError>} */
-    async loadfile(source, flags = "replace", index = -1, options = null) { // 
+    async loadfile(source, flags = "replace", index = -1, options = null) {
+        if (!this.#socket) return;
         var params = [source, flags]; //, options
         options = options || {};
         if (this.#version[0] == 0 && this.#version[1] < 38) {
@@ -427,6 +498,7 @@ export class MPVWrapper extends events.EventEmitter {
     // ----------------------------------------------
 
     async command(...command) {
+        if (!this.#socket) return;
         return new Promise(async (resolve, reject)=>{
             const request_id = ++this.#message_id;
             const msg = { command, request_id };
@@ -445,6 +517,7 @@ export class MPVWrapper extends events.EventEmitter {
 
     // remember playlist-count observe message always comes after playlist
     async on_playlist_change_promise(promise, count) {
+        if (!this.#socket) return;
         var handler;
         await new Promise((resolve, reject)=>{
             // setTimeout(()=>reject(`on_playlist_change_promise timed out`), TIMEOUT);
@@ -466,6 +539,7 @@ export class MPVWrapper extends events.EventEmitter {
 
     /** @param {Promise<any,MPVLoadFileError>} promise */
     async on_load_promise(promise) {
+        if (!this.#socket) return;
         var handler;
         let start_event;
         var load_id = ++this.#load_id;

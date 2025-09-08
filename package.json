@@ -36,13 +36,15 @@
     "start-external-stream": "tests\\start-external-stream.bat",
     "start-session-stream": "tests\\start-session-stream.bat",
     "start-live-stream": "tests\\start-live-stream.bat",
-    "docker:start": "docker-compose up -d --build",
-    "docker:stop": "docker-compose down"
+    "docker:build": "docker build --build-context mpv=../livestreamer-mpv/out/debian/latest -t livestreamer -f Dockerfile .",
+    "docker:start": "docker compose up -d --build",
+    "docker:stop": "docker compose down"
   },
   "dependencies": {
     "@google-cloud/local-auth": "^3.0.1",
     "@googleapis/drive": "^12.0.0",
     "archiver": "^7.0.1",
+    "async-mutex": "^0.5.0",
     "basic-auth": "^2.0.1",
     "basic-ftp": "^5.0.5",
     "body-parser": "^1.20.3",
@@ -58,10 +60,9 @@
     "encoding-japanese": "^2.2.0",
     "execa": "^9.3.1",
     "express": "^4.21.0",
-    "fs-extra": "^11.2.0",
     "glob": "^11.0.0",
     "hammerjs": "^2.0.8",
-    "hls.js": "^1.6.7",
+    "hls.js": "^1.6.10",
     "http-proxy-node16": "^1.0.6",
     "http-terminator": "^3.2.0",
     "is-image": "^3.1.0",
@@ -100,7 +101,7 @@
     "unzip-stream": "^0.3.4",
     "upath": "^2.0.1",
     "uuid": "^10.0.0",
-    "video.js": "^8.17.4",
+    "video.js": "^8.23.4",
     "which": "^5.0.0",
     "ws": "^8.18.0"
   },

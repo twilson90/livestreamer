@@ -1,7 +1,6 @@
 export * from "./Cache.js";
 export * from "./Driver.js";
 export * from "./ElFinder.js";
-export * from "./ElFinderEx.js";
 export * from "./Volume.js";
 export * as drivers from "./drivers/exports.js";
 export * as errors from "./errors.js";

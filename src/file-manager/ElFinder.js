@@ -1,8 +1,7 @@
 import express, { Router } from "express";
 import path from "node:path";
 import multer from "multer";
-import fs from "fs-extra";
-import crypto from "node:crypto";
+import fs from "node:fs";
 import bodyParser from "body-parser";
 import {errors, globals, Volume, drivers} from "./exports.js";
 import {utils, constants} from "../core/exports.js";
@@ -40,7 +39,39 @@ export class ElFinder {
 
 	/** @param {Express} express @param {object} config */
 	constructor(express, config) {
-		this.commands = new Set(['abort','archive','callback','chmod','dim','duplicate','editor','extract','file','get','info','ls','mkdir','mkfile'/* ,'netmount' */,'open','parents','paste','put','rename','resize','rm','search','size','subdirs','tmb','tree','upload','url','zipdl']);
+		this.commands = new Set([
+			'abort',
+			'archive',
+			'callback',
+			'chmod',
+			'dim',
+			'duplicate',
+			'editor',
+			'extract',
+			'file',
+			'get',
+			'info',
+			'ls',
+			'mkdir',
+			'mkfile',
+			/* ,'netmount' */
+			'open',
+			'parents',
+			'paste',
+			'put',
+			'rename',
+			'resize',
+			'rm',
+			'search',
+			'size',
+			'subdirs',
+			'tmb',
+			'tree',
+			'upload',
+			'url',
+			'zipdl',
+			'listtree'
+		]);
 
 		this.#elfinder_dir = path.join(globals.app.appdata_dir, "elfinder");
 		this.#netmounts_dir = path.join(this.#elfinder_dir, "netmounts");
@@ -113,16 +144,16 @@ export class ElFinder {
 	}
 
 	async #init() {
-		await fs.mkdir(this.#thumbnails_dir, {recursive:true});
-		await fs.mkdir(this.#uploads_dir, {recursive:true});
-		await fs.emptyDir(this.#uploads_dir);
-		await fs.mkdir(this.#tmp_dir, {recursive:true});
-		await fs.emptyDir(this.#tmp_dir);
-		await fs.mkdir(this.#netmounts_dir, {recursive:true});
-		await fs.mkdir(this.#volumes_dir, {recursive:true});
+		await fs.promises.mkdir(this.#thumbnails_dir, {recursive:true});
+		await fs.promises.rmdir(this.#uploads_dir, {recursive:true});
+		await fs.promises.mkdir(this.#uploads_dir, {recursive:true});
+		await fs.promises.rmdir(this.#tmp_dir, {recursive:true});
+		await fs.promises.mkdir(this.#tmp_dir, {recursive:true});
+		await fs.promises.mkdir(this.#netmounts_dir, {recursive:true});
+		await fs.promises.mkdir(this.#volumes_dir, {recursive:true});
 
 		var load_config = async (id)=>{
-			try { return JSON.parse(await fs.readFile(path.join(this.#volumes_dir, id), "utf8")); } catch (e) {}
+			try { return JSON.parse(await fs.promises.readFile(path.join(this.#volumes_dir, id), "utf8")); } catch (e) {}
 		}
 
 		// always first so temp gets id v0_ by default.
@@ -136,15 +167,15 @@ export class ElFinder {
 			this.register_volume(volume);
 		}
 
-		for (var id of await fs.readdir(this.#volumes_dir)) {
+		for (var id of await fs.promises.readdir(this.#volumes_dir)) {
 			var config = await load_config(id);
 			if (!config) continue;
 			var volume = new Volume(this, {...config, id});
 			this.register_volume(volume);
 		}
 
-		/* for (var netkey of await fs.readdir(this.#netmounts_dir)) {
-			var config = JSON.parse(await fs.readFile(path.join(this.#netmounts_dir, netkey), "utf8"));
+		/* for (var netkey of await fs.promises.readdir(this.#netmounts_dir)) {
+			var config = JSON.parse(await fs.promises.readFile(path.join(this.#netmounts_dir, netkey), "utf8"));
 			await new Volume(this, config).register();
 		} */
 

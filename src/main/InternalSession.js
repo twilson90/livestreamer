@@ -1,6 +1,6 @@
-import fs from "fs-extra";
+import fs from "node:fs";
 import path from "node:path";
-import {globals, SessionTypes, MediaProps, Download, Session, InternalSessionProps, PlaylistItemProps, PlaylistItemPropsProps, Session$, StreamSettings$, DEFAULT_PROBE_MEDIA_OPTS} from "./exports.js";
+import {globals, MediaProps, Download, Session, InternalSessionProps, PlaylistItemProps, PlaylistItemPropsProps, Session$, StreamSettings$, DEFAULT_PROBE_MEDIA_OPTS} from "./exports.js";
 import {utils, FFMPEGWrapper, MPVLoadFileError, History, History$, AccessControl, constants} from "../core/exports.js";
 /** @import {MediaInfo, Session$, ProbeMediaOpts, LoadFileOpts} from "./exports.js" */
 
@@ -60,6 +60,7 @@ export class PlaylistItem$ {
     filename = "";
     /** @type {typeof PlaylistItemPropsProps} */
     props = {};
+    upload_id = null;
 }
 
 /** @typedef {{id:string, parent_id:string, index:number, track_index:number, filename:string, props:Record<PropertyKey,any>}} PlaylistEntry$ */
@@ -99,7 +100,7 @@ export class InternalSession extends Session {
 
     /** @param {string} id @param {string} name */
     constructor(id, name) {
-        super(id ?? globals.app.generate_uid("internal-session"), new InternalSession$(), SessionTypes.INTERNAL, utils.get_defaults(InternalSessionProps));
+        super(id ?? globals.app.generate_uid("internal-session"), new InternalSession$(), constants.SessionTypes.INTERNAL, utils.get_defaults(InternalSessionProps));
 
         this.$.name = name;
         
@@ -163,7 +164,7 @@ export class InternalSession extends Session {
     }
 
     async move_autosave_dir() {
-        await fs.rename(this.saves_dir, path.join(globals.app.old_saves_dir, this.id));
+        await fs.promises.rename(this.saves_dir, path.join(globals.app.old_saves_dir, this.id));
     }
 
     /** @param {string[]} filenames */
@@ -313,6 +314,8 @@ export class InternalSession extends Session {
                 var filename = this.#all_files_iterator.next().value;
                 if (filename) this.update_media_info(filename, {silent:true});
             }
+        }
+        if (this.#ticks % 30 == 0) {
             if (this.is_running) {
                 if (this.player.duration && this.player.time_pos >= this.player.duration - 60) {
                     this.prepare_next_playlist_item();
@@ -324,9 +327,8 @@ export class InternalSession extends Session {
     }
 
     prepare_next_playlist_item() {
-        if (this.#next_parsed_playlist_item) return;
-        var next = this.get_playlist_adjacent_item(this.$.playlist_id);
-        this.#next_parsed_playlist_item = this.player.parse_item(next);
+        var next = this.get_playlist_adjacent_item(this.$.playlist_id, 1);
+        this.player.parse_item(next);
     }
 
     /** @param {string[]} ids */
@@ -478,7 +480,7 @@ export class InternalSession extends Session {
         this.playlist_remove(Object.keys(this.$.playlist), opts);
     }
 
-    async detect_crop(id) {
+    async detect_crop(id, start) {
         var item = this.$.playlist[id];
         if (!item) return;
         
@@ -495,22 +497,52 @@ export class InternalSession extends Session {
         var t0 = Date.now();
         var n = 5; // num keyframes to sample.
         var props = item.props || {};
-        var start = props.clip_start || 0;
+        start = start ?? 0
         // var duration = mi.duration;
         // start = utils.clamp(start, 0, Math.max(0,duration - 60));
         // var interval = utils.clamp((duration-1)/n, 0, 10);
         var filepath = utils.pathify(filename);
         var dir = path.join(globals.app.screenshots_dir, id);
-        await fs.mkdir(dir, {recursive:true});
+
+        await fs.promises.rm(dir, {recursive:true, force:true});
+        await fs.promises.mkdir(dir, {recursive:true});
+
+        var ffmpeg = new FFMPEGWrapper();
+        var features = await ffmpeg.features();
+
         var vfs = [
+            // `fps=1`,
             `cropdetect=limit=24:round=2:reset_count=1:skip=0`,
-            `scale=${ow}:${oh}`,
+            `scale=width=(iw*sar)*min(${ow}/(iw*sar)\\,${oh}/ih):height=ih*min(${ow}/(iw*sar)\\,${oh}/ih):force_divisible_by=2`,
             `setsar=1/1`,
-            `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape_file_path(globals.app.resources.get_path("fonts/RobotoMono-Regular.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`,
         ];
+
+        if (features.filters.drawtext) {
+            vfs.push(
+                `drawtext=text='%{pts\\:hms}':fontfile='${utils.ffmpeg_escape(globals.app.resources.get_path("fonts/RobotoMono-Regular.ttf"))}':fontsize=18:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w-10):y=(h-text_h-10)`
+            );
+        }
+        var ffmpeg_args = [
+            "-threads", "1",
+            "-fflags", "+genpts+igndts",
+            // `-avoid_negative_ts`,`make_zero`,
+            "-skip_frame", "nokey",
+            '-noaccurate_seek',
+            `-copyts`, `-start_at_zero`,
+            "-ss", start,
+            "-i", filepath,
+            // ...(interval ? ["-r", 1/interval] : []),
+            `-f`, "image2",
+            // "-max_muxing_queue_size", "9999",
+            "-vf", vfs.join(","),
+            "-fps_mode", "vfr",
+            "-vframes", String(n),
+            "-y",
+            `%3d.jpg`,
+        ];
+
         /** @type {({pts:number, rect:utils.Rectangle})[]} */
         var rects = [];
-        var ffmpeg = new FFMPEGWrapper();
         ffmpeg.on("line", (line)=>{
             console.log(line);
             var m = String(line).match(/crop=(.+?):(.+?):(.+?):(.+?)$/);
@@ -522,27 +554,16 @@ export class InternalSession extends Session {
                 rects.push({pts, rect});
             }
         });
-        var ffmpeg_args = [
-            "-threads", "1",
-            "-skip_frame", "nokey",
-            '-noaccurate_seek',
-            "-ss", start,
-            "-i", filepath,
-            // ...(interval ? ["-r", 1/interval] : []),
-            `-f`, "image2",
-            // "-max_muxing_queue_size", "9999",
-            "-vf", vfs.join(","),
-            "-fps_mode", "passthrough",
-            "-vframes", String(n+2),
-            "-y",
-            `%d.jpg`,
-        ];
-
         await ffmpeg.start(ffmpeg_args, {cwd: dir}).catch((e)=>{
             this.logger.error(new Error(`Failed to detect crop: ${e.message}`));
         });
 
-        var files = await fs.readdir(dir);
+        var files = await fs.promises.readdir(dir)
+        files = await Promise.all(files.map(async f=>{
+            var newf = utils.uuid4()+".jpg";
+            await fs.promises.rename(path.join(dir, f), path.join(dir, newf));
+            return newf;
+        }));
         rects = rects.slice(-n);
         var t1 = Date.now();
         var r = rects.length ? utils.Rectangle.union(...rects.map(r=>r.rect)) : null;
@@ -552,7 +573,7 @@ export class InternalSession extends Session {
             var url = `/screenshots/${id}/${f}`;
             return {url, ...r}
         }).filter(c=>c);
-        utils.sort(crops, c=>c.pts);
+        // utils.sort(crops, c=>c.pts);
         var result = {
             crops,
             combined: r,
@@ -665,15 +686,13 @@ export class InternalSession extends Session {
         let {register_history} = opts ?? {};
         if (register_history != false) this.playlist_history.push(`Playlist Removed ${ids.length} items`);
         if (!Array.isArray(ids)) ids = [ids];
-
-        var curr_index = this.#flat_playlist_index_map.get(this.$.playlist[this.$.playlist_id])
-        var next_items = this.#flat_playlist.slice(curr_index);
-
-        for (var id of ids) this.#playlist_remove(id);
+        var curr_index = this.#flat_playlist_index_map.get(this.$.playlist[this.$.playlist_id]);
+        for (var id of ids) {
+            this.#playlist_remove(id);
+        }
         this.#playlist_update();
-
-        if (this.is_running) {
-            var next_item = next_items.find(i=>i.id in this.$.playlist);
+        if (this.is_running && !(this.$.playlist_id in this.$.playlist)) {
+            var next_item = this.#flat_playlist[curr_index];
             this.playlist_play(next_item ? next_item.id : null);
         }
     }
@@ -735,7 +754,7 @@ export class InternalSession extends Session {
 
     async load_autosave(filename) {
         var fullpath = path.join(this.saves_dir, filename);
-        var data = JSON.parse(await fs.readFile(fullpath, "utf8"));
+        var data = JSON.parse(await fs.promises.readFile(fullpath, "utf8"));
         await this.load(data);
     }
 
@@ -792,7 +811,7 @@ export class InternalSession extends Session {
         
         var json = JSON.stringify($);
         var fullpath = path.join(this.saves_dir, filename);
-        var old_json = await fs.readFile(fullpath, "utf8").catch(utils.noop);
+        var old_json = await fs.promises.readFile(fullpath, "utf8").catch(utils.noop);
         if (json === old_json) return;
 
         if (utils.is_empty(diff) && this.#autosaves.length) {
@@ -803,12 +822,12 @@ export class InternalSession extends Session {
             this.#autosaves.push(filename);
         }
 
-        await globals.app.safe_write_file(fullpath, json);
+        await utils.safe_write_file(fullpath, json);
         
         while (this.#autosaves.length > globals.app.conf["main.autosaves_limit"]) {
             var filename = this.#autosaves.shift();
             var f = path.join(this.saves_dir, filename);
-            await fs.unlink(f).catch(utils.noop);
+            await fs.promises.unlink(f).catch(utils.noop);
         }
 
         return $;
@@ -824,7 +843,7 @@ export class InternalSession extends Session {
             var data;
             var fullpath = path.join(this.saves_dir, f.filename);
             try {
-                data = JSON.parse(await fs.readFile(fullpath, "utf8"));
+                data = JSON.parse(await fs.promises.readFile(fullpath, "utf8"));
             } catch (e) {
                 this.logger.error(`malformed json: '${fullpath}'`);
                 continue;
@@ -866,7 +885,7 @@ export class InternalSession extends Session {
     }
 
     async reload(remember_time_pos=false) {
-        return this.playlist_play(this.$.playlist_id, { start: remember_time_pos ? this.$.time_pos : 0, pause: this.player.$.paused });
+        this.playlist_play(this.$.playlist_id, { start: remember_time_pos ? this.$.time_pos : 0, pause: this.player.$.paused });
     }
 
     /** @param {string} id @param {LoadFileOpts} opts */
@@ -962,7 +981,7 @@ export class InternalSession extends Session {
         if (opts.volume_speed !== undefined) this.$.volume_speed = opts.volume_speed;
         if (opts.fade_out_speed !== undefined) this.$.fade_out_speed = opts.fade_out_speed;
         if (this.is_running) {
-            this.player?.mpv?.update_volume();
+            this.player?.update_volume();
         }
     }
 
@@ -977,7 +996,7 @@ export class InternalSession extends Session {
     }
 
     handover(session) {
-        this.stream.attach(session); // , false
+        return this.stream.attach(session); // , false
     }
 }
 
@@ -1030,11 +1049,9 @@ function fix_session($, warn) {
     return $;
 }
 
-export default InternalSession;
-
 function fix_playlist_item(item, $) {
     if (typeof item !== "object" || item === null) item = {filename: item ? String(item) : ""};
-    var {id, filename, props, index, parent_id, track_index} = item;
+    var {id, filename, props, index, parent_id, track_index, upload_id} = item;
     id = String(id ?? utils.uuidb64());
     filename = filename || "";
     props = props || {};
@@ -1055,15 +1072,17 @@ function fix_playlist_item(item, $) {
     index = index || 0;
     track_index = track_index || 0;
     while ($ && $[id]) id = utils.uuidb64();
-    return {id, filename, index, parent_id, track_index, props};
+    return utils.remove_nulls({id, filename, index, parent_id, track_index, props, upload_id});
 }
 
-/** @param {Record<string,any>} $ @param {Record<string,{__default__:any}>} defaults @param {string} name @param {any} value */
-function set_prop($, defaults, name, value) {
-    if (!(name in defaults)) return;
-    if (JSON.stringify(value) === JSON.stringify(defaults[name].__default__) || value == null) {
-        delete $[name];
-    } else {
-        $[name] = value;
-    }
-}
+// /** @param {Record<string,any>} $ @param {Record<string,{__default__:any}>} defaults @param {string} name @param {any} value */
+// function set_prop($, defaults, name, value) {
+//     if (!(name in defaults)) return;
+//     if (JSON.stringify(value) === JSON.stringify(defaults[name].__default__) || value == null) {
+//         delete $[name];
+//     } else {
+//         $[name] = value;
+//     }
+// }
+
+export default InternalSession;

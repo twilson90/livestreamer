@@ -21,7 +21,6 @@ import { create_disable_scrollbars_stylesheet_and_class } from "../create_disabl
 *  "modal.header": UISetting<ThisType, boolean>,
 *  "modal.width": UISetting<ThisType, number|string>,
 *  "modal.items": UISetting<ThisType, ItemType[]>,
-*  "modal.blocking": UISetting<ThisType, boolean>,
 *  "modal.close": UISetting<ThisType, boolean>,
 *  "modal.hide": (this: ThisType) => void,
 *  "modal.show": (this: ThisType) => void,
@@ -41,6 +40,8 @@ import { create_disable_scrollbars_stylesheet_and_class } from "../create_disabl
 * @template {ModalEvents} [Events=ModalEvents]
 * @extends {UI<Settings,Events>}
 */
+
+const DEFAULT_WIDTH = 600;
 
 export class Modal extends UI {
     get showing() { return !!this.fb; }
@@ -68,7 +69,6 @@ export class Modal extends UI {
     static showing = new Set();
     /** @type {Set<Modal>} */
     static instances = new Set();
-    static blocking_updates = new Set();
 
     static defaults = {
         root: document.body,
@@ -77,10 +77,9 @@ export class Modal extends UI {
         title_overflow: false,
         header: true,
         footer: true,
-        width: undefined,
+        width: DEFAULT_WIDTH,
         items: [undefined],
         return_value: (r)=>r,
-        blocking: true,
         close: true,
     };
 
@@ -96,6 +95,8 @@ export class Modal extends UI {
         };
 
         super(elem, settings);
+        
+        this.elem.setAttribute('tabindex', '-1');
         
         this.#root = this.get_setting("modal.root") || document.body;
         
@@ -189,12 +190,15 @@ export class Modal extends UI {
             this.#root.append(this.elem);
             force_reflow(this.elem);
             this.elem.classList.add("showing");
+            this.elem.style.zIndex = 9999+Modal.showing.size;
+
+            // document.activeElement.blur();
+            this.elem.focus();
 
             this.#showing_promise = new Promise(resolve=>{
                 this.#showing_resolve = resolve;
             }).finally(()=>this.#showing_promise = null);
-
-            if (this.get_setting("modal.blocking")) Modal.blocking_updates.add(this.#showing_promise);
+            
             Modal.showing.add(this);
 
             this.#root.classList.add(this.#disable_scroll_class);
@@ -247,7 +251,6 @@ export class Modal extends UI {
     hide() {
         if (!this.#showing_promise) return;
         Modal.showing.delete(this);
-        Modal.blocking_updates.delete(this.#showing_promise);
         if (Modal.showing.size == 0) this.#root.classList.remove(this.#disable_scroll_class);
         window.removeEventListener("keydown", this.#on_key_down);
         this.emit("hide");

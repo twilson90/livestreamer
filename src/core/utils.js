@@ -1,4 +1,4 @@
-import fs from "fs-extra";
+import fs from "node:fs";
 import path from "node:path";
 import child_process from "node:child_process";
 import stream from "node:stream";
@@ -10,14 +10,18 @@ import is_image from "is-image";
 import { execa } from "execa";
 import pidtree from "pidtree";
 import { Agent, setGlobalDispatcher } from 'undici'
+import { Mutex } from "async-mutex";
 import { glob, Glob } from "glob";
 import {noop} from "../utils/noop.js";
 import {pathify} from "../utils/pathify.js";
 import { fileURLToPath } from "url";
 import { StopWatchBase } from "../utils/StopWatch.js";
 export * from "../utils/exports.js";
+import { md5 } from "../utils/md5.js";
+import globals from "./globals.js";
 
 const speed_window = 16;
+const safe_write_mutex_map = {};
 
 /** @import { Path } from "glob"; */
 /** @import { Logger } from "../core/exports.js"; */
@@ -35,9 +39,6 @@ const speed_window = 16;
 
 export function is_windows() { return !!process.platform.match(/^win/i); }
 
-/** @template T @param {any} o @param {T} type @returns {T} */
-export function cast(o, type) { return o; }
-
 export function strip_ext(name) {
     const extension = path.extname(name);
     if (!extension) {
@@ -46,49 +47,63 @@ export function strip_ext(name) {
     return name.slice(0, -extension.length);
 }
 
-export async function read_last_lines(input_file_path, max_lines, encoding, buffer_size) {
-    buffer_size = buffer_size || 16 * 1024;
-    const nl = "\n".charCodeAt(0);
-    var [stat, file] = await Promise.all([
-        fs.stat(input_file_path),
-        fs.open(input_file_path, "r")
-    ]);
-    let lines = [];
-    var chunk = Buffer.alloc(buffer_size);
-    let leftover = [];
-    var add_line = (buffer)=>{
-        lines.push(encoding ? buffer.toString(encoding) : buffer);
-    }
-    let pos = stat.size;
-    while (pos) {
-        pos -= buffer_size
-        if (pos < 0) {
-            buffer_size += pos;
-            pos = 0;
+export async function empty_dir(dirPath) {
+    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+            await fs.promises.rm(fullPath, { recursive: true, force: true });
+        } else {
+            await fs.promises.unlink(fullPath);
         }
-        await fs.read(file, chunk, 0, buffer_size, pos);
-        let i = buffer_size;
-        let last_nl_index = buffer_size;
-        while (i--) {
-            if (chunk[i] === nl) {
-                let temp = chunk.subarray(i+1, last_nl_index);
-                if (leftover.length) {
-                    temp = Buffer.from([...temp, ...leftover]);
-                    leftover = [];
+    }
+}
+
+export async function read_last_lines(input_file_path, max_lines, encoding="utf-8", buffer_size = 16 * 1024) {
+    let lines = [];
+    const nl = "\n".charCodeAt(0);
+    const fd = await fs.promises.open(input_file_path, "r");
+
+    try {
+        const stat = await fs.promises.stat(input_file_path);
+        var chunk = Buffer.alloc(buffer_size);
+        let leftover = [];
+        /** @param {Buffer} buffer */
+        var add_line = (buffer)=>{
+            lines.push(encoding ? buffer.toString(encoding) : buffer);
+        }
+        let pos = stat.size;
+        while (pos) {
+            pos -= buffer_size
+            if (pos < 0) {
+                buffer_size += pos;
+                pos = 0;
+            }
+            await fd.read(chunk, 0, buffer_size, pos);
+            let i = buffer_size;
+            let last_nl_index = buffer_size;
+            while (i--) {
+                if (chunk[i] === nl) {
+                    let temp = chunk.subarray(i+1, last_nl_index);
+                    if (leftover.length) {
+                        temp = Buffer.from([...temp, ...leftover]);
+                        leftover = [];
+                    }
+                    add_line(temp);
+                    last_nl_index = i;
+                    if (lines.length >= max_lines) break;
                 }
-                add_line(temp);
-                last_nl_index = i;
-                if (lines.length >= max_lines) break;
+            }
+            if (lines.length >= max_lines) break;
+            leftover = Buffer.from([...chunk.subarray(0, last_nl_index), ...leftover]);
+            if (pos == 0) {
+                add_line(leftover);
             }
         }
-        if (lines.length >= max_lines) break;
-        leftover = Buffer.from([...chunk.subarray(0, last_nl_index), ...leftover]);
-        if (pos == 0) {
-            add_line(leftover);
-        }
+        lines.reverse();
+    } finally {
+        await fd.close();
     }
-    lines.reverse();
-    await fs.close(file);
     return lines;
 }
 
@@ -96,7 +111,7 @@ export {is_image};
 
 export async function is_dir_empty(p) {
     try {
-        const directory = await fs.opendir(p);
+        const directory = await fs.promises.opendir(p);
         const entry = await directory.read();
         await directory.close();
         return entry === null;
@@ -107,7 +122,7 @@ export async function is_dir_empty(p) {
 
 export async function can_write_file(filepath, size) {
     try {
-        const stats = fs.statfs(path.parse(filepath).root);
+        const stats = fs.promises.statfs(path.parse(filepath).root);
         const free = stats.bsize * stats.bfree;
         return free >= size;
     } catch (error) {
@@ -122,7 +137,7 @@ export async function unique_filename(filepath) {
     let filename = path.basename(filepath, ext);
     let dir = path.dirname(filepath);
     while (true) {
-        let stat = await fs.stat(filepath).catch(noop);
+        let stat = await fs.promises.stat(filepath).catch(noop);
         if (!stat) return filepath;
         let suffix = (n == 0) ? ` - Copy` : ` - Copy (${n+1})`;
         filepath = path.join(dir, filename + suffix + ext);
@@ -165,21 +180,6 @@ export async function order_files_by_mtime_descending(files, dir){
     return (await order_files_by_mtime(files, dir)).reverse();
 }
 
-export function split_spaces_exclude_quotes(string) {
-    let match, matches = [];
-    const groupsRegex = /[^\s"']+|(?:"|'){2,}|"(?!")([^"]*)"|'(?!')([^']*)'|"|'/g;
-    while ((match = groupsRegex.exec(string))) {
-        if (match[2]) {
-            matches.push(match[2]);
-        } else if (match[1]) {
-            matches.push(match[1]);
-        } else {
-            matches.push(match[0]);
-        }
-    }
-    return matches;
-}
-
 export function has_root_privileges(){
     return !!(process.getuid && process.getuid() === 0);
 }
@@ -189,12 +189,12 @@ export async function  compress_logs_directory(dir){
     // core.logger.info(`Compressing '${dir}'...`);
     var dayago = now - (24 * 60 * 60 * 1000);
     var promises = [];
-    var files = await fs.readdir(dir);
+    var files = await fs.promises.readdir(dir);
     files = files.filter(filename=>filename.match(/\.log$/));
     files = await order_files_by_mtime_descending(files, dir);
     for (let filename of files) {
         let fullpath = path.join(dir, filename);
-        let stats = await fs.lstat(fullpath);
+        let stats = await fs.promises.lstat(fullpath);
         let tar_path = `${fullpath}.tgz`;
         if (+stats.mtime < dayago) {
             var t = Date.now();
@@ -202,21 +202,14 @@ export async function  compress_logs_directory(dir){
                 (async()=>{
                     await tar.create({gzip:true, file:tar_path, cwd:dir, portable:true}, [filename]).catch(noop);
                     // core.logger.info(`Compressed '${fullpath}' in ${Date.now()-t}ms.`);
-                    await fs.utimes(tar_path, stats.atime, stats.mtime);
-                    await fs.unlink(fullpath);
+                    await fs.promises.utimes(tar_path, stats.atime, stats.mtime);
+                    await fs.promises.unlink(fullpath);
                 })()
             );
         }
     }
     await Promise.all(promises);
     // core.logger.info(`Compression of '${dir}' took ${Date.now()-now}ms.`)
-}
-  
-export const array_avg = function (arr) {
-    if (arr && arr.length >= 1) {
-        const sumArr = arr.reduce((a, b) => a + b, 0)
-        return sumArr / arr.length;
-    }
 }
 
 export function cpu_average() {
@@ -260,35 +253,6 @@ export function get_cpu_load_avg(avgTime = 1000, delay = 100) {
 export { promisify } from "node:util";
 export { pidtree, execa }
 
-export function build_hierarchy_from_indented_string(str) {
-    const lines = str.split('\n');
-    const root = {};
-    const stack = [{ level: -1, node: root }];
-
-    for (const line of lines) {
-        const trimmedLine = line.trim();
-        if (trimmedLine === '') continue; // Skip empty lines
-
-        const leadingSpaces = line.match(/^ */)[0].length;
-        const key = trimmedLine;
-        const currentLevel = leadingSpaces;
-
-        // Pop stack until we find a parent level
-        while (stack.length > 0 && stack[stack.length - 1].level >= currentLevel) {
-            stack.pop();
-        }
-
-        // Get parent node and add new key
-        const parent = stack[stack.length - 1].node;
-        parent[key] = {};
-
-        // Push new node onto the stack
-        stack.push({ level: currentLevel, node: parent[key] });
-    }
-
-    return root;
-}
-
 /** @returns {AsyncIterable<Path>} */
 export async function *find_symlinks(dir, broken=false) {
     /** @type {AsyncGenerator<Path>} */
@@ -298,94 +262,27 @@ export async function *find_symlinks(dir, broken=false) {
         if (broken !== undefined) {
             const targetPath = await f.readlink();
             const resolvedTargetPath = path.resolve(path.dirname(f.fullpath()), targetPath);
-            const targetBroken = await fs.access(resolvedTargetPath).then(()=>true).catch(()=>false);
+            const targetBroken = await fs.promises.access(resolvedTargetPath).then(()=>true).catch(()=>false);
             if (broken !== targetBroken) continue;
         }
         yield f;
     }
 }
 
-export function ffmpeg_escape(str) {
-    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/,/g, '\\,'); // not sure about the comma
-}
-
-// export function ffmpeg_escape_av_file_path(str) {
-//     return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'\\''").replace(/:/g, '\\:').replace(/,/g, '\\,'); // not sure about the comma
-// }
-
-/* export function ffmpeg_escape_av_file_path(str) {
-    if (is_windows()) str = str.replace(/\\/g, "/");
-    return str.replace(/\\/g, "\\\\\\\\").replace(/'/g, `\\\\'`).replace(/:/g, "\\:")
-} */
-
-// export function ffmpeg_escape(str) {
-//     return str.replace(/\\/g, "\\\\\\\\").replace(/'/g, `'\\\\''`).replace(/:/g, "\\:")
-// }
-
 export async function append_line_truncate(filePath, line, maxLines=512) {
-    var data = await fs.readFile(filePath, 'utf8').catch(noop);
+    var data = await fs.promises.readFile(filePath, 'utf8').catch(noop);
     let lines = data ? data.split('\n') : [];
     lines.push(line);
     if (lines.length > maxLines) {
         lines = lines.slice(lines.length - maxLines);
     }
     const updatedContent = lines.join('\n');
-    await fs.writeFile(filePath, updatedContent, 'utf8');
-}
-
-/** @template T */
-export class AsyncIteratorLoop {
-    /** @type {Function():Iterator<T>} */
-    #generator;
-    /** @type {Iterator<T>} */
-    #iterator;
-    /** @type {Iterator<any>} */
-    #looped_iterator;
-    constructor(generator, fn) {
-        this.#generator = generator;
-        this.#iterator = this.#generator();
-        this.#looped_iterator = this.#start_loop();
-    }
-
-    next() {
-        return this.#looped_iterator.next();
-    }
-    
-    async *#start_loop() {
-        while (true) {
-            var r = this.#iterator.next();
-            if (r.done === true) {
-                yield;
-                this.#iterator = this.#generator();
-            } else {
-                yield r.value;
-            }
-        }
-    }
-}
-
-export function* iterate_keys(obj) {
-    for (var k in obj) yield k;
-}
-
-/** @template T @param {(() => Iterable<T>) | Iterable<T>} generator */
-export function* infinite_iterator(generator) {
-    while (true) {
-        let hasItems = false;
-        var iterable = typeof generator === "function" ? generator() : generator;
-        for (const item of iterable) {
-            hasItems = true;
-            yield item;
-        }
-        if (!hasItems) {
-            yield undefined;
-        }
-    }
+    await fs.promises.writeFile(filePath, updatedContent, 'utf8');
 }
 
 export function url_exists(url) {
     if (typeof url !== "string") url = url.toString();
-    if (url.match(/^file:/)) return fs.exists(pathify(url));
+    if (url.match(/^file:/)) return file_exists(pathify(url));
     return fetch(url, { method: 'head' }).then((res)=>!String(res.status).match(/^4\d\d$/)).catch(()=>false);
 }
 
@@ -562,8 +459,8 @@ export class Downloader extends events.EventEmitter {
     /** @param {string} file */
     async file(file, resume=false) {
         if (resume) {
-            const exists = await fs.exists(file).catch(noop);
-            const stat = exists ? await fs.stat(file).catch(noop) : null;
+            const exists = await file_exists(file).catch(noop);
+            const stat = exists ? await fs.promises.stat(file).catch(noop) : null;
             if (stat) this.#opts.start = stat.size;
             else resume = false;
         }
@@ -595,6 +492,246 @@ export function write_safe(stream_out, data, encoding) {
             });
         }
     });
+}
+  
+export const array_avg = function (arr) {
+    if (arr && arr.length >= 1) {
+        const sumArr = arr.reduce((a, b) => a + b, 0)
+        return sumArr / arr.length;
+    }
+}
+
+export function pad(num, size) {
+    return num.toString().padStart(size, '0');
+}
+
+export function format_srt_time(seconds, webvtt=false) {
+    // Calculate hours, minutes, seconds, and milliseconds
+    const ms_delim = webvtt ? "." : ",";
+    const hours = Math.floor(seconds / 3600);
+    const remaining = seconds % 3600;
+    const minutes = Math.floor(remaining / 60);
+    const secs = Math.floor(remaining % 60);
+    const milliseconds = Math.round((seconds - Math.floor(seconds)) * 1000);
+    return `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(secs, 2)}${ms_delim}${pad(milliseconds, 3)}`;
+}
+
+/** @template T @param {function():T} func @returns {function():Promise<T>} */
+export function debounce_next_tick(func) {
+    var args, context, promise, resolve;
+    var later = () => {
+        promise = null;
+        resolve(func.apply(context, args));
+    };
+    var debounced = function (...p) {
+        context = this;
+        args = p;
+        return promise = promise || new Promise(r => {
+            resolve = r;
+            process.nextTick(later);
+        });
+    };
+    return debounced;
+}
+
+export function build_hierarchy_from_indented_string(str) {
+    const lines = str.split('\n');
+    const root = {};
+    const stack = [{ level: -1, node: root }];
+
+    for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (trimmedLine === '') continue; // Skip empty lines
+
+        const leadingSpaces = line.match(/^ */)[0].length;
+        const key = trimmedLine;
+        const currentLevel = leadingSpaces;
+
+        // Pop stack until we find a parent level
+        while (stack.length > 0 && stack[stack.length - 1].level >= currentLevel) {
+            stack.pop();
+        }
+
+        // Get parent node and add new key
+        const parent = stack[stack.length - 1].node;
+        parent[key] = {};
+
+        // Push new node onto the stack
+        stack.push({ level: currentLevel, node: parent[key] });
+    }
+
+    return root;
+}
+
+// export function ffmpeg_escape_av_file_path(str) {
+//     return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'\\''").replace(/:/g, '\\:').replace(/,/g, '\\,'); // not sure about the comma
+// }
+
+/* export function ffmpeg_escape_av_file_path(str) {
+    if (is_windows()) str = str.replace(/\\/g, "/");
+    return str.replace(/\\/g, "\\\\\\\\").replace(/'/g, `\\\\'`).replace(/:/g, "\\:")
+} */
+
+// export function ffmpeg_escape(str) {
+//     return str.replace(/\\/g, "\\\\\\\\").replace(/'/g, `'\\\\''`).replace(/:/g, "\\:")
+// }
+
+export function ffmpeg_escape(str) {
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/,/g, '\\,'); // not sure about the comma
+}
+
+export function* iterate_keys(obj) {
+    for (var k in obj) yield k;
+}
+
+export async function reserve_disk_space(filename, size) {
+    await fs.promises.writeFile(filename, "");
+    await fs.promises.truncate(filename, size); // Set file size
+}
+
+/** @template T @param {(() => Iterable<T>) | Iterable<T>} generator */
+export function* infinite_iterator(generator) {
+    while (true) {
+        let hasItems = false;
+        var iterable = typeof generator === "function" ? generator() : generator;
+        for (const item of iterable) {
+            hasItems = true;
+            yield item;
+        }
+        if (!hasItems) {
+            yield undefined;
+        }
+    }
+}
+
+export async function safe_write_file(filename, data, encoding="utf-8") {
+    var tmp_filename = path.join(globals.app.tmp_dir, `${md5(filename)}_${uuid4()}.tmp`);
+    if (!safe_write_mutex_map[filename]) safe_write_mutex_map[filename] = new Mutex();
+    const release = await safe_write_mutex_map[filename].acquire();
+    try {
+        await fs.promises.writeFile(tmp_filename, data, encoding);
+        await fs.promises.rename(tmp_filename, filename);
+    } finally {
+        delete safe_write_mutex_map[filename];
+        release();
+    }
+}
+
+export async function file_exists(path) {
+    return fs.promises.access(path).then(()=>true).catch(()=>false);
+}
+
+export function get_encoder_ffmpeg_args(encoder, profile="main", level="4.1") {
+    var ffmpeg_args = [];
+    ffmpeg_args.push(
+        `-profile:v`, profile,
+        `-level:v`, level,
+    );
+    if (encoder == "h264_vaapi") {
+        ffmpeg_args.push(
+            `-compression_level`, "6", // 1-7 (1 = fastest, 7 = slowest)
+            `-rc_mode`, `QVBR`,
+        );
+    } else if (encoder == "h264_qsv") {
+        ffmpeg_args.push(
+            `-preset`, `slow`,
+            // `-forced_idr`, `1`,
+        );
+    } else if (encoder == "h264_vulkan") {
+        ffmpeg_args.push(
+            `-rc_mode`, `vbr`,
+            // `-tune`, `ll`
+        );
+    } else if (encoder == "h264_amf") {
+        ffmpeg_args.push(
+            `-rc`, `hqvbr`,
+            `-preset`, `quality`,
+            `-quality`, `quality`,
+        );
+    } else if (encoder == "h264_nvenc") {
+        ffmpeg_args.push(
+            `-preset`, "p5", // p1-p7 (1 = fastest, 7 = slowest)
+            `-rc`, `vbr_hq`,
+            // `-forced-idr`, `1`,
+            // `-tune`, `ll`
+        );
+    } else if (encoder == "libx264") {
+        ffmpeg_args.push(
+            `-preset`, "medium",
+            // `-forced-idr`, `1`,
+            // `-tune`, `zerolatency`,
+            // "-x264-params", `nal-hrd=cbr:force-cfr=1:scenecut=0`,
+        );
+    } else if (encoder == "hevc_vaapi") {
+        ffmpeg_args.push(
+            `-compression_level`, "6", // 1-7 (1 = fastest, 7 = slowest)
+            `-rc_mode`, `QVBR`,
+        );
+    } else if (encoder == "hevc_qsv") {
+        ffmpeg_args.push(
+            `-preset`, `slow`,
+            // `-forced_idr`, `1`,
+        );
+    } else if (encoder == "hevc_vulkan") {
+        ffmpeg_args.push(
+            `-rc_mode`, `vbr`,
+            // `-tune`, `ll`
+        );
+    } else if (encoder == "hevc_amf") {
+        ffmpeg_args.push(
+            `-rc`, `hqvbr`,
+            `-preset`, `quality`,
+            `-quality`, `quality`,
+        );
+    } else if (encoder == "hevc_nvenc") {
+        ffmpeg_args.push(
+            `-preset`, "p5", // p1-p7 (1 = fastest, 7 = slowest)
+            `-rc`, `vbr_hq`,
+            // `-forced-idr`, `1`,
+            // `-tune`, `ll`
+        );
+    } else if (encoder == "hevc") {
+        ffmpeg_args.push(
+            `-preset`, "medium",
+            // `-forced-idr`, `1`,
+            // `-tune`, `zerolatency`,
+            // `-x265-params`, "nal-hrd=cbr:force-cfr=1:scenecut=0"
+        );
+    }
+    return ffmpeg_args;
+}
+
+export function get_hls_segment_codec_string(codec = "h264", profile = "main", level = 40, tier = "L") {
+    codec = codec.toLowerCase();
+
+    let videoCodec = "";
+    let audioCodec = "mp4a.40.2";
+
+    if (typeof level == "string") {
+        level = parseInt(level.replace(/[^\d]+/g, ""));
+    }
+
+    if (codec.match(/^(h264|avc1)$/)) {
+        let profiles = {
+            baseline: { idc: 0x42, constraint: 0xe0 }, // 42e0
+            main:     { idc: 0x4d, constraint: 0x40 }, // 4d40
+            high:     { idc: 0x64, constraint: 0x00 }, // 6400
+        };
+        let p = profiles[profile.toLowerCase()];
+        if (!p) throw new Error(`Unknown H.264 profile: ${profile}`);
+        let levelHex = (+level).toString(16).padStart(2, "0");
+        videoCodec = `avc1.${p.idc.toString(16)}${p.constraint.toString(16).padStart(2, "0")}${levelHex}`;
+    } else if (codec.match(/^(h265|hevc|hvc1)$/)) {
+        let profiles = {
+            main:  1,
+            main10: 2,
+        };
+        let profileId = profiles[profile.toLowerCase()];
+        if (!profileId) throw new Error(`Unknown H.265 profile: ${profile}`);
+        // HEVC levels are expressed as integers (e.g. 93 = L3.1, 120 = L4.0, 123 = L4.1, 150 = L5.0)
+        videoCodec = `hvc1.${profileId}.0.${tier.toUpperCase()}${level}`;
+    }
+    return [videoCodec, audioCodec].join(",")
 }
 
 // prevents bad SSL being rejected.

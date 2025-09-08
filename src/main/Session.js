@@ -1,5 +1,5 @@
 import path from "node:path";
-import fs from "fs-extra";
+import fs from "node:fs";
 import {globals, SessionStream} from "./exports.js";
 import {utils, constants, DataNodeID, DataNodeID$, Logger, ClientUpdater, LogCollector, AccessControl } from "../core/exports.js";
 import e from "express";
@@ -35,7 +35,7 @@ export class StreamSettings$ {
  * }} Events
  */
 
-/** @template {Session$} T @extends {DataNodeID<T,Events>} */
+/** @template [T=Session$] @extends {DataNodeID<T,Events>} */
 export class Session extends DataNodeID {
     /** @type {Logger} */
     logger;
@@ -86,11 +86,7 @@ export class Session extends DataNodeID {
             return logger_prefix;
         };
         
-        this.logger.on("log", (log)=>{
-            log.prefix = [update_logger_prefix(), ...log.prefix];
-            globals.app.logger.log(log);
-        });
-
+        globals.app.logger.add(this.logger, (log)=>({...log, prefix: [update_logger_prefix(), ...log.prefix]}));
         
         var log_collector = new LogCollector(this.$.logs);
         this.logger.on("log", (log)=>{
@@ -103,7 +99,7 @@ export class Session extends DataNodeID {
         globals.app.sessions[this.id] = this;
         globals.app.$.sessions[this.id] = this.$;
         globals.app.logger.info(`Initialized session [${this.id}]`);
-        globals.app.ipc.emit("main.session.created", this.id);
+        globals.app.ipc.emit("main.session.created", this.$);
     }
 
     rename(new_name) {
@@ -142,8 +138,10 @@ export class Session extends DataNodeID {
             ...utils.remove_nulls(settings || {}),
         });
         if (await stream.start(settings)) {
-            globals.app.ipc.emit("main.session.stream-started", {id:this.id, ...settings});
+            globals.app.ipc.emit("main.session.stream-started", {session:this.$, settings});
+            return true;
         }
+        return false;
     }
 
     // only called by client
@@ -177,7 +175,7 @@ export class Session extends DataNodeID {
         
         this.client_updater.destroy();
 
-        // this.logger.destroy();
+        this.logger.destroy();
         return super._destroy();
     }
 

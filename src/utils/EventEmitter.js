@@ -51,11 +51,12 @@ export class EventEmitter {
     } */
     
     once(event, listener) {
-        var listener_wrapped = (...args)=>{
-            this.removeListener(event, listener_wrapped);
+        var _this = this;
+        var wrapper = function (...args) {
+            _this.removeListener(event, wrapper);
             listener.apply(this, args);
         };
-        this.on(event, listener_wrapped);
+        this.on(event, wrapper);
     }
 }
 export default EventEmitter;

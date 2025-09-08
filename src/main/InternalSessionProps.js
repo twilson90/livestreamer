@@ -88,10 +88,11 @@ export const MediaProps = {
     volume_normalization: {
         __default__: "dynaudnorm1",
         __options__: [
-            "dynaudnorm1",
-            "dynaudnorm2",
-            "loudnorm"
-        ].map(o=>[o,o]),
+            [false, "Off"],
+            ["dynaudnorm1", "dynaudnorm1"],
+            ["dynaudnorm2", "dynaudnorm2"],
+            ["loudnorm", "loudnorm"]
+        ],
     },
     filters: new FiltersProperty(),
     pre_filters: new FiltersProperty(),
@@ -182,8 +183,8 @@ export const PlaylistItemPropsProps = {
             ["none", "None"],
             ["default", "Default"],
             ["logo",`Logo`],
-            ["embedded", "Embedded Artwork"],
-            ["external", "External Artwork"]
+            ["embedded", "Album Art"],
+            // ["external", "External Artwork"]
         ],
     },
     background_color: {
@@ -200,10 +201,18 @@ export const PlaylistItemPropsProps = {
         __default__: null,
         __min__: 0,
     },
-    subtitle_file: {
+    audio_file: {
         __default__: "",
     },
-    audio_file: {
+    audio_file_start: {
+        __default__: null,
+        __min__: 0,
+    },
+    audio_file_end: {
+        __default__: null,
+        __min__: 0,
+    },
+    subtitle_file: {
         __default__: "",
     },
     crop: {

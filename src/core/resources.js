@@ -1,15 +1,13 @@
 import path from "node:path";
-import fs from "fs-extra";
+import fs from "node:fs";
 import {glob} from "glob";
 
 export const dirs = [];
 
 const exists = {};
-let resources_dir = process.env.LIVESTREAMER_RESOURCES_DIR ?? find_resources_dir(import.meta.dirname);
-
+let resources_dir = find_resources_dir(import.meta.dirname);
 if (resources_dir) {
 	add_dir(resources_dir);
-	process.env.LIVESTREAMER_RESOURCES_DIR = resources_dir;
 }
 if (process.versions.electron && import.meta.env?.BUILD && process.resourcesPath) {
 	add_dir(process.resourcesPath, true);

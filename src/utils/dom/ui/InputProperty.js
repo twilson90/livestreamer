@@ -401,14 +401,14 @@ export class InputProperty extends Property {
             // var is_text_field = !input.readOnly && (input.isContentEditable || input.type in editable_input_types || input.nodeName === "TEXTAREA");
             // !is_text_field || 
             if (!is_focussed || !is_editable || this.#force_update_inputs) {
-                if (typeof value === "number" && this.settings["precision"] !== undefined) {
-                    value = value.toFixed(this.get_setting("precision", item));
-                    if (value.includes(".")) value = value.replace(/\.?0+$/,"");
-                }
                 if (is_indeterminate) {
                     value = "";
                 } else {
                     value = this.apply_output_modifiers(value, input);
+                }
+                if (typeof value === "number" && this.settings["precision"] !== undefined) {
+                    value = value.toFixed(this.get_setting("precision", item));
+                    if (value.includes(".")) value = value.replace(/\.?0+$/,"");
                 }
                 if (input.type == "color") {
                     if (is_indeterminate) value = "#ffffff";

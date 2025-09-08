@@ -3,7 +3,6 @@ services:
     container_name: livestreamer
     build: .
     volumes:
-      # - ./dist:/opt/livestreamer
       - appdata:/var/opt/livestreamer
     restart: no
     ports:

@@ -1,8 +1,4 @@
 import { StreamRangeServer } from "../../core/exports.js";
-import { globals } from "../exports.js";
-import fs from "fs-extra";
-import path from "node:path";
-import {utils} from "../../core/exports.js";
 
 /** @param {string} url @param {http.IncomingMessage} req @param {http.ServerResponse} res */
 export default async function (url, req, res) {

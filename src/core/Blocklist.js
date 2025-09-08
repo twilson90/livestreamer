@@ -1,4 +1,4 @@
-import fs from "fs-extra";
+import fs from "node:fs";
 import chokidar from "chokidar";
 import {DataNode, DataNode$, utils, globals} from "./exports.js";
 
@@ -69,9 +69,9 @@ export class Blocklist extends DataNode {
     }
     
     debounced_save = utils.debounce(this.save, 0);
-    save() {
+    async save() {
         this.#ignore_changes = true;
-        globals.app.safe_write_file(this.#path, JSON.stringify(this.$, null, "  "), "utf8");
+        await utils.safe_write_file(this.#path, JSON.stringify(this.$, null, "  "), "utf8");
     }
 
     watch() {

@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import child_process from "node:child_process";
-import fs from "fs-extra";
+import fs from "node:fs";
 import showdown from "showdown";
 import chokidar from "chokidar";
 import compression from "compression";
@@ -19,12 +19,13 @@ import {utils, WebServer, ClientUpdater, ClientServer, Cache, CoreFork, LogColle
 /** @typedef {{index:number, start:number, end:number, title:string}} MediaInfoChapter */
 /** @typedef {{type:MediaInfoStreamType, codec:string, bitrate:number, default:boolean, forced:boolean, title:string, language:string, width:number, height:number, albumart:boolean, channels:number, duration:number, fps:number, avg_fps:number}} MediaInfoStream */
 /** @typedef {{filename:string, type:MediaInfoStreamType, streams:MediaInfoStream[]}} MediaInfoExternalFile */
-/** @typedef {{name:string, filename:string, streams:MediaInfoStream[], external_files:MediaInfoExternalFile[], exists:boolean, duration:number, size:number, mtime:number, format:string, bitrate:number, chapters:MediaInfoChapter[], direct:boolean, ytdl:boolean, virtual_filename:string}} MediaInfo */
+/** @typedef {{name:string, filename:string, streams:MediaInfoStream[], external_files:MediaInfoExternalFile[], exists:boolean, duration:number, size:number, mtime:number, format:string, bitrate:number, chapters:MediaInfoChapter[], direct:boolean, ytdl:boolean, virtual_filename:string, fps:number}} MediaInfo */
 /** @typedef {{cache:boolean, force:boolean, silent:boolean}} ProbeMediaOpts */
+/** @typedef {typeof DEFAULT_GENERATE_MEDIA_OPTS} GenerateMediaOpts */
 
 const dirname = import.meta.dirname;
 const TICK_INTERVAL = 1 * 1000;
-export const MEDIA_INFO_VERSION = 4;
+export const MEDIA_INFO_VERSION = 7;
 export const MAX_CONCURRENT_MEDIA_INFO_PROMISES = 8;
 export const DEFAULT_PROBE_MEDIA_OPTS = {
     force: false, // forces rescan despite still valid in cache
@@ -48,13 +49,6 @@ const AUDIO_EXTS = Object.fromEntries([
 const IMAGE_EXTS = Object.fromEntries([
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"
 ].map((ext)=>[ext, 1]));
-
-var ext_format_map = {
-    ".mkv": "matroska",
-    ".flv": "flv",
-    ".mp4": "mp4",
-};
-var format_ext_map = Object.fromEntries(utils.reverse_map(ext_format_map));
 
 export const DEFAULT_GENERATE_MEDIA_OPTS = {
     type: "video",
@@ -154,10 +148,10 @@ export class MainApp extends CoreFork {
             // ["auth"]: this.auth,
             ["debug"]: this.debug,
             ["test_stream_low_settings"]: this.conf["main.test_stream_low_settings"],
-            ["rtmp_port"]: this.conf["media-server.rtmp_port"],
             ["session_order_client"]: this.conf["main.session_order_client"],
             ["media_expire_time"]: this.conf["media-server.media_expire_time"],
             ["mpv_hwdec"]: this.conf["core.mpv_hwdec"],
+            ["rtmp_server_url"]: `rtmp://media-server.${this.hostname}:${this.conf["media-server.rtmp_port"]}`,
         };
         
         var log_collector = new LogCollector(this.$.logs);
@@ -181,7 +175,7 @@ export class MainApp extends CoreFork {
         });
         this.detected_crops_cache.on("delete", ({key,data})=>{
             delete this.$.detected_crops[key];
-            fs.rm(path.resolve(this.#screenshots_dir, key), {recursive:true}).catch(utils.noop);
+            fs.promises.rm(path.resolve(this.#screenshots_dir, key), {recursive:true}).catch(utils.noop);
         });
 
         this.#media_info_cache = new Cache("mediainfo", 1000 * 60 * 60 * 24 * 7);
@@ -212,7 +206,7 @@ export class MainApp extends CoreFork {
         this.ipc.respond("targets", ()=>{
             return Object.values(this.targets).flat().map(t=>t.$);
         });
-        this.ipc.respond("save-sessions", ()=>{
+        this.ipc.respond("save_sessions", ()=>{
             this.save_sessions();
         });
         this.ipc.on("media-server.post-publish", async (session)=>{
@@ -293,7 +287,7 @@ export class MainApp extends CoreFork {
                     if (!(session instanceof InternalSession)) session = null;
                     if (session) dest_dir = session.files_dir;
                     let dest_path = path.resolve(dest_dir, rel_dir, filename);
-                    let item = session ? session.$.playlist[id] : null;
+                    let item = session ? Object.values(session.$.playlist).find(i=>i.upload_id == id) : null;
 
                     if (path.relative(dest_dir, dest_path).startsWith("..")) {
                         cb(`dest_path is not descendent of ${dest_dir}.`);
@@ -314,7 +308,11 @@ export class MainApp extends CoreFork {
                                 }
                             });
                         }
+                        upload.on("complete", ()=>{
+                            delete item.upload_id;
+                        });
                     }
+
                     req.upload = upload;
                     
                     if (item) {
@@ -329,7 +327,7 @@ export class MainApp extends CoreFork {
                 _removeFile: async (req, file, cb)=>{
                     /** @type {Upload} */
                     let upload = req.upload;
-                    await fs.rm(upload.unique_dest_path, {force:true, recursive:true});
+                    await fs.promises.rm(upload.unique_dest_path, {force:true, recursive:true});
                     // await ul.cancel();
                     cb(null);
                 }
@@ -352,7 +350,7 @@ export class MainApp extends CoreFork {
         var showdown_converter = new showdown.Converter();
         exp.use(compression({threshold:0}));
         exp.use("/changes.md", async (req, res, next)=>{
-            var html = showdown_converter.makeHtml(await fs.readFile(this.change_log_path, "utf8").catch(utils.noop).then(s=>s?s:""));
+            var html = showdown_converter.makeHtml(await fs.promises.readFile(this.change_log_path, "utf8").catch(utils.noop).then(s=>s?s:""));
             res.status(200).send(html);
         });
 
@@ -386,7 +384,7 @@ export class MainApp extends CoreFork {
         //     if (filename) {
         //         if (filename.match(/^https?:\/\//)) {
         //             var local_path = path.join(this.tmp_dir, utils.md5(source));
-        //             if (!await fs.exists(local_path)) {
+        //             if (!await utils.file_exists(local_path)) {
         //                 try {
         //                     let downloader = new utils.Downloader(source, { controller: controller });
         //                     await downloader.file(local_path);
@@ -398,7 +396,7 @@ export class MainApp extends CoreFork {
         //             }
         //             filename = local_path;
         //         }
-        //         if (!(await fs.exists(filename))) {
+        //         if (!(await utils.file_exists(filename))) {
         //             res.status(400).send(`File not found: ${filename}`);
         //             return;
         //         }
@@ -412,13 +410,13 @@ export class MainApp extends CoreFork {
         //     else if (media_types.has("audio")) [ext, mime] = ["mp3", "audio/mpeg"];
         //     else if (media_types.has("subtitle")) [ext, mime] = ["ass", "text/plain"];
         //     var generated_filename = path.join(this.tmp_dir, `${hash}.${ext}`);
-        //     var exists = !!(await fs.exists(generated_filename));
-        //     var stat = exists ? await fs.stat(generated_filename) : null;
+        //     var exists = !!(await utils.file_exists(generated_filename));
+        //     var stat = exists ? await fs.promises.stat(generated_filename) : null;
         //     var size = stat?.size;
         //     var readable = exists ? fs.createReadStream(generated_filename) : null;
 
         //     if (!readable) {
-        //         // fs.writeFile(generated_filename, "").catch(utils.noop);
+        //         // fs.promises.writeFile(generated_filename, "").catch(utils.noop);
         //         var ffmpeg_args = [
         //             `-r`, `${data.fps}`
         //         ];
@@ -449,8 +447,8 @@ export class MainApp extends CoreFork {
         //                 let ass_text = ass.create(undefined, undefined, [{end:data.duration, text:""}]);
         //                 let hash = utils.md5(ass_text);
         //                 let tmp = path.join(this.tmp_dir, `${hash}.ass`);
-        //                 if (!await fs.exists(tmp)) {
-        //                     await fs.writeFile(tmp, ass_text, "utf-8");
+        //                 if (!await utils.file_exists(tmp)) {
+        //                     await fs.promises.writeFile(tmp, ass_text, "utf-8");
         //                 }
         //                 ffmpeg_args.push(
         //                     "-i", tmp,
@@ -485,13 +483,13 @@ export class MainApp extends CoreFork {
 
         //         ffmpeg.start(ffmpeg_args)
         //             .then(async ()=>{
-        //                 var stat = await fs.stat(temp_path).catch(utils.noop);
-        //                 if (stat && stat.size) await fs.rename(temp_path, generated_filename);
+        //                 var stat = await fs.promises.stat(temp_path).catch(utils.noop);
+        //                 if (stat && stat.size) await fs.promises.rename(temp_path, generated_filename);
         //             })
         //             .catch(async (e)=>{
         //                 controller.abort();
         //                 this.logger.error(new Error(`Failed to generate media: ${e.message}`));
-        //                 await fs.unlink(temp_path).catch(utils.noop);
+        //                 await fs.promises.unlink(temp_path).catch(utils.noop);
         //                 end(false);
         //             });
                 
@@ -522,11 +520,11 @@ export class MainApp extends CoreFork {
 
         this.api = new API();
         
-        await fs.mkdir(this.#old_saves_dir, { recursive: true });
-        await fs.mkdir(this.#curr_saves_dir, { recursive: true });
-        await fs.mkdir(this.#saves_dir, { recursive:true });
-        await fs.mkdir(this.#targets_dir, { recursive:true });
-        await fs.mkdir(this.#screenshots_dir, { recursive:true });
+        await fs.promises.mkdir(this.#old_saves_dir, { recursive: true });
+        await fs.promises.mkdir(this.#curr_saves_dir, { recursive: true });
+        await fs.promises.mkdir(this.#saves_dir, { recursive:true });
+        await fs.promises.mkdir(this.#targets_dir, { recursive:true });
+        await fs.promises.mkdir(this.#screenshots_dir, { recursive:true });
 
         await this.detected_crops_cache.ready;
         await this.#media_info_cache.ready;
@@ -536,7 +534,7 @@ export class MainApp extends CoreFork {
         setInterval(()=>this.#tick(), TICK_INTERVAL);
         var update_change_log = async ()=>{
             this.$.change_log = {
-                "mtime": +(await fs.stat(this.change_log_path).catch(utils.noop).then(s=>s?s.mtime:0))
+                "mtime": +(await fs.promises.stat(this.change_log_path).catch(utils.noop).then(s=>s?s.mtime:0))
             };
         }
 
@@ -558,7 +556,7 @@ export class MainApp extends CoreFork {
         await this.client_server.ready;
     }
 
-    /** @param {typeof DEFAULT_GENERATE_MEDIA_OPTS} data */
+    // /** @param {GenerateMediaOpts} data */
     // generate_media_url(data) {
     //     var url = new URL("/generate/", this.get_urls().url);
     //     for (var k in data) {
@@ -567,17 +565,17 @@ export class MainApp extends CoreFork {
     //     return url.toString();
     // }
 
-    /** @param {typeof DEFAULT_GENERATE_MEDIA_OPTS} data */
-    async generate_media(data) {
-        data = {
+    /** @param {GenerateMediaOpts} opts */
+    async generate_media(opts) {
+        opts = {
             ...DEFAULT_GENERATE_MEDIA_OPTS,
-            ...data,
+            ...opts,
         };
-        var {filename} = data;
+        var {filename} = opts;
         if (filename) {
             if (filename.match(/^https?:\/\//)) {
                 var local_path = path.join(this.tmp_dir, utils.md5(source));
-                if (!await fs.exists(local_path)) {
+                if (!await utils.file_exists(local_path)) {
                     try {
                         let downloader = new utils.Downloader(source); // risky...
                         await downloader.file(local_path);
@@ -589,40 +587,53 @@ export class MainApp extends CoreFork {
                 }
                 filename = local_path;
             }
-            if (!(await fs.exists(filename))) {
+            if (!(await utils.file_exists(filename))) {
                 res.status(400).send(`File not found: ${filename}`);
                 return;
             }
         }
-        let color_str = Color(data.background || 0x000000).hex();
-        var hash = utils.md5(JSON.stringify(data));
-        var media_types = new Set(data.type.split(/[^a-zA-Z0-9]/));
+        let color_str = Color(opts.background || 0x000000).hex();
+        var hash = utils.md5(JSON.stringify(opts));
+        var media_types = new Set(opts.type.split(/[^a-zA-Z0-9]/));
         let [ext, mime] = ["mkv", "video/x-matroska"];
         if (media_types.has("video")) [ext, mime] = ["mkv", "video/x-matroska"];
         else if (media_types.has("audio")) [ext, mime] = ["mp3", "audio/mpeg"];
         else if (media_types.has("subtitle")) [ext, mime] = ["ass", "text/plain"];
         var generated_filename = path.join(this.tmp_dir, `${hash}.${ext}`);
-        var exists = !!(await fs.exists(generated_filename));
+        var exists = !!(await utils.file_exists(generated_filename));
 
         if (!exists) {
             var tmp_path = path.join(this.tmp_dir, `${hash}-${utils.uuid4()}`);
-            let ffmpeg_args = [
-                `-r`, `${data.fps}`
-            ];
+            let ffmpeg_args = [];
             for (var media_type of media_types) {
                 if (media_type === "video") {
                     if (filename) {
                         ffmpeg_args.push(
                             `-loop`, `1`,
+                            `-r`, `1`,
                             "-i", filename,
                         );
-                        // vf.push(`pad=width=${data.width}:height=${data.height}:x=(ow-iw)/2:y=(oh-ih)/2:color=${color_str}`);
                     } else {
                         ffmpeg_args.push(
                             "-f", "lavfi",
-                            "-i", `color=c=${color_str}:s=${data.width}x${data.height}:r=${data.fps}`,
+                            "-i", `color=c=${color_str}:s=${opts.width}x${opts.height}:r=${opts.fps}`,
                         );
                     }
+                    ffmpeg_args.push(
+                        `-r`, `${opts.fps}`,
+                        `-crf`, `16`,
+                        `-tune`, `stillimage,zerolatency`,
+                        `-c:v`, `libx264`,
+                        `-preset:v`, `ultrafast`,
+                        `-pix_fmt`, `yuv420p`,
+                        `-profile:v`, `main`,
+                        `-level`, `4.1`,
+                        `-vf`, `scale=${opts.width}:${opts.height}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
+                        // `-g`, `999999`,
+                        // `-keyint_min`, `999999`,
+                        // `-x264-params`, `ref=1:no-scenecut=1`,
+                        // `-force_key_frames`, `0`,
+                    );
                 } else if (media_type === "audio") {
                     ffmpeg_args.push(
                         "-f", "lavfi",
@@ -630,14 +641,14 @@ export class MainApp extends CoreFork {
                         "-ar", "44100",
                         "-c:a", "mp3",
                         "-b:a", "320k",
-                        "-t", `${data.duration}`,
+                        "-t", `${opts.duration}`,
                     );
                 } else if (media_type === "subtitle") {
-                    let ass_text = ass.create(undefined, undefined, [{end:data.duration, text:""}]);
+                    let ass_text = ass.create(undefined, undefined, [{end:opts.duration, text:""}]);
                     let hash = utils.md5(ass_text);
                     let tmp = path.join(this.tmp_dir, `${hash}.ass`);
-                    if (!await fs.exists(tmp)) {
-                        await fs.writeFile(tmp, ass_text, "utf-8");
+                    if (!await utils.file_exists(tmp)) {
+                        await fs.promises.writeFile(tmp, ass_text, "utf-8");
                     }
                     ffmpeg_args.push(
                         "-i", tmp,
@@ -645,24 +656,8 @@ export class MainApp extends CoreFork {
                 }
             }
             ffmpeg_args.push(
-                `-crf`, `0`,
-                `-tune`, `stillimage,zerolatency`,
-                `-c:v`, `libx264`,
-                `-preset:v`, `ultrafast`,
-                `-pix_fmt`, `yuv420p`
-            );
-            if (filename && media_types.has("video")) {
-                ffmpeg_args.push(
-                    `-vf`, `scale=${data.width}:${data.height}:force_original_aspect_ratio=decrease:force_divisible_by=2`
-                );
-            }
-            ffmpeg_args.push(
-                `-g`, `999999`,
-                `-keyint_min`, `999999`,
-                `-x264-params`, `ref=1:no-scenecut=1`,
-                `-force_key_frames`, `0`,
                 `-f`, `matroska`,
-                "-t", `${data.duration}`,
+                "-t", `${opts.duration}`,
                 `-y`,
                 tmp_path
             );
@@ -671,13 +666,13 @@ export class MainApp extends CoreFork {
 
             await ffmpeg.start(ffmpeg_args)
                 .then(async ()=>{
-                    var stat = await fs.stat(tmp_path).catch(utils.noop);
-                    if (stat && stat.size) await fs.rename(tmp_path, generated_filename);
+                    var stat = await fs.promises.stat(tmp_path).catch(utils.noop);
+                    if (stat && stat.size) await fs.promises.rename(tmp_path, generated_filename);
                 })
                 .catch(async (e)=>{
                     // controller.abort();
                     this.logger.error(new Error(`Failed to generate media: ${e.message}`));
-                    await fs.unlink(tmp_path).catch(utils.noop);
+                    await fs.promises.unlink(tmp_path).catch(utils.noop);
                 });
         }
 
@@ -702,7 +697,7 @@ export class MainApp extends CoreFork {
             ["stream_id"]
         ];
 
-        const STREAM_PUBLIC_PROPS = [
+        const SESSION_STREAM_PUBLIC_PROPS = [
             ["id"],
             ["session_id"],
             ["state"],
@@ -711,7 +706,7 @@ export class MainApp extends CoreFork {
         this.client_updater = new ClientUpdater(this.observer, [], {
             filter: (c)=>{
                 if (c.path[0] === "sessions") return check_prop(c.path.slice(2), SESSION_PUBLIC_PROPS);
-                if (c.path[0] === "streams") return check_prop(c.path.slice(2), STREAM_PUBLIC_PROPS);
+                if (c.path[0] === "session_streams") return check_prop(c.path.slice(2), SESSION_STREAM_PUBLIC_PROPS);
                 if (c.path[0] === "logs") return false;
                 if (c.path[0] === "sysinfo") return false;
                 return true;
@@ -748,13 +743,7 @@ export class MainApp extends CoreFork {
                 "opts": {
                     "use_hardware": true,
                     "use_hevc": false,
-                    "fps_passthrough": true,
-                },
-                "config": (data, st)=>{
-                    return {
-                        "output_url": `rtmp://127.0.0.1:${this.conf["media-server.rtmp_port"]}/live/${st.id}`,
-                        "url": `${this.get_urls("media-server").url}/player/index.html?id=${st.id}`,
-                    }
+                    // "fps_passthrough": true,
                 },
 			},
 			{
@@ -767,21 +756,6 @@ export class MainApp extends CoreFork {
                     "format": "flv",
                     "re": false,
                 },
-                "config": (data, st)=>{
-                    let format = data.opts.format;
-                    let filename = st.stream.session.evaluate_and_sanitize_filename(path.resolve(this.files_dir, data.opts.filename));
-                    let ext = path.extname(filename);
-                    if (!ext) {
-                        ext = format_ext_map[format] || ".flv";
-                        filename += ext;
-                    }
-                    filename = filename.split(path.sep).join("/");
-                    if (filename.slice(0,1) !== "/") filename = "/"+filename;
-                    return {
-                        "output_format": format,
-                        "output_url": `file://${filename}`,
-                    }
-                },
 			},
 			{
                 "id": "gui",
@@ -790,9 +764,6 @@ export class MainApp extends CoreFork {
 				"limit": 0,
                 "opts": {
                     "osc": false
-                },
-                "config": (data, st)=>{
-                    return {}
                 },
 			}
         ];
@@ -805,11 +776,11 @@ export class MainApp extends CoreFork {
         for (var t of targets) t.locked = true;
 
         var user_targets = [];
-        for (var id of await fs.readdir(this.#targets_dir)) {
+        for (var id of await fs.promises.readdir(this.#targets_dir)) {
             /** @type {Target} */
             var t;
             try {
-                t = JSON.parse(await fs.readFile(path.resolve(this.#targets_dir, id)));
+                t = JSON.parse(await fs.promises.readFile(path.resolve(this.#targets_dir, id)));
             } catch (e) {
                 this.logger.error(`Couldn't read or parse target '${id}'`);
             }
@@ -852,7 +823,7 @@ export class MainApp extends CoreFork {
         if (this.#ticks % 60 == 0) {
             var root = path.parse(process.cwd()).root;
             
-            const stats = await fs.statfs(root);
+            const stats = await fs.promises.statfs(root);
             const total = stats.blocks * stats.bsize;
             const free = stats.bsize * stats.bfree;
             const used = total - free;
@@ -889,17 +860,17 @@ export class MainApp extends CoreFork {
 
     async load_sessions() {
         var sessions = [];
-        var session_ids = await fs.readdir(this.#curr_saves_dir);
+        var session_ids = await fs.promises.readdir(this.#curr_saves_dir);
         // new format...
         for (let uid of session_ids) {
             var session_dir = path.resolve(this.#curr_saves_dir, uid);
-            let filenames = await utils.order_files_by_mtime_descending(await fs.readdir(session_dir), session_dir);
+            let filenames = await utils.order_files_by_mtime_descending(await fs.promises.readdir(session_dir), session_dir);
             for (let filename of filenames) {
                 let fullpath = path.resolve(session_dir, filename);
                 this.logger.info(`Loading '${filename}'...`);
                 var session = null;
                 try {
-                    session = JSON.parse(await fs.readFile(fullpath, "utf8"));
+                    session = JSON.parse(await fs.promises.readFile(fullpath, "utf8"));
                 } catch {
                     this.logger.error(`Failed to load '${filename}'`);
                 }
@@ -954,7 +925,7 @@ export class MainApp extends CoreFork {
         //                     var hash = utils.md5(filename);
         //                     var output_filename = path.join(core.cache_dir, "fixed", hash + ".mkv");
         //                     var proof_filename = output_filename + ".complete";
-        //                     var exists = (await Promise.all([fs.exists(output_filename), fs.exists(proof_filename)])).every(s=>s);
+        //                     var exists = (await Promise.all([utils.file_exists(output_filename), utils.file_exists(proof_filename)])).every(s=>s);
         //                     core.logger.info(`Fixing '${filename}' => '${output_filename}'...`);
         //                     if (!exists) {
         //                         await new Promise((resolve)=>{
@@ -965,7 +936,7 @@ export class MainApp extends CoreFork {
         //                             });
         //                             ffmpeg.on("end", async()=>{
         //                                 core.logger.info(`Fixed '${filename}' => '${output_filename}'.`);
-        //                                 await fs.writeFile(proof_filename, "");
+        //                                 await fs.promises.writeFile(proof_filename, "");
         //                                 resolve();
         //                             });
         //                             utils.timeout(10000).then(resolve);
@@ -1035,7 +1006,7 @@ export class MainApp extends CoreFork {
             let protocol = url.protocol;
             let abspath = utils.pathify(filename) || filename;
             let original_abspath = abspath;
-            let stat = (await fs.stat(abspath).catch(utils.noop));
+            let stat = (await fs.promises.stat(abspath).catch(utils.noop));
 
             /** @type {MediaInfo} */
             let mi;
@@ -1067,25 +1038,33 @@ export class MainApp extends CoreFork {
                             let stream = {};
                             stream.type = s.codec_type;
                             stream.codec = s.codec_name;
-                            stream.bitrate = +s.bit_rate || 0;
-                            stream.duration = +s.duration || 0;
+                            stream.bitrate = +(s.bit_rate ?? s.tags?.BPS ?? 0);
+                            stream.duration = +(s.duration ?? 0);
+                            if (!stream.duration && s.tags?.DURATION) {
+                                stream.duration = utils.timespan_str_to_seconds(s.tags.DURATION) || 0;
+                            }
                             stream.default = !!s.disposition.default;
                             stream.forced = !!s.disposition.forced;
-                            if (s.tags && s.tags.title) stream.title = s.tags.title;
-                            if (s.tags && s.tags.language) stream.language = s.tags.language;
+                            if (s.tags?.NUMBER_OF_BYTES) stream.size = +s.tags.NUMBER_OF_BYTES
+                            if (s.tags?.NUMBER_OF_FRAMES) stream.frames = +s.tags.NUMBER_OF_FRAMES
+                            if (s.tags?.title) stream.title = s.tags.title;
+                            if (s.tags?.language) stream.language = s.tags.language;
                             if (s.codec_type === "video") {
                                 stream.width = +s.width;
                                 stream.height = +s.height;
                                 stream.albumart = !!s.disposition.attached_pic;
-                                stream.fps = calc_ratio(s.r_frame_rate);
-                                stream.avg_fps = calc_ratio(s.avg_frame_rate);
-                                stream.interlaced = !!(s.field_order && s.field_order != "progressive");
-                                stream.field_order = s.field_order;
                                 let sar = calc_ratio(s.sample_aspect_ratio) ?? 1;
                                 let dar = calc_ratio(s.display_aspect_ratio);
                                 stream.sar = sar;
                                 stream.dar = dar;
                                 stream.aspect_ratio = dar || ((stream.width * sar) / (stream.height * sar));
+                                if (!stream.albumart) {
+                                    stream.fps = calc_ratio(s.r_frame_rate);
+                                    if (!mi.fps) mi.fps = stream.fps;
+                                    stream.avg_fps = calc_ratio(s.avg_frame_rate);
+                                    stream.interlaced = !!(s.field_order && s.field_order != "progressive");
+                                    stream.field_order = s.field_order;
+                                }
                             } else if (s.codec_type === "audio") {
                                 stream.channels = +s.channels;
                             }
@@ -1094,7 +1073,7 @@ export class MainApp extends CoreFork {
 
                         mi.exists = true;
                         mi.duration = parseFloat(raw.format.duration) || 0;
-                        mi.chapters = raw.chapters.map((c,i)=>({ index: i, start: +c.start_time, end: +c.end_time, title: (c.tags) ? c.tags.title : null }));
+                        mi.chapters = raw.chapters.map((c,i)=>({ index: i, start: +c.start_time, end: +c.end_time, title: c.tags?.title }));
                         mi.format = raw.format.format_name;
                         mi.bitrate = +raw.format.bit_rate || 0;
                         mi.streams = [];
@@ -1102,7 +1081,7 @@ export class MainApp extends CoreFork {
                         
                         let dir = path.dirname(abspath);
                         let basename = path.basename(abspath);
-                        let files = await fs.readdir(dir).catch(()=>[]);
+                        let files = await fs.promises.readdir(dir).catch(()=>[]);
                         mi.external_files = [];
                         
                         var add_external = async(filename, type)=>{
@@ -1154,6 +1133,9 @@ export class MainApp extends CoreFork {
                             mi.filename = raw._filename;
                             mi.direct = !!raw.direct;
                             mi.exists = true;
+                            mi.bitrate = raw.tbr * 1024
+                            mi.format = raw.ext;
+                            mi.fps = raw.fps;
                             if (raw.is_playlist) {
                                 mi.playlist = raw.items.map(i=>i.url || i.webpage_url);
                             } else {
@@ -1162,16 +1144,17 @@ export class MainApp extends CoreFork {
                                 if (raw.vcodec) {
                                     mi.streams.push({
                                         type: "video",
-                                        bitrate: raw.vbr,
+                                        bitrate: raw.vbr * 1024,
                                         codec: raw.vcodec,
                                         width: raw.width,
                                         height: raw.height,
+                                        fps: raw.fps,
                                     });
                                 }
                                 if (raw.acodec && raw.acodec != "none") {
                                     mi.streams.push({
                                         type: "audio",
-                                        bitrate: raw.abr,
+                                        bitrate: raw.abr * 1024,
                                         codec: raw.acodec,
                                         channels: 2,
                                     });
@@ -1202,7 +1185,7 @@ export class MainApp extends CoreFork {
                     let is_playlist_file = header.startsWith("// livestreamer playlist\n");
 
                     if (is_playlist_file) {
-                        let header_and_json = utils.split_after_first_line(await fs.readFile(abspath, "utf8"));
+                        let header_and_json = utils.split_after_first_line(await fs.promises.readFile(abspath, "utf8"));
                         try {
                             mi.playlist = JSON.parse(header_and_json[1]);
                         } catch {
@@ -1242,7 +1225,8 @@ export class MainApp extends CoreFork {
                 if (!opts.silent) {
                     this.logger.info(`Probing '${filename}' took ${((t1-t0)/1000).toFixed(2)} secs`);
                 }
-                if (mi.exists && use_cache) this.#media_info_cache.set(cache_key, mi, ttl);
+                if (use_cache) this.#media_info_cache.set(cache_key, mi, ttl);
+                // if (mi.exists && use_cache)
             }
             return mi;
         });
@@ -1254,7 +1238,7 @@ export class MainApp extends CoreFork {
     //         var filename = path.join(dir, name);
     //         if (is_dir) {
     //             node[1] = [];
-    //             var files = await fs.readdir(filename, {withFileTypes:true}).catch(utils.noop);
+    //             var files = await fs.promises.readdir(filename, {withFileTypes:true}).catch(utils.noop);
     //             if (files) {
     //                 for (var c of files) {
     //                     var n = await process(filename, c.name, c.isDirectory());
@@ -1262,13 +1246,13 @@ export class MainApp extends CoreFork {
     //                 }
     //             }
     //         } else {
-    //             var s = await fs.lstat(filename).catch(utils.noop);
+    //             var s = await fs.promises.lstat(filename).catch(utils.noop);
     //             node[1] = s ? s.size : 0;
     //         }
     //         return node;
     //     }
     //     var v = this.$.volumes[id];
-    //     let s = await fs.stat(v.root).catch(utils.noop);
+    //     let s = await fs.promises.stat(v.root).catch(utils.noop);
     //     if (!s || !s.isDirectory()) return;
     //     return await process(path.dirname(v.root), path.basename(v.root), true);
     // }
@@ -1332,10 +1316,11 @@ export class MainApp extends CoreFork {
             url
         ]).catch(()=>null);
         if (!output) return;
-        var lines = output.stdout.split(/\r?\n/);
-        for (var line of lines) {
-            var m = line.match(/^\[get_stream_open_filename\] (.+)$/);
-            try { return JSON.parse(m[1].trim()); } catch { }
+        var m = output.stdout.match(/^\[get_stream_open_filename\] (.+)$/m);
+        try {
+            return JSON.parse(m[1].trim());
+        } catch {
+            return;
         }
     }
 
@@ -1349,8 +1334,8 @@ export class MainApp extends CoreFork {
 
     async _destroy() {
         this.client_updater.destroy();
+        this.client_server.destroy();
         this.admin_updater.destroy();
-        this.logger.info("Saving all sessions before exit...");
         await this.save_sessions();
         this.web.destroy();
         return super._destroy();
