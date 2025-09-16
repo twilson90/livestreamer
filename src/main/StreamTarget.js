@@ -4,6 +4,7 @@ import child_process from "node:child_process";
 import {codec_to_ext, globals} from "./exports.js";
 import {utils, StopStartStateMachine, StopStartStateMachine$, FFMPEGWrapper, Logger, MPVWrapper, constants} from "../core/exports.js";
 /** @import { Target, SessionStream } from './exports.js' */
+/** @import { Live$ } from '../media-server/exports.js' */
 
 export class StreamTarget$ extends StopStartStateMachine$ {
     stream_id = "";
@@ -17,7 +18,10 @@ export class StreamTarget$ extends StopStartStateMachine$ {
     /** @type {Record<PropertyKey,any>} */
     opts = {};
     url = "";
+    /** @type {Live$} */
+    live = null;
     key = utils.uuidb64();
+    title = "";
 }
 
 /** @extends {StopStartStateMachine<StreamTarget$>} */
@@ -42,6 +46,21 @@ export class StreamTarget extends StopStartStateMachine {
 
         stream.stream_targets[target.id] = this;
         stream.$.stream_targets[target.id] = this.$;
+
+        var update_live = ()=>{
+            if (!this.$.live) return;
+            globals.app.ipc.request("media-server", "update_live", [
+                this.$.live.id,
+                { title: this.$.title }
+            ]);
+        }
+        var debounced_update_live = utils.debounce(update_live, 100);
+        this.observer.on("change", (c)=>{
+            if (c.subtree) return;
+            if (c.path[0] === "title") {
+                debounced_update_live();
+            }
+        });
 
         this.ready = this.#init();
     }
@@ -70,7 +89,7 @@ export class StreamTarget extends StopStartStateMachine {
         let key = `${key_base}-${this.stream.keys[key_base]+1}`;
         
         if (this.target.id === "local") {
-            this.live_id = await globals.app.ipc.request("media-server", "create_live", this.$);
+            this.$.live = await globals.app.ipc.request("media-server", "create_live", this.$);
         } else if (this.target.id === "file") {
             let format = opts.format;
             let filename = this.stream.session.evaluate_and_sanitize_filename(path.resolve(globals.app.files_dir, opts.filename));
@@ -117,7 +136,7 @@ export class StreamTarget extends StopStartStateMachine {
         });
     }
 
-    update() {
+    tick() {
         this.$.title = this.stream.$.title;
     }
 
@@ -157,8 +176,16 @@ export class StreamTarget extends StopStartStateMachine {
         };
 
         if (this.target.id === "local") {
-            globals.app.ipc.once(`media-server.live.stopped.${this.live_id}`, handle_end);
-            await globals.app.ipc.request("media-server", "start_live", [this.live_id, this.$]);
+            if (this.$.live) {
+                let handler = (id)=>{
+                    if (id == this.$.live.id) {
+                        handle_end();
+                        globals.app.ipc.off(`media-server.live.stopped`, handler);
+                    }
+                }
+                globals.app.ipc.on(`media-server.live.stopped`, handler);
+                await globals.app.ipc.request("media-server", "start_live", [this.$.live.id, this.$]);
+            }
         } else if (this.target.id === "gui") {
             var title = this.stream.name || "";
             this.#ffplay = child_process.spawn("ffplay", [
@@ -188,7 +215,9 @@ export class StreamTarget extends StopStartStateMachine {
                 await fs.promises.mkdir(path.dirname(output), {recursive:true});
             }
             var ffmpeg_args = [];
-            if (this.stream.is_realtime) ffmpeg_args.push("-re");
+            if (this.stream.is_realtime) {
+                ffmpeg_args.push("-re");
+            }
             ffmpeg_args.push(
                 // `-noautoscale`,
                 ...(input_format ? ["-f", input_format] : []),
@@ -224,7 +253,7 @@ export class StreamTarget extends StopStartStateMachine {
     async _stop() {
         clearTimeout(this.#restart_timeout);
         if (this.#ffplay) this.#ffplay.kill();
-        if (this.live_id) await globals.app.ipc.request("media-server", "stop_live", this.live_id);
+        if (this.$.live) await globals.app.ipc.request("media-server", "stop_live", this.$.live.id);
         if (this.#ffmpeg) await this.#ffmpeg.destroy();
         if (this.#mpv) await this.#mpv.destroy();
 

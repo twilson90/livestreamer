@@ -2,6 +2,8 @@ import {SessionProps} from "./SessionProps.js";
 
 export {SessionProps};
 
+/** @typedef {Record<keyof typeof PlaylistItemPropsProps, any>} PlaylistItemProps$ */
+
 class FiltersProperty {
     __default__ = {};
     ["*"] = new class {
@@ -144,6 +146,11 @@ export const MediaProps = {
         __max__: 100,
         __step__: 1,
     },
+    correct_pts: {
+        __default__: false,
+        __options__: [[true, "On"], [false, "Off"]],
+        __info__: "Fixes presentation time-stamps for variable framerate streams. Only turn this on for files with severely broken frame timing.",
+    }
 };
 
 export const PlaylistItemPropsProps = {
@@ -336,9 +343,8 @@ export const InternalSessionProps = {
     stream_settings: {
         ...SessionProps.stream_settings,
         fps: {
-            __default__: 0,
+            __default__: 60,
             __options__: [
-                [0,"Variable"],
                 [23.97,"23.97 fps"],
                 [24,"24 fps"],
                 [25,"25 fps"],
@@ -346,7 +352,8 @@ export const InternalSessionProps = {
                 [30,"30 fps"],
                 [50,"50 fps"],
                 [59.94,"59.94 fps"],
-                [60,"60 fps"]
+                [60,"60 fps"],
+                [0,"Variable"],
             ]
             // ["passthrough","Pass Through"],["vfr","Variable"],
         },

@@ -1780,6 +1780,7 @@ input[type=number]::-webkit-inner-spin-button {
 			flex: 1 0 0;
 			&>[data-overlayscrollbars-viewport] {
 				display: flex;
+				flex-direction: column;
 				flex: none;
 			}
 
@@ -3117,5 +3118,12 @@ table.keyboard-shortcuts {
 		gap: 5px;
 		display: flex;
 		flex-direction: column;
+	}
+}
+
+.playlist-buttons-wrapper {
+	display: flex;
+	&>* {
+		flex: 1;
 	}
 }

@@ -118,6 +118,7 @@ export class FFMPEGWrapper extends events.EventEmitter {
     start(args, spawn_opts) {
         if (this.#done) throw new Error("FFMPEGWrapper already started");
         this.#done = new Promise((resolve, reject)=>{
+            // ({resolve, reject} = utils.onceify({resolve, reject}));
                 
             this.#logger.info(`Starting ffmpeg...`);
             this.#logger.debug(`ffmpeg args:`, args);
@@ -127,11 +128,10 @@ export class FFMPEGWrapper extends events.EventEmitter {
 
             this.#process.on("error", (e) => {
                 reject(new Error(`FFMPEGWrapper process error: ${e.message}`));
-                this.destroy();
+                // this.destroy();
             });
 
             this.#process.on("close", (code)=>{
-                if (this.#closed) return;
                 this.#closed = true;
                 listener.close();
                 clearInterval(this.#info_interval);
@@ -253,15 +253,15 @@ export class FFMPEGWrapper extends events.EventEmitter {
         this.#destroyed = true;
         if (!this.#closed) {
             this.#process.kill("SIGTERM");
-            // this.#process.stdin.write('q');
         }
         setTimeout(()=>{
             if (!this.#closed) {
                 this.#logger.warn("Killing ffmpeg with force...");
                 this.#process.kill("SIGKILL");
             }
-        }, 1000);
-        return this.#done;
+        }, 5000);
+        return this.#done.catch(utils.noop)
+            .finally(()=>this.logger.destroy())
     }
 }
 

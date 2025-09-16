@@ -12,8 +12,8 @@ import pidtree from "pidtree";
 import { Agent, setGlobalDispatcher } from 'undici'
 import { Mutex } from "async-mutex";
 import { glob, Glob } from "glob";
-import {noop} from "../utils/noop.js";
-import {pathify} from "../utils/pathify.js";
+import { noop } from "../utils/noop.js";
+import { pathify } from "../utils/pathify.js";
 import { fileURLToPath } from "url";
 import { StopWatchBase } from "../utils/StopWatch.js";
 export * from "../utils/exports.js";
@@ -59,7 +59,7 @@ export async function empty_dir(dirPath) {
     }
 }
 
-export async function read_last_lines(input_file_path, max_lines, encoding="utf-8", buffer_size = 16 * 1024) {
+export async function read_last_lines(input_file_path, max_lines, encoding = "utf-8", buffer_size = 16 * 1024) {
     let lines = [];
     const nl = "\n".charCodeAt(0);
     const fd = await fs.promises.open(input_file_path, "r");
@@ -69,7 +69,7 @@ export async function read_last_lines(input_file_path, max_lines, encoding="utf-
         var chunk = Buffer.alloc(buffer_size);
         let leftover = [];
         /** @param {Buffer} buffer */
-        var add_line = (buffer)=>{
+        var add_line = (buffer) => {
             lines.push(encoding ? buffer.toString(encoding) : buffer);
         }
         let pos = stat.size;
@@ -84,7 +84,7 @@ export async function read_last_lines(input_file_path, max_lines, encoding="utf-
             let last_nl_index = buffer_size;
             while (i--) {
                 if (chunk[i] === nl) {
-                    let temp = chunk.subarray(i+1, last_nl_index);
+                    let temp = chunk.subarray(i + 1, last_nl_index);
                     if (leftover.length) {
                         temp = Buffer.from([...temp, ...leftover]);
                         leftover = [];
@@ -107,7 +107,7 @@ export async function read_last_lines(input_file_path, max_lines, encoding="utf-
     return lines;
 }
 
-export {is_image};
+export { is_image };
 
 export async function is_dir_empty(p) {
     try {
@@ -139,33 +139,33 @@ export async function unique_filename(filepath) {
     while (true) {
         let stat = await fs.promises.stat(filepath).catch(noop);
         if (!stat) return filepath;
-        let suffix = (n == 0) ? ` - Copy` : ` - Copy (${n+1})`;
+        let suffix = (n == 0) ? ` - Copy` : ` - Copy (${n + 1})`;
         filepath = path.join(dir, filename + suffix + ext);
         n++;
     }
 }
 
-export async function readdir_stats(dir){
+export async function readdir_stats(dir) {
     var files = await fs.promises.readdir(dir);
-    return Promise.all(files.map(filename=>fs.promises.lstat(path.join(dir, filename)).then(stat=>({filename,stat}))));
+    return Promise.all(files.map(filename => fs.promises.lstat(path.join(dir, filename)).then(stat => ({ filename, stat }))));
 }
 
-export async function get_most_recent_file_in_dir(dir){
+export async function get_most_recent_file_in_dir(dir) {
     var files = await fs.promises.readdir(dir);
     return (await order_files_by_mtime(files, dir)).pop();
 }
 
-export async function order_files_by_mtime(files, dir){
+export async function order_files_by_mtime(files, dir) {
     var stat_map = {};
-    await Promise.all(files.map((filename)=>(async()=>{
+    await Promise.all(files.map((filename) => (async () => {
         var fullpath = dir ? path.join(dir, filename) : filename;
         stat_map[filename] = await fs.promises.lstat(fullpath);
     })()));
     return files
-        .map(filename=>({filename, stat:stat_map[filename]}))
-        .filter(f=>f.stat.isFile())
-        .sort((a,b)=>a.stat.mtime-b.stat.mtime)
-        .map(f=>f.filename);
+        .map(filename => ({ filename, stat: stat_map[filename] }))
+        .filter(f => f.stat.isFile())
+        .sort((a, b) => a.stat.mtime - b.stat.mtime)
+        .map(f => f.filename);
 }
 
 export function uuidb64() {
@@ -176,21 +176,21 @@ export function uuid4() {
     return uuid.v4();
 }
 
-export async function order_files_by_mtime_descending(files, dir){
+export async function order_files_by_mtime_descending(files, dir) {
     return (await order_files_by_mtime(files, dir)).reverse();
 }
 
-export function has_root_privileges(){
+export function has_root_privileges() {
     return !!(process.getuid && process.getuid() === 0);
 }
 
-export async function  compress_logs_directory(dir){
+export async function compress_logs_directory(dir) {
     var now = Date.now();
     // core.logger.info(`Compressing '${dir}'...`);
     var dayago = now - (24 * 60 * 60 * 1000);
     var promises = [];
     var files = await fs.promises.readdir(dir);
-    files = files.filter(filename=>filename.match(/\.log$/));
+    files = files.filter(filename => filename.match(/\.log$/));
     files = await order_files_by_mtime_descending(files, dir);
     for (let filename of files) {
         let fullpath = path.join(dir, filename);
@@ -199,8 +199,8 @@ export async function  compress_logs_directory(dir){
         if (+stats.mtime < dayago) {
             var t = Date.now();
             promises.push(
-                (async()=>{
-                    await tar.create({gzip:true, file:tar_path, cwd:dir, portable:true}, [filename]).catch(noop);
+                (async () => {
+                    await tar.create({ gzip: true, file: tar_path, cwd: dir, portable: true }, [filename]).catch(noop);
                     // core.logger.info(`Compressed '${fullpath}' in ${Date.now()-t}ms.`);
                     await fs.promises.utimes(tar_path, stats.atime, stats.mtime);
                     await fs.promises.unlink(fullpath);
@@ -222,9 +222,9 @@ export function cpu_average() {
         }
         totalIdle += cpu.times.idle;
     }
-    return {idle: totalIdle / cpus.length, total: totalTick / cpus.length};
+    return { idle: totalIdle / cpus.length, total: totalTick / cpus.length };
 }
-  
+
 // load average for the past 1000 milliseconds calculated every 100
 /** @returns {number} */
 export function get_cpu_load_avg(avgTime = 1000, delay = 100) {
@@ -254,22 +254,22 @@ export { promisify } from "node:util";
 export { pidtree, execa }
 
 /** @returns {AsyncIterable<Path>} */
-export async function *find_symlinks(dir, broken=false) {
+export async function* find_symlinks(dir, broken = false) {
     /** @type {AsyncGenerator<Path>} */
-    var g = new Glob("**", {cwd:dir, absolute:true, nodir:true, stat:true, withFileTypes:true});
+    var g = new Glob("**", { cwd: dir, absolute: true, nodir: true, stat: true, withFileTypes: true });
     for await (var f of g) {
         if (!f.isSymbolicLink()) continue;
         if (broken !== undefined) {
             const targetPath = await f.readlink();
             const resolvedTargetPath = path.resolve(path.dirname(f.fullpath()), targetPath);
-            const targetBroken = await fs.promises.access(resolvedTargetPath).then(()=>true).catch(()=>false);
+            const targetBroken = await fs.promises.access(resolvedTargetPath).then(() => true).catch(() => false);
             if (broken !== targetBroken) continue;
         }
         yield f;
     }
 }
 
-export async function append_line_truncate(filePath, line, maxLines=512) {
+export async function append_line_truncate(filePath, line, maxLines = 512) {
     var data = await fs.promises.readFile(filePath, 'utf8').catch(noop);
     let lines = data ? data.split('\n') : [];
     lines.push(line);
@@ -283,7 +283,7 @@ export async function append_line_truncate(filePath, line, maxLines=512) {
 export function url_exists(url) {
     if (typeof url !== "string") url = url.toString();
     if (url.match(/^file:/)) return file_exists(pathify(url));
-    return fetch(url, { method: 'head' }).then((res)=>!String(res.status).match(/^4\d\d$/)).catch(()=>false);
+    return fetch(url, { method: 'head' }).then((res) => !String(res.status).match(/^4\d\d$/)).catch(() => false);
 }
 
 /** @param {string} url @param {RequestInit} options */
@@ -300,7 +300,7 @@ export async function* stream_response(response) {
     try {
         while (true) {
             const { done, value } = await reader.read();
-                if (done) break;
+            if (done) break;
             yield value;
         }
     } finally {
@@ -310,19 +310,19 @@ export async function* stream_response(response) {
 
 export function get_node_modules_dir(module) {
     var f = fileURLToPath(module ? import.meta.resolve(module) : import.meta.url);
-    while(path.basename(f) != "node_modules" || path.basename(f) == f) f = path.dirname(f);
+    while (path.basename(f) != "node_modules" || path.basename(f) == f) f = path.dirname(f);
     return f;
 }
 
 /** @param {Logger} logger @param {string} msg */
 export function pipe_error_handler(logger, msg) {
-    return (e)=>{
+    return (e) => {
         logger.error(new Error(`pipe error [${msg}]: ${e.message}`));
     }
 }
 
 export class StopWatchHR extends StopWatchBase {
-	__get_now() { return performance.now(); }
+    __get_now() { return performance.now(); }
 }
 
 /** @typedef {{downloaded: number, total: number, percent: number, speed: number}} Progress */
@@ -359,29 +359,29 @@ export class Downloader extends events.EventEmitter {
     }
 
     async download() {
-        return this.#started = this.#started ?? (async()=>{
+        return this.#started = this.#started ?? (async () => {
             let downloaded_bytes = 0;
             let progress_bytes = 0;
             let last_progress_update = 0;
             var start_ts = Date.now();
-            var {chunk_size, progress_interval, start, end, agent} = this.#opts;
+            var { chunk_size, progress_interval, start, end, agent } = this.#opts;
 
             chunk_size = Math.max(chunk_size, 0);
             progress_interval = Math.max(progress_interval, 0);
             start = Math.max(start, 0);
             end = Math.max(end, 0);
-        
+
             downloaded_bytes = start ?? 0;
             let accept_ranges;
             let file_size = 0;
-        
+
             if (chunk_size || start || end) {
                 const head_res = await fetch(this.#url, { method: 'HEAD', signal: this.#controller.signal, agent });
                 if (!head_res.ok) throw new Error(`HEAD request failed: ${head_res.status}`);
-                
+
                 file_size = parseInt(head_res.headers.get('content-length'));
                 accept_ranges = head_res.headers.get('accept-ranges') === 'bytes';
-                
+
                 if (!accept_ranges) {
                     console.warn('Server does not support byte ranges - cannot resume downloads');
                     downloaded_bytes = 0;
@@ -391,7 +391,7 @@ export class Downloader extends events.EventEmitter {
                 }
             }
             var done = false;
-            
+
             while (!done) {
                 let headers = {};
                 if (accept_ranges && file_size) {
@@ -418,7 +418,7 @@ export class Downloader extends events.EventEmitter {
                     let speed = progress_bytes / ((now - start_ts) / 1000);
 
                     this.emit('data', chunk);
-                    
+
                     if ((downloaded_bytes - last_progress_update >= progress_interval) || (downloaded_bytes === file_size)) {
                         let p = {
                             downloaded: downloaded_bytes,
@@ -443,28 +443,28 @@ export class Downloader extends events.EventEmitter {
     abort() {
         this.#controller.abort();
     }
-    
+
     stream() {
         var out = new stream.PassThrough();
-        this.on('data', (chunk)=>{
+        this.on('data', (chunk) => {
             out.write(chunk);
         });
-        this.on("end", ()=>{
+        this.on("end", () => {
             out.end()
         });
         this.start();
         return out;
     }
-    
+
     /** @param {string} file */
-    async file(file, resume=false) {
+    async file(file, resume = false) {
         if (resume) {
             const exists = await file_exists(file).catch(noop);
             const stat = exists ? await fs.promises.stat(file).catch(noop) : null;
             if (stat) this.#opts.start = stat.size;
             else resume = false;
         }
-        var out = fs.createWriteStream(file, {flags: resume ? 'r+' : 'w'});
+        var out = fs.createWriteStream(file, { flags: resume ? 'r+' : 'w' });
         this.stream().pipe(out);
         return this.start();
     }
@@ -493,7 +493,7 @@ export function write_safe(stream_out, data, encoding) {
         }
     });
 }
-  
+
 export const array_avg = function (arr) {
     if (arr && arr.length >= 1) {
         const sumArr = arr.reduce((a, b) => a + b, 0)
@@ -505,7 +505,7 @@ export function pad(num, size) {
     return num.toString().padStart(size, '0');
 }
 
-export function format_srt_time(seconds, webvtt=false) {
+export function format_srt_time(seconds, webvtt = false) {
     // Calculate hours, minutes, seconds, and milliseconds
     const ms_delim = webvtt ? "." : ",";
     const hours = Math.floor(seconds / 3600);
@@ -604,7 +604,7 @@ export function* infinite_iterator(generator) {
     }
 }
 
-export async function safe_write_file(filename, data, encoding="utf-8") {
+export async function safe_write_file(filename, data, encoding = "utf-8") {
     var tmp_filename = path.join(globals.app.tmp_dir, `${md5(filename)}_${uuid4()}.tmp`);
     if (!safe_write_mutex_map[filename]) safe_write_mutex_map[filename] = new Mutex();
     const release = await safe_write_mutex_map[filename].acquire();
@@ -618,10 +618,10 @@ export async function safe_write_file(filename, data, encoding="utf-8") {
 }
 
 export async function file_exists(path) {
-    return fs.promises.access(path).then(()=>true).catch(()=>false);
+    return fs.promises.access(path).then(() => true).catch(() => false);
 }
 
-export function get_encoder_ffmpeg_args(encoder, profile="main", level="4.1") {
+export function get_encoder_ffmpeg_args(encoder, profile = "main", level = "4.1") {
     var ffmpeg_args = [];
     ffmpeg_args.push(
         `-profile:v`, profile,
@@ -714,8 +714,8 @@ export function get_hls_segment_codec_string(codec = "h264", profile = "main", l
     if (codec.match(/^(h264|avc1)$/)) {
         let profiles = {
             baseline: { idc: 0x42, constraint: 0xe0 }, // 42e0
-            main:     { idc: 0x4d, constraint: 0x40 }, // 4d40
-            high:     { idc: 0x64, constraint: 0x00 }, // 6400
+            main: { idc: 0x4d, constraint: 0x40 }, // 4d40
+            high: { idc: 0x64, constraint: 0x00 }, // 6400
         };
         let p = profiles[profile.toLowerCase()];
         if (!p) throw new Error(`Unknown H.264 profile: ${profile}`);
@@ -723,7 +723,7 @@ export function get_hls_segment_codec_string(codec = "h264", profile = "main", l
         videoCodec = `avc1.${p.idc.toString(16)}${p.constraint.toString(16).padStart(2, "0")}${levelHex}`;
     } else if (codec.match(/^(h265|hevc|hvc1)$/)) {
         let profiles = {
-            main:  1,
+            main: 1,
             main10: 2,
         };
         let profileId = profiles[profile.toLowerCase()];
@@ -732,6 +732,24 @@ export function get_hls_segment_codec_string(codec = "h264", profile = "main", l
         videoCodec = `hvc1.${profileId}.0.${tier.toUpperCase()}${level}`;
     }
     return [videoCodec, audioCodec].join(",")
+}
+
+export function onceify({resolve, reject}) {
+    let settled = false;
+    return {
+        resolve: (v) => {
+            if (!settled) {
+                settled = true;
+                resolve(v);
+            }
+        },
+        reject: (e) => {
+            if (!settled) {
+                settled = true;
+                reject(e);
+            }
+        },
+    };
 }
 
 // prevents bad SSL being rejected.

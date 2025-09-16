@@ -2,10 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import {globals, MediaProps, Download, Session, InternalSessionProps, PlaylistItemProps, PlaylistItemPropsProps, Session$, StreamSettings$, DEFAULT_PROBE_MEDIA_OPTS} from "./exports.js";
 import {utils, FFMPEGWrapper, MPVLoadFileError, History, History$, AccessControl, constants} from "../core/exports.js";
-/** @import {MediaInfo, Session$, ProbeMediaOpts, LoadFileOpts} from "./exports.js" */
+/** @import {MediaInfo, Session$, ProbeMediaOpts, LoadFileOpts, PlaylistItemProps$} from "./exports.js" */
 
 const video_exts = ["3g2","3gp","aaf","asf","avchd","avi","drc","flv","gif","m2v","m4p","m4v","mkv","mng","mov","mp2","mp4","mpe","mpeg","mpg","mpv","mxf","nsv","ogg","ogv","qt","rm","rmvb","roq","svi","vob","webm","wmv","yuv"];
-
 
 const VERSION = "3.0";
 
@@ -58,12 +57,12 @@ export class PlaylistItem$ {
     index = 0;
     track_index = 0;
     filename = "";
-    /** @type {typeof PlaylistItemPropsProps} */
+    /** @type {PlaylistItemProps$} */
     props = {};
     upload_id = null;
 }
 
-/** @typedef {{id:string, parent_id:string, index:number, track_index:number, filename:string, props:Record<PropertyKey,any>}} PlaylistEntry$ */
+/** @typedef {{id:string, parent_id:string, index:number, track_index:number, filename:string, props:PlaylistItemProps$}} PlaylistEntry$ */
 /** @typedef {Session$ & {playlist_history:History$, playlist_info:Record<PropertyKey,any>, media_info:Record<PropertyKey,MediaInfo$>, playlist_id:string, playlist:Record<PropertyKey,PlaylistEntry$>}} InternalSession$ */
 /** @typedef {{register_history:boolean}} PlaylistOptions */
 /** @typedef {PlaylistOptions & {insert_pos:number, parent_id:string, track_index:number}} PlaylistAddOptions */
@@ -85,8 +84,8 @@ export class InternalSession extends Session {
     #flat_playlist_index_map = new Map();
     /** @type {Map<PlaylistItem$, number>} */
     #flat_playlist_playable_index_map = new Map();
-    #next_parsed_playlist_item;
     #loads = 0;
+    #errors = 0;
 
     get saves_dir() { return path.join(globals.app.curr_saves_dir, this.id); }
     get files_dir() { return this.$.files_dir ? this.$.files_dir : globals.app.files_dir; }
@@ -294,8 +293,6 @@ export class InternalSession extends Session {
         this.#flat_playlist = flat_playlist;
         this.#flat_playlist_index_map = new Map(flat_playlist.map((c,i)=>[c, i]));
         this.#flat_playlist_playable_index_map = new Map(flat_playlist_playable.map((c,i)=>[c, i]));
-        
-        this.#next_parsed_playlist_item = null;
     }
 
     async scheduled_start_stream() {
@@ -326,6 +323,7 @@ export class InternalSession extends Session {
         this.#ticks++;
     }
 
+    // parsing an item can take time, this is to help potentially stalling while loading.
     prepare_next_playlist_item() {
         var next = this.get_playlist_adjacent_item(this.$.playlist_id, 1);
         this.player.parse_item(next);
@@ -891,7 +889,6 @@ export class InternalSession extends Session {
     /** @param {string} id @param {LoadFileOpts} opts */
     async playlist_play(id, opts) {
         var current_load_id = ++this.#loads;
-        this.#next_parsed_playlist_item = null;
         
         opts = {...opts};
 
@@ -930,9 +927,20 @@ export class InternalSession extends Session {
 
         this.$.playlist_id = item.id;
 
-        await this.player.loadfile(item, opts);
+        let error = await this.player.play_file(item, opts);
+        if (error) {
+            this.#errors++;
+        } else {
+            this.errors = 0;
+        }
         
-        if (this.is_running && current_load_id == this.#loads) this.playlist_next();
+        if (this.is_running && current_load_id == this.#loads) {
+            if (this.#errors == 1) {
+                this.playlist_play(id, opts);
+            } else {
+                this.playlist_next();
+            }
+        }
     }
 
     /** @param {LoadFileOpts} opts */
@@ -1052,7 +1060,6 @@ function fix_session($, warn) {
 function fix_playlist_item(item, $) {
     if (typeof item !== "object" || item === null) item = {filename: item ? String(item) : ""};
     var {id, filename, props, index, parent_id, track_index, upload_id} = item;
-    id = String(id ?? utils.uuidb64());
     filename = filename || "";
     props = props || {};
     utils.remove_nulls(props);
@@ -1071,7 +1078,7 @@ function fix_playlist_item(item, $) {
     parent_id = String(parent_id || "0");
     index = index || 0;
     track_index = track_index || 0;
-    while ($ && $[id]) id = utils.uuidb64();
+    while ($ && (!id || $[id])) id = utils.uuidb64(); // only fixes empty ids and bad ids if $ is supplied.
     return utils.remove_nulls({id, filename, index, parent_id, track_index, props, upload_id});
 }
 

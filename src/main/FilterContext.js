@@ -29,7 +29,7 @@ export class FilterContext {
         return `'${s.replace(/'/g, "\\'")}'`;
     }
 	/** @param {FilterInput[]} inputs */
-	apply(inputs) {
+	push(...inputs) {
 		for (var i of inputs) {
             if (!i) continue;
             if (!i.active) continue;

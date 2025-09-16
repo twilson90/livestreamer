@@ -1,3 +1,5 @@
+/** @typedef {{name:string, value:number, description:string}} AspectRatio */  
+  
   // Expanded list of aspect ratios
 export const COMMON_ASPECT_RATIOS = [
     { name: '32:9', value: 32 / 9, description: "Super Ultrawide" },
@@ -19,8 +21,9 @@ export const COMMON_ASPECT_RATIOS = [
     { name: '2:1', value: 2 / 1, description: "Univisium" },
     { name: '1.85:1', value: 1.85 / 1, description: "Theatrical widescreen" },
     { name: '1.43:1', value: 1.43 / 1, description: "IMAX" },
-];
+].sort((a, b) => a.value - b.value);
 
+/** @return {AspectRatio} */
 export function nearest_aspect_ratio(aspect) {
     let closest = COMMON_ASPECT_RATIOS[0];
     let minDiff = Math.abs(aspect - closest.value);

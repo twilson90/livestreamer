@@ -4,7 +4,7 @@ export function load_image(src) {
     return new Promise((resolve, reject) => {
         img.src = src;
         img.addEventListener("load", on_resolve = () => resolve(img));
-        img.addEventListener("error", on_reject = () => reject());
+        img.addEventListener("error", on_reject = (err) => reject(err));
     }).finally(() => {
         img.removeEventListener("load", on_resolve);
         img.removeEventListener("error", on_reject);

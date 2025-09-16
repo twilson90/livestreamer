@@ -163,7 +163,7 @@ export class Core extends DataNode {
 
         process.env.PATH = [...new Set([this.bin_dir, ...process.env.PATH.split(path.delimiter)])].join(path.delimiter);
 
-        process.on('unhandledRejection', (e)=>{
+        process.on('unhandledRejection', (e, promise)=>{
             if (this.debug) throw e;
             if (!e instanceof Error) e = new Error(e);
             this.logger.error(`Unhandled Rejection:`, e.stack);
@@ -333,7 +333,7 @@ export class CoreMaster extends Core {
 
         this.__init();
         
-        fs.rmdirSync(this.tmp_dir, { recursive: true });
+        fs.rmSync(this.tmp_dir, { force: true, recursive: true });
         fs.mkdirSync(this.tmp_dir, { recursive: true });
         fs.mkdirSync(this.appdata_dir, { recursive: true });
         fs.mkdirSync(this.bin_dir, { recursive: true });
@@ -644,7 +644,9 @@ export class CoreMaster extends Core {
     }
 
     async #load_confs() {
-        var new_conf = utils.json_copy(config_default);
+        var conf_jsons = [
+            utils.json_copy(config_default)
+        ];
         console.log(`Loading confs [${this.#conf_paths.join(", ")}]...`);
         for (let conf_path of this.#conf_paths) {
             if (!(await utils.file_exists(conf_path))) {
@@ -652,6 +654,10 @@ export class CoreMaster extends Core {
             }
             let conf_json = require_no_cache(path.resolve(conf_path));
             console.info(`Conf file '${conf_path}' successfully loaded.`);
+            conf_jsons.push(conf_json)
+        }
+        var new_conf = {};
+        for (var conf_json of conf_jsons) {
             for (var k in conf_json) {
                 let v = conf_json[k];
                 if (typeof v === "string") {

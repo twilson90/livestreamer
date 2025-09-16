@@ -1,5 +1,3 @@
-import * as resources from "./core/resources.js";
-
 export default {
 	"core.title": "Core",
 	"core.description": "IPC, web proxies, process management.",
@@ -59,6 +57,7 @@ export default {
 	"media-server.media_expire_time": 2 * 24 * 60 * 60,
 	"media-server.hls_list_size": 10,
 	"media-server.hls_live_window": 2 * 60 * 60, // 2 hrs
+	// "media-server.hls_live_window": 1 * 60, // 1 min
 	"media-server.hls_segment_duration": 2.0,
 	"media-server.keyframe_interval": 0,
 	"media-server.allow_hardware": true,

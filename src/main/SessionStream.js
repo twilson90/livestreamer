@@ -1,4 +1,5 @@
 import path from "node:path";
+import stream from "node:stream";
 import {globals, StreamTarget, InternalSessionPlayer, InternalSessionPlayer$, OUTPUT_FORMAT} from "./exports.js";
 import {utils, constants, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, ClientUpdater, StreamServer} from "../core/exports.js";
 /** @import { Session, InternalSession, ExternalSession, Session$ } from './exports.js' */
@@ -150,7 +151,6 @@ export class SessionStream extends StopStartStateMachine {
         this.$.speed = 0;
     
         let ffmpeg_args = [
-            // `-re`,
             // "-flags", "low_delay",
             // "-thread_queue_size", "4096",
             // "-probesize", "32",
@@ -160,12 +160,13 @@ export class SessionStream extends StopStartStateMachine {
             // `-ignore_unknown`,
             // `-copy_unknown`,
             // "-avioflags", "direct",
-            "-err_detect", "ignore_err",
+            `-err_detect`, `ignore_err`,
             `-strict`, `experimental`,
             // "-avoid_negative_ts", "1",
             `-flags`, "+global_header", // +low_delay
-            "-fflags", "+autobsf+flush_packets", //  +nobuffer
+            "-fflags", "+genpts+igndts+discardcorrupt+autobsf+flush_packets", //  +nobuffer
             "-flush_packets", "1",
+            // `-rw_timeout`, `15000000`,
             // `-tag:v`, `7`, // needed for tee muxer
             // `-tag:a`, `10`, // needed for tee muxer
             // ...(this.is_realtime ? ["-readrate", "1"] : []), // "-readrate_catchup", "1" // doesnt exist on my build of ffmpeg yet
@@ -173,8 +174,12 @@ export class SessionStream extends StopStartStateMachine {
         
         if (this.session.type === constants.SessionTypes.EXTERNAL) {
             ffmpeg_args.push(
-                `-f`, `flv`,
-                `-stream_loop`, `-1`,
+                // `-reconnect_on_network_error`, `1`,
+                // `-reconnect_on_http_error`, `1`,
+                // `-reconnect_delay_max`, `5`,
+                // `-stream_loop`, `-1`,
+                `-re`,
+                `-f`, `live_flv`, // "important to survive timestamp discontinuities"
                 "-i", `rtmp://media-server.${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}${this.external_session.nms_session.publishStreamPath}`,
             );
         } else {
@@ -244,16 +249,22 @@ export class SessionStream extends StopStartStateMachine {
             this.logger.error(new Error(`SessionStream ffmpeg error: ${e.message}`));
             this.stop("error");
         });
-        
-        this.#ffmpeg.stdout.pipe(this.server);
+
+        // this.#ffmpeg.stdout.on("error", (e)=>{
+        //     console.error(`ffmpeg.stdout error: ${e.message}`)
+        // })
+        // this.#ffmpeg.stdout.pipe(this.server);
+
+        stream.promises.pipeline(this.#ffmpeg.stdout, this.server).catch((e)=>{
+            this.logger.error(`ffmpeg.stdout piping error: ${e.message}`)
+        })
 
         if (this.session.type === constants.SessionTypes.INTERNAL) {
             this.player = new InternalSessionPlayer(this);
-            this.player.out.pipe(this.#ffmpeg.stdin);
-            this.#ffmpeg.stdin.on('error', (e)=>{
-                // we always get a complaint about premature closure, EOF, etc. Just ignore it.
+            stream.promises.pipeline(this.player.out, this.#ffmpeg.stdin).catch((e)=>{
                 if (this.player.destroyed) return;
-                this.logger.error('FFmpeg stdin error:', e)
+                this.logger.error('FFmpeg stdin error:', e);
+                this.stop("error");
             });
             
             this.logger.add(this.player.logger);
@@ -286,7 +297,7 @@ export class SessionStream extends StopStartStateMachine {
                 }
             }
             if (this.stream_targets[target_id]) {
-                this.stream_targets[target_id].update();
+                this.stream_targets[target_id].tick();
                 curr_targets.add(this.stream_targets[target_id]);
             }
         }

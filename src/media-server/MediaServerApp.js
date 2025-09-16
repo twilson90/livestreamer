@@ -94,7 +94,7 @@ const SESSION_VARS = [
 ];
 
 export const APPNAMES = new Set([
-    "live", // local encoding server
+    // "live", // local encoding server
     "external", "livestream", // external
     "private", "session", // session playlist items
     "internal", // internal session
@@ -171,8 +171,8 @@ export class MediaServerApp extends CoreFork {
         })
         this.ipc.respond("create_live", async ()=>{
             let live_id = this.generate_uid("live");
-            new Live(live_id);
-            return live_id;
+            let live = new Live(live_id);
+            return live.$;
         })
         this.ipc.respond("start_live", async (live_id, data)=>{
             var live = this.lives[live_id];
@@ -182,9 +182,8 @@ export class MediaServerApp extends CoreFork {
             }
             await live.restart(data);
         })
-        this.ipc.respond("stop_session", (id)=>{
-            var session = this.get_nms_session(id);
-            if (session) session.stop();
+        this.ipc.respond("update_live", (live_id, data)=>{
+            this.lives[live_id]?.update(data);
         });
         this.ipc.respond("stop_live", async (live_id)=>{
             this.lives[live_id]?.stop();
@@ -192,6 +191,9 @@ export class MediaServerApp extends CoreFork {
         this.ipc.respond("destroy_live", async (live_id)=>{
             this.lives[live_id]?.destroy();
         })
+        this.ipc.respond("stop_session", (id)=>{
+            this.get_nms_session(id)?.stop();
+        });
         this.ipc.respond("get_session", (id)=>{
             return session_json(this.get_nms_session(id));
         });
@@ -269,7 +271,7 @@ export class MediaServerApp extends CoreFork {
             var {id} = req.params;
             var live = this.lives[id];
             if (live) {
-                if (await live.fetch_manifest(req, res)) return;
+                if (await live.fetch_master(req, res)) return;
             }
             next();
         });
@@ -277,7 +279,7 @@ export class MediaServerApp extends CoreFork {
             var {id} = req.params;
             var live = this.lives[id];
             if (live) {
-                if (await live.fetch_stream(req, res)) return;
+                if (await live.fetch_playlist(req, res)) return;
             }
             next();
         });

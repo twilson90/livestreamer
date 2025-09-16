@@ -130,9 +130,9 @@ body {
   * {
     transition: none;
   }
-  .embedded & .vjs-fullscreen-control {
+  /* .embedded & .vjs-fullscreen-control {
     display: none;
-  }
+  } */
 
   video {
     pointer-events: none !important; // for volume slider, dragging and hovering over video fucks up pointer events for slider.
@@ -660,7 +660,26 @@ body {
       }
     }
   }
+  .vjs-level-select {
+    display:none;
+  }
+  &.hls-loaded {
+    .vjs-level-select {
+      display:block;
+    }
+  }
   /* video::-moz-media-controls {
     display: none !important;
   } */
+}
+
+.cover-icon>*:first-child {display:block;}
+.cover-icon>*:last-child {display:none;}
+.cover-horizontal {
+  .cover-icon>*:first-child {display:none;}
+  .cover-icon>*:last-child {display:block;}
+}
+
+.vjs-load-progress {
+  display: none !important;
 }

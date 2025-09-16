@@ -1,10 +1,10 @@
 import path from "node:path";
 import fs from "node:fs";
-import stream from "node:stream";
 import events from "node:events";
+import * as hls from "hls-parser";
 
-import {globals, Segment} from "./exports.js";
-import {utils, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, constants} from "../core/exports.js";
+import { globals } from "./exports.js";
+import { utils, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, constants } from "../core/exports.js";
 
 /** @import {Session} from "./exports.js" */
 /** @import {Request, Response} from "express" */
@@ -22,7 +22,7 @@ export class Live$ extends StopStartStateMachine$ {
     hls_list_size = 0;
     hls_live_window = 0;
     segment_duration = 0;
-    segment = 0;
+    segments = {};
     origin = "";
     title = "";
     url = "";
@@ -89,6 +89,7 @@ export class Live extends StopStartStateMachine {
     session;
     #base_url = "";
     #ticks = 0;
+    #master = "";
 
     get aspect_ratio() { return this.$.settings.width / this.$.settings.height; }
 
@@ -101,13 +102,13 @@ export class Live extends StopStartStateMachine {
         this.thumbnails_dir = path.join(this.dir, "thumbnails");
         this.data_filename = path.join(this.dir, "data.json");
 
-        fs.mkdirSync(this.dir, {recursive:true});
-        fs.mkdirSync(this.thumbnails_dir, {recursive:true});
+        fs.mkdirSync(this.dir, { recursive: true });
+        fs.mkdirSync(this.thumbnails_dir, { recursive: true });
 
         var base = `${globals.app.get_urls("media-server").url}`;
         this.#base_url = `${base}/media/live/${this.id}`;
         var player_url = `${base}/player/index.html?id=${this.id}`;
-        var manifest_url =`${this.#base_url}/master.m3u8`;
+        var manifest_url = `${this.#base_url}/master.m3u8`;
         this.manifest_path = path.join(this.dir, "master.m3u8");
 
         Object.assign(this.$, {
@@ -115,18 +116,18 @@ export class Live extends StopStartStateMachine {
             manifest_url,
             is_live: false,
         });
-        
+
         this.logger = new Logger(`live-${this.id}`);
         globals.app.logger.add(this.logger);
 
-        this.observer.on("change", (e)=>{
+        this.observer.on("change", (e) => {
             if (e.subtree) return;
             this.debounced_save();
         });
     }
 
     generate_levels() {
-        var configs = default_configs.filter(c=>c.resolution <= this.$.settings.height);
+        var configs = default_configs.filter(c => c.resolution <= this.$.settings.height);
         for (var c of configs) {
             new LiveLevel(this, c);
         }
@@ -134,21 +135,22 @@ export class Live extends StopStartStateMachine {
 
     async load() {
         var d;
-        try { d = JSON.parse(await fs.promises.readFile(this.data_filename, "utf-8").catch(utils.noop)); } catch {};
+        try { d = JSON.parse(await fs.promises.readFile(this.data_filename, "utf-8").catch(utils.noop)); } catch { };
         if (d) {
             Object.assign(this.$, d);
             this.generate_levels();
-            await this.end();
+            // await this.end();
             await this.stop();
             return true;
         }
     }
 
     async save() {
+        if (this.destroyed) return;
         await utils.safe_write_file(this.data_filename, JSON.stringify(this.$), "utf-8");
     }
 
-    debounced_save = utils.debounce(async ()=>{
+    debounced_save = utils.debounce(async () => {
         await this.save();
     }, 10);
 
@@ -157,18 +159,20 @@ export class Live extends StopStartStateMachine {
         if (this.is_started) {
             this.$.ts = now;
             this.$.duration = now - this.$.start_ts;
-        } else if (!this.$.ended && now > (this.$.ts + AUTO_END_LIVE_TIMEOUT)) {
+        } else if (this.is_started && now > (this.$.ts + AUTO_END_LIVE_TIMEOUT)) {
             this.logger.warn(`LIVE [${this.id}] was not ended manually, ending automatically...`);
-            await this.end();
+            // await this.end();
+            await this.stop();
         } else if (now > (this.$.ts + (globals.app.conf["media-server.media_expire_time"] * 1000))) {
             this.logger.warn(`LIVE [${this.id}] has expired, destroying...`);
             await this.destroy();
-        } else if ((this.#ticks % 60 == 0) && !(await utils.file_exists(this.data_filename))) {
-            await this.destroy();
         }
+        //  else if ((this.#ticks % 60 == 0) && !(await utils.file_exists(this.data_filename))) {
+        //     await this.destroy();
+        // }
         this.#ticks++;
     }
-    
+
     async create_thumbnail() {
         if (!this.is_started) return;
 
@@ -176,13 +180,13 @@ export class Live extends StopStartStateMachine {
         var last_segment_name = level.last_segment_filename;
         if (!last_segment_name) return;
         var last_segment_filename = last_segment_name;
-        
+
         var thumbnail_name = `${last_segment_name}.${THUMBNAIL_FORMAT}`;
         var thumbnail_path = path.join(this.thumbnails_dir, thumbnail_name);
         var ffmpeg_args = [];
         if (level.init_uri) {
             var init_filename = path.join(this.dir, level.init_uri);
-            ffmpeg_args.push("-i", `concat:${init_filename}|${last_segment_filename}`); 
+            ffmpeg_args.push("-i", `concat:${init_filename}|${last_segment_filename}`);
         } else {
             ffmpeg_args.push("-i", last_segment_filename);
         }
@@ -193,11 +197,11 @@ export class Live extends StopStartStateMachine {
             "-y",
             thumbnail_path
         );
-        new FFMPEGWrapper().start(ffmpeg_args, {cwd: level.dir})
-            .then(()=>{
+        new FFMPEGWrapper().start(ffmpeg_args, { cwd: level.dir })
+            .then(() => {
                 this.$.thumbnail_url = `${this.#base_url}/thumbnails/${thumbnail_name}`;
             })
-            .catch((e)=>{
+            .catch((e) => {
                 // 1 bad thumbnail, whatever.
             });
     };
@@ -208,88 +212,91 @@ export class Live extends StopStartStateMachine {
     }
 
     /** @param {Request} req @param {Response} res */
-    async fetch_manifest(req, res) {
-        // var str = await fs.promises.readFile(this.manifest_path, "utf8").catch(utils.noop);
-        // if (!str) return false;
-        var str = "";
-        str += `#EXTM3U\n`;
-        str += `#EXT-X-VERSION:${HLS_EXT_VERSION}\n`;
-        var default_bandwidth = 2000000;
-        var levels = Object.values(this.levels).map((level,i)=>{
-            let str = "";
-            var codec = this.use_hevc ? "hevc" : "h264";
-            var codec_profile = "main";
-            var codec_level = this.use_hevc ? "3.1" : "4.1";
-            var codecs_string = utils.get_hls_segment_codec_string(codec, codec_profile, codec_level);
-            var bandwidth = (level.config.video_bitrate + level.config.audio_bitrate) * 1000;
-            let resolution = `${level.width}x${level.height}`;
-            str += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${resolution},CODECS="${codecs_string}"\n`
-            str += `${level.name}/stream.m3u8\n`;
-            return {str, bandwidth};
-        })
+    async fetch_master(req, res) {
+        if (!this.#master) {
+            var default_bandwidth = 2000000;
+            var variants = Object.values(this.levels).map((level, i) => {
+                var codec = this.use_hevc ? "hevc" : "h264";
+                var codec_profile = "main";
+                var codec_level = this.use_hevc ? "3.1" : "4.1";
+                var codecs_string = utils.get_hls_segment_codec_string(codec, codec_profile, codec_level);
+                var bandwidth = (level.config.video_bitrate + level.config.audio_bitrate) * 1000;
+                return new hls.types.Variant({
+                    uri: `${level.name}/stream.m3u8`,
+                    bandwidth: bandwidth,
+                    resolution: {
+                        width: level.width,
+                        height: level.height,
+                    },
+                    codecs: codecs_string,
+                });
+            });
+            var obj = new hls.types.MasterPlaylist({
+                version: HLS_EXT_VERSION,
+                variants,
+            })
 
-        // Find the index closest to default_bandwidth
-        let closestIndex = levels.reduce((closest, lvl, i) => {
-            let diff = Math.abs(lvl.bandwidth - default_bandwidth);
-            return diff < Math.abs(levels[closest].bandwidth - default_bandwidth) ? i : closest;
-        }, 0);
+            // Find the index closest to default_bandwidth
+            let closestIndex = variants.reduce((closest, lvl, i) => {
+                let diff = Math.abs(lvl.bandwidth - default_bandwidth);
+                return diff < Math.abs(variants[closest].bandwidth - default_bandwidth) ? i : closest;
+            }, 0);
 
-        // Move the closest level to the start of the array
-        levels.unshift(...levels.splice(closestIndex, 1));
+            // Move the closest level to the start of the array
+            variants.unshift(...variants.splice(closestIndex, 1));
+            this.#master = hls.stringify(obj);
+        }
 
-        str += levels.map(l=>l.str).join("\n");
         res.header("content-type", "application/vnd.apple.mpegurl");
-        res.send(str);
+        res.send(this.#master);
+
         return true;
     }
 
     /** @param {Request} req @param {Response} res */
-    async fetch_stream(req, res) {
-        var {id, v} = req.params;
+    async fetch_playlist(req, res) {
+        var { id, v } = req.params;
         var vod_path = path.join(this.dir, v, `vod.m3u8`);
-        if (req.query.vod || this.$.ended) {
+        if (req.query.vod || !this.$.is_live) {
             let str = await fs.promises.readFile(vod_path, "utf8").catch(utils.noop);
             if (!str) return false;
-            if (this.$.ended) str += `#EXT-X-ENDLIST\n`;
             res.header("content-type", "application/vnd.apple.mpegurl");
-            res.send(str);
+            res.send(str+`\n#EXT-X-ENDLIST`);
             return true;
         } else {
-            res.set('cache-control', 'no-store');
             if (this.levels[v]) {
-                return await this.levels[v].fetch(req, res);
+                return await this.levels[v].fetch_playlist(req, res);
             }
         }
     }
 
-    async end() {
-        if (this.$.ended) return;
-        this.$.ended = true;
-        // await Promise.all(Object.values(this.levels).map(l=>l.end()));
+    update(data) {
+        Object.assign(this.$, data);
     }
-    
+
     async _start(settings) {
-        this.$.segment = 0;
         Object.assign(this.$.settings, utils.json_copy(settings));
 
         this.generate_levels();
+
+        this.$.segments = Object.fromEntries(Object.keys(this.levels).map((k) => [k, -1]));
 
         this.$.is_live = true;
         this.$.hls_list_size = globals.app.conf["media-server.hls_list_size"];
         this.$.hls_live_window = globals.app.conf["media-server.hls_live_window"];
         this.$.segment_duration = +globals.app.conf["media-server.hls_segment_duration"];
-        
+
         this.use_hardware = this.$.settings.opts.use_hardware && globals.app.conf["media-server.allow_hardware"];
         this.use_hevc = this.$.settings.opts.use_hevc && globals.app.conf["media-server.allow_hevc"];
 
-        this.ffmpeg = new FFMPEGWrapper({log_filename: path.join(globals.app.logs_dir, `ffmpeg-live-${this.id}-${utils.date_to_string()}.log`)});
-        
+        this.ffmpeg = new FFMPEGWrapper({ log_filename: path.join(globals.app.logs_dir, `ffmpeg-live-${this.id}-${utils.date_to_string()}.log`) });
+
         var last_s;
-        this.last_level.on("new_segment", ()=>{
-            var s = Math.floor(this.$.segment * this.$.segment_duration * 1000 / THUMBNAIL_INTERVAL);
+        var last_level = this.last_level;
+        last_level.on("update", () => {
+            var s = Math.floor(this.$.segments[last_level.name] * this.$.segment_duration * 1000 / THUMBNAIL_INTERVAL);
             if (s != last_s) this.create_thumbnail();
             last_s = s;
-            this.$.segment++;
         });
 
         console.info(`Starting LIVE [${this.id}]...`);
@@ -297,7 +304,7 @@ export class Live extends StopStartStateMachine {
         let ffmpeg_args = [
             "-strict", "experimental"
         ];
-        
+
         let hwaccel = this.use_hardware ? globals.app.conf["core.ffmpeg_hwaccel"] : null;
         let hwenc = this.use_hardware ? globals.app.conf["core.ffmpeg_hwenc"] : null;
         let hwdec = false; // whether all frames should start on gpu. With multiple mpv inputs there is an issue with sub-formats causing fuck ups, setting false fixes this by decoding by cpu but still allowing scaling and encoding with gpu
@@ -322,18 +329,18 @@ export class Live extends StopStartStateMachine {
                 // "-hwaccel_device", utils.is_windows() ? "0" : "/dev/dri/renderD128"
             );
         } */
-        
+
         // var fps = this.$.settings.opts.fps_passthrough ? 0 : this.$.settings.fps ?? 0;
         var fps = this.$.settings.fps;
-        if (hwenc) fps = 60; // VERY ANNOYING, but a builtin limitation of nvenc (and it looks like VAAPI too) is rate control with variable frame rate is not possible. it will take the container fps and that's that. If it varies, so will the bitrate... potentially massively, so we must fix it.
+        // if (hwenc) fps = 60; // VERY ANNOYING, but a builtin limitation of nvenc (and it looks like VAAPI too) is rate control with variable frame rate is not possible. it will take the container fps and that's that. If it varies, so will the bitrate... potentially massively, so we must fix it.
 
         // without nvenc frame times are not working, 23.976fps still looks like garbage. Forcing 60fps.
-        fps = 60;
-        
+        // fps = 60;
+
         var keyint = globals.app.conf["media-server.keyframe_interval"] || globals.app.conf["media-server.hls_segment_duration"] || 2;
         var use_hevc = this.use_hevc;
 
-        
+
         // /** @type {net.Socket} */
         // var socket = await new Promise(resolve=>{
         //     var socket = net.createConnection(this.$.settings.input, ()=>{
@@ -369,13 +376,16 @@ export class Live extends StopStartStateMachine {
 
             // "-r", fps,
             "-fps_mode", fps ? "cfr" : "vfr",
-            ...(fps ? [`-r`, `${fps}`] : []),
-            ...(fps ? [] : [`-enc_time_base`, `1/90000`]),
         );
+        if (fps) {
+            ffmpeg_args.push(`-r`, `${fps}`);
+        } else {
+            ffmpeg_args.push(`-enc_time_base`, `1/90000`);
+        }
 
         var encoder = use_hevc ? `libx265` : `libx264`;
         if (hwenc) {
-            encoder = `${use_hevc ? "hevc":"h264"}_${hwenc}`;
+            encoder = `${use_hevc ? "hevc" : "h264"}_${hwenc}`;
             ffmpeg_args.unshift(
                 `-threads`, `${Object.values(this.levels).length}`
             );
@@ -385,12 +395,12 @@ export class Live extends StopStartStateMachine {
 
         let _vi = 0;
         let _ai = 0;
-        let genvid = ()=>`v${++_vi}`;
-        let genaid = ()=>`a${++_ai}`;
+        let genvid = () => `v${++_vi}`;
+        let genaid = () => `a${++_ai}`;
 
         let filter_complex = [];
         ffmpeg_args.push(`-aspect`, `${this.aspect_ratio.toFixed(6)}`);
-        
+
         // filter_complex.push(`[${vid}]setpts=PTS-STARTPTS[fixed]`);
         // vid = "fixed";
         let vid = "0:v:0";
@@ -405,18 +415,18 @@ export class Live extends StopStartStateMachine {
             vid = tmp2;
         } */
         var levels = Object.values(this.levels);
-        let vids = levels.map(c=>genvid());
-        let aids = levels.map(c=>genaid());
+        let vids = levels.map(c => genvid());
+        let aids = levels.map(c => genaid());
         let filter_complex_v_init = [
-            `split=${vids.length}${vids.map((vid)=>`[${vid}]`).join("")}`
+            `split=${vids.length}${vids.map((vid) => `[${vid}]`).join("")}`
         ]
         if (!hwdec && hwenc) {
-            let hwu = (hwaccel=="cuda") ? `hwupload_cuda` : `hwupload`;
+            let hwu = (hwaccel == "cuda") ? `hwupload_cuda` : `hwupload`;
             filter_complex_v_init.unshift(`format=nv12`, hwu) // converts all frames to GPU surfaces
         }
         let filter_complex_a_init = [
             `aresample=async=1:min_hard_comp=0.100000:first_pts=0`,
-            `asplit=${aids.length}${aids.map((aid)=>`[${aid}]`).join("")}`
+            `asplit=${aids.length}${aids.map((aid) => `[${aid}]`).join("")}`
         ];
         filter_complex.push(
             // setpts=PTS-STARTPTS,
@@ -435,7 +445,7 @@ export class Live extends StopStartStateMachine {
             else graph.push(`scale=${s}`);
 
             if (hwaccel && !hwenc) {
-                graph.push(`hwdownload`,`format=yuv420p`);
+                graph.push(`hwdownload`, `format=yuv420p`);
                 vid = tmp;
             }
             if (graph.length) {
@@ -458,7 +468,7 @@ export class Live extends StopStartStateMachine {
         ffmpeg_args.push("-filter_complex", filter_complex.join(";"));
         // var fix_name = /** @param {string} s */(s)=>s.trim().replace(/\s+/g, "-").toLowerCase();
         ffmpeg_args.push(
-            `-var_stream_map`, levels.map((c,i)=>`v:${i},a:${i},name:${encodeURIComponent(c.name)}`).join(" "),
+            `-var_stream_map`, levels.map((c, i) => `v:${i},a:${i},name:${encodeURIComponent(c.name)}`).join(" "),
             `-hls_list_size`, this.$.hls_list_size,
             `-hls_segment_filename`, `%v/%03d.${use_hevc ? "m4s" : "ts"}`,
             // `-hls_playlist_type`, `event`,
@@ -478,11 +488,11 @@ export class Live extends StopStartStateMachine {
             l.start();
         }
 
-        this.ffmpeg.start(ffmpeg_args, {cwd: this.dir})
-            .catch((e)=>{
+        this.ffmpeg.start(ffmpeg_args, { cwd: this.dir })
+            .catch((e) => {
                 this.logger.error(new Error(`Live [${this.id}] ffmpeg error: ${e.message}`));
             })
-            .then(()=>{
+            .then(() => {
                 // if (!this.destroyed) console.log("Live FFMPEG ended unexpectedly.");
                 this.stop();
             })
@@ -496,18 +506,17 @@ export class Live extends StopStartStateMachine {
         console.info(`LIVE [${this.id}] has stopped.`);
         this.$.is_live = false;
         globals.app.ipc.emit("media-server.live.stopped", this.id);
-        globals.app.ipc.emit(`media-server.live.stopped.${this.id}`);
         for (var k in this.levels) {
             await this.levels[k].stop();
         }
         if (this.ffmpeg) await this.ffmpeg.destroy();
-        await this.end();
+        // await this.end();
         return super._stop();
     }
 
     async _destroy() {
         delete globals.app.lives[this.id];
-        await fs.promises.rm(this.dir, { recursive: true }).catch(err=>console.warn(err));
+        await fs.promises.rm(this.dir, { recursive: true }).catch(err => console.warn(err));
         this.logger.info(`${this} has been destroyed.`);
         this.logger.destroy();
         return super._destroy();
@@ -515,8 +524,9 @@ export class Live extends StopStartStateMachine {
 }
 
 export class LiveLevel extends events.EventEmitter {
-    /** @type {Segment[]} */
+    /** @type {hls.types.Segment[]} */
     #segments = [];
+    #header = "";
     /** @type {Live} */
     #live;
     #stopped = false;
@@ -525,6 +535,15 @@ export class LiveLevel extends events.EventEmitter {
     #interval;
     /** @type {LiveLevelConfig} */
     #config = {};
+    #segment_map = {};
+    /** @type {Record<number, utils.Deferred>} */
+    #msn_promises = {};
+    get msn() {
+        return this.#live.$.segments[this.name];
+    }
+    set msn(value) {
+        this.#live.$.segments[this.name] = value
+    }
     get config() { return this.#config; }
     get name() { return this.#config.name; }
     get width() { return Math.round(this.#live.aspect_ratio * this.#config.resolution / 2) * 2; }
@@ -536,9 +555,9 @@ export class LiveLevel extends events.EventEmitter {
         this.#config = config;
         this.#live = live;
         this.#live.levels[config.name] = this;
-        
+
         this.dir = path.join(this.#live.dir, config.name);
-        fs.mkdirSync(this.dir, {recursive:true}) // just incase...
+        fs.mkdirSync(this.dir, { recursive: true }) // just incase...
         this.live_filename = path.join(this.dir, "stream.m3u8");
         this.filename = path.join(this.dir, "vod.m3u8");
     }
@@ -547,96 +566,105 @@ export class LiveLevel extends events.EventEmitter {
         if (this.#started) return;
         this.#started = true;
         var last_mtime;
-        this.#interval = setInterval(async()=>{
+        var updating = false;
+        this.#interval = setInterval(async () => {
+            if (updating) return;
             var stat = await fs.promises.stat(this.live_filename).catch(utils.noop);
             if (stat && stat.mtime != last_mtime) {
                 last_mtime = stat.mtime;
-                this.#update();
+                updating = true;
+                this.update().finally(() => updating = false);
             }
         }, 500);
     }
 
     get last_segment() {
-        return this.#segments[this.#segments.length-1];
+        return this.#segments[this.#segments.length - 1];
     }
     get last_segment_filename() {
         var s = this.last_segment;
         return s ? s.uri : null;
     }
 
-    #uri_map = {};
-    
     /** @param {string} str */
     async #parse_segments(str) {
-        var lines = str.split(/\n/);
-        /** @type {Segment[]} */
-        var segments = [];
-        var m;
-        for (var line of lines) {
-            line = line.trim();
-            if (!line) continue;
-            if (line.match(/^#EXTINF:/)) {
-                segments.push(new Segment(line));
-            } else {
-                if (line.match(/^#EXT-X-ENDLIST/)) continue;
-                if (m = line.match(/^#EXT-X-MAP:URI="(.+)"$/)) {
-                    this.init_uri = init[1];
-                }
-                if (segments.length) {
-                    segments[segments.length-1].add(line);
-                }
-            }
+        /** @type {hls.types.MediaPlaylist} */
+        var data = hls.parse(str);
+        var new_obj = new hls.types.MediaPlaylist({
+            version: HLS_EXT_VERSION,
+            targetDuration: this.#live.$.segment_duration,
+        });
+        let stream_id = this.#live.$.settings?.stream_id;
+        let ar;
+        if (stream_id) {
+            try { ar = globals.app.aspect_ratio_cache[stream_id]; } catch (e) { }
         }
-        for (var segment of segments) {
-            if (this.#uri_map[segment.uri]) continue;
-            var uri_full = path.join(this.dir, segment.uri);
+        var new_segments = [];
+        for (var segment of data.segments) {
+            if (this.#segment_map[segment.uri]) continue;
 
-            let stream_id = this.#live.$.settings?.stream_id;
-            if (stream_id) {
-                let ar;
-                try {
-                    ar = globals.app.aspect_ratio_cache[stream_id];
-                } catch (e) {}
-                if (ar) {
-                    segment.data["ASPECT"] = ar.toFixed(6);
-                }
+            var uri_full = path.join(this.dir, segment.uri);
+            if (ar) {
+                segment.aspect_ratio = ar;
             }
-            let str = "";
-            var i = this.#segments.length;
-            if (!this.#segments.length) str += this.#render_header();
-            str += segment.toString();
             this.#segments.push(segment);
-            this.#uri_map[segment.uri] = segment;
-            this.emit("new_segment", segment);
-            fs.promises.stat(uri_full).catch(utils.noop).then(stat=>{
-                this.#live.$.size += stat?.size ?? 0;
-            });
-            this.#live.emit("update");
-            this.emit("update");
-            this.emit(`segment.${i}`);
-            await fs.promises.appendFile(this.filename, str, "utf8");
+            this.#segment_map[segment.uri] = segment;
+            new_segments.push(segment);
+            var msn = ++this.msn;
+            fs.promises.stat(uri_full)
+                .catch(utils.noop)
+                .then(stat => {
+                    this.#live.$.size += stat?.size ?? 0;
+                });
+            this.#msn_promises[msn]?.resolve();
+            delete this.#msn_promises[msn];
+            this.emit(`segment.${msn}`);
         }
+        if (!new_segments.length) return;
+        
+        new_obj.segments = new_segments;
+        var header;
+        var new_str = hls.stringify(new_obj, {
+            segmentProcessor: (lines, start, end, segment, i) => {
+                if (!header) {
+                    header = lines.slice(0, start).join("\n");
+                }
+                if (segment.aspect_ratio) {
+                    lines.splice(end - 1, 0, `#EXT-X-ASPECT:${segment.aspect_ratio.toFixed(6)}`);
+                    end++;
+                }
+                segment.lines = lines.slice(start, end + 1).join("\n");
+            }
+        });
+        this.#header = header;
+        this.#live.emit("update");
+        this.emit("update");
+        var exists = await utils.file_exists(this.filename);
+        if (exists) new_str = new_str.slice(header.length);
+        await fs.promises.appendFile(this.filename, new_str, "utf8");
     }
 
-    async #update() {
-        var str = await fs.promises.readFile(this.live_filename, "utf-8").catch(()=>"");
+    async update() {
+        var str = await fs.promises.readFile(this.live_filename, "utf-8").catch(() => "");
         await this.#parse_segments(str);
     }
 
-    #render_header(media_sequence) {
-        var str = `#EXTM3U\n`;
-        str += `#EXT-X-VERSION:${HLS_EXT_VERSION}\n`;
-        str += `#EXT-X-TARGETDURATION:${this.#live.$.segment_duration.toFixed(6)}\n`;
-        str += `#EXT-X-MEDIA-SEQUENCE:${media_sequence||0}\n`;
-        if (this.init_uri) {
-            str += `#EXT-X-MAP:URI="${this.init_uri}"\n`;
-        }
-        return str;
+    async wait_for_segment(msn) {
+        if (this.msn >= msn) return;
+        if (!this.#msn_promises[msn]) this.#msn_promises[msn] = new utils.Deferred();
+        return this.#msn_promises[msn].promise;
     }
+
     /** @param {Request} req @param {Response} res */
-    async fetch(req, res) {
-        res.header("content-type", "application/vnd.apple.mpegurl");
-        
+    async fetch_playlist(req, res) {
+        res.header("Content-type", "application/vnd.apple.mpegurl");
+        res.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.header("Connection", "keep-alive");
+        res.header('Pragma', 'no-cache');
+        res.header('Expires', '0');
+        req.setTimeout(0);        // No request timeout
+        req.socket.setTimeout(0); // No socket timeout
+
         let { _HLS_msn, _HLS_skip, full } = req.query;
         const hasMSN = _HLS_msn !== undefined;
         const msn = hasMSN ? Math.max(0, Number(_HLS_msn)) : 0;
@@ -644,19 +672,7 @@ export class LiveLevel extends events.EventEmitter {
 
         // Block until requested msn exists (if provided) unless we've stopped.
         if (hasMSN && !this.#segments[msn] && !this.#stopped) {
-            let _resolve;
-            let res = await Promise.race([
-                new Promise((resolve)=>{
-                    _resolve = ()=>resolve(true);
-                    this.on(`segment.${msn}`, _resolve);
-                }),
-                utils.timeout(FETCH_TIMEOUT).then(()=>false)
-            ]);
-            this.off(`segment.${msn}`, _resolve);
-            if (!res) {
-                console.warn("Fetch timed out, aborting.");
-                return false;
-            }
+            await this.wait_for_segment(msn);
         }
 
         // Config
@@ -665,23 +681,25 @@ export class LiveLevel extends events.EventEmitter {
         let total_segments = this.#segments.length;
         let dvr_duration = full ? total_segments * segment_duration : this.#live.$.hls_live_window;
         let max_segments = Math.max(min_segments, Math.ceil(dvr_duration / segment_duration));
-        let lines = "";
         let start = Math.max(0, total_segments - max_segments);
-        let end = total_segments;
-        
-        lines += this.#render_header(start);
-        lines += `#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,CAN-SKIP-UNTIL=${dvr_duration.toFixed(1)}\n`;
+        let end = total_segments - 1;
+
+        const obj = new hls.types.MediaPlaylist({
+            version: HLS_EXT_VERSION,
+            targetDuration: this.#live.$.segment_duration,
+            mediaSequenceBase: start,
+        });
+        obj.lowLatencyCompatibility = {
+            canBlockReload: true,
+            canSkipUntil: this.#live.$.hls_list_size * segment_duration,
+        }
         let skipped_segments = 0;
         if (wantSkip) {
-            skipped_segments = utils.clamp(end - min_segments, 0, (max_segments - min_segments));
-            lines += `#EXT-X-SKIP:SKIPPED-SEGMENTS=${skipped_segments}\n`;
+            skipped_segments = utils.clamp(end + 1 - min_segments, 0, (max_segments - min_segments));
+            obj.skip = skipped_segments
         }
-        let recent_segments = this.#segments.slice(start + skipped_segments, end);
-        for (var s of recent_segments) {
-            lines += s.toString();
-        }
-
-        res.send(lines);
+        let recent_segments = this.#segments.slice(start + skipped_segments, end + 1);
+        res.send(hls.stringify(obj) + "\n" + recent_segments.map(s => s.lines).join("\n"));
         return true;
     }
 
@@ -695,6 +713,6 @@ export class LiveLevel extends events.EventEmitter {
         if (this.#stopped) return;
         this.#stopped = true;
         clearInterval(this.#interval);
-        await this.#update();
+        await this.update();
     }
 }

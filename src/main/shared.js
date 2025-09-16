@@ -29,39 +29,16 @@ export function get_stream_by_id(id, streams, type) {
     return streams.find(s=>s.type_id == id);
 }
 
-/** @param {MediaInfo} mi @param {([string, MediaInfo])[]} extras */
-export function get_streams(mi, extras) {
-	var streams = [];
-	if (mi?.streams) streams.push(...mi.streams)
-	for (var extra of extras) {
-		let [type, mi] = extra
-		if (mi?.streams) {
-			let ex_streams = json_copy(mi.streams);
-			let default_stream = get_default_stream(ex_streams, type, true);
-			if (default_stream) {
-				default_stream.extra = 1;
-				if (!default_stream.title) default_stream.title = basename(mi.filename);
-				default_stream.title = default_stream.title;
-			}
-			streams.push(default_stream);
-		}
-	}
-	return streams;
-}
-
 /** @typedef {{default:boolean, forced:boolean, extra:boolean}} StreamInfo */
 
 /** @param {StreamInfo[]} streams @param {string} type */
 export function get_default_stream(streams, type, force = false) {
 	if (type) {
 		streams = streams.filter(s=>!s || !s.type || s.type == type);
+		if (type == "video") streams = streams.filter(s=>!s.albumart);
 	}
 
 	if (!streams.length) return null;
-
-	// 1. Pick the first `extra` stream (original)
-	const extras = streams.filter(s => s.extra);
-	if (extras.length >= 1) return extras[0]; // Prefer first extra
 
 	// 1. Pick the first `default` stream (original)
 	const defaults = streams.filter(s => s.default);

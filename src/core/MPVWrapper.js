@@ -162,6 +162,7 @@ export class MPVWrapper extends events.EventEmitter {
     start(args) {
         if (this.#done) throw new Error("MPVWrapper already started");
         this.#done = new Promise((resolve, reject)=>{
+            // ({resolve, reject} = utils.onceify({resolve, reject}));
             args = [
                 ...(args||[]),
                 // "--idle",
@@ -206,11 +207,14 @@ export class MPVWrapper extends events.EventEmitter {
                 this.#process.on("close", end);
             }
 
-            this.#process.on("close", (e)=>{
+            this.#process.on("close", (code)=>{
                 this.#closed = true;
-                if (this.#socket) this.#socket.end(()=>this.#socket.destroy());
-                try { fs.unlinkSync(this.#socket_path); } catch { }
-                resolve();
+                try {
+                    if (this.#socket) this.#socket.end(()=>this.#socket.destroy());
+                    fs.unlinkSync(this.#socket_path);
+                } catch (e) { }
+                if (!this.#destroyed && code) reject(code);
+                else resolve();
             });
             this.#process.on("error", (e)=>{
                 reject(e);
@@ -245,11 +249,13 @@ export class MPVWrapper extends events.EventEmitter {
         return this.#done;
     }
 
-    stop() {
+    async stop() {
         if (!this.#socket) return;
+        this.set_property("keep-open", false).catch(utils.noop);
         return Promise.race([
-            this.#done,
+            this.#done.catch(utils.noop),
             new Promise((resolve, reject)=>{
+                // ({resolve, reject} = utils.onceify({resolve, reject}));
                 if (this.#observed_props["idle-active"]) return resolve();
                 this.once("idle", ()=>resolve());
                 this.command("stop").catch(reject);
@@ -260,26 +266,21 @@ export class MPVWrapper extends events.EventEmitter {
     async destroy() {
         if (this.#destroyed) return;
         this.#destroyed = true;
-        await Promise.race([
-            utils.timeout(5000), 
-            this.stop().catch(utils.noop)
-        ]);
-        await this.#kill();
-        this.logger.destroy();
-    }
-
-    #kill() {
-        if (this.#closed) return;
-        return new Promise((resolve)=>{
-            this.#process.on("close", resolve);
-            this.#process.kill("SIGTERM");
-            setTimeout(()=>{
-                if (!this.#closed) {
-                    this.#logger.warn("Killing MPV with force...");
-                    this.#process.kill("SIGKILL");
-                }
-            }, 5000);
-        });
+        this.stop().catch(utils.noop)
+        setTimeout(()=>{
+            if (!this.#closed) {
+                this.#logger.warn("Sending MPV terminate signal...");
+                this.#process.kill("SIGTERM");
+            }
+        }, 3000);
+        setTimeout(()=>{
+            if (!this.#closed) {
+                this.#logger.warn("Killing MPV with force...");
+                this.#process.kill("SIGKILL");
+            }
+        }, 6000);
+        return this.#done.catch(utils.noop)
+            .finally(()=>this.logger.destroy())
     }
 
     #init_socket() {

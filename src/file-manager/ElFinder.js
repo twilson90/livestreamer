@@ -145,9 +145,9 @@ export class ElFinder {
 
 	async #init() {
 		await fs.promises.mkdir(this.#thumbnails_dir, {recursive:true});
-		await fs.promises.rmdir(this.#uploads_dir, {recursive:true});
+		await fs.promises.rm(this.#uploads_dir, {recursive:true});
 		await fs.promises.mkdir(this.#uploads_dir, {recursive:true});
-		await fs.promises.rmdir(this.#tmp_dir, {recursive:true});
+		await fs.promises.rm(this.#tmp_dir, {recursive:true});
 		await fs.promises.mkdir(this.#tmp_dir, {recursive:true});
 		await fs.promises.mkdir(this.#netmounts_dir, {recursive:true});
 		await fs.promises.mkdir(this.#volumes_dir, {recursive:true});

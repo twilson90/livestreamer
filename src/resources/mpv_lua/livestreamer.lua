@@ -76,6 +76,16 @@ function move_toward(current, target, speed, delta)
     return current + direction * (move / distance)
 end
 
+local function findIndex(t, fn)
+    for i, v in ipairs(t) do
+        if fn(v) then
+            return i
+        end
+    end
+    return nil -- not found
+end
+
+
 ------------------
 
 local last_pts = 0
@@ -172,17 +182,32 @@ mp.add_hook("on_load_fail", 50, function ()
     end
 end)
 
+local track_list = {}
+local loaded_map = {}
+
+function update_tracks()
+    track_list = mp.get_property_native("track-list")
+    loaded_map = {audio={}, video={}, sub={}}
+    local albumart_tracks = {}
+    for _,t in ipairs(track_list) do
+        table.insert(loaded_map[t.type], t)
+    end
+    msg.verbose("track-list: "..JSON.stringify(track_list))
+end
+
 mp.add_hook("on_preloaded", 50, function ()
 
     local filename = mp.get_property_native("path")
     msg.info("on_preloaded: "..filename)
+
     if filename == "null://invalid" then
         mp.set_property_native("file-local-options/vf", o.default_vf)
         mp.set_property_native("file-local-options/af", o.default_af)
         mp.set_property_native("file-local-options/end", "5")
+        update_tracks()
         return
     end
-
+    
     if loadfile_opts.commands then
         msg.verbose("loadfile_opts.commands: "..JSON.stringify(loadfile_opts.commands))
         for _,c in ipairs(loadfile_opts.commands) do
@@ -192,9 +217,43 @@ mp.add_hook("on_preloaded", 50, function ()
             end
         end
     end
+
+    update_tracks()
+
+    local expected_map = {audio={}, video={}, sub={}}
+    if loadfile_opts.streams then
+        for _,t in ipairs(loadfile_opts.streams) do
+            local type = t.type
+            if type == "subtitle" then type = "sub" end
+            table.insert(expected_map[type], t)
+        end
+    end
+
+    for k,_ in pairs(expected_map) do
+        if #loaded_map[k] ~= #expected_map[k] then
+            msg.warn(k.." tracks mismatch, loaded "..tostring(#loaded_map[k])..", expected "..tostring(#expected_map[k]))
+            msg.warn(k.." tracks mismatch further details: "..JSON.stringify(loaded_map[k]).." != "..JSON.stringify(expected_map[k]))
+        end
+    end
+
     if loadfile_opts.props then
-        msg.verbose("loadfile_opts.props: "..JSON.stringify(loadfile_opts.props))
-        for k,v in pairs(loadfile_opts.props) do
+        local props = loadfile_opts.props
+
+        --[[ if props.vid and loaded_map["video"][props.vid] == nil or loaded_map["video"][props.vid].albumart then
+            props.vid = findIndex(loaded_map["video"], function(s) return not s.albumart end)
+            msg.warn("video track "..tostring(props.vid).." not found, using first track: "..JSON.stringify(loaded_map["video"][props.vid]))
+        end
+        if props.aid and loaded_map["audio"][props.aid] == nil then
+            props.aid = 1
+            msg.warn("audio track "..tostring(props.aid).." not found, using first track: "..JSON.stringify(loaded_map["audio"][props.aid]))
+        end
+        if props.sid and loaded_map["sub"][props.sid] == nil then
+            props.sid = false
+            msg.warn("subtitle track "..tostring(props.sid).."not found, using none")
+        end ]]
+
+        msg.verbose("loadfile_opts.props: "..JSON.stringify(props))
+        for k,v in pairs(props) do
             mp.set_property_native("file-local-options/"..k, v)
         end
     end

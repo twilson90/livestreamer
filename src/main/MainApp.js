@@ -78,8 +78,6 @@ export class MainApp$ {
     uploads = {};
     /** @type {Record<PropertyKey,Download$>} */
     downloads = {};
-    /** @type {Record<PropertyKey,Live$>} */
-    lives = {}
     nms_sessions = {};
     processes = {};
     detected_crops = {};
@@ -216,27 +214,23 @@ export class MainApp extends CoreFork {
                 new ExternalSession(session);
             }
         });
+        var get_external_sessions_from_nms_id = (id)=>{
+            return Object.values(this.sessions).filter(s=>s instanceof ExternalSession && s.nms_session && s.nms_session.id == id);
+        }
         this.ipc.on("media-server.metadata-publish", async (session)=>{
             Object.assign(this.$.nms_sessions[session.id], session);
+            for (var s of get_external_sessions_from_nms_id(session.id)) {
+                s.start_stream({fps: session.videoFps, resolution: `${session.videoWidth}x${session.videoHeight}`});
+            }
         });
         this.ipc.on("media-server.done-publish", (id)=>{
-            var sessions = Object.values(this.sessions).filter(s=>s instanceof ExternalSession && s.nms_session && s.nms_session.id == id);
-            for (var s of sessions) s.destroy();
+            for (var s of get_external_sessions_from_nms_id(id)) s.destroy();
             delete this.$.nms_sessions[id];
         });
         this.ipc.request("media-server", "published_sessions").then((nms_sessions)=>{
             Object.assign(this.$.nms_sessions, Object.fromEntries(nms_sessions.map(s=>[s.id,s])));
         }).catch(utils.noop);
 
-        this.ipc.on("media-server.live.started", (d)=>{
-            this.$.lives[d.id] = d;
-        });
-        this.ipc.on("media-server.live.stopped", (id)=>{
-            delete this.$.lives[id];
-        });
-        this.ipc.request("media-server", "lives").then((lives)=>{
-            this.$.lives = Object.fromEntries(lives.map((live)=>[live.id, live]));
-        }).catch(utils.noop);
 
         this.ipc.on("file-manager.volumes", (volumes)=>{
             this.$.volumes = volumes;
@@ -1053,11 +1047,8 @@ export class MainApp extends CoreFork {
                                 stream.width = +s.width;
                                 stream.height = +s.height;
                                 stream.albumart = !!s.disposition.attached_pic;
-                                let sar = calc_ratio(s.sample_aspect_ratio) ?? 1;
-                                let dar = calc_ratio(s.display_aspect_ratio);
-                                stream.sar = sar;
-                                stream.dar = dar;
-                                stream.aspect_ratio = dar || ((stream.width * sar) / (stream.height * sar));
+                                stream.sar = calc_ratio(s.sample_aspect_ratio) || 1;
+                                stream.dar = calc_ratio(s.display_aspect_ratio) || (stream.width/stream.height) * stream.sar;
                                 if (!stream.albumart) {
                                     stream.fps = calc_ratio(s.r_frame_rate);
                                     if (!mi.fps) mi.fps = stream.fps;
@@ -1330,6 +1321,10 @@ export class MainApp extends CoreFork {
 
     async destroy_live(id) {
         await this.ipc.request("media-server", "destroy_live", [id]);
+    }
+
+    async stop_live(id) {
+        await this.ipc.request("media-server", "stop_live", [id]);
     }
 
     async _destroy() {
