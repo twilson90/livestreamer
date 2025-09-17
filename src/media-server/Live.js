@@ -109,6 +109,7 @@ export class Live extends StopStartStateMachine {
         this.#base_url = `${base}/media/live/${this.id}`;
         var player_url = `${base}/player/index.html?id=${this.id}`;
         var manifest_url = `${this.#base_url}/master.m3u8`;
+        
         this.manifest_path = path.join(this.dir, "master.m3u8");
 
         Object.assign(this.$, {

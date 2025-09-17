@@ -238,8 +238,8 @@ body {
     .vjs-load-progress {
       background:transparent;
       &>div {
-        z-index: 1;
-        background: rgba(255,255,255,0.2);
+        // z-index: 1;
+        background: rgba(255,255,255,0.5);
         mix-blend-mode: hard-light;
         pointer-events: none;
       }
@@ -281,7 +281,12 @@ body {
       margin: 0;
       padding: 0;
       left: 0;
-      top: 0;
+    }
+    .vjs-load-progress {
+      // height: 2px;
+      // top: 50%;
+      // transform: translateY(-50%);
+      // z-index: 1;
     }
     .vjs-play-progress {
       // background: #80d2ff;
@@ -293,7 +298,7 @@ body {
       // background: #66a8cc url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAYAAAAGCAYAAADgzO9IAAAAP0lEQVQIHWWMAQoAIAgDR/QJ/Ub//04+w7ZICBwcOg5FZi5iBB82AGzixEglJrd4TVK5XUJpskSTEvpdFzX9AB2pGziSQcvAAAAAAElFTkSuQmCC) 0% 0% repeat;
     }
     .vjs-load-progress {
-      background: rgba(255, 255, 255, 0.4);
+      // background: rgba(255, 255, 255, 0.4);
     }
   }
   .vjs-seek-handle {
@@ -680,6 +685,6 @@ body {
   .cover-icon>*:last-child {display:block;}
 }
 
-.vjs-load-progress {
+/* .vjs-load-progress {
   display: none !important;
-}
+} */

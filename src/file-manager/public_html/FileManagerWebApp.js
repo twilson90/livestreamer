@@ -1,6 +1,6 @@
 import {WindowCommunicator} from "../../utils/dom/WindowCommunicator.js";
 import {mime_ext_map} from "../../utils/mime_ext_map.js";
-import {md5} from "../../utils/md5.js";
+// import {md5} from "../../utils/md5.js";
 import "./extra-style.scss";
 
 export class FileManagerWebApp {
@@ -14,7 +14,7 @@ export class FileManagerWebApp {
 		try { opts = JSON.parse(params.get("opts")); } catch {}
 		if (!opts) opts = {};
 		var hash = window.location.hash.slice(5);
-		if (!is_iframe) window.history.replaceState({}, "", "/"+window.location.hash);
+		// if (!is_iframe) window.history.replaceState({}, "", "/"+window.location.hash);
 		console.log(opts);
 		var id = opts ? opts.id : null;
 		console.log("id:", id)

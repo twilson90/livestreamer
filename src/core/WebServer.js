@@ -1,5 +1,6 @@
 import http from "node:http";
 import https from "node:https";
+import events from "node:events";
 import WebSocket, { WebSocketServer } from "ws";
 import { createHttpTerminator } from 'http-terminator';
 import { globals, utils } from "./exports.js";
@@ -30,30 +31,29 @@ var default_opts = {
         } */
     },
 }
-export class WebServer {
-    /** @type {http.Server} */
-    #server;
+/** @extends {events.EventEmitter<{
+    "connection": [WebSocket, http.IncomingMessage],
+}>} */
+export class WebServer extends events.EventEmitter {
     /** @type {import("http-terminator").HttpTerminator} */
-    #terminator;
-    /** @type {WebSocketServer} */
-    #wss;
-    get wss() { return this.#wss; }
-    get server() { return this.#server; }
+    #http_terminator;
+    /** @type {import("http-terminator").HttpTerminator} */
+    #https_terminator;
+    /** @type {http.Server} */
+    #http_server;
+    /** @type {https.Server} */
+    #https_server;
+    /** @type {https.Server[]} */
+    #servers = [];
     /** @param {http.RequestListener<typeof http.IncomingMessage, typeof http.ServerResponse>} handler @param {typeof default_opts} opts */
     constructor(handler, opts) {
 
-        opts = {...default_opts, ...opts};
+        super();
 
-        /** @type {https.ServerOptions<typeof http.IncomingMessage, typeof http.ServerResponse>} */
-        var http_opts = {};
-
-        this.socket_path = globals.app.get_socket_path(`${globals.app.name}_http`, true);
-        globals.app.logger.info(`Starting HTTP server on socket ${this.socket_path}...`);
-        globals.app.logger.info(globals.app.get_urls().http);
-        // console.info(globals.app.get_urls(globals.app.name).url);
+        opts = { ...default_opts, ...opts };
 
         /** @param {http.IncomingMessage} req @param {http.ServerResponse} res @param {import("node:stream").Duplex} socket */
-        var check_auth = async (req, res, socket)=>{
+        var check_auth = async (req, res, socket) => {
             let requires_auth = false;
             let is_websocket = req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket';
             if (typeof opts.auth === "function") {
@@ -86,55 +86,97 @@ export class WebServer {
             }
             return true;
         }
-        this.#server = http.createServer(http_opts, async (req, res)=>{
-            await globals.app.ready;
-            if (!await check_auth(req, res, null)) return;
-            var allow_origin = opts.allow_origin;
-            // var urls = globals.app.get_urls();
-            // var is_https = false;
-            // if (req.headers.origin && req.headers.origin.startsWith("https://")) {
-            //     is_https = true;
-            // }
-            res.setHeader('Access-Control-Allow-Origin', allow_origin);
-            // res.setHeader('Access-Control-Allow-Origin', is_https ? urls.https : urls.http);
-            res.setHeader('Access-Control-Allow-Credentials', true);
-            res.setHeader('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', '*');
-            //'Origin, Accept, X-Requested-With, Content-Type, Authorization, Access-Control-Allow-Headers, Access-Control-Request-Method, Access-Control-Request-Headers'
-            res.setHeader('Content-Security-Policy', `frame-ancestors 'self' ${allow_origin}`);
-            // res.setHeader('Content-Security-Policy', `default-src 'self' ${host}`);
 
-            //}
-            res.setHeader('Vary', "Origin");
-            if (req.method === 'OPTIONS') {
-                res.statusCode = 200;
-                res.end();
-            } else if (handler) {
-                handler(req, res);
-            }
-        });
-        this.#terminator = createHttpTerminator({ server: this.#server, gracefulTerminationTimeout: 1000 });
-        this.#server.listen(this.socket_path);
-        
-        if (opts.ws) {
-            this.#server.on('upgrade', async (req, socket, head)=>{
+        /** @type {http.RequestListener<typeof http.IncomingMessage, typeof http.ServerResponse>} */
+        var create_request_listener = (ssl) => {
+            return async (req, res) => {
                 await globals.app.ready;
-                if (!await check_auth(req, null, socket)) return;
-                this.#wss.handleUpgrade(req, socket, head, (socket)=>{
-                    this.#wss.emit('connection', socket, req);
-                });
-            });
-            this.#wss = new WebSocketServer(opts.ws);
-            this.#wss.on("error", (error)=>{
-                globals.app.logger.error(error);
-            });
+                if (!await check_auth(req, res, null)) return;
+                var allow_origin = opts.allow_origin;
+
+                res.setHeader('Access-Control-Allow-Origin', allow_origin);
+                res.setHeader('Access-Control-Allow-Credentials', true);
+                res.setHeader('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, OPTIONS');
+                res.setHeader('Access-Control-Allow-Headers', '*');
+                //'Origin, Accept, X-Requested-With, Content-Type, Authorization, Access-Control-Allow-Headers, Access-Control-Request-Method, Access-Control-Request-Headers'
+                res.setHeader('Content-Security-Policy', `frame-ancestors 'self' ${allow_origin}`);
+                res.setHeader('Vary', "Origin");
+
+                if (req.method === 'OPTIONS') {
+                    res.statusCode = 200;
+                    res.end();
+                    return;
+                }
+                if (!globals.app.conf["core.http_proxy"]) {
+                    if (globals.app.default_request_handler(req, res, ssl)) return;
+                }
+                if (handler) {
+                    handler(req, res);
+                }
+            }
         }
+
+        /** @param {http.Server|https.Server} server */
+        var add_server = (server) => {
+            this.#servers.push(server);
+            server.terminator = createHttpTerminator({ server, gracefulTerminationTimeout: 1000 });
+        }
+        if (globals.app.conf["core.http_proxy"]) {
+            let socket_path = globals.app.get_socket_path(`${globals.app.name}_http`, true);
+            globals.app.logger.info(`Starting HTTP server on socket ${socket_path}...`);
+            let server = http.createServer(create_request_listener());
+            server.listen({
+                path: socket_path,
+            });
+            add_server(server);
+        } else {
+            let http_port = globals.app.conf[`${globals.app.name}.http_port`];
+            let https_port = globals.app.conf[`${globals.app.name}.https_port`];
+            if (http_port) {
+                globals.app.logger.info(`Starting HTTP server on port ${http_port}...`);
+                let server = http.createServer(create_request_listener());
+                server.listen({
+                    port: http_port,
+                });
+                add_server(server);
+            }
+            if (https_port) {
+                let cert = globals.app.get_ssl_cert();
+                if (cert) {
+                    globals.app.logger.info(`Starting HTTPS server on port ${https_port}...`);
+                    let server = https.createServer({ ...cert }, create_request_listener(true));
+                    server.listen({
+                        port: https_port,
+                    });
+                    add_server(server);
+                }
+            }
+        }
+
+        if (opts.ws) {
+            for (var s of this.#servers) {
+                var wss = new WebSocketServer(opts.ws);
+                wss.on("error", (error) => {
+                    globals.app.logger.error(error);
+                });
+                s.on('upgrade', async (req, socket, head) => {
+                    await globals.app.ready;
+                    if (!await check_auth(req, null, socket)) return;
+                    wss.handleUpgrade(req, socket, head, (socket) => {
+                        this.emit('connection', socket, req);
+                    });
+                });
+            }
+        }
+        globals.app.logger.info(`URL: ${globals.app.get_urls().url}/`);
     }
 
     async destroy() {
-        this.#server.closeAllConnections();
-        // await utils.promisify(this.#server.close.bind(this.#server))();
-        await this.#terminator.terminate();
+        for (var s of this.#servers) {
+            s.closeAllConnections();
+        }
+        await this.#http_terminator?.terminate();
+        await this.#https_terminator?.terminate();
     }
 }
 export default WebServer;

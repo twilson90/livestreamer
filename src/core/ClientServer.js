@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import events from "events";;
 import {globals, Logger, utils} from "./exports.js";
-/** @import { Client } from './exports.js' */
+/** @import { Client, WebServer } from './exports.js' */
 
 
 /**
@@ -25,19 +25,18 @@ export class ClientServer extends events.EventEmitter {
 
     get destroyed() { return this.#destroyed; }
 
-    /** @param {WebSocketServer} wss  @param {new () => T} ClientClass */
-    constructor(name, wss, ClientClass) {
+    /** @param {WebServer} server  @param {new () => T} ClientClass */
+    constructor(name, server, ClientClass) {
         super();
         this.name = name;
         this.clients_dir = path.join(globals.app.clients_dir, name);
         this.logger = new Logger(`client-server`);
         globals.app.logger.add(this.logger);
-        this.wss = wss;
         this.ClientClass = ClientClass;
         
         fs.mkdirSync(this.clients_dir, {recursive:true});
 
-        this.wss.on("connection", (ws, request)=>{
+        server.on("connection", (ws, request)=>{
             var alive = true;
             var client = new this.ClientClass(globals.app.generate_uid(`client-${name}`));
             client.init(this, ws, request);

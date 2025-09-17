@@ -8,8 +8,6 @@ export default {
 	"core.logs_max_length": 64,
 	"core.logs_max_msg_length": 128 * 1024, // 128 kb
 	"core.compress_logs_schedule": "* 4 * * *", // Every day @ 4:00 am
-	"core.http_port": 8120,
-	"core.https_port": 8121,
 	"core.redirect_http_to_https": true,
 	"core.auth": null,
 	"core.mpv_path": "",
@@ -29,6 +27,10 @@ export default {
 		"best[ext=mp4]",
 		"best"
 	].join("/"),
+	/** @type {false|"subdomain"|"path"} */
+	"core.http_proxy": "subdomain",
+	"core.http_port": 8120,
+	"core.https_port": 8121,
 	"core.inspect": 9229,
 	
 	"main.title": "Live Streamer",
@@ -43,11 +45,15 @@ export default {
 	"main.google_drive_credentials_path": "",
 	"main.google_drive_service_account_path": "",
 	"main.warn_disk_space": 0.2,
+	"main.http_port": 8120,
+	"main.https_port": 8121,
 	"main.inspect": 9230,
 	
 	"file-manager.title": "File Manager",
 	"file-manager.description": "File manager server and interface.",
 	"file-manager.volumes": {},
+	"file-manager.http_port": 8122,
+	"file-manager.https_port": 8123,
 	"file-manager.inspect": 9231,
 	
 	"media-server.title": "Local Media Server",
@@ -64,5 +70,7 @@ export default {
 	"media-server.allow_hevc": true,
 	"media-server.logo_path": "",
 	"media-server.site_url": "",
+	"media-server.http_port": 8124,
+	"media-server.https_port": 8125,
 	"media-server.inspect": 9232,
 }

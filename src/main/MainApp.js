@@ -142,14 +142,23 @@ export class MainApp extends CoreFork {
     async init() {
 
         this.$.hostname = this.hostname;
+        
+        let main_url = this.get_urls("main").url;
+        let file_manager_url = this.get_urls("file-manager").url;
+        let media_server_url = this.get_urls("media-server").url;
+        let rtmp_server_url = `rtmp://${new URL(media_server_url).hostname}:${this.conf["media-server.rtmp_port"]}`;
+
         this.$.conf = {
             // ["auth"]: this.auth,
-            ["debug"]: this.debug,
-            ["test_stream_low_settings"]: this.conf["main.test_stream_low_settings"],
-            ["session_order_client"]: this.conf["main.session_order_client"],
-            ["media_expire_time"]: this.conf["media-server.media_expire_time"],
-            ["mpv_hwdec"]: this.conf["core.mpv_hwdec"],
-            ["rtmp_server_url"]: `rtmp://media-server.${this.hostname}:${this.conf["media-server.rtmp_port"]}`,
+            debug: this.debug,
+            test_stream_low_settings: this.conf["main.test_stream_low_settings"],
+            session_order_client: this.conf["main.session_order_client"],
+            media_expire_time: this.conf["media-server.media_expire_time"],
+            mpv_hwdec: this.conf["core.mpv_hwdec"],
+            main_url: `${main_url}/`,
+            file_manager_url: `${file_manager_url}/`,
+            media_server_url: `${media_server_url}/`,
+            rtmp_server_url,
         };
         
         var log_collector = new LogCollector(this.$.logs);
@@ -510,7 +519,7 @@ export class MainApp extends CoreFork {
         exp.use("/", await this.serve({
             root: this.#public_html_dir
         }));
-        this.client_server = new ClientServer("main", this.web.wss, MainClient);
+        this.client_server = new ClientServer("main", this.web, MainClient);
 
         this.api = new API();
         
@@ -1023,7 +1032,7 @@ export class MainApp extends CoreFork {
 
                     let ffprobe_path = abspath;
                     if (abspath.match(/^https?:\/\/(?:mega\.nz|drive\.google\.com)\/(.+)/i)) {
-                        ffprobe_path = new URL(`/virtual/${encodeURIComponent(abspath)}`, this.get_urls().url).toString();
+                        ffprobe_path = new URL(`/virtual/${encodeURIComponent(abspath)}`, this.get_urls("main").url).toString();
                     }
                     
                     let raw = await this.ffprobe(ffprobe_path).catch(()=>null);

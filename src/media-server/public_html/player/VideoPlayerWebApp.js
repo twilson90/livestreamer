@@ -148,11 +148,11 @@ export class MediaServerVideoPlayerWebApp {
 
         if (IS_EMBED) document.documentElement.classList.add("embedded");
 
-        conf = await (await fetch("/conf")).json();
+        conf = await (await fetch("../conf")).json();
 
         var params = new URLSearchParams(location.search);
         var autoplay = params.has("autoplay") == "1";
-        this.src = new URL(`/media/live/${params.get("id")}/master.m3u8`, window.location.origin + window.location.pathname).toString();
+        this.src = new URL(`../media/live/${params.get("id")}/master.m3u8`, window.location.origin + window.location.pathname).toString();
 
         /* var menu = new dom.DropdownMenu({
             items: [
@@ -357,81 +357,69 @@ class Player extends utils.EventEmitter {
         var PlaybackRateMenuItem = videojs.getComponent("PlaybackRateMenuItem");
         var LoadProgressBar = videojs.getComponent("LoadProgressBar");
         
-        // {
-        //     function textContent(el, text) {
-        //         if (typeof el.textContent === 'undefined') {
-        //             el.innerText = text;
-        //         } else {
-        //             el.textContent = text;
-        //         }
-        //         return el;
-        //     }
-        //     const percentify = (time, end) => utils.clamp(time / end * 100, 0, 100).toFixed(2) + '%';
-        //     let update = LoadProgressBar.prototype.update;
-        //     LoadProgressBar.prototype.update = function(...args) {
-        //         this.requestNamedAnimationFrame('LoadProgressBar#update', () => {
-        //             const liveTracker = this.player_.liveTracker;
-        //             const buffered = this.player_.buffered();
-        //             const duration = liveTracker && liveTracker.isLive() ? liveTracker.seekableEnd() : this.player_.duration();
-        //             let bufferedEnd = this.player_.bufferedEnd();
-        //             const children = this.partEls_;
-        //             const percent = percentify(bufferedEnd, duration);
-        //             if (this.percent_ !== percent) {
-        //                 // update the width of the progress bar
-        //                 this.el_.style.width = percent;
-        //                 // update the control-text
-        //                 textContent(this.percentageEl_, percent);
-        //                 this.percent_ = percent;
-        //             }
-        //             const hls = _this.hls;
-        //             const details = hls?.levels?.[hls.currentLevel]?.details;
+        {
+            function textContent(el, text) {
+                if (typeof el.textContent === 'undefined') {
+                    el.innerText = text;
+                } else {
+                    el.textContent = text;
+                }
+                return el;
+            }
+            const percentify = (time, end) => utils.clamp(time / end * 100, 0, 100).toFixed(2) + '%';
+            let update = LoadProgressBar.prototype.update;
+            LoadProgressBar.prototype.update = function(...args) {
+                this.requestNamedAnimationFrame('LoadProgressBar#update', () => {
+                    let hls = _this.hls;
+                    let details = hls?.levels?.[hls.currentLevel]?.details;
+                    let liveTracker = this.player_.liveTracker;
+                    let buffered = this.player_.buffered();
+                    let duration = liveTracker && liveTracker.isLive() ? liveTracker.seekableEnd() : this.player_.duration();
+                    let bufferedEnd = this.player_.bufferedEnd();
+                    let diff = 0;
+                    if (details?.live) {
+                        duration = details.totalduration
+                        if (bufferedEnd > duration) {
+                            diff = bufferedEnd - duration;
+                            bufferedEnd = duration;
+                        }
+                    }
+                    const children = this.partEls_;
+                    const percent = percentify(bufferedEnd, duration);
+                    if (this.percent_ !== percent) {
+                        this.el_.style.width = percent;
+                        textContent(this.percentageEl_, percent);
+                        this.percent_ = percent;
+                    }
 
-        //             // add child elements to represent the individual buffered time ranges
-        //             for (let i = 0; i < buffered.length; i++) {
-        //                 let part = children[i];
-        //                 let start = buffered.start(i);
-        //                 let end = buffered.end(i);
-        //                 if (!part) {
-        //                     part = this.el_.appendChild($(`<div></div>`)[0]);
-        //                     children[i] = part;
-        //                 }
+                    // add child elements to represent the individual buffered time ranges
+                    for (let i = 0; i < buffered.length; i++) {
+                        let part = children[i];
+                        let start = buffered.start(i) - diff - (details?.targetduration ?? 0);
+                        let end = buffered.end(i) - diff;
+                        if (!part) {
+                            part = this.el_.appendChild($(`<div></div>`)[0]);
+                            children[i] = part;
+                        }
 
-        //                 //  only update if changed
-        //                 if (part.dataset.start === start && part.dataset.end === end) {
-        //                     continue;
-        //                 }
-        //                 part.dataset.start = start;
-        //                 part.dataset.end = end;
+                        //  only update if changed
+                        if (part.dataset.start === start && part.dataset.end === end) {
+                            continue;
+                        }
+                        part.dataset.start = start;
+                        part.dataset.end = end;
+                        part.style.left = percentify(start, bufferedEnd);
+                        part.style.width = percentify(end - start, bufferedEnd);
+                    }
 
-        //                 if (details?.live) {
-        //                     part.style.left = percentify(start, bufferedEnd);
-        //                     part.style.width = percentify(end - start, bufferedEnd);
-        //                 } else {
-        //                     part.style.left = percentify(start, bufferedEnd);
-        //                     part.style.width = percentify(end - start, bufferedEnd);
-        //                 }
-        //                 console.log(start, end, bufferedEnd);
-
-        //                 /* if (details?.live) {
-        //                     console.log(details);
-        //                     let left = utils.map_range(start, end-details.totalduration, end, 0, 1);
-        //                     let right = utils.map_range(end, end-details.totalduration, end, 0, 1);
-        //                     part.style.left = percentify(left, 1);
-        //                     part.style.width = percentify(right-left, 1);
-        //                 } else {
-        //                     part.style.left = percentify(start, bufferedEnd);
-        //                     part.style.width = percentify(end - start, bufferedEnd);
-        //                 } */
-        //             }
-
-        //             // remove unused buffered range elements
-        //             for (let i = children.length; i > buffered.length; i--) {
-        //                 this.el_.removeChild(children[i - 1]);
-        //             }
-        //             children.length = buffered.length;
-        //         });
-        //     }
-        // }
+                    // remove unused buffered range elements
+                    for (let i = children.length; i > buffered.length; i--) {
+                        this.el_.removeChild(children[i - 1]);
+                    }
+                    children.length = buffered.length;
+                });
+            }
+        }
 
         var walk = (component, cb) => {
             cb(component);
@@ -934,7 +922,7 @@ class Player extends utils.EventEmitter {
         if (conf.logo_url) {
             // let target = IS_EMBED ? `_parent` : `_blank`;
             let target = `_blank`;
-            dom.load_image("/logo").then(img => {
+            dom.load_image("../logo").then(img => {
                 this.logo_el = $(`<a target="${target}" class="logo" href="${conf.logo_url}"></a>`)[0];
                 this.logo_el.append(img);
                 controlBar.el_.append(this.logo_el);

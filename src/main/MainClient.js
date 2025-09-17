@@ -47,25 +47,25 @@ export class MainClient extends Client {
             return this.internal_session?.handover(...args)
         },
         "get_autosave_history": (...args) => {
-            this.internal_session?.get_autosave_history(...args)
+            return this.internal_session?.get_autosave_history(...args)
         },
         "detect_crop": (...args) => {
-            this.internal_session?.detect_crop(...args)
+            return this.internal_session?.detect_crop(...args)
         },
         "stop_stream": (...args) => {
-            this.internal_session?.stop_stream(...args)
+            return this.internal_session?.stop_stream(...args)
         },
         "start_stream": (...args) => {
-            this.internal_session?.start_stream(...args)
+            return this.internal_session?.start_stream(...args)
         },
         "set_player_default_override": (...args) => {
-            this.internal_session?.set_player_default_override(...args)
+            return this.internal_session?.set_player_default_override(...args)
         },
         "update_media_info_from_ids": (...args) => {
-            this.internal_session?.update_media_info_from_ids(...args)
+            return this.internal_session?.update_media_info_from_ids(...args)
         },
         "playlist_add": (...args) => {
-            this.internal_session?.playlist_add(...args)
+            return this.internal_session?.playlist_add(...args)
         },
         "playlist_remove": (ids, session_id, opts) => {
             /** @type {InternalSession} */
@@ -74,55 +74,55 @@ export class MainClient extends Client {
             return session.playlist_remove(ids, opts);
         },
         "playlist_update": (...args) => {
-            this.internal_session?.playlist_update(...args)
+            return this.internal_session?.playlist_update(...args)
         },
         "playlist_undo": (...args) => {
-            this.internal_session?.playlist_undo(...args)
+            return this.internal_session?.playlist_undo(...args)
         },
         "playlist_redo": (...args) => {
-            this.internal_session?.playlist_redo(...args)
+            return this.internal_session?.playlist_redo(...args)
         },
         "playlist_register_history": (...args) => {
-            this.internal_session?.playlist_history.push(...args)
+            return this.internal_session?.playlist_history.push(...args)
         },
         "playlist_reload_current": (...args) => {
-            this.internal_session?.reload(...args)
+            return this.internal_session?.reload(...args)
         },
         "download_and_replace": (...args) => {
-            this.internal_session?.download_and_replace(...args)
+            return this.internal_session?.download_and_replace(...args)
         },
         "cancel_download": (...args) => {
-            this.internal_session?.cancel_download(...args)
+            return this.internal_session?.cancel_download(...args)
         },
         "cancel_upload": (...args) => {
-            this.internal_session?.cancel_upload(...args)
+            return this.internal_session?.cancel_upload(...args)
         },
         "playlist_play": (...args) => {
-            this.internal_session?.playlist_play(...args)
+            return this.internal_session?.playlist_play(...args)
         },
         "seek": (...args) => {
-            this.internal_session?.seek(...args)
+            return this.internal_session?.seek(...args)
         },
         "update_player_controls": (...args) => {
-            this.internal_session?.update_player_controls(...args)
+            return this.internal_session?.update_player_controls(...args)
         },
         "fade_out_in": (...args) => {
-            this.internal_session?.fade_out_in(...args)
+            return this.internal_session?.fade_out_in(...args)
         },
         "load_session": (...args) => {
-            this.internal_session?.load(...args)
+            return this.internal_session?.load(...args)
         },
         "load_session_autosave": (...args) => {
-            this.internal_session?.load_autosave(...args)
+            return this.internal_session?.load_autosave(...args)
         },
         "get_user_save_data": (...args) => {
-            this.internal_session?.get_user_save_data(...args)
+            return this.internal_session?.get_user_save_data(...args)
         },
         "pause": (...args) => {
-            this.session_stream?.pause(...args)
+            return this.session_stream?.pause(...args)
         },
         "resume": (...args) => {
-            this.session_stream?.resume(...args)
+            return this.session_stream?.resume(...args)
         },
         "session_update_values": (...args) => {
             if (!this.session) return;

@@ -24,6 +24,8 @@ import { createHttpTerminator } from 'http-terminator';
 import tree_kill from "tree-kill-promise";
 import * as resources from "./resources.js";
 
+/** @typedef {{key:Buffer, cert:Buffer}} SSLCert */
+
 // const DEV_MODE = !!import.meta.env?.MODE.match(/^dev/);
 // const PRODUCTION_MODE = !!import.meta.env?.MODE.match(/^prod/);
 
@@ -97,6 +99,11 @@ export class Core extends DataNode {
     #exiting = false;
     /** @type {Set<string>} */
     #socket_files = new Set();
+    /** @type {SSLCert} */
+    #ssl;
+    #last_ssl_ts = 0;
+    /** @type {Record<PropertyKey,{path:string,urls:ReturnType<Core["get_urls"]>}>} */
+    modules = {}; // just a map of name:path to dir
     
     get name() { return this.#name; }
     get logger() { return this.#logger; }
@@ -181,37 +188,51 @@ export class Core extends DataNode {
         return p;
     }
 
-    get_ssl_certs() {
+    /** @return {SSLCert|null} */
+    get_ssl_cert() {
         var ssl_key_path = this.conf["core.ssl_key"];
         var ssl_cert_path = this.conf["core.ssl_cert"];
         if (!ssl_key_path || !ssl_cert_path) return null;
+        let now = Date.now();
         try {
-            return {
-                key: fs.readFileSync(ssl_key_path),
-                cert: fs.readFileSync(ssl_cert_path)
-            };
+            if (!this.#ssl || (this.#last_ssl_ts + 1000 * 60 * 60 * 24) > now) {
+                this.#last_ssl_ts = now;
+                let key = fs.readFileSync(ssl_key_path);
+                let cert = fs.readFileSync(ssl_cert_path);
+                this.#ssl = { key, cert };
+            }
         } catch (e) {
             this.logger.error(`Could not load SSL certs: ${e.message}`);
-            return null;
         }
+        return this.#ssl;
     }
     
-    get_urls(subdomain) {
-        if (!subdomain && subdomain !== false) subdomain = globals.app.name;
-        var hostname = subdomain ? `${subdomain}.${this.hostname}` : this.hostname;
-        var http = `http://${hostname}:${this.conf["core.http_port"]}`;
-        var https = `https://${hostname}:${this.conf["core.https_port"]}`;
-        var ws = `ws://${hostname}:${this.conf["core.http_port"]}`;
-        var wss = `wss://${hostname}:${this.conf["core.https_port"]}`;
-        var ssl = !!(this.conf["core.https_port"]);
+    get_urls(app) {
+        if (!app) app = globals.app.name;
+        var hostname = this.hostname;
+        var http_port = this.conf[`core.http_port`];
+        var https_port = this.conf[`core.https_port`];
+        let path = "";
+        if (app != "core") {
+            if (this.conf["core.http_proxy"] == "subdomain") {
+                hostname = `${app}.${hostname}`;
+            } else if (this.conf["core.http_proxy"] == "path") {
+                path = `/${app}`;
+            } else {
+                http_port = this.conf[`${app}.http_port`];
+                https_port = this.conf[`${app}.https_port`];
+            }
+        }
+        var http = `http://${hostname}:${http_port}${path}`;
+        var https = https_port ? `https://${hostname}:${https_port}${path}` : null;
+        var ws = `ws://${hostname}:${http_port}${path}`;
+        var wss = https_port ? `wss://${hostname}:${https_port}${path}` : null;
         return {
+            url: https || http,
             http,
             https,
             ws,
             wss,
-            ssl,
-            domain: hostname,
-            url: ssl ? https : http,
         }
     }
 
@@ -236,6 +257,38 @@ export class Core extends DataNode {
             }
         }
         this.#socket_files.clear();
+    }
+
+        /** @param {IncomingMessage} req @param {ServerResponse} res */
+    default_request_handler(req, res, ssl) {
+        var ref = req.headers.referer || "";
+        if (!ssl && this.conf["core.redirect_http_to_https"] && (!ref || ref.startsWith("https://"))) {
+            let url;
+            if (this.conf["core.http_proxy"] == "path") {
+                let app = req.url.split("/")[1];
+                url = this.get_urls(app).https+"/"+req.url.split("/").slice(2).join("/");
+            } else if (this.conf["core.http_proxy"] == "subdomain") {
+                let app = req.headers.host.split(".")[0];
+                url = this.get_urls(app).https + req.url;
+            } else {
+                url = this.get_urls().https + req.url;
+            }
+            res.writeHead(301, { 'Location': url });
+            res.end();
+            return true;
+        }
+        if (req.url == "/favicon.ico") {
+            let f = resources.get_path("icon.ico");
+            res.writeHead(200, { 'Content-Type': "image/x-icon" });
+            fs.createReadStream(f).pipe(res);
+            return true;
+        }
+        if (req.url == "/modules.json") {
+            res.writeHead(200, { 'Content-Type': "application/json" });
+            var modules = Object.entries(this.modules).map(([k,m])=>[k,m.urls]);
+            res.end(JSON.stringify(modules));
+            return true;
+        }
     }
 
     async exit(signal, code=0) {
@@ -263,8 +316,6 @@ export class Core extends DataNode {
  */
 
 export class CoreMaster extends Core {
-    /** @type {Record<PropertyKey,string>} */
-    modules = {}; // just a map of name:path to dir
     /** @type {(http.Server | https.Server)[]} */
     #servers = [];
     /** @type {import("http-terminator").HttpTerminator[]} */
@@ -307,11 +358,15 @@ export class CoreMaster extends Core {
         
         this.#opts = Object.assign({}, program.opts(), opts);
 
-        if (this.#opts.cwd) process.chdir(this.#opts.cwd);
+        if (this.#opts.cwd) {
+            process.chdir(this.#opts.cwd);
+        }
 
         // ----------------------------------
 
-        if (process.env.LIVESTREAMER_CONF_PATH) this.#conf_paths.push(process.env.LIVESTREAMER_CONF_PATH);
+        if (process.env.LIVESTREAMER_CONF_PATH) {
+            this.#conf_paths.push(process.env.LIVESTREAMER_CONF_PATH);
+        }
 
         if (this.#opts.configs) {
             this.#conf_paths.push(...this.#opts.configs);
@@ -397,8 +452,16 @@ export class CoreMaster extends Core {
         
         let modules = this.#opts.modules.flatMap(p=>p.split(path.delimiter));
         let resolved_modules = [...new Set(modules.map(p=>resolve_module(p)))].filter(p=>p);
+
+        let get_module_name = (m)=>path.basename(path.dirname(m))
+        let module_obj = (m)=>{
+            return {
+                path: m,
+                urls: this.get_urls(get_module_name(m)),
+            }
+        }
         
-        this.modules = Object.fromEntries(resolved_modules.map(p=>[path.basename(path.dirname(p)), p]));
+        this.modules = Object.fromEntries(resolved_modules.map(p=>[get_module_name(p), module_obj(p)]));
 
         // -----------------------------------------
         
@@ -466,7 +529,7 @@ export class CoreMaster extends Core {
             console.warn(`Module '${m}' is already running.`);
             return;
         }
-        var run_path = this.modules[m];
+        var run_path = this.modules[m]?.path;
         this.logger.info(`Starting ${m} [${run_path}]...`);
         
         return new Promise(async (resolve)=>{
@@ -521,7 +584,7 @@ export class CoreMaster extends Core {
     }
     
     async #setup_proxies() {
-        var ssl_certs = this.get_ssl_certs();
+        if (!this.conf["core.http_proxy"]) return;
         const agent = new http.Agent({
             maxSockets: Number.MAX_SAFE_INTEGER,
             keepAlive: true,
@@ -531,15 +594,20 @@ export class CoreMaster extends Core {
         console.info(`Starting HTTP Server on port ${this.conf["core.http_port"]}`);
         /** @param {IncomingMessage} req @param {ServerResponse} res */
         var get_proxy = async (req, res)=>{
-            var host_parts = req.headers.host.split(".");
-            var name = host_parts[0];
+            var name;
+            if (this.conf["core.http_proxy"] === "path") {
+                let parts = req.url.slice(1).split("/");
+                name = parts[0];
+                req.url = "/"+parts.slice(1).join("/");
+            } else if (this.conf["core.http_proxy"] === "subdomain") {
+                name = req.headers.host.split(".")[0];
+            }
             /** @type {http_proxy} */
             var proxy;
             /** @type {http_proxy.ProxyTarget} */
             var target;
             
-            if (this.modules[name] && await this.#ipc.wait_for_process(name)) {
-                // req.url = "/"+parts.slice(1).join("/") + url.search;
+            if (name in this.modules && await this.#ipc.wait_for_process(name)) {
                 if (!proxies[name]) {
                     proxies[name] = http_proxy.createProxy({ agent });
                     proxies[name].on("error", (e)=>{
@@ -568,25 +636,9 @@ export class CoreMaster extends Core {
         };
         
         var create_request_listener = (ssl)=>{
-        /** @param {IncomingMessage} req @param {ServerResponse} res */
+            /** @param {IncomingMessage} req @param {ServerResponse} res */
             return async (req, res)=>{
-                var ref = req.headers.referer || "";
-                if (!ssl && this.conf["core.redirect_http_to_https"] && this.conf["core.https_port"] && ssl_certs && (!ref || ref.startsWith("https://"))) {
-                    var url = new URL(`http://${req.headers.host}${req.url}`);
-                    url.port = this.conf["core.https_port"];
-                    url.protocol = "https:";
-                    res.writeHead(301, {
-                        'Location': url.toString()
-                    });
-                    res.end();
-                    return;
-                }
-                if (req.url == "/favicon.ico") {
-                    let f = resources.get_path("icon.ico");
-                    res.writeHead(200, { 'Content-Type': "image/x-icon" });
-                    res.end(await fs.promises.readFile(f));
-                    return;
-                }
+                if (this.default_request_handler(req,res,ssl)) return true;
                 let {proxy,target} = await get_proxy(req, res);
                 if (proxy) {
                     proxy.web(req, res, {
@@ -595,10 +647,10 @@ export class CoreMaster extends Core {
                     }, (e)=>{
                         if (res) res.end();
                     });
-                    return;
+                } else {
+                    res.statusCode = 500;
+                    res.end();
                 }
-                res.statusCode = 500;
-                res.end();
             };
         }
         /** @type {http.Server} */
@@ -613,20 +665,18 @@ export class CoreMaster extends Core {
             proxy_http_server.listen(this.conf["core.http_port"]);
         }
 
-        if (this.conf["core.https_port"] && ssl_certs) {
+        let ssl = this.get_ssl_cert();
+        if (this.conf["core.https_port"] && ssl) {
             console.info(`Starting HTTPS Server on port ${this.conf["core.https_port"]}`);
-            proxy_https_server = https.createServer({
-                ...ssl_certs,
-            }, create_request_listener(true));
+            proxy_https_server = https.createServer({ ...ssl }, create_request_listener(true));
             this.#servers.push(proxy_https_server);
             this.#server_terminators.push(createHttpTerminator({ server: proxy_https_server, gracefulTerminationTimeout:1000 }));
             proxy_https_server.listen(this.conf["core.https_port"]);
             setInterval(async ()=>{
-                ssl_certs = this.get_ssl_certs();
-                if (ssl_certs) {
-                    console.info(`Updating SSL certs...`);
-                    proxy_https_server.setSecureContext({...ssl_certs});
-                }
+                console.info(`Updating SSL certs...`);
+                proxy_https_server.setSecureContext({
+                    ...this.get_ssl_cert()
+                });
             }, 1000*60*60*24) // every day
         }
         // }
@@ -811,15 +861,12 @@ export class CoreFork extends Core {
     /** @type {IPCFork} */
     #ipc;
     #auth_cache = new utils.SimpleCache(30 * 1000);
-    /** @type {Record<PropertyKey, string>} */
-    #modules = {};
     #title = "";
     #description = "";
     
     get ready() { return this.#ready; }
     get ipc() { return this.#ipc; }
-    get modules() { return this.#modules; }
-    get module_id() { return Object.keys(this.#modules).indexOf(this.name); }
+    get module_id() { return Object.keys(this.modules).indexOf(this.name); }
     get title() { return this.#title; }
     get description() { return this.#description; }
     
@@ -850,7 +897,7 @@ export class CoreFork extends Core {
         process.env.LIVESTREAMER_PORTABLE = core.portable ? "1" : "";
         Object.assign(this.conf, core.conf);
 
-        this.#modules = core.modules;
+        this.modules = core.modules;
 
         this.logger.on("log", (log)=>{
             this.#ipc.emit("internal:log", log).catch(utils.noop); // IMPORTANT: will create log feedback loop if socket is closed (logs error, collects error, tries to emit, and so on).
@@ -900,18 +947,18 @@ export class CoreFork extends Core {
         if (BUILD) {
             return express.static(root);
         } else {
-            var ssl_certs = this.get_ssl_certs();
+            ;
             var node_modules_dir = utils.get_node_modules_dir("vite");
             let vite = await import("vite");
             /** @type {import("vite").UserConfig} */
             var config = {
                 mode: MODE,
                 configFile: false,
-                base: `./`,
+                base: this.conf["core.http_proxy"] === "path" ? `/${this.name}/` : `./`,
                 root,
                 // outDir: path.resolve(this.tmp_dir, "web", utils.md5(dir)),
                 server: {
-                    https: ssl_certs ? ({...ssl_certs}) : false,
+                    https: this.get_ssl_cert() ?? false,
                     hmr: {
                         port: 24679 + this.module_id,
                     },
@@ -980,7 +1027,11 @@ export class CoreFork extends Core {
             let basic_auth_res = basic_auth(req);
             let url = new URL(`http://localhost${req.url}`);
             
-            let user_pass = (basic_auth_res && [basic_auth_res.name, basic_auth_res.pass].join(":")) || req.headers[key] || (url.searchParams.has(key) && url.searchParams.get(key)) || cookies.get(key);
+            let user_pass;
+            if (basic_auth_res) user_pass = [basic_auth_res.name, basic_auth_res.pass].join(":");
+            else if (req.headers[key]) user_pass = req.headers[key];
+            else if (url.searchParams.has(key)) user_pass = url.searchParams.get(key);
+            else user_pass = cookies.get(key);
             
             if (!user_pass) return;
 

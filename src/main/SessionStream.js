@@ -98,11 +98,13 @@ export class SessionStream extends StopStartStateMachine {
                 // we only do this once, if we detach / attach to another session the urls remain the same.
                 let publish_stream_path = `/internal/${this.id}`;
                 this.$.publish_stream_path = publish_stream_path;
-                this.$.rtmp_url = `rtmp://media-server.${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}${publish_stream_path}`;
-                this.$.ws_url = `ws://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${publish_stream_path}.flv`;
-                this.$.wss_url = `wss://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${publish_stream_path}.flv`;
-                this.$.http_url = `http://media-server.${globals.app.hostname}:${globals.app.conf["core.http_port"]}${publish_stream_path}.flv`;
-                this.$.https_url = `https://media-server.${globals.app.hostname}:${globals.app.conf["core.https_port"]}${publish_stream_path}.flv`;
+                var urls = globals.app.get_urls("media-server");
+                let rtmp = `rtmp://${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}`;
+                this.$.rtmp_url = `${rtmp}${publish_stream_path}`;
+                this.$.ws_url = `${urls.ws}${publish_stream_path}.flv`;
+                this.$.wss_url = `${urls.wss}${publish_stream_path}.flv`;
+                this.$.http_url = `${urls.http}${publish_stream_path}.flv`;
+                this.$.https_url = `${urls.https}${publish_stream_path}.flv`;
             }
         });
         this.on("detach", (session)=>{

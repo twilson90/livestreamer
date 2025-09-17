@@ -459,8 +459,8 @@ export class Driver extends events.EventEmitter {
 			},
 			csscls: "elfinder-navbar-root-local",
 			uiCmdMap: [],
-			url: new URL(`/api/file/${this.volume.id}/`, base).toString(),
-			tmbUrl: new URL(`/api/tmb/${this.volume.id}/`, base).toString(),
+			url: `${base}/api/file/${this.volume.id}/`,
+			tmbUrl: `${base}/api/tmb/${this.volume.id}/`,
 			netkey: this.volume.config.netkey || "",
 			csscls: this.volume.config.netkey ? "elfinder-navbar-root-network" : "",
 		}

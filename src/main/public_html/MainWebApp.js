@@ -34,7 +34,7 @@ import "./style.scss";
 /** @type {MainWebApp} */
 export let app;
 
-export { ui, utils, jQuery, $, noUiSlider, mpegts as flvjs, Chart, Hammer, Sortable, MultiDrag }
+export { ui, utils, jQuery, $, noUiSlider, mpegts, Chart, Hammer, Sortable, MultiDrag }
 
 // if (window.videojs) window.videojs.options.autoplay = true;
 // export const WS_MIN_WAIT = 1000;
@@ -489,17 +489,6 @@ async function read_file(file, encoding = "utf-8") {
     }
     throw new Error(`Cannot read file '${file}'`);
 }
-async function open_file_dialog(options) {
-    if (IS_ELECTRON) {
-        var paths = await open_file_manager(options);
-        return paths.map(p => ({ path: p, name: utils.basename(p) }));
-    } else {
-        var dialog_opts = {};
-        if (options.filter) dialog_opts.accept = options.filter.join(", ");
-        if (options.multiple) dialog_opts.multiple = !!options.multiple;
-        return await dom.open_file_dialog(dialog_opts);
-    }
-}
 async function save_local_file(filename, text) {
     if (IS_ELECTRON) {
         var result = await electron.showSaveDialog({
@@ -597,143 +586,6 @@ export function create_file_start_end_properties(settings) {
     });
 
     return { file, start, end };
-}
-
-function get_file_manager_url(opts) {
-    var url = new URL("/index.html", dom.get_url(null, "file-manager"));
-    if (!opts) opts = {};
-    var elfinder_options = {};
-    if (opts.id != null) elfinder_options.id = opts.id;
-    if (opts.multiple != null || opts.files != null || opts.folders != null) {
-        if (!elfinder_options.commandsOptions) elfinder_options.commandsOptions = {};
-        if (!elfinder_options.commandsOptions.getfile) elfinder_options.commandsOptions.getfile = {};
-        if (opts.multiple != null) {
-            elfinder_options.commandsOptions.getfile.multiple = !!opts.multiple;
-        }
-        if (opts.folders != null) {
-            elfinder_options.commandsOptions.getfile.folders = !!opts.folders;
-        }
-    }
-    if (opts.folders) {
-        elfinder_options.onlyMimes = ["directory"];
-    }
-    if (opts.start) {
-        var hash = app.uri_to_elfinder_hash(opts.start);
-        if (hash) {
-            url.hash = "#elf_" + hash;
-        }
-    }
-    if (opts.filter) {
-        elfinder_options.fileFilter = opts.filter;
-    }
-
-    var getfile = !!(opts.multiple || opts.files || opts.folders);
-    if (getfile) {
-        elfinder_options.getFileCallback = true;
-    }
-
-    url.searchParams.append("opts", JSON.stringify(elfinder_options));
-    return url.toString();
-}
-
-/** @typedef {{id:any, hidden_id:any, folders:boolean, files:boolean, multiple:boolean, filter:string[], start:string}} FileManagerOptions */
-/**
- * @param {FileManagerOptions} options 
- */
-async function open_file_manager(options) {
-    // console.log(options);
-    options = {
-        // "new_window" : app.settings.get("open_file_manager_in_new_window"),
-        ...default_file_manager_options,
-        ...options
-    };
-
-    if (!options.standalone && options.id === undefined) options.id = dom.uuidb64();
-    // if ("start" in options && !Array.isArray(options.start)) options.start = [options.start];
-
-    if (IS_ELECTRON) {
-        var electron_options = {
-            properties: []
-        };
-        if (options.start) electron_options.defaultPath = utils.pathify(options.start); // utils.dirname(options.start[0]);
-        if (options.folders) electron_options.properties.push("openDirectory");
-        if (options.files) electron_options.properties.push("openFile");
-        if (options.multiple) electron_options.properties.push("multiSelections");
-        if (options.filter) {
-            electron_options.filters = [];
-            electron_options.filters.push({ name: "All Files", extensions: ["*"] });
-            var custom_ext = [];
-            let mime_filters = [];
-            for (var f of options.filter) {
-                mime_filters.push({ name: utils.capitalize(f), extensions: utils.mime_ext_map[f] || ["*"] });
-            }
-            if (mime_filters.length > 1) {
-                let names = [];
-                let extensions = [];
-                for (var f of mime_filters) {
-                    names.push(f.name);
-                    extensions.push(...f.extensions);
-                }
-                electron_options.filters.push({ name: names.join("/"), extensions: [...new Set(extensions)] })
-            }
-            electron_options.filters.push(...mime_filters);
-            if (custom_ext.length) {
-                custom_ext = [...new Set(custom_ext)];
-                electron_options.filters.push({ name: "Custom File Type", extensions: custom_ext });
-            }
-        }
-        var results = await electron.showOpenDialog(electron_options);
-        if (results.cancelled) return null;
-        return results.filePaths;
-    } else if (app.$.processes["file-manager"]) {
-        /** @type {Window} */
-        var win;
-        /** @type {FileManagerMenu} */
-        var menu;
-        var win_id = options.hidden_id || options.id;
-        var use_window = options.new_window;
-        var messenger = new dom.WindowCommunicator();
-        return new Promise((resolve, reject) => {
-            messenger.on("exit", ({ id }) => {
-                if (id != options.id) return;
-                resolve(null);
-            });
-            messenger.on("files", ({ files, id }) => {
-                if (id != options.id) return;
-                var paths = files.map(f => utils.pathify(f.uri) || f.uri);
-                resolve(paths);
-            });
-
-            var url = get_file_manager_url(options);
-
-            if (use_window) {
-                win = windows[win_id];
-                if (!win || win.closed) {
-                    win = window.open(url, `_blank`);
-                    if (win_id) windows[win_id] = win;
-                }
-                win.focus();
-                win.addEventListener("beforeunload", (e) => {
-                    e.preventDefault();
-                    delete windows[win_id];
-                    resolve();
-                });
-            } else {
-                menu = new FileManagerMenu(url);
-                menu.show();
-                win = menu.iframe.contentWindow;
-                menu.once("hide", () => {
-                    resolve();
-                });
-            }
-        }).finally(() => {
-            messenger.destroy();
-            if (use_window) win.close();
-            else menu.hide();
-        })
-    } else {
-        console.error("File Manager not present")
-    }
 }
 
 export class TicksBar {
@@ -1592,7 +1444,7 @@ export class PlaylistItem$ extends utils.remote.ProxyID$ {
             else if (url.protocol === "file:") return electron.showItemInFolder(utils.pathify(this._uri));
         }
         if (url.protocol.match(/^https?:$/)) return window.open(url, "_blank");
-        return open_file_manager({ start: this.filename });
+        return app.open_file_manager({ start: this.filename });
     }
     get _uri() {
         return utils.is_uri(this.filename) ? this.filename : utils.urlify(this.filename).toString();
@@ -2788,7 +2640,7 @@ export class FileManagerVolumesMenu extends ui.Modal {
 //             name_el.innerText = node.name;
 //             name_el.onclick = (e)=>{
 //                 e.preventDefault();
-//                 open_file_manager({start:node.path});
+//                 app.open_file_manager({start:node.path});
 //             }
 
 //             var arrow_el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -6567,7 +6419,7 @@ export class FileProperty extends ui.InputProperty {
             click: async (e) => {
                 /** @type {FileManagerOptions} */
                 var file_options = { id: this.name_id, start: this.value, ...this.get_setting("file.options") };
-                var paths = await open_file_manager(file_options);
+                var paths = await app.open_file_manager(file_options);
                 if (!paths) return;
                 this.set_values(paths[0], { trigger: true });
             }
@@ -7472,7 +7324,7 @@ export class MediaPlayerPanel extends Panel {
                 height = Math.min(720, height);
                 width = height * ratio;
                 // yay this works well.
-                var test_url = new URL("/blank.html", dom.get_url(null, "main").toString());
+                var test_url = new URL("/blank.html", this.$.conf.main_url);
                 w = windows["test-" + id] = window.open(test_url, id, `width=${width},height=${height},scrollbars=1,resizable=1`);
                 w.onload = () => {
                     w.document.head.append($(`<title>Test Stream ${id}</title>`)[0]);
@@ -8748,7 +8600,7 @@ export class PlaylistPanel extends Panel {
             }
         })
         this.pl_add_file_button.addEventListener("click", async (e) => {
-            var paths = await open_file_manager({
+            var paths = await app.open_file_manager({
                 id: "load-file",
                 files: true,
                 multiple: true
@@ -10741,10 +10593,10 @@ export class MainWebApp extends utils.EventEmitter {
                 )
                 group.append(
                     new ui.Link(`<a class="button">File Manager</a>`, {
-                        "href": () => get_file_manager_url(),
+                        "href": () => this.get_file_manager_url(),
                         "click": (e) => {
                             e.preventDefault();
-                            open_file_manager({ new_window: true, standalone: true, hidden_id: "file-manager-standalone" });
+                            this.open_file_manager({ new_window: true, standalone: true, hidden_id: "file-manager-standalone" });
                         }
                     })
                 );
@@ -10820,7 +10672,8 @@ export class MainWebApp extends utils.EventEmitter {
                 }
             } else {
                 for (var w of [window, ...Object.values(windows)]) {
-                    var body = w.document.body;
+                    var body;
+                    try { body = w.document.body; } catch (e) { continue; }
                     var type = typeof v;
                     var inputs = ["input", "select", "textarea"];
                     for (var c of inputs.map(i => [...w.document.querySelectorAll(`${i}[data-setting__${k}]`)]).flat()) {
@@ -10943,8 +10796,9 @@ export class MainWebApp extends utils.EventEmitter {
             this.playlist_add(items);
         });
 
-        var key = new URL(window.location.href).searchParams.get("livestreamer_auth");
-        var ws_url = dom.get_url(null, "main", true);
+        var url = new URL(window.location.href);
+        var key = url.searchParams.get("livestreamer_auth");
+        var ws_url = new URL(url.origin.replace(/^http(s)?:\/\//, "ws$1://")+url.pathname);
         if (key) ws_url.searchParams.set("livestreamer_auth", key);
 
         this.ws = new dom.ReconnectingWebSocket();
@@ -11015,7 +10869,7 @@ export class MainWebApp extends utils.EventEmitter {
             //     var file_manager_url = dom.get_url(null, "file-manager");
             //     if (url.host === file_manager_url.host && url.pathname === "/index.html") {
             //         console.log(utils.try_catch_file_uri_to_path(url).toString());
-            //         open_file_manager({start: utils.try_catch_file_uri_to_path(url).toString()})
+            //         this.open_file_manager({start: utils.try_catch_file_uri_to_path(url).toString()})
             //         console.log(e.target);
             //         e.preventDefault();
             //     }
@@ -11681,7 +11535,7 @@ export class MainWebApp extends utils.EventEmitter {
     get user_time_format() { return this.settings.get("time_display_ms") ? "h:mm:ss.SSS" : "h:mm:ss"; }
 
     async load_session() {
-        var files = await open_file_dialog({ filter: [".json"] });
+        var files = await this.open_file_dialog({ filter: [".json"] });
         var text = await read_file(files[0]);
         var data;
         try { data = JSON.parse(text); } catch {
@@ -11765,6 +11619,156 @@ export class MainWebApp extends utils.EventEmitter {
         }
         return this.media_info_promises[filename];
     }
+    
+    async open_file_dialog(options) {
+        if (IS_ELECTRON) {
+            var paths = await this.open_file_manager(options);
+            return paths.map(p => ({ path: p, name: utils.basename(p) }));
+        } else {
+            var dialog_opts = {};
+            if (options.filter) dialog_opts.accept = options.filter.join(", ");
+            if (options.multiple) dialog_opts.multiple = !!options.multiple;
+            return await dom.open_file_dialog(dialog_opts);
+        }
+    }
+
+    get_file_manager_url(opts) {
+        if (!this.$.conf.file_manager_url) return;
+        var url = new URL(this.$.conf.file_manager_url);
+        if (!opts) opts = {};
+        var elfinder_options = {};
+        if (opts.id != null) elfinder_options.id = opts.id;
+        if (opts.multiple != null || opts.files != null || opts.folders != null) {
+            if (!elfinder_options.commandsOptions) elfinder_options.commandsOptions = {};
+            if (!elfinder_options.commandsOptions.getfile) elfinder_options.commandsOptions.getfile = {};
+            if (opts.multiple != null) {
+                elfinder_options.commandsOptions.getfile.multiple = !!opts.multiple;
+            }
+            if (opts.folders != null) {
+                elfinder_options.commandsOptions.getfile.folders = !!opts.folders;
+            }
+        }
+        if (opts.folders) {
+            elfinder_options.onlyMimes = ["directory"];
+        }
+        if (opts.start) {
+            var hash = app.uri_to_elfinder_hash(opts.start);
+            if (hash) {
+                url.hash = "#elf_" + hash;
+            }
+        }
+        if (opts.filter) {
+            elfinder_options.fileFilter = opts.filter;
+        }
+
+        var getfile = !!(opts.multiple || opts.files || opts.folders);
+        if (getfile) {
+            elfinder_options.getFileCallback = true;
+        }
+
+        url.searchParams.append("opts", JSON.stringify(elfinder_options));
+        return url.toString();
+    }
+
+    /** @typedef {{id:any, hidden_id:any, folders:boolean, files:boolean, multiple:boolean, filter:string[], start:string}} FileManagerOptions */
+
+    /** @param {FileManagerOptions} options */
+    async open_file_manager(options) {
+        // console.log(options);
+        options = {
+            // "new_window" : app.settings.get("open_file_manager_in_new_window"),
+            ...default_file_manager_options,
+            ...options
+        };
+
+        if (!options.standalone && options.id === undefined) options.id = dom.uuidb64();
+        // if ("start" in options && !Array.isArray(options.start)) options.start = [options.start];
+
+        if (IS_ELECTRON) {
+            var electron_options = {
+                properties: []
+            };
+            if (options.start) electron_options.defaultPath = utils.pathify(options.start); // utils.dirname(options.start[0]);
+            if (options.folders) electron_options.properties.push("openDirectory");
+            if (options.files) electron_options.properties.push("openFile");
+            if (options.multiple) electron_options.properties.push("multiSelections");
+            if (options.filter) {
+                electron_options.filters = [];
+                electron_options.filters.push({ name: "All Files", extensions: ["*"] });
+                var custom_ext = [];
+                let mime_filters = [];
+                for (var f of options.filter) {
+                    mime_filters.push({ name: utils.capitalize(f), extensions: utils.mime_ext_map[f] || ["*"] });
+                }
+                if (mime_filters.length > 1) {
+                    let names = [];
+                    let extensions = [];
+                    for (var f of mime_filters) {
+                        names.push(f.name);
+                        extensions.push(...f.extensions);
+                    }
+                    electron_options.filters.push({ name: names.join("/"), extensions: [...new Set(extensions)] })
+                }
+                electron_options.filters.push(...mime_filters);
+                if (custom_ext.length) {
+                    custom_ext = [...new Set(custom_ext)];
+                    electron_options.filters.push({ name: "Custom File Type", extensions: custom_ext });
+                }
+            }
+            var results = await electron.showOpenDialog(electron_options);
+            if (results.cancelled) return null;
+            return results.filePaths;
+        } else if (app.$.processes["file-manager"]) {
+            /** @type {Window} */
+            var win;
+            /** @type {FileManagerMenu} */
+            var menu;
+            var win_id = options.hidden_id || options.id;
+            var use_window = options.new_window;
+            var messenger = new dom.WindowCommunicator();
+            return new Promise((resolve, reject) => {
+                messenger.on("exit", ({ id }) => {
+                    if (id != options.id) return;
+                    resolve(null);
+                });
+                messenger.on("files", ({ files, id }) => {
+                    if (id != options.id) return;
+                    var paths = files.map(f => utils.pathify(f.uri) || f.uri);
+                    resolve(paths);
+                });
+
+                var url = this.get_file_manager_url(options);
+
+                if (use_window) {
+                    win = windows[win_id];
+                    if (!win || win.closed) {
+                        win = window.open(url, `_blank`);
+                        if (win_id) windows[win_id] = win;
+                    }
+                    win.focus();
+                    win.addEventListener("beforeunload", (e) => {
+                        e.preventDefault();
+                        delete windows[win_id];
+                        resolve();
+                    });
+                } else {
+                    menu = new FileManagerMenu(url);
+                    menu.show();
+                    win = menu.iframe.contentWindow;
+                    menu.once("hide", () => {
+                        resolve();
+                    });
+                }
+            }).finally(() => {
+                messenger.destroy();
+                if (use_window) win.close();
+                else menu.hide();
+            })
+        } else {
+            console.error("File Manager not present")
+        }
+    }
+
 
     destroy() {
         for (var root of this.roots) root.destroy();

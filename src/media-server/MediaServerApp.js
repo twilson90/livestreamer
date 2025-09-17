@@ -249,7 +249,7 @@ export class MediaServerApp extends CoreFork {
             new NodeFlvSession({}, req, res).run();
         });
 
-        this.web.wss.on("connection", (ws,req)=>{
+        this.web.on("connection", (ws, req)=>{
             req.nmsConnectionType = 'ws';
             new NodeFlvSession({}, req, ws).run();
         });

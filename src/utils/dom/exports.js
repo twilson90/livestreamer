@@ -26,7 +26,6 @@ export * from "./get_dataset.js";
 export * from "./get_index.js";
 export * from "./get_owner_window.js";
 export * from "./get_top_position.js";
-export * from "./get_url.js";
 export * from "./get_value.js";
 export * from "./has_focus.js";
 export * from "./has_touch_screen.js";
