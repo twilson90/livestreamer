@@ -347,6 +347,7 @@ export class InputProperty extends Property {
         var is_disabled = this.is_disabled || (has_options && !is_options_consistant);
         var readonly = !!this.get_setting("readonly");
         var width = this.get_setting("width");
+        // var min_width = this.get_setting("min-width");
             
         toggle_class(this.elem, "vertical", !!this.get_setting("vertical"))
         toggle_class(this.elem, "is-null", values[0] == null);
@@ -357,6 +358,7 @@ export class InputProperty extends Property {
 
         if (width != null) {
             this.elem.style.setProperty("--ui-property-width", typeof width == "number" ? `${width}px` : width);
+            this.elem.style.flex = "none";
         }
         
         /* if (this.reset_button) {

@@ -573,6 +573,7 @@ export function create_file_start_end_properties(settings) {
         "max": get_file_duration,
         "hidden": () => file.is_hidden || is_file_image(),
         "default": 0,
+        "width":140,
     });
 
     var end = new ui.TimeSpanProperty({
@@ -583,6 +584,7 @@ export function create_file_start_end_properties(settings) {
         "max": get_file_duration,
         "hidden": () => file.is_hidden || is_file_image(),
         "default": get_file_duration,
+        "width":140,
     });
 
     return { file, start, end };
@@ -2131,7 +2133,7 @@ export class JSONContainer extends ui.UI {
 
 // -----------------------------------------------------------
 
-/** @extends {EditModal<ExpandedTargetsProperty>} */
+/** @extends {ui.EditModal<ExpandedTargetsProperty>} */
 export class TargetConfigMenu extends ui.EditModal {
     get _target() { return app.$.targets[this._target_id]; }
 
@@ -3217,7 +3219,7 @@ export class ScheduleGeneratorMenu extends ui.EditModal {
     }
 } */
 
-/** @extends {Modal<PlaylistItem$>} */
+/** @extends {ui.EditModal<PlaylistItem$>} */
 export class SplitMenu extends ui.EditModal {
     constructor(items) {
         super({
@@ -3361,7 +3363,7 @@ export class SplitMenu extends ui.EditModal {
     };
 }
 
-/** @extends {EditModal<PlaylistItem$>} */
+/** @extends {ui.EditModal<PlaylistItem$>} */
 export class CropEditMenu extends ui.EditModal {
     /** @param {ui.MultiInputProperty} crop_property @param {DetectedCrop$} data @param {Rectangle} rect */
     constructor(crop_property, data, index) {
@@ -3438,7 +3440,7 @@ export class CropEditMenu extends ui.EditModal {
 }
 
 
-/** @extends {Modal<Session$>} */
+/** @extends {ui.EditModal<Session$>} */
 export class ScheduleStreamMenu extends ui.EditModal {
     constructor() {
         super({
@@ -3475,7 +3477,7 @@ export class ScheduleStreamMenu extends ui.EditModal {
     }
 }
 
-/** @extends {Modal<Session$>} */
+/** @extends {ui.EditModal<Session$>} */
 export class SessionConfigurationMenu extends ui.EditModal {
     constructor() {
         super({
@@ -3569,7 +3571,6 @@ export class SessionConfigurationMenu extends ui.EditModal {
             "label": "Access Control",
             "info": "Owners: Full access.\nAllowed: Full access but cannot edit session confugration, delete the session, load/save session files or access history.\nDenied: No access rights whatsoever.",
         });
-
         this.props.on("update", () => {
             var layout = [
                 [this.name],
@@ -5151,7 +5152,7 @@ export class PlaylistAddURLMenu extends ui.EditModal {
     }
 };
 
-/** @extends {Modal<PlaylistItem$>} */
+/** @extends {ui.EditModal<PlaylistItem$>} */
 export class PlaylistItemModifyMenu extends ui.EditModal {
 
     get changes() {
@@ -5163,7 +5164,7 @@ export class PlaylistItemModifyMenu extends ui.EditModal {
     constructor(items) {
         var is_new = items.length == 1 && !items[0].id;
         super({
-            "modal.width": 640,
+            "modal.width": 720,
             "modal.title": () => is_new ? `New Playlist Item` : `Modify ${get_items_title_html(this.props.items)}`,
             "modal.auto_apply": !is_new,
             "modal.apply": () => {
@@ -6414,6 +6415,24 @@ export class FileProperty extends ui.InputProperty {
         }
         var input = $(`<input type="text">`)[0];
         super(input, settings);
+        var input2 = $(`<input type="text">`)[0];
+        input.parentElement.append(input2)
+        // input2.style.pointerEvents = "none";
+        var update_inputs = (has_focus)=>{
+            input2.style.display = has_focus ? "none" : "";
+            this.input.style.display = has_focus ? "" : "none"
+        };
+        update_inputs(false);
+        input2.addEventListener("focus", (e)=>{
+            update_inputs(true);
+            this.input.focus();
+            this.input.scrollLeft = Number.MAX_SAFE_INTEGER;
+            this.input.setSelectionRange(this.input.value.length, this.input.value.length);
+        }, {capture:true});
+        this.input.addEventListener("blur", (e)=>{
+            update_inputs(false);
+        }, {capture:true});
+
         var browse_button = new ui.Button(`<button><i class="fas fa-folder-open"></i></button>`, {
             title: "Browse",
             click: async (e) => {
@@ -6431,7 +6450,7 @@ export class FileProperty extends ui.InputProperty {
             return true;
         });
         this.buttons_el.prepend(browse_button);
-        var last_has_focus;
+        // var last_has_focus;
         this.on("change", async (e) => {
             if (!this.get_setting("file.check_media")) return;
             if (e.trigger) {
@@ -6445,20 +6464,22 @@ export class FileProperty extends ui.InputProperty {
             var value = this.input.value;
             this.input.setSelectionRange(value.length, value.length);
         }); */
-        /* this.on("render", ()=>{
+        this.on("render", ()=>{
             var value = this.value;
             var has_focus = dom.has_focus(this.input);
-            if (!has_focus) {
-                if (value && !value.startsWith("livestreamer://")) value = pretty_uri_basename(value);
-            }
-            if (this.input.value != value) this.input.value = value;
-            if (has_focus && !last_has_focus) {
-                this.input.scrollLeft = Number.MAX_SAFE_INTEGER;
-                // dom.set_selection_range(this.input, value.length, value.length);
-                this.input.setSelectionRange(value.length, value.length);
-            }
-            last_has_focus = has_focus;
-        }); */
+            console.log("has_focus", has_focus);
+            if (value && !value.startsWith("livestreamer://")) value = pretty_uri_basename(value);
+            input2.value = value;
+            input2.placeholder = this.get_setting("placeholder");
+            // input2.scrollLeft = Number.MAX_SAFE_INTEGER;
+            // if (this.input.value != value) this.input.value = value;
+            // if (has_focus && !last_has_focus) {
+            //     this.input.scrollLeft = Number.MAX_SAFE_INTEGER;
+            //     // dom.set_selection_range(this.input, value.length, value.length);
+            //     this.input.setSelectionRange(value.length, value.length);
+            // }
+            // last_has_focus = has_focus;
+        });
     }
 }
 

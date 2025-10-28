@@ -804,7 +804,7 @@ export class InternalSession extends Session {
         
         var filename = `${utils.sanitize_filename(this.name)}-${utils.date_to_string()}`;
         
-        delete diff.time;
+        delete diff.time_pos;
         delete diff.playlist_id;
         
         var json = JSON.stringify($);

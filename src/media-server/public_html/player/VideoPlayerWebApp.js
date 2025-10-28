@@ -1144,6 +1144,7 @@ class Player extends utils.EventEmitter {
         // this.hls.media.srcObject.setLiveSeekableRange(0, 600)
         var stall_timeout;
         this.hls.on(Hls.Events.ERROR, (e, data) => {
+            debugger;
             /* if (data.fatal && data.type == "mediaError") {
                 this.hls.recoverMediaError();
             } */

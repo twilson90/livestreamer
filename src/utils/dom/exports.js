@@ -79,3 +79,4 @@ export * from "./walk.js";
 export * from "./WindowCommunicator.js";
 export * from "./WrapDetector.js";
 export * from "./OverlayScrollbars.js";
+export * from "./UserScrollDetect.js";

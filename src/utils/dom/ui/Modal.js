@@ -8,6 +8,8 @@ import { set_inner_html } from "../set_inner_html.js";
 import { update_style_properties } from "../update_style_properties.js";
 import { create_disable_scrollbars_stylesheet_and_class } from "../create_disable_scrollbars_stylesheet_and_class.js";
 
+const DEFAULT_WIDTH = 600;
+
 /** @import {UISettings, UISetting, UIEvents} from './exports.js' */
 
 /**
@@ -40,9 +42,6 @@ import { create_disable_scrollbars_stylesheet_and_class } from "../create_disabl
 * @template {ModalEvents} [Events=ModalEvents]
 * @extends {UI<Settings,Events>}
 */
-
-const DEFAULT_WIDTH = 600;
-
 export class Modal extends UI {
     get showing() { return !!this.fb; }
     get modal_title() { return this.get_setting("modal.title"); }
@@ -271,7 +270,10 @@ export class Modal extends UI {
 * }} EditModalSettings
 */
 
-/** @template ItemType @extends {Modal<ItemType,EditModalSettings<ItemType>>} */
+/**
+ * @template ItemType
+ * @extends {Modal<ItemType,EditModalSettings<ItemType>>}
+ */
 export class EditModal extends Modal {
     #applied = false;
     #cancelled = false;

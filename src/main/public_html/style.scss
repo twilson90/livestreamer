@@ -1780,7 +1780,10 @@ input[type=number]::-webkit-inner-spin-button {
 			flex: 1 0 0;
 			&>[data-overlayscrollbars-viewport] {
 				display: flex;
-				flex-direction: column;
+				flex-direction: row;
+				body[data-setting__playlist_display_mode="1"] & {
+					flex-direction: column;
+				}
 				flex: none;
 			}
 
@@ -1809,8 +1812,8 @@ input[type=number]::-webkit-inner-spin-button {
 			margin: 0;
 			padding: 0;
 			position: relative;
-			width:100%;
-			flex:1;
+			width: 0;
+			flex: 1 1 0;
 
 			&:empty{
 				&:after {

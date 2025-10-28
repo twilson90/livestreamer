@@ -225,7 +225,9 @@ mp.add_hook("on_preloaded", 50, function ()
         for _,t in ipairs(loadfile_opts.streams) do
             local type = t.type
             if type == "subtitle" then type = "sub" end
-            table.insert(expected_map[type], t)
+            if expected_map[type] ~= nil then
+                table.insert(expected_map[type], t)
+            end
         end
     end
 

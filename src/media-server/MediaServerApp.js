@@ -268,30 +268,34 @@ export class MediaServerApp extends CoreFork {
 
         this.media_router = Router();
         this.media_router.get("/live/:id/master.m3u8", async (req, res, next)=>{
-            var {id} = req.params;
-            var live = this.lives[id];
+            let {id} = req.params;
+            let live = this.lives[id];
             if (live) {
                 if (await live.fetch_master(req, res)) return;
             }
-            next();
+            res.status(404).send(`Live ${id} Master Playlist not found.`);
         });
         this.media_router.get("/live/:id/:v/stream.m3u8", async (req, res, next)=>{
-            var {id} = req.params;
-            var live = this.lives[id];
+            let {id,v} = req.params;
+            let live = this.lives[id];
             if (live) {
                 if (await live.fetch_playlist(req, res)) return;
             }
-            next();
+            res.status(404).send(`Live ${id} Playlist ${v} not found.`);
         });
         this.media_router.use("/", express.static(this.media_dir, {
             maxAge: "2y",
             etag: false,
+            acceptRanges: false,
             setHeaders: (res, file_path, stat)=>{
                 res.removeHeader("connection");
                 // var metadata = await fs.promises.readFile(file_path+".metadata.json", "utf8").catch(utils.noop);
                 // if (metadata) res.setHeader("segment-metadata", metadata);
             }
         }));
+
+        // -----------
+        
         exp.use(compression({
             threshold: 0,
             filter: (req, res)=>{
@@ -301,7 +305,10 @@ export class MediaServerApp extends CoreFork {
         }));
         exp.use("/media", this.media_router);
         exp.use('/logo', (req, res, next)=>{
-            if (!this.conf["media-server.logo_path"]) return next();
+            if (!this.conf["media-server.logo_path"]) {
+                res.status(404).send("Logo not found.");
+                return;
+            }
             var fp = path.resolve(this.conf["media-server.logo_path"]);
             express.static(fp)(req, res, next);
         });

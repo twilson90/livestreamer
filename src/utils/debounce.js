@@ -1,4 +1,4 @@
-/** @template T @param {function():T} func @returns {(function():Promise<T>) & {cancel:function():void}} */
+/** @template T @param {(...args: any[]) => T} func @returns {((...args: any[]) => Promise<T>) & {cancel: () => void}} Wrapped function that returns a promise */
 export function debounce(func, t = 0) {
 	var timeout_id, args, context, promise, resolve;
 	var later = () => {

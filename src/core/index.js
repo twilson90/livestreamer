@@ -398,7 +398,7 @@ export class CoreMaster extends Core {
         fs.mkdirSync(this.uids_dir, { recursive:true });
         fs.mkdirSync(this.sockets_dir, { recursive:true });
         fs.mkdirSync(this.files_dir, { recursive:true });
-        fs.chmodSync(this.files_dir, "777");
+        fs.chmodSync(this.files_dir, "755");
         
         this.#ipc = new IPCMaster(this.name, this.get_socket_path(`ipc`, true));
         
