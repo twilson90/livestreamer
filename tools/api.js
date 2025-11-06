@@ -206,11 +206,11 @@ export class API {
                     ...alias,
                 ]
             },
-            
-            /* esbuild: {
+            esbuild: {
+                // this was commented out, not sure why?
                 minifyIdentifiers: false,
                 keepNames: true,
-            }, */
+            },
             build: {
                 assetsDir: 'chunks',
                 reportCompressedSize: false,

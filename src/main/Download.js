@@ -4,6 +4,7 @@ import fs from "node:fs";
 import readline from "node:readline";
 import child_process from "node:child_process";
 import {globals} from "./exports.js";
+import tree_kill from "tree-kill-promise";
 import {utils, DataNodeID, DataNodeID$} from "../core/exports.js";
 /** @import {InternalSession} from "./exports.js" */
 
@@ -53,6 +54,7 @@ export class Download extends DataNodeID {
             this.$.dest_path = dest_path;
             var exists = await fs.promises.stat(dest_path).catch(utils.noop);
             var tmp_download_path = path.join(globals.app.tmp_dir, utils.md5(this.filename) + (path.extname(mi.filename) || ".mp4"));
+            var success = false;
             if (exists) {
                 this.emit("info", `'${this.filename}' already exists.`);
             } else {
@@ -72,22 +74,23 @@ export class Download extends DataNodeID {
                         "--playlist-start", "1",
                         "--playlist-end", "1",
                         `--no-mtime`,
+                        `--progress-template`, `{"status":"%(progress.status)s","bytes":"%(progress.downloaded_bytes)s","total":"%(progress.total_bytes)s","total_est":"%(progress.total_bytes_estimate)s","speed":"%(progress.speed)s"}`,
                         "--output", tmp_download_path
                     ]);
-                    var stdout_listener = readline.createInterface(this.#ytdl_proc.stdout);
                     var first = false;
+                    var stdout_listener = readline.createInterface(this.#ytdl_proc.stdout);
                     stdout_listener.on("line", line=>{
-                        console.log(line.trim());
+                        // console.log(line.trim());
                         var m;
                         if (line.match(/^\[download\] Destination\:/i)) {
                             if (first) this.$.stage++;
                             if (this.$.stage >= this.$.stages) this.$.stages = this.$.stage+1;
                             first = true;
-                        } else if (m = line.match(/^\[download\]\s+(\S+)\s+of\s+(\S+)\s+at\s+(\S+)\s+ETA\s+(\S+)/i)) {
-                            var percent = parseFloat(m[1]) / 100;
-                            this.total = Math.floor(utils.string_to_bytes(m[2]));
-                            this.bytes = Math.floor(percent * this.$.total);
-                            this.speed = Math.floor(utils.string_to_bytes(m[3]));
+                        } else if (m = line.match(/^\{.+\}$/i)) {
+                            var d = JSON.parse(m[0]);
+                            this.total = +d.total || +d.total_est || 0;
+                            this.bytes = +d.bytes || 0;
+                            this.speed = +d.speed || 0;
                             this.#update_progress();
                         } else if (line.match(/^ERROR\:/i)) {
                             throw new Error(line);
@@ -96,10 +99,10 @@ export class Download extends DataNodeID {
                     this.#ytdl_proc.on("error", (e)=>{
                         console.error("ytdl error", e);
                     });
-                    await new Promise((resolve, reject)=>{
+                    success = await new Promise((resolve, reject)=>{
                         this.#ytdl_proc.on("close", (code, signal)=>{
                             stdout_listener.close();
-                            resolve();
+                            resolve(code == 0);
                         });
                     });
                 } else {
@@ -111,8 +114,13 @@ export class Download extends DataNodeID {
                         this.speed = info.speed;
                         this.#update_progress();
                     });
-                    await downloader.file(tmp_download_path, true);
+                    success = await downloader.file(tmp_download_path, true).then(()=>true).catch(()=>false);
                 }
+
+                if (!success) {
+                    throw new Error("Download failed.");
+                }
+
                 await fs.promises.rename(tmp_download_path, dest_path);
                 this.emit("info", `Download finished [${this.filename}]`);
             }
@@ -137,7 +145,9 @@ export class Download extends DataNodeID {
 
     _destroy() {
         this.#controller.abort();
-        if (this.#ytdl_proc) this.#ytdl_proc.kill('SIGINT');
+        if (this.#ytdl_proc) {
+            tree_kill(this.#ytdl_proc.pid).catch(utils.noop);
+        }
         delete globals.app.downloads[this.id];
         delete globals.app.$.downloads[this.id];
         this.#promise = null;

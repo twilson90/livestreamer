@@ -670,7 +670,9 @@ export class MainApp extends CoreFork {
             await ffmpeg.start(ffmpeg_args)
                 .then(async ()=>{
                     var stat = await fs.promises.stat(tmp_path).catch(utils.noop);
-                    if (stat && stat.size) await fs.promises.rename(tmp_path, generated_filename);
+                    if (stat && stat.size) {
+                        await fs.promises.rename(tmp_path, generated_filename);
+                    }
                 })
                 .catch(async (e)=>{
                     // controller.abort();

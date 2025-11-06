@@ -94,18 +94,6 @@ body {
   }
 }
 
-.video-wrapper {
-  position:absolute;
-  width: 100%;
-  height: 100%;
-  top:0;
-  left:0;
-  overflow: hidden;
-  video {
-    position:relative !important;
-  }
-}
-
 .video-js {
   width: 100%;
   height: 100%;
@@ -135,7 +123,25 @@ body {
   } */
 
   video {
-    pointer-events: none !important; // for volume slider, dragging and hovering over video fucks up pointer events for slider.
+    // SHEEPY FIX HERE, Chrome 138 GLITCH DO NOT CHANGE
+    // When:
+    // the fullscreen element is a parent <div> (not the <video> itself), and
+    // the <video> has custom controls,
+    // and there’s any touch event over the video,
+    // Chrome tries to promote both the <video> and the fullscreen container into separate hardware layers.
+    // The touch causes a layer invalidation, the video overlay tears away from the compositor surface, and you get 5–10 seconds of “psychedelic pixel vomit” until the buffer chain resyncs.
+    // This is specific to Android 8/9 devices with Chrome 137–139 and certain Qualcomm or Mali GPUs.
+    // You want Chrome to stop treating the <video> as an overlay and instead draw it as a normal composited texture.
+    will-change: auto !important;
+    contain: none !important;
+    transform: none !important;
+    backface-visibility: visible !important;
+    pointer-events: auto !important;
+    isolation: isolate !important;
+    z-index: 1 !important;
+  }
+  &>* {
+    z-index: 2;
   }
 
   @media screen and (max-width: $mobile_screen_width) {
@@ -647,22 +653,33 @@ body {
     }
   }
   @mixin center() {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    overflow: hidden;
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    overflow: hidden !important;
     // transition: width 0.2s, height 0.2s;
   }
-  .outer-crop {
-    @include center();
-    .inner-crop {
+  /* .outer-crop {
+    &:after {
+      // blocker, fixes sheepy thing
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      pointer-events: all;
+    }
+  } */
+  .outer-crop, .inner-crop, video {
+    width: 100%;
+    height: 100%;
+  }
+  &.crop-enabled {
+    .outer-crop, .inner-crop, video {
       @include center();
-      video {
-        @include center();
-      }
     }
   }
   .vjs-level-select {

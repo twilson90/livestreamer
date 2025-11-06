@@ -33,7 +33,7 @@ const H264_PROFILE = "main";
 const H264_LEVEL = "4.1";
 const FILE_LOOPS = 9999;
 
-const MULTIPLE_MPV_INSTANCES = true;
+const MULTIPLE_MPV_INSTANCES = false; // single mpv instance unless there's a play error
 const MPV_OUTPUT_RAW = false; // we can't trust mpv to output the EXACT same format all the time because it's shit, which confuses the ffmpeg vaapi encoder and causes it to end.
 // Also I've now discovered playing complex edls now has a tendency to corrupt the output stream, cuasing the flv media server to buffer tons. Maybe a bug with node-media-server, who the fuck knows.
 
@@ -277,7 +277,7 @@ export class InternalSessionPlayer extends DataNode {
                 this.logger.warn(`loadfile failed: ${e.message}`);
             });
         if (play_result) {
-            return new Promise(resolve=>{
+            return new Promise(resolve => {
                 this.$.loaded = true;
                 this.session.$.time_pos = start;
                 var resolve_wrapper = () => {
@@ -288,7 +288,7 @@ export class InternalSessionPlayer extends DataNode {
                 this.#mpv.on("idle", resolve_wrapper);
                 this.#mpv.on("eof-reached", resolve_wrapper);
                 this.#mpv.done
-                    .catch((e)=>{
+                    .catch((e) => {
                         this.logger.error(`MPV done error: ${e}`);
                     })
                     .then(resolve_wrapper);
@@ -348,11 +348,51 @@ export class InternalSessionPlayer extends DataNode {
         let is_empty = filename === "livestreamer://empty";
         let is_playlist = this.session.is_item_playlist(item.id);
 
-        let is_video = !!media_info.streams?.find((s) => s.type == "video" && !s.albumart)
-        let is_image = !!(media_info.streams?.filter((s) => s.type == "video").length && media_info.duration <= 0.04); // weird way of doing it but I guess it works.
-        let has_albumart = media_info.streams?.filter(s => s.type == "video" && s.albumart).length > 0;
-        let is_audio = !!(media_info.streams?.find(s => s.type == "audio") && media_info.streams?.filter(s => s.type == "video" && !s.albumart).length == 0);
-        // let albumart_file;
+        /** @param {MediaInfo} mi */
+        let is_video = (mi) => !!mi?.streams?.find((s) => s.type == "video" && !s.albumart)
+        /** @param {MediaInfo} mi */
+        let is_image = (mi) => !!(mi?.streams?.filter((s) => s.type == "video").length && mi.duration <= 0.04); // weird way of doing it but I guess it works.
+        /** @param {MediaInfo} mi */
+        let has_albumart = (mi) => mi?.streams?.filter(s => s.type == "video" && s.albumart).length > 0;
+        /** @param {MediaInfo} mi */
+        let is_audio = (mi) => !!(mi?.streams?.find(s => s.type == "audio") && mi.streams?.filter(s => s.type == "video" && !s.albumart).length == 0);
+
+        let generate_video_from_image = (filename) => {
+            return globals.app.generate_media({
+                type: "video",
+                duration: NULL_STREAM_DURATION,
+                width: this.width,
+                height: this.height,
+                background: background_color,
+                fps: NULL_STREAM_FPS,
+                filename,
+            });
+        }
+
+        let generate_null = (type) => {
+            if (type == "video") {
+                return globals.app.generate_media({
+                    type: "video",
+                    duration: NULL_STREAM_DURATION,
+                    width: this.width,
+                    height: this.height,
+                    background: background_color,
+                    fps: NULL_STREAM_FPS
+                });
+            }
+            if (type == "audio") {
+                return globals.app.generate_media({
+                    type: "audio",
+                    duration: NULL_STREAM_DURATION
+                });
+            }
+            if (type == "subtitle") {
+                return globals.app.generate_media({
+                    type: "subtitle",
+                    duration: NULL_STREAM_DURATION
+                });
+            }
+        }
 
         /* if (is_audio && has_artwork) {
             let res = await separate_albumart_from_audio_file(original_filename, {albumart:true, audio:true}).catch((e) => {
@@ -410,24 +450,14 @@ export class InternalSessionPlayer extends DataNode {
             filename = media_info.virtual_filename;
         }
 
-        if (is_image) {
-            let width = this.width;
-            let height = this.height;
+        if (is_image(media_info)) {
             // let title = `Image (${path.basename(filename)})`;
             // let {width, height} = media_info.streams.find(s=>s.type=="video");
             // ({width, height} = fit_into(width, height, this.width, this.height));
             // width = Math.round(width / 2) * 2;
             // height = Math.round(height / 2) * 2;
-            filename = await globals.app.generate_media({
-                type: "video",
-                duration: NULL_STREAM_DURATION,
-                width,
-                height,
-                background: background_color,
-                fps: NULL_STREAM_FPS,
-                filename,
-            });
-            media_info = await globals.app.get_media_info(filename);
+            filename = await generate_video_from_image(filename);
+            // media_info = await globals.app.get_media_info(filename); // no!
             media_duration = NULL_STREAM_DURATION;
             if (duration != media_duration) {
                 let edl = new MPVEDL(MPVEDL.clip(filename, { end: media_duration, duration }));
@@ -512,14 +542,8 @@ export class InternalSessionPlayer extends DataNode {
                             }));
                         } else {
                             // add padding to track if necessary
-                            let tmp = await this.parse_item(null, { duration: pad_duration, media_type: track.type, offset, root });
-                            if (tmp.duration) {
-                                // track.entries.push(new MPVEDLEntry("C:\\Users\\hedge\\Downloads\\na.wav", {length: "60.000"}));
-                                // if (tmp.edl) track.entries.push(...tmp.edl.entries);
-                                track.entries.push(new MPVEDLEntry(tmp.parsed_filename, {
-                                    length: pad_duration.toFixed(3)
-                                }));
-                            }
+                            let null_filename = await generate_null(track.type);
+                            track.entries.push(...MPVEDL.clip(null_filename, { end: NULL_STREAM_DURATION, duration: pad_duration }));
                         }
                     }
                 }
@@ -534,25 +558,25 @@ export class InternalSessionPlayer extends DataNode {
             map.register_stream({ type: "audio", title: "EDL Audio" }, true);
 
         }
-        
+
         if (media_type || !is_root) {
 
             let needs_video = !media_type || media_type == "video";
             let needs_audio = !media_type || media_type == "audio";
             let needs_subtitle = media_type == "subtitle";
-            let has_video = media_info.streams?.find(s=>s.type == "video" && !s.albumart);
-            let has_audio = media_info.streams?.find(s=>s.type == "audio");
-            let has_subtitle = media_info.streams?.find(s=>s.type == "subtitle");
+            let has_video = media_info.streams?.find(s => s.type == "video" && !s.albumart);
+            let has_audio = media_info.streams?.find(s => s.type == "audio");
+            let has_subtitle = media_info.streams?.find(s => s.type == "subtitle");
 
             let media_type_mismatch = (needs_audio != has_audio || needs_video != has_video || (needs_subtitle && !has_subtitle));
 
             if (media_type_mismatch || media_type) {
                 let edl = new MPVEDL();
-                
+
                 if (media_info.exists) {
                     edl.append("!new_stream", "!no_chapters");
                     if (media_type) {
-                        let s = media_info.streams.find(s=>s.type == media_type);
+                        let s = media_info.streams?.find(s => s.type == media_type);
                         map.register_stream({
                             ...s,
                             type: media_type,
@@ -566,7 +590,7 @@ export class InternalSessionPlayer extends DataNode {
                     }));
                 }
 
-                let add_stream = (null_filename, type)=>{
+                let add_stream = (null_filename, type) => {
                     edl.append(
                         "!new_stream", "!no_chapters",
                         new MPVEDLEntry("!delay_open", { media_type: edl_track_type(type) }),
@@ -575,35 +599,22 @@ export class InternalSessionPlayer extends DataNode {
                     map.register_stream({ type, title: "Nothing" }, true);
                 }
                 if (needs_video && !has_video) {
-                    let null_filename = await globals.app.generate_media({
-                        type: "video",
-                        duration: NULL_STREAM_DURATION,
-                        width: this.width,
-                        height: this.height,
-                        background: background_color,
-                        fps: NULL_STREAM_FPS
-                    });
+                    let null_filename = await generate_null("video");
                     add_stream(null_filename, "video");
                 }
                 if (needs_audio && !has_audio) {
-                    let null_filename = await globals.app.generate_media({
-                        type: "audio",
-                        duration: NULL_STREAM_DURATION
-                    });
+                    let null_filename = await generate_null("audio");
                     add_stream(null_filename, "audio");
                 }
                 if (needs_subtitle && !has_subtitle) {
-                    let null_filename = await globals.app.generate_media({
-                        type: "subtitle",
-                        duration: NULL_STREAM_DURATION
-                    });
+                    let null_filename = await generate_null("subtitle");
                     add_stream(null_filename, "subtitle");
                 }
 
                 filename = edl.toString();
             }
         } else {
-            
+
             if (!map.streams.length) {
                 map.register_default_media_streams(media_info.streams);
             }
@@ -619,17 +630,40 @@ export class InternalSessionPlayer extends DataNode {
                 var original_filename = filename;
                 let name = original_filename ? path.basename(original_filename) : "None";
                 if (!type) throw new Error("type is required");
-                let tmp = (await this.parse_item({ filename }, {
-                    media_type: type,
-                    duration,
-                    clipping,
-                    root: {}, // <-- hack
-                }));
-                filename = tmp.parsed_filename;
-                let streams = tmp.map.streams;
+                
+                let mi = filename ? await globals.app.get_media_info(filename) : null;
+                if (filename) {
+                    if (is_image(mi)) {
+                        filename = await generate_video_from_image(filename);
+                        clipping.start = 0;
+                        clipping.end = NULL_STREAM_DURATION;
+                    } else {
+                        clipping.end = clipping.end ?? mi?.duration ?? NULL_STREAM_DURATION;
+                    }
+                } else {
+                    filename = await generate_null(type);
+                    clipping.end = NULL_STREAM_DURATION;
+                }
+                var edl = new MPVEDL();
+                edl.append(new MPVEDLEntry("!delay_open", { media_type: edl_track_type(type) }));
+                clipping.start = clipping.start ?? 0;
+                clipping.duration = duration;
+                edl.append(...MPVEDL.clip(filename, clipping));
+
+                /* var streams;
+                if (mi) {
+                    var d = get_default_stream(mi.streams, type);
+                    streams = mi.streams.map(s=>{
+                        if (d != s) return {...s, ignore: true};
+                        return s;
+                    })
+                } else {
+                    streams = [{ type, title: name }]
+                } */
+               var streams = [{ type, title: name }];
 
                 await map.register_file({
-                    filename,
+                    filename: edl.toString(),
                     original_filename,
                     streams,
                     name,
@@ -637,20 +671,20 @@ export class InternalSessionPlayer extends DataNode {
                 });
             }
 
-            if (!map.video.streams.filter(s=>!s.albumart).length) {
+            if (!map.video.streams.filter(s => !s.albumart).length) {
                 await add_file(null, "video");
             }
             if (!map.audio.streams.length) {
                 await add_file(null, "audio");
             }
 
-            if (background_mode == "embedded" && has_albumart) {
-                let res = await separate_albumart_from_audio_file(original_filename, {albumart:true, audio:false}).catch((e) => {
+            if (background_mode == "embedded" && has_albumart(media_info)) {
+                let res = await separate_albumart_from_audio_file(original_filename, { albumart: true, audio: false }).catch((e) => {
                     this.logger.error(new Error(`Failed to extract albumart: ${e.message}`));
                 });
                 if (res?.albumart) await add_file(res.albumart, "video");
             } else if (background_mode == "file") {
-                await add_file(this.session.$.background_file, "video", { start: this.session.$.background_file_start, end: this.session.$.background_file_end, duration });
+                await add_file(this.session.$.background_file, "video", { start: this.session.$.background_file_start, end: this.session.$.background_file_end });
             } else if (background_mode == "logo") {
                 await add_file(path.resolve(globals.app.conf["main.logo_path"]), "video");
             } else if (background_mode === "none") {
@@ -793,7 +827,7 @@ class InternalSessionMPV extends MPVWrapper {
         this.#player = player;
         this.#last_session_stream_fps = this.session_stream.$.fps;
 
-        var destroy = (text)=>{
+        var fatal_error = (text) => {
             this.#player.play_file_error = text;
             this.destroy();
         }
@@ -802,8 +836,8 @@ class InternalSessionMPV extends MPVWrapper {
             // this.logger.debug(log.text);
             let text = `[${log.prefix}] ${log.text.trim()}`;
             if (log.prefix == "encode" && log.text.match(/Encoder was reinitialized/i)) {
-                this.logger.error(log.text+"\nStopping MPV");
-                destroy(log.text);
+                this.logger.error(log.text + "\nStopping MPV");
+                fatal_error(log.text);
                 return;
             }
             if (log.level == "warn") {
@@ -815,7 +849,7 @@ class InternalSessionMPV extends MPVWrapper {
                     throw new Error(text);
                 }
                 this.logger.error(text);
-                destroy(log.text);
+                fatal_error(log.text);
             }
         });
         this.on("seek", (e) => {
@@ -1081,10 +1115,14 @@ class InternalSessionMPV extends MPVWrapper {
 
             var realtime = new RealTimeBufferTransform(this.player);
 
-            stream.promises.pipeline(this.stdout, realtime, stream_fixer, demuxer, this.#player.out, { end: false })
-                // .catch(utils.pipe_error_handler(this.logger, "mpv.stdout -> player.in"))
-                .catch(reject)
-                .then(resolve);
+            try {
+                stream.promises.pipeline(this.stdout, realtime, stream_fixer, demuxer, this.#player.out, { end: false })
+                    // .catch(utils.pipe_error_handler(this.logger, "mpv.stdout -> player.in"))
+                    .catch(reject)
+                    .then(resolve);
+            } catch (e) {
+                reject(e);
+            }
         });
         return this.#done;
     }
@@ -1186,6 +1224,7 @@ class InternalSessionMPV extends MPVWrapper {
             case "audio_file_end":
             case "audio_file_start":
             case "subtitle_file":
+            case "vid_override": // get pts dts bollocks if we do this without restarting sometimes.
                 mpv_key = null;
                 reload = true;
                 break;
@@ -1207,7 +1246,6 @@ class InternalSessionMPV extends MPVWrapper {
             case "aspect_ratio":
             case "aid_override":
             case "sid_override":
-            case "vid_override": // get pts dts bollocks if we do this without restarting sometimes.
                 mpv_key = null;
                 rebuild_filters = true;
                 break;
@@ -1310,30 +1348,25 @@ class InternalSessionMPV extends MPVWrapper {
         let aid_auto = this.#parsed_item.map.audio.force_id ?? this.#parsed_item.map.audio.auto_id ?? 1;
         let sid_auto = this.#parsed_item.map.subtitle.force_id ?? this.#parsed_item.map.subtitle.auto_id ?? false;
 
-        var get_stream_id = (id, type) => {
-            id = +id || 1;
-            /** @type {StreamCollection} */
-            var sc = this.#parsed_item.map[type];
-            var s = sc.streams[id - 1];
-            if (s?.replacement_stream_id) id = s.replacement_stream_id;
-            return id;
-        }
-
-        let vid = this.#props.vid_override == "auto" ? vid_auto : get_stream_id(this.#props.vid_override, "video");
+        let vid = this.#props.vid_override == "auto" ? vid_auto : this.#props.vid_override;
         let aid = this.#props.aid_override == "auto" ? aid_auto : this.#props.aid_override;
         let sid = this.#props.sid_override == "auto" ? sid_auto : this.#props.sid_override;
 
         if (vid == false) vid = vid_auto; // can never be false
         if (aid == false) aid = aid_auto; // can never be false
 
-        let v_stream = this.#parsed_item.map.video.streams[vid - 1];
+        var video_streams = this.#parsed_item.map.video.streams.map(s=>!s.ignore);
+        var audio_streams = this.#parsed_item.map.audio.streams.map(s=>!s.ignore);
+        var subtitle_streams = this.#parsed_item.map.subtitle.streams.map(s=>!s.ignore);
+
+        let v_stream = video_streams[vid - 1];
         let reason;
         if (!v_stream) reason = "no stream";
         else if (v_stream.albumart) reason = "albumart";
 
         if (reason) {
             this.logger.error(`Bad video stream selected [${reason}]...`);
-            v_stream = this.#parsed_item.map.video.streams.find(s => s.type == "video" && !s.albumart);
+            v_stream = video_streams.find(s => s.type == "video" && !s.albumart);
             if (v_stream) {
                 vid = v_stream.type_id;
                 this.logger.error(`Setting to a safe fallback [${vid}]...`);
@@ -1342,8 +1375,8 @@ class InternalSessionMPV extends MPVWrapper {
             }
         }
 
-        let a_stream = this.#parsed_item.map.audio.streams[aid - 1];
-        let s_stream = this.#parsed_item.map.subtitle.streams[sid - 1];
+        let a_stream = audio_streams[aid - 1];
+        let s_stream = subtitle_streams[sid - 1];
 
         let [ow, oh, oar] = [this.#player.width, this.#player.height, this.#player.aspect_ratio];
         let [iw, ih] = [v_stream.width ?? ow, v_stream.height ?? oh];
@@ -1435,7 +1468,7 @@ class InternalSessionMPV extends MPVWrapper {
                 if (m = ar.match(/^([\d.]+)[:\/]([\d.]+)$/)) {
                     let w = +m[1]
                     let h = +m[2]
-                    ar = w/h;
+                    ar = w / h;
                 } else {
                     ar = +ar;
                 }
@@ -1648,8 +1681,10 @@ class InternalSessionMPV extends MPVWrapper {
     }
 
     async destroy() {
-        await super.destroy();
-        return this.#done.catch(utils.noop);
+        return Promise.all([
+            super.destroy(),
+            this.#done.catch(utils.noop)
+        ]);
     }
 }
 
@@ -1688,7 +1723,7 @@ class StreamMap {
     /** @param {MediaInfoStreamEx[]} streams */
     register_default_media_streams(streams) {
         if (!streams) return;
-        var defaults = Object.fromEntries(["video","audio","subtitle"].map(t=>[t, get_default_stream(streams, t)]))
+        var defaults = Object.fromEntries(["video", "audio", "subtitle"].map(t => [t, get_default_stream(streams, t)]))
         for (let s of streams) {
             let is_default = defaults[s.type] === s;
             this.register_stream(s, is_default);
@@ -1729,17 +1764,17 @@ async function create_file(filename, generator) {
     return CACHE.get(filename);
 }
 
-async function separate_albumart_from_audio_file(filename, {audio=false, albumart=true}) {
+async function separate_albumart_from_audio_file(filename, { audio = false, albumart = true }) {
     var mi = await globals.app.get_media_info(filename);
-    
+
     let hash = utils.md5(filename);
-    let a_streams = mi.streams.filter(s=>s.type === "audio");
+    let a_streams = mi.streams.filter(s => s.type === "audio");
     let audio_stream = a_streams[0];
     let audio_stream_id = 0;
     let audio_ext = codec_to_ext(audio_stream.codec);
     let audio_filename = path.resolve(globals.app.tmp_dir, `${hash}-${audio_stream_id}-audio${audio_ext}`);
-    let v_streams = mi.streams.filter(s=>s.type === "video");
-    let albumart_stream = v_streams.find(s=>s.albumart);
+    let v_streams = mi.streams.filter(s => s.type === "video");
+    let albumart_stream = v_streams.find(s => s.albumart);
     let albumart_stream_id = v_streams.indexOf(albumart_stream);
     let albumart_ext = codec_to_ext(albumart_stream.codec);
     let albumart_filename = path.resolve(globals.app.tmp_dir, `${hash}-${albumart_stream_id}-albumart${albumart_ext}`);
@@ -1771,8 +1806,8 @@ async function separate_albumart_from_audio_file(filename, {audio=false, albumar
     }
 
     await Promise.all([
-        ...(albumart ? [create_file(albumart_filename, job)] : []), 
-        ...(audio ? [create_file(audio_filename, job)] : []), 
+        ...(albumart ? [create_file(albumart_filename, job)] : []),
+        ...(audio ? [create_file(audio_filename, job)] : []),
     ]);
 
     return {
@@ -1783,7 +1818,7 @@ async function separate_albumart_from_audio_file(filename, {audio=false, albumar
 
 async function get_ass_subtitle_as_path(ass_str) {
     var filename = path.resolve(globals.app.tmp_dir, `${utils.md5(ass_str)}.ass`);
-    await create_file(filename, ()=>utils.safe_write_file(filename, ass_str));
+    await create_file(filename, () => utils.safe_write_file(filename, ass_str));
     return filename;
 }
 
@@ -1857,7 +1892,7 @@ export class StreamFixerTransform extends BridgeTransform {
             // "-muxdelay", "0",
             // "-muxpreload", "0",
             `-fps_mode`, "passthrough",
-            // `-output_ts_offset`, `${player.pts}`, // not needed any more
+            `-output_ts_offset`, `${player.pts}`,
             `-map_metadata`, `0`,
             "pipe:1"
         );
@@ -1872,7 +1907,7 @@ export class StreamFixerTransform extends BridgeTransform {
         this.#ffmpeg = ffmpeg;
     }
     async _destroy(err, callback) {
-        this.#ffmpeg.destroy().then(()=>callback(err));
+        this.#ffmpeg.destroy().then(() => callback(err));
     }
 }
 
@@ -1977,12 +2012,12 @@ demuxer-cache-state */
 /* --demuxer-lavf-o=loop=1 */
 
 function fit_into(innerWidth, innerHeight, outerWidth, outerHeight) {
-  // scale factors in each dimension
-  const scaleW = outerWidth / innerWidth;
-  const scaleH = outerHeight / innerHeight;
-  const scale = Math.min(1, scaleW, scaleH);
-  return {
-    width: innerWidth * scale,
-    height: innerHeight * scale,
-  };
+    // scale factors in each dimension
+    const scaleW = outerWidth / innerWidth;
+    const scaleH = outerHeight / innerHeight;
+    const scale = Math.min(1, scaleW, scaleH);
+    return {
+        width: innerWidth * scale,
+        height: innerHeight * scale,
+    };
 }

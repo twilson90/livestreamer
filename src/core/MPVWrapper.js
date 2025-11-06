@@ -279,7 +279,8 @@ export class MPVWrapper extends events.EventEmitter {
                 this.#process.kill("SIGKILL");
             }
         }, 6000);
-        return this.#done.catch(utils.noop)
+        return this.#done
+            .catch(utils.noop)
             .finally(()=>this.logger.destroy())
     }
 

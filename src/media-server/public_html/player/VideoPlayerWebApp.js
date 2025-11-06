@@ -18,6 +18,9 @@ const ENABLE_SEEK_STAGGER = true;
 
 var url = new URL(window.location.href);
 
+const DEBUG = window.location.search.includes("debug");
+const DEBUG_HLS = window.location.search.includes("debug-hls");
+
 var conf;
 var time_display_modes = [
     {
@@ -56,9 +59,13 @@ var crop_modes = [
         "icon": `<i style="transform:scale(0.8)" class="fas fa-robot"></i>`,
         "value": "detect",
     },
+    {
+        "label": "None",
+        "icon": `None`,
+        "value": "none"
+    },
 ];
 
-var DEBUG = false;
 var REGION_BUFFER = 10;
 var ASPECT_BUFFER = 10;
 var MIN_REGIONS_FIRST_CROP = 0;
@@ -318,9 +325,12 @@ class Player extends utils.EventEmitter {
             this.crop_detect.init(this.video_el);
             let ar = this.crop_detect.aspect_ratio?.value;
             if (ar) c1 = ar;
+        } else if (this.crop_mode.value == "none") {
+            c1 = 0;
         } else {
             c1 = this.crop_mode.value;
         }
+        this.player.el_.classList.toggle("crop-enabled", this.crop_mode.value != "none");
         apply_crop(this.video_el, c1, c2);
         this.cropMenuButton.update_display();
         
@@ -709,12 +719,16 @@ class Player extends utils.EventEmitter {
         /** @type {HTMLVideoElement} */
         var video_el = $(`<video class="video-js" preload="auto" width="1280" height="720"></video>`)[0];
         app.container_el.append(video_el);
-
+        video_el.addEventListener('click', e => {
+            e.stopPropagation();
+            return false;
+        }, true);
+        video_el.tabIndex = -1;
 
         this.player = videojs(video_el, {
             // fluid: true,
             autoplay: this.autoplay && !isIOS,
-            playsinline: isIOS,
+            playsinline: true,
             muted: this.autoplay && isIOS,
             // fluid: true,
             playbackRates: [0.5, 1, 1.25, 1.5, 2], // , -1
@@ -1106,7 +1120,7 @@ class Player extends utils.EventEmitter {
             // maxLiveSyncPlaybackRate: 1.5,
 
             // -----
-            debug: url.searchParams.has("debug")
+            debug: DEBUG_HLS
         });
 
         this.hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
@@ -1144,7 +1158,6 @@ class Player extends utils.EventEmitter {
         // this.hls.media.srcObject.setLiveSeekableRange(0, 600)
         var stall_timeout;
         this.hls.on(Hls.Events.ERROR, (e, data) => {
-            debugger;
             /* if (data.fatal && data.type == "mediaError") {
                 this.hls.recoverMediaError();
             } */
@@ -1451,7 +1464,9 @@ var crop_ar = (el, ar1, ar2, clip = false) => {
     // el.style.transition = immediate ? "none" : "";
     el.style.width = `${100 / w}%`;
     el.style.height = `${100 / h}%`;
-    el.style.clipPath = (ch > epsilon || cw > epsilon) ? `inset(${ch}% ${cw}%)` : "";
+    // if (!DEBUG) {
+    //     el.style.clipPath = (ch > epsilon || cw > epsilon) ? `inset(${ch}% ${cw}%)` : "";
+    // }
 }
 
 class FrameStepper {

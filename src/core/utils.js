@@ -406,6 +406,7 @@ export class Downloader extends events.EventEmitter {
                     agent,
                     signal: this.#controller.signal
                 });
+                
                 if (res.status !== 206 && res.status !== 200) {
                     throw new Error(`Unexpected status: ${res.status}`);
                 }
