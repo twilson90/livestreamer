@@ -3992,7 +3992,7 @@ export class ExternalSessionConfigurationMenu extends ui.Modal {
         });
 
         var row = this.props.append(new ui.FlexRow());
-        dom.set_inner_html(row.elem, `Setup your streaming software to stream to cabtv and restream to multiple targets.`);
+        dom.set_inner_html(row.elem, `Setup your streaming software to stream to LiveStreamer and restream to multiple targets.`);
 
         var row = this.props.append(new ui.FlexRow());
         dom.set_inner_html(row.elem, `<hr/>`);
@@ -4001,7 +4001,7 @@ export class ExternalSessionConfigurationMenu extends ui.Modal {
             "name": "name",
             "label": "Name",
             "default": () => `${app.$._client.user.username}'s Stream`,
-            "placeholder": () => `CAB TV`,
+            "placeholder": () => `My Stream`,
             "info": "This must be a unique name to identify your stream."
         });
         this.props.append(this.stream_name);
