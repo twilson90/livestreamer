@@ -1,6 +1,7 @@
 import { program, Option } from 'commander';
 import child_process from 'child_process';
-import fs from 'fs';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {API, vite} from "./api.js";
     
@@ -33,11 +34,28 @@ async function build(opts) {
     }
 }
 
+async function run(cmd, args=[]) {
+    return new Promise((resolve, reject) => {
+        child_process.spawn(cmd, args, {stdio: "inherit"})
+            .on("close", (code) => {
+                if (code !== 0) {
+                    reject(new Error(`Command '${cmd}' failed with exit code ${code}`));
+                } else {
+                    resolve();
+                }
+            });
+    });
+}
+
 async function build_electron(opts) {
     var name = "LiveStreamer";
-    fs.rmSync(`out/${name}-${opts.platform}-${opts.arch}`, { recursive: true, force: true });
+    var target_dir = `out/${name}-${opts.platform}-${opts.arch}`;
+
+    await fs.promises.rm(target_dir, { recursive: true, force: true }).catch(()=>{});
+    await fs.promises.rm(target_dir+".7z", { recursive: true, force: true }).catch(()=>{});
+    await fs.promises.rm(target_dir+".tar.gz", { recursive: true, force: true }).catch(()=>{});
     
-    const build = child_process.spawn('docker', [
+    await run('docker', [
         'build',
         '--progress', 'plain',
         '--target', 'artifact',
@@ -48,8 +66,16 @@ async function build_electron(opts) {
         '--build-arg', `TARGETPLATFORM=${opts.platform}`,
         '-t', `${name}-${opts.platform}-${opts.arch}`.toLowerCase(),
         '.'
-    ], { stdio: 'inherit' });
+    ]);
 
-    fs.cpSync("resources", `out/${name}-${opts.platform}-${opts.arch}/resources`, { recursive: true, force: true });
-    fs.cpSync(opts.platform, `out/${name}-${opts.platform}-${opts.arch}/resources/${opts.platform}`, { recursive: true, force: true });
+    await fs.promises.cp("resources", path.join(target_dir, `resources`), { recursive: true, force: true });
+    await fs.promises.cp(opts.platform, path.join(target_dir, `resources/${opts.platform}`), { recursive: true, force: true });
+
+    if (opts.platform == "win32") {
+        await run("7za", ["a", "-t7z", "-mx=9", target_dir+".7z", target_dir+"/*"]);
+    } else if (opts.platform == "linux") {
+        await run("7za", ["a", "-ttar", target_dir+".tar", target_dir+"/*"]);
+        await run("7za", ["a", "-tgzip", "-mx=9", target_dir+".tar.gz", target_dir+".tar"]);
+        await fs.promises.rm(target_dir+".tar");
+    }
 }

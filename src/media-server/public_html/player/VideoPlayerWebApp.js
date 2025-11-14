@@ -942,7 +942,7 @@ class Player extends utils.EventEmitter {
         (() => {
             var wrapper_el = $(`<div class="volume-bar-wrapper"></div>`)[0];
             var outer_el = $(`<div class="volume-bar-outer"></div>`)[0];
-            var boost_button = $(`<button class="vjs-control vjs-button vjs-volume-boost"><i class="fas fa-volume-high"><i class="fas fa-plus"></i></button>`)[0];
+            var boost_button = $(`<button class="vjs-control vjs-button vjs-volume-boost"><i class="fas fa-volume-high"></i><i class="fas fa-volume-low"></i><i class="fas fa-plus"></i></button>`)[0];
             volumeBar.el_.after(wrapper_el);
             wrapper_el.append(boost_button);
             wrapper_el.append(outer_el);

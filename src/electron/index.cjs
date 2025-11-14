@@ -112,8 +112,12 @@ if (electron.app) {
                 label: 'Other',
                 submenu: [
                     {
-                        label:'Open Installation Folder', 
+                        label:'Open AppData Folder', 
                         click: ()=>electron.shell.openPath(app.appdata_dir),
+                    },
+                    {
+                        label:'Open Installation Folder', 
+                        click: ()=>electron.shell.openPath(electron.app.getAppPath()),
                     },
                 ],
             },
