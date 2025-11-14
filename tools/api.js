@@ -8,7 +8,7 @@ import { viteStaticCopy } from "vite-plugin-static-copy";
 // import { normalizePath } from 'vite'
 import esmShim from '@rollup/plugin-esm-shim';
 import { api as forge_api } from "@electron-forge/core";
-import finder from "find-package-json";
+import packageFinder from "find-package-json";
 import open from "open";
 import { createHash } from "node:crypto";
 // import replace from "@rollup/plugin-replace";
@@ -87,7 +87,7 @@ export class API {
         opts = { ...default_opts, ...opts };
         
         let is_production = opts.mode === "production";
-        let pkg = { ...finder(src).next().value };
+        let pkg = { ...packageFinder(src).next().value };
         
         let external = [
             'vite',
