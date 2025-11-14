@@ -194,7 +194,7 @@ export class API {
             build: {
                 assetsDir: 'chunks',
                 reportCompressedSize: false,
-                minify,
+                minify: false,
                 commonjsOptions: {
                     include: [/node_modules/],
                     transformMixedEsModules: true,

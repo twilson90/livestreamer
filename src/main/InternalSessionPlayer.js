@@ -252,7 +252,7 @@ export class InternalSessionPlayer extends DataNode {
             this.#mpv = new InternalSessionMPV(this);
             this.#mpv.logger.on("log", (log) => {
                 if (log.level === Logger.ERROR) {
-                    this.logger.error(log.msg);
+                    this.logger.error(log.message);
                 }
             });
             this.#mpv.start();

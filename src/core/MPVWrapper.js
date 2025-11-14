@@ -267,10 +267,10 @@ export class MPVWrapper extends events.EventEmitter {
     async destroy() {
         if (this.#destroyed) return;
         this.#destroyed = true;
-        var stop = ()=>this.stop().catch(utils.noop);
-        var terminate = ()=>tree_kill(this.#process.pid, "SIGTERM").catch(utils.noop);
+        // var stop = ()=>this.stop().catch(utils.noop);
+        // var terminate = ()=>tree_kill(this.#process.pid, "SIGTERM").catch(utils.noop);
         var kill = ()=>tree_kill(this.#process.pid, "SIGKILL").catch(utils.noop);
-        if (this.#is_piped) {
+        /* if (this.#is_piped) {
             stop();
             setTimeout(()=>{
                 if (!this.#closed) {
@@ -286,7 +286,8 @@ export class MPVWrapper extends events.EventEmitter {
             }, 6000);
         } else {
             kill();
-        }
+        } */
+        kill();
         return this.#done
             .catch(utils.noop)
             .finally(()=>this.logger.destroy())
