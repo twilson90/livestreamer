@@ -116,7 +116,7 @@ label._ui_ {
 					outline: 2px solid #000;
 				}
 				
-				select,textarea,input,.fake-input,[contenteditable=true] {
+				select,textarea,input:not([type=range]),.fake-input,[contenteditable=true] {
 					// border:none!important;
 					padding: var(--ui-property-padding);
 					outline: none !important;

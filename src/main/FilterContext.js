@@ -55,7 +55,7 @@ export class FilterContext {
     pad(id, position="center") {
         var pad = this.id("pad");
         var [x, y] = position_map[position];
-        this.stack.push(`[${id||this.vid}]pad=width=${this.width}:height=${this.height}:x=(ow-iw)*${x}:y=(oh-ih)*${y}:color=${this.color}[${pad}]`);
+        this.stack.push(`[${id||this.vid}]pad=width=max(iw\\,${this.width}):height=max(ih\\,${this.height}):x=(ow-iw)*${x}:y=(oh-ih)*${y}:color=${this.color}[${pad}]`);
         return pad;
     }
     scale(id) {

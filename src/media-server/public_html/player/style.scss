@@ -376,11 +376,11 @@ body {
       font-size: 1em !important;
     }
   }
-
+  .vjs-volume-control {
+    width: auto !important;
+    height: auto !important;
+  }
   .vjs-volume-vertical {
-    --vh: 100px;
-    --padding: calc((var(--control-width) - var(--bar-thickness)) / 2);
-    --volume-height: calc(var(--vh) + var(--padding) * 2);
     --bar-thickness: 5px;
     
     /* @media screen and (max-height: 240px) {
@@ -391,28 +391,56 @@ body {
     left: auto !important;
     position: absolute !important;
     
-    height: var(--volume-height) !important;
-    width: var(--control-width) !important;
+    height: auto !important;
+    width: auto !important;
     background: none !important;
     bottom: 100% !important;
     padding-bottom: 0.5em;
     box-sizing: content-box;
+    
+    .volume-bar-wrapper {
+      display:flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
 
-    &:before {
-      content: "";
-      position:absolute;
-      display:block;
       background: var(--bg) !important;
       border-radius: 1em;
       border: var(--border);
       height: var(--volume-height) !important;
-      width: var(--control-width) !important;
+      padding: 0.5em;
+      // overflow: hidden;
+      &.disable-tooltip {
+        .vjs-volume-tooltip {
+          display:none !important;
+        }
+      }
+      .volume-bar-outer {
+        padding: 1em;
+      }
+      .vjs-volume-boost {
+        width: 3em;
+        height: 3em;
+        position:relative;
+        border-radius: 999px;
+        .fa-plus {
+          display: none;
+          position:absolute;
+          left:50%;
+          top:50%;
+          transform: scale(0.4);
+          text-shadow: 0 0 2px rgba(0,0,0,0.8);
+        }
+        &:not(.active) {
+          color: rgba(255,255,255,0.3);
+        }
+      }
     }
+
     .vjs-slider-vertical {
-      margin: auto !important;
       width: var(--bar-thickness) !important;
-      height: calc(100% - var(--control-width) + var(--bar-thickness));
-      margin: auto !important;
+      height: 100px;
+      margin: 0 !important;
       padding: 0 !important;
     }
     .vjs-volume-level:before {
@@ -420,6 +448,7 @@ body {
     }
     .vjs-volume-bar {
       background: var(--progress-bg);
+
     }
     .vjs-volume-level {
       width: 100% !important;
@@ -500,9 +529,9 @@ body {
     .vjs-load-full-stream-button {
       display: none;
     }
-    .vjs-time-display-toggle {
+    /* .vjs-time-display-toggle {
       display: none;
-    }
+    } */
   }
   .seek-to-live-wrapper {
     height: var(--control-height) !important;

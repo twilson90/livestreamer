@@ -126,27 +126,31 @@ export const showspectrum = new Filter({
 			__default__: 1,
 			__min__: 0,
 			__max__: 1,
+		},
+		x_scale: {
+			__name__: "X Scale",
+			__description__: `Set the x scale of the spectrum.`,
+			__default__: 1,
+			__min__: 0,
+			__max__: 1,
 		}
 	},
 	apply(ctx, $) {
 		let ar = ctx.aspect_ratio;
 		let h = Math.min(720, ctx.height) // cap it at 720 or it lags.
-		let w = Math.ceil(h * ar);
+		let w = Math.ceil(h * ar) * $.x_scale;
 		h *= $.height;
 		let a1 = ctx.id("a");
 		let a2 = ctx.id("a");
 		let ss1 = ctx.id("ss");
 		ctx.stack.push(
 			`[${ctx.aid}]asplit[${a1}][${a2}]`,
-			`[${a1}]dynaudnorm,showspectrum=slide=${$.slide}:size=${w}x${h}:scale=${$.scale}:fscale=${$.fscale}:saturation=${$.saturation}:win_func=${$.win_func}:orientation=${$.orientation}:overlap=${$.overlap}:gain=${$.gain}:data=${$.data}:rotation=${$.rotation}:start=${$.start}:stop=${$.stop}:drange=${$.drange}:limit=${$.limit}:fps=${ctx.fps},scale=${ctx.width}:${ctx.height}:force_original_aspect_ratio=decrease[${ss1}]`,
+			`[${a1}]dynaudnorm,showspectrum=slide=${$.slide}:size=${w}x${h}:scale=${$.scale}:fscale=${$.fscale}:saturation=${$.saturation}:win_func=${$.win_func}:orientation=${$.orientation}:overlap=${$.overlap}:gain=${$.gain}:data=${$.data}:rotation=${$.rotation}:start=${$.start}:stop=${$.stop}:drange=${$.drange}:limit=${$.limit}:fps=${ctx.fps},scale=${ctx.width}:${ctx.height * $.height}[${ss1}]`,
 		);
-		// if ($.overlay) {
-		let c = ctx.colorgen($.color, $.alpha, w, h);
+		ss1 = ctx.pad(ss1);
+		let c = ctx.colorgen($.color, $.alpha, ctx.width, ctx.height);
 		let am = ctx.alphamerge(c, ss1);
 		ctx.vid = ctx.overlay(ctx.vid, am);
-		// } else {
-		// 	ctx.vid = ss1;
-		// }
 		ctx.aid = a2;
 	}
 });

@@ -14,11 +14,9 @@ import { createHash } from "node:crypto";
 // import replace from "@rollup/plugin-replace";
 export const dirname = import.meta.dirname;
 
-export const forge_config_path = path.resolve(dirname, "forge.config.cjs");
 export const root = path.dirname(dirname);
-export const src = path.resolve(root, "src");
 export const target = `node22`;
-export const format = "esm";
+export const format = "commonjs";
 export const platforms = ["linux", "win32"];
 export const js_exts = [`js`,`ts`,`cjs`,`mjs`,`cts`,`mts`];
 export const js_exts_str = js_exts.join(",");
@@ -26,18 +24,17 @@ export const js_exts_str = js_exts.join(",");
 const default_opts = {
     input: [],
     external: [],
-    entry: path.resolve(src, "index.js"),
-    root: src,
+    entry: "",
     mode: "development",
     plugins: [],
     /** @type {vite.Plugin[]} */
     vite_plugins: [],
-    platform: "windows",
+    platform: "win32",
     copy: [],
     define: {},
 };
 
-export function get_index_file(src, dir) {
+export function get_index_file(src, dir = ".") {
     var p = glob.sync(`${dir.replace(/\\/g, "/")}/index*.{${js_exts_str}}`, {absolute:true, cwd:src}).sort()[0];
     var dirname = path.basename(dir);
     var ext = path.extname(p);
@@ -73,21 +70,7 @@ export function md5(str) {
 
 export class API {
 
-    constructor(dir) {
-        if (!dir) dir = process.cwd();
-        this.out = path.resolve(dir, "out");
-        this.dist = path.resolve(dir, "dist");
-    }
-
-    async copy_to(srcs, dir) {
-        if (!Array.isArray(srcs)) srcs = [srcs];
-        for (var src of srcs) {
-            var name = path.basename(src);
-            await fs.promises.copy(src, path.join(dir, name));
-        }
-    }
-
-    suppress_warnings() {
+    /* suppress_warnings() {
         const originalEmit = process.emit;
         process.emit = function (event, error) {
             if (event === 'warning' && error.code == 'DEP0174') {
@@ -95,28 +78,16 @@ export class API {
             }
             return originalEmit.apply(process, arguments);
         }
-    }
-
-    async config_electron_forge() {
-        await this.copy_to(forge_config_path, this.dist);
-        this.suppress_warnings();
-        // process.env.DEBUG = 1;
-    }
+    } */
 
     /** @param {typeof default_opts} opts @returns {Promise<vite.InlineConfig[]>} */
-    async generate_configs(opts) {
+    async generate_configs(dist, opts) {
+        let src = path.resolve(root, "src");
+        dist = dist || path.resolve(root, "dist");
         opts = { ...default_opts, ...opts };
         
         let is_production = opts.mode === "production";
         let pkg = { ...finder(src).next().value };
-        
-        const dist = this.dist;
-        
-        let roots = [src, opts.root].filter(src=>src);
-        roots = [...new Set(roots.map(p=>path.resolve(p)))];
-
-        let user_pkg = finder(opts.root).next().value;
-        // let combine_packages = (user_pkg.__path !== pkg.__path);
         
         let external = [
             'vite',
@@ -142,11 +113,12 @@ export class API {
 
         // relative to src
         let input = {
-            "index": opts.entry,
+            "index": opts.entry || Object.values(get_index_file(src))[0],
             ...get_index_file(src, `core`),
             ...get_index_file(src, `media-server`),
             ...get_index_file(src, `file-manager`),
             ...get_index_file(src, `main`),
+            ...get_index_file(src, `electron`),
             ...opts.input,
         };
         input = Object.fromEntries(Object.entries(input).map(([k,p])=>[k, path.resolve(src, p)]));
@@ -155,7 +127,7 @@ export class API {
         let alias = [];
 
         let configs = [];
-        let platform = opts.platform.match(/^win/i) ? "windows" : "linux";
+        let platform = opts.platform.match(/^win/i) ? "win32" : "linux";
         var date_str = new Date().toISOString().split("T").join("-").split(":").join("-").slice(0,-5);
         let define = {
             "import.meta.env.BUILD": JSON.stringify(1),
@@ -171,13 +143,21 @@ export class API {
                 esmShim(),
                 viteStaticCopy({
                     targets: [
+                        // {
+                        //     src: [normalizePath(src, "resources"), ...platforms.filter(p=>p!=platform).map(p=>`!**/${p}`)],
+                        //     dest: path.resolve(dist)
+                        // },
                         {
-                            src: [normalizePath(src, "resources"), ...platforms.filter(p=>p!=platform).map(p=>`!**/${p}`)],
+                            src: [normalizePath(root, "resources")],
                             dest: path.resolve(dist)
                         },
                         {
                             src: [normalizePath(src, "pm2.config.cjs")],
                             dest: path.resolve(dist)
+                        },
+                        {
+                            src: [normalizePath(src, "electron/preload.cjs")],
+                            dest: path.resolve(dist, "electron")
                         },
                         ...opts.copy,
                     ]
@@ -282,64 +262,6 @@ export class API {
             }
         }
         return configs;
-    }
-
-    /* async electron_config() {
-        var preload = path.join(src, "electron", "preload.cjs");
-        let preload_config = defineConfig({
-            mode: opts.mode,
-            configFile: false,
-            build: {
-                minify,
-                target,
-                ssr: true,
-                sourcemap,
-                emptyOutDir: false,
-                outDir: path.join(dist, "electron"),
-                lib: {
-                    name: "livestreamer",
-                    entry: preload,
-                    formats: [format]
-                },
-                rollupOptions: {
-                    input: preload,
-                    output: {
-                        entryFileNames: `[name].cjs`,
-                    },
-                    external: [
-                        'electron',
-                        /^electron\/.+/
-                    ],
-                }
-            }
-        });
-        return preload_config;
-    } */
-
-    async start() {
-        await this.config_electron_forge();
-        forge_api.start({
-            dir: this.dist,
-            interactive: true,
-        })
-    }
-
-    async package() {
-        await this.config_electron_forge();
-        forge_api.package({
-            dir: this.dist,
-            outDir: this.out,
-            interactive: true,
-        })
-    }
-
-    async make() {
-        await this.config_electron_forge();
-        forge_api.make({
-            dir: this.dist,
-            outDir: this.out,
-            interactive: true,
-        })
     }
 
     async generate_google_drive_offline_refresh_token({client_id, client_secret}) {

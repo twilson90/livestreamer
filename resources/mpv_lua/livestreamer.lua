@@ -211,7 +211,7 @@ mp.add_hook("on_preloaded", 50, function ()
     if loadfile_opts.commands then
         msg.verbose("loadfile_opts.commands: "..JSON.stringify(loadfile_opts.commands))
         for _,c in ipairs(loadfile_opts.commands) do
-            local _,err = mp.commandv(unpack(c))
+            local _,err = mp.command_native(c)
             if err then
                 msg.info(err)
             end

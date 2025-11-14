@@ -6,6 +6,7 @@ export const dirs = [];
 
 const exists = {};
 let resources_dir = find_resources_dir(import.meta.dirname);
+
 if (resources_dir) {
 	add_dir(resources_dir);
 }

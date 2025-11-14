@@ -36,7 +36,7 @@ const editable_input_types = {
 /**
  * @template ItemType
  * @template ValueType
- * @template {InputProperty<ItemType,ValueType>} [ThisType=InputProperty<ItemType,ValueType>]
+ * @template ThisType [ThisType=InputProperty<ItemType,ValueType>]
  * @typedef {PropertySettings<ItemType,ValueType,ThisType> & {
  *  "setup": ()=>InputElement[],
  *  "placeholder": UISetting<ThisType,string>,
@@ -52,6 +52,7 @@ const editable_input_types = {
  *  "focus": (this:ThisType,input:InputElement)=>void,
  *  "blur": (this:ThisType,input:InputElement)=>void,
  *  "readonly": UISetting<ThisType,boolean>,
+ *  "change_on_input": UISetting<ThisType,boolean>,
  * }} InputPropertySettings
  */
 
@@ -78,14 +79,13 @@ export class InputProperty extends Property {
     #is_focussed = false;
     #focus_promise = null;
 
-
     get inputs() { return this.#inputs; }
     get input() { return this.#inputs[0]; }
     get input_modifiers() { return this.#input_modifiers; }
     get output_modifiers() { return this.#output_modifiers; }
     get is_focussed() { return this.#is_focussed; }
     
-    /** @param {HTMLElement} contents @param {InputPropertySettings} settings */
+    /** @param {HTMLElement} contents @param {Settings} settings */
     constructor(contents, settings) {
         super({
             "contents": contents,
@@ -113,6 +113,7 @@ export class InputProperty extends Property {
             "copy":false,
             "inline": false,
             "readonly": false,
+            "change_on_input": false,
             ...settings
         });
         
@@ -185,8 +186,12 @@ export class InputProperty extends Property {
                 input.tabIndex = "-1"
             }
             set_attribute(input, "id", this.name_id);
-            input.addEventListener("change", (e)=>update_value(input, true));
-            input.addEventListener("input", (e)=>update_value(input, false));
+            input.addEventListener("change", (e)=>{
+                update_value(input, true)
+            });
+            input.addEventListener("input", (e)=>{
+                update_value(input, this.get_setting("change_on_input"));
+            });
             if (input.nodeName === "INPUT" || input.isContentEditable) {
                 input.addEventListener("keydown", (e)=>{
                     if (e.key === "Enter") {
@@ -209,7 +214,6 @@ export class InputProperty extends Property {
 
         this.elem.addEventListener("focusin", (e)=>{
             if (this.#is_focussed) return;
-            console.log(e.target);
             if (!this.#inputs.includes(e.target)) return;
             /** @type {InputElement} */
             var input = e.target;

@@ -31,5 +31,11 @@ export const SessionProps = {
         __custom__: true,
         __default__: { "*": { "access":"allow" } },
     },
+    type: {
+        __save__: false,
+    },
+    logs: {
+        __save__: false,
+    },
 }
 export default SessionProps;

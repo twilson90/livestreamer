@@ -510,7 +510,7 @@ export class Volume {
 								if (opts.cut == 1) {
 									await fs.promises.rename(srcdriver.abspath(src.id), dstdriver.abspath(newfile));
 								} else {
-									await fs.promises.copy(srcdriver.abspath(src.id), dstdriver.abspath(newfile));
+									await fs.promises.cp(srcdriver.abspath(src.id), dstdriver.abspath(newfile));
 								}
 							}
 							if (opts.cut == 1) removed.push(srcdriver.hash(src.id));

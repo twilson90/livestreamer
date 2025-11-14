@@ -34,6 +34,8 @@ export class StreamTarget extends StopStartStateMachine {
     #ffplay;
     #restart_timeout;
 
+    get ffmpeg() { return this.#ffmpeg; }
+
     /** @param {SessionStream} stream @param {Target} target */
     constructor(stream, target) {
         super(globals.app.generate_uid("stream-target"), new StreamTarget$());
@@ -241,13 +243,6 @@ export class StreamTarget extends StopStartStateMachine {
         globals.app.ipc.emit("main.stream-target.started", this.$);
         
         return super._start();
-    }
-
-    tick() {
-        if (this.#ffmpeg) {
-            this.stream.register_metric(`${this.$.key}:speed`, this.ffmpeg_speed);
-            this.stream.register_metric(`${this.$.key}:bitrate`, this.ffmpeg_bitrate);
-        }
     }
 
     async _stop() {

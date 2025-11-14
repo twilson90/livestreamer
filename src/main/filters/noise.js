@@ -15,7 +15,7 @@ export const noise = new Filter({
 		all_strength: {
 			__name__: "Strength", 
 			__description__: "Set noise strength for all pixel components.",
-			__default__: 0,
+			__default__: 50,
 			__min__: 0,
 			__max__: 100
 		},

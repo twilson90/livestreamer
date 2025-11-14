@@ -91,7 +91,7 @@ export default {
     noise,
     normalize,
     pixelize,
-    rgbshift,
+    // rgbshift,
     rubberband,
     scroll,
     shear,

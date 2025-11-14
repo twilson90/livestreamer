@@ -1,0 +1,31 @@
+FROM node:22-bullseye AS builder
+
+RUN apt-get update
+RUN apt-get install -y build-essential python3 curl git pkg-config
+RUN apt-get install -y wine64
+
+RUN npm install -g electron@33.2.0 @electron/packager
+
+WORKDIR /app
+
+COPY dist .
+
+ARG NAME=LiveStreamer
+ARG TARGETPLATFORM=linux
+ARG ARCH=x64
+
+RUN npm install --omit=dev
+RUN npm install --cpu=${ARCH} --os=${TARGETPLATFORM} sharp
+
+RUN npx @electron/packager . ${NAME} \
+    --platform=${TARGETPLATFORM} \
+    --arch=${ARCH} \
+    --out=./out \
+    --overwrite \
+    --electron-version=33.2.0 \
+    --ignore="resources" \
+    --asar.unpackDir="node_modules/@img" \
+    --icon="resources/icon.ico"
+
+FROM scratch AS artifact
+COPY --from=builder /app/out /

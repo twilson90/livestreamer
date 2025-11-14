@@ -80,6 +80,56 @@ var settings = new dom.LocalStorageBucket("player-v2", {
 });
 settings.load();
 
+function toggleVolumeBoost(mediaElem, state) {
+    if (!mediaElem._audioCtx) {
+        const ctx = new AudioContext();
+        const source = ctx.createMediaElementSource(mediaElem);
+        const compressor = ctx.createDynamicsCompressor();
+        const gainNode = ctx.createGain();
+
+        // Good defaults ("night mode" leveling)
+        compressor.threshold.value = -50;
+        compressor.knee.value = 40;
+        compressor.ratio.value = 12;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.25;
+
+        gainNode.gain.value = 2;
+
+        // Initially connected normally
+        source.connect(ctx.destination);
+
+        mediaElem._audioCtx = ctx;
+        mediaElem._source = source;
+        mediaElem._compressor = compressor;
+        mediaElem._gainNode = gainNode;
+        mediaElem._boosted = false;
+    }
+    const ctx = mediaElem._audioCtx;
+    const source = mediaElem._source;
+    const compressor = mediaElem._compressor;
+    const gainNode = mediaElem._gainNode;
+
+    if (state === undefined) {
+        state = !mediaElem._boosted;
+    } else {
+        state = !!state;
+    }
+    if (state) {
+        connectChain([source, compressor, gainNode, ctx.destination]);
+    } else {
+        connectChain([source, ctx.destination]);
+    }
+    mediaElem._boosted = state;
+
+}
+function connectChain(nodes) {
+    nodes.forEach(n => { try { n.disconnect(); } catch {} });
+    for (let i = 0; i < nodes.length - 1; i++) {
+        nodes[i].connect(nodes[i + 1]);
+    }
+}
+
 /** @type {MediaServerVideoPlayerWebApp} */
 let app;
 export class MediaServerVideoPlayerWebApp {
@@ -268,36 +318,27 @@ class Player extends utils.EventEmitter {
     async update() {
         await this.ready;
         if (this.destroyed) return;
-        
 
-        var d = this.get_time_until_live_edge_area(true);
-        var behindLiveEdge = this.player.liveTracker.behindLiveEdge();
-        var is_live = this.player.liveTracker.isLive();
+        var seekToLive = this.player.controlBar.getChild("SeekToLive");
+        seekToLive.updateLiveEdgeStatus();
+
         var rate = this.player.playbackRate();
-        var at_live_edge = d <= 0;
-        var new_rate = at_live_edge ? Math.min(1, rate) : rate;
+        var new_rate = rate;
+        var is_live = false;
+        if (this.player.liveTracker?.isLive()) {
+            is_live = true;
+            const liveCurrentTime = this.player.liveTracker?.liveCurrentTime();
+            const currentTime = this.player.currentTime();
+            let isBehind = Math.abs(liveCurrentTime - currentTime) > (this.player.liveTracker.options_.liveTolerance - 2);
+            if (!isBehind) {
+                new_rate = Math.min(1, rate);
+            }
+        }
         if (new_rate != rate) {
             this.player.playbackRate(new_rate);
         }
 
         this.player.el_.classList.toggle("is-live", is_live);
-
-        if (this.seekToLive) {
-            var stl_text;
-            if (behindLiveEdge) {
-                if (settings.get("time_display_mode") == 0) {
-                    stl_text = "[" + this.get_live_time(0, this.player.currentTime()) + "]"
-                } else {
-                    stl_text = `[-${videojs.time.formatTime(this.get_time_until_live_edge_area())}]`
-                }
-            } else {
-                stl_text = "LIVE";
-            }
-            if (this.seekToLive.last_text != stl_text) {
-                this.seekToLive.last_text = stl_text
-                this.seekToLive.textEl_.innerHTML = stl_text;
-            }
-        }
 
         this.play_button.update();
 
@@ -333,7 +374,7 @@ class Player extends utils.EventEmitter {
         this.player.el_.classList.toggle("crop-enabled", this.crop_mode.value != "none");
         apply_crop(this.video_el, c1, c2);
         this.cropMenuButton.update_display();
-        
+
 
         if (window.parent) {
             try {
@@ -349,8 +390,12 @@ class Player extends utils.EventEmitter {
             }
         }
     }
-    get_active_menus(){
+    get_active_menus() {
         return [...this.player.el_.querySelectorAll(".vjs-menu.vjs-lock-showing")];
+    }
+
+    get hls_level_details() {
+        return this.hls?.levels?.[this.hls.currentLevel]?.details;
     }
 
     async #init() {
@@ -366,7 +411,7 @@ class Player extends utils.EventEmitter {
         var PlaybackRateMenuButton = videojs.getComponent("PlaybackRateMenuButton");
         var PlaybackRateMenuItem = videojs.getComponent("PlaybackRateMenuItem");
         var LoadProgressBar = videojs.getComponent("LoadProgressBar");
-        
+
         {
             function textContent(el, text) {
                 if (typeof el.textContent === 'undefined') {
@@ -378,10 +423,9 @@ class Player extends utils.EventEmitter {
             }
             const percentify = (time, end) => utils.clamp(time / end * 100, 0, 100).toFixed(2) + '%';
             let update = LoadProgressBar.prototype.update;
-            LoadProgressBar.prototype.update = function(...args) {
+            LoadProgressBar.prototype.update = function (...args) {
                 this.requestNamedAnimationFrame('LoadProgressBar#update', () => {
-                    let hls = _this.hls;
-                    let details = hls?.levels?.[hls.currentLevel]?.details;
+                    let details = _this.hls_level_details
                     let liveTracker = this.player_.liveTracker;
                     let buffered = this.player_.buffered();
                     let duration = liveTracker && liveTracker.isLive() ? liveTracker.seekableEnd() : this.player_.duration();
@@ -644,7 +688,8 @@ class Player extends utils.EventEmitter {
                 this.update();
             }
             handleClick(event) {
-                settings.set("time_display_mode", (settings.get("time_display_mode") + 1) % time_display_modes.length)
+                settings.set("time_display_mode", (settings.get("time_display_mode") + 1) % time_display_modes.length);
+                remainingTimeDisplay.update();
                 this.update();
             }
             update() {
@@ -671,11 +716,9 @@ class Player extends utils.EventEmitter {
                 this.controlText("Load Full Playlist");
                 this.update();
             }
+            update() { }
             handleClick(event) {
                 _this.load_full_playlist();
-            }
-            update() {
-                // this.controlText(`Time Display Mode: ${c.label}`);
             }
             buildCSSClass() {
                 return `vjs-load-full-stream-button vjs-control vjs-button ${super.buildCSSClass()}`;
@@ -683,7 +726,7 @@ class Player extends utils.EventEmitter {
         }
         videojs.registerComponent("loadFullPlaylistButton", LoadFullPlaylistButton);
 
-        var fix_time_ranges = (time_ranges)=>{
+        var fix_time_ranges = (time_ranges) => {
             const hls = _this.hls;
             const details = hls?.levels?.[hls.currentLevel]?.details;
             if (details?.live) {
@@ -754,7 +797,7 @@ class Player extends utils.EventEmitter {
             // experimentalSvgIcons: true,
             liveTracker: {
                 trackingThreshold: 0,
-                liveTolerance: 10
+                liveTolerance: 6
                 // trackingThreshold: 0,
                 // liveTolerance: 0.5
             },
@@ -851,7 +894,43 @@ class Player extends utils.EventEmitter {
         controlBar.el_.addEventListener("mouseout", () => controlBar.el_.classList.remove("mouseover"))
 
         /** @type {import("video.js/dist/types/control-bar/seek-to-live").default}*/
-        this.seekToLive = controlBar.getChild("SeekToLive");
+        var seekToLive = controlBar.getChild("SeekToLive");
+        (() => {
+            var last_text;
+            var seektolive_wrapper_el = $(`<div class="seek-to-live-wrapper"></div>`)[0];
+            seekToLive.el_.after(seektolive_wrapper_el);
+            seektolive_wrapper_el.append(seekToLive.el_);
+            seekToLive.handleClick = function (e) {
+                _this.seekToLiveEdge();
+                _this.player.play();
+            }
+            var old_updateLiveEdgeStatus = seekToLive.updateLiveEdgeStatus;
+            seekToLive.updateLiveEdgeStatus = function () {
+                old_updateLiveEdgeStatus.apply(this);
+                var stl_text;
+                var behindLiveEdge = _this.player.liveTracker.behindLiveEdge();
+                if (behindLiveEdge) {
+                    stl_text = `[${_this.get_time_string(-_this.get_time_until_live_edge_area(), true)}]`;
+                } else {
+                    stl_text = "LIVE";
+                }
+                if (last_text != stl_text) {
+                    last_text = stl_text
+                    this.textEl_.innerHTML = stl_text;
+                }
+            }
+        })();
+        /** @type {import("video.js/dist/types/control-bar/time-controls/remaining-time-display").default}*/
+        var remainingTimeDisplay = controlBar.getChild("RemainingTimeDisplay");
+        (() => {
+            var first;
+            remainingTimeDisplay.updateContent = function () {
+                if (!first) this.el_.querySelector(`[aria-hidden="true"]`)?.remove();
+                this.contentEl_.innerHTML = _this.get_time_string(_this.player.currentTime(), true);
+                first = true;
+            }
+            remainingTimeDisplay.updateContent();
+        })();
         /** @type {import("video.js/dist/types/control-bar/fullscreen-toggle").default}*/
         var fullscreenToggle = controlBar.getChild("FullscreenToggle");
         /** @type {import("video.js/dist/types/control-bar/volume-panel").default}*/
@@ -860,6 +939,35 @@ class Player extends utils.EventEmitter {
         var volumeControl = volumePanel.getChild("VolumeControl");
         /** @type {import("video.js/dist/types/control-bar/volume-control/volume-bar").default}*/
         var volumeBar = volumeControl.getChild("VolumeBar");
+        (() => {
+            var wrapper_el = $(`<div class="volume-bar-wrapper"></div>`)[0];
+            var outer_el = $(`<div class="volume-bar-outer"></div>`)[0];
+            var boost_button = $(`<button class="vjs-control vjs-button vjs-volume-boost"><i class="fas fa-volume-high"><i class="fas fa-plus"></i></button>`)[0];
+            volumeBar.el_.after(wrapper_el);
+            wrapper_el.append(boost_button);
+            wrapper_el.append(outer_el);
+            outer_el.append(volumeBar.el_);
+            boost_button.title = "Volume Boost";
+            var boost = false;
+            wrapper_el.onmousemove = (e)=>{
+                var r = boost_button.getBoundingClientRect();
+                wrapper_el.classList.toggle("disable-tooltip", e.clientY < r.top + r.height);
+            }
+            boost_button.onmouseout = (e)=>{
+                wrapper_el.classList.remove("disable-tooltip");
+            }
+            boost_button.onpointerdown = (e)=>{
+                if (videojs.dom.isSingleLeftClick(e)) {
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    e.preventDefault();
+                    boost = !boost;
+                    boost_button.classList.toggle("active", boost);
+                    // amplifyMedia(_this.video_el, boost ? 3 : 1);
+                    toggleVolumeBoost(_this.video_el, boost);
+                }
+            }
+        })();
         // /** @type {import("video.js/dist/types/control-bar/volume-control/volume-level").default}*/
         // var volumeLevel = volumeBar.getChild("VolumeLevel");
         /** @type {TimeDisplayToggle} */
@@ -923,16 +1031,6 @@ class Player extends utils.EventEmitter {
         } */
         controlplaybackRateMenuButton.menu.contentEl_.prepend(...$(`<li class="vjs-menu-title" tabindex="-1">Speed</li>`))
 
-        this.seektolive_wrapper_el = $(`<div>`)[0];
-        this.seektolive_wrapper_el.classList.add("seek-to-live-wrapper");
-        this.seekToLive.el_.after(this.seektolive_wrapper_el);
-        this.seektolive_wrapper_el.append(this.seekToLive.el_);
-        var seekToLive_handleClick = this.seekToLive.handleClick;
-        this.seekToLive.handleClick = function (e) {
-            _this.seekToLiveEdge();
-            _this.player.play();
-        }
-
         if (conf.logo_url) {
             // let target = IS_EMBED ? `_parent` : `_blank`;
             let target = `_blank`;
@@ -979,8 +1077,8 @@ class Player extends utils.EventEmitter {
             };
             timeTooltip.updateTime = function (seekBarRect, seekBarPoint, time) {
                 const liveWindow = _this.player.liveTracker.liveWindow();
-                var time = seekBarPoint * liveWindow
-                let content = _this.get_live_time(settings.get("time_display_mode"), time);
+                if (_this.player.liveTracker?.isLive()) time = (1-seekBarPoint) * -liveWindow;
+                let content = _this.get_time_string(time, true);
                 this.update(seekBarRect, seekBarPoint, content);
             };
         }
@@ -1024,7 +1122,7 @@ class Player extends utils.EventEmitter {
                 e.preventDefault();
             }
         }, true);
-        
+
 
         if (!window.__first_player_init) {
             window.__first_player_init = true;
@@ -1138,6 +1236,17 @@ class Player extends utils.EventEmitter {
             this.cropMenuButton?.update_display();
             this.hlsSelectMenuButton.update_display();
         });
+        this.hls_start_ts = Number.MAX_SAFE_INTEGER;
+        this.hls_end_ts = Number.MIN_SAFE_INTEGER;
+        this.hls.on(Hls.Events.FRAG_PARSED, (event, data) => {
+            if (data.frag.programDateTime > this.hls_end_ts) {
+                this.hls_end_ts = data.frag.programDateTime;
+            }
+            if (data.frag.programDateTime < this.hls_start_ts) {
+                this.hls_start_ts = data.frag.programDateTime;
+            }
+            this.hls_offset = this.hls_end_ts - Date.now();
+        });
         this.hls.on(Hls.Events.LEVEL_SWITCHING, () => {
             this.hlsSelectMenuButton.update_display()
         });
@@ -1157,12 +1266,20 @@ class Player extends utils.EventEmitter {
 
         // this.hls.media.srcObject.setLiveSeekableRange(0, 600)
         var stall_timeout;
-        this.hls.on(Hls.Events.ERROR, (e, data) => {
+        this.hls.on(Hls.Events.ERROR, (e, error) => {
             /* if (data.fatal && data.type == "mediaError") {
                 this.hls.recoverMediaError();
             } */
-            if (data.type == "mediaError") {
-                if (data.details == "bufferStalledError") {
+            if (error.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR) {
+                setTimeout(() => {
+                    console.log("Resetting HLS level errors.");
+                    Object.values(this.hls.levels).forEach(l => l.loadError = 0);
+                    Object.values(this.hls.levels).forEach(l => l.fragmentError = 0);
+                }, 5000);
+            }
+
+            if (error.type == "mediaError") {
+                if (error.details == "bufferStalledError") {
                     // clearTimeout(stall_timeout);
                     // let time = this.hls.media.currentTime;
                     // stall_timeout = setTimeout(()=>{
@@ -1172,10 +1289,10 @@ class Player extends utils.EventEmitter {
                     //     }
                     // },1000)
                 } else {
-                    if (data.fatal) this.hls.recoverMediaError()
+                    if (error.fatal) this.hls.recoverMediaError()
                 }
             }
-            console.error(data.error.message, data);
+            console.error(error.error.message, error);
         });
     }
 
@@ -1230,19 +1347,33 @@ class Player extends utils.EventEmitter {
         return Math.max(0, Math.abs(liveCurrentTime - currentTime) - (use_latency ? this.hls?.targetLatency : 0));
     };
 
-    get_live_time(mode, time) {
-        const duration = this.player.duration();
-        if (this.player.liveTracker && this.player.liveTracker.isLive()) {
-            const liveWindow = this.player.liveTracker.liveWindow();
-            const secondsBehind = liveWindow - time;
+    /**
+     * @param {number} time - time in seconds from live edge
+     * @returns {string} - time string
+     */
+    get_time_string(time, format = false) {
+        let mode = settings.get("time_display_mode");
+        let duration = this.player.duration();
+        let str = "";
+        if (this.player.liveTracker?.isLive()) {
             if (mode == 0) {
-                return new Date(Date.now() - secondsBehind * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: "2-digit" }) // hour12: true
-            } else if (mode == 1) {
-                return (secondsBehind < 1 ? '' : '-') + videojs.time.formatTime(secondsBehind, liveWindow);
+                let ts = time < 0 ? Date.now() + this.hls_offset + time * 1000 : Date.now() + this.hls_offset - duration;
+                str = new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: "2-digit" });
+            }
+            if (mode == 1) {
+                str = (format ? `-` : "") + videojs.time.formatTime(Math.abs(time), this.player.liveTracker.liveWindow());
             }
         } else {
-            return videojs.time.formatTime(time, duration);
+            if (mode == 0) {
+                let ts = this.hls_start_ts + (time * 1000);
+                str = new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: "2-digit" });
+            }
+            if (mode == 1) {
+                str = (format ? `-` : "") + videojs.time.formatTime(duration - time, duration);
+            }
         }
+        if (str === "Invalid Date") str = "-";
+        return str;
     }
 
     destroy() {

@@ -4,7 +4,7 @@ export default {
 	
 	"core.debug": false,
 	"core.appspace": "livestreamer",
-	"core.hostname": "livestreamer.localhost",
+	"core.hostname": "localhost",
 	"core.logs_max_length": 64,
 	"core.logs_max_msg_length": 128 * 1024, // 128 kb
 	"core.compress_logs_schedule": "* 4 * * *", // Every day @ 4:00 am
@@ -16,8 +16,8 @@ export default {
 	"core.ffmpeg_hwaccel": null,
 	"core.ffmpeg_hwenc": null,
 	"core.pm2": false,
-	"core.ssl_key": "{RESOURCE}ssl/livestreamer.localhost.key{/RESOURCE}",
-	"core.ssl_cert": "{RESOURCE}ssl/livestreamer.localhost.pem{/RESOURCE}",
+	"core.ssl_key": "{RESOURCE}ssl/localhost.key{/RESOURCE}",
+	"core.ssl_cert": "{RESOURCE}ssl/localhost.pem{/RESOURCE}",
 	"core.changelog": "{RESOURCE}changes.md{/RESOURCE}",
 	"core.ytdl_path": "yt-dlp",
 	"core.ytdl_format": [

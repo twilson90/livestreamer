@@ -1,1 +1,1 @@
-mkcert -key-file livestreamer.localhost.key -cert-file livestreamer.localhost.pem -install livestreamer.localhost "*.livestreamer.localhost" localhost 127.0.0.1 ::1
+mkcert -key-file localhost.key -cert-file localhost.pem -install "*.localhost" localhost 127.0.0.1 ::1

@@ -71,14 +71,6 @@ export const MediaProps = {
         __min__: 0,
         __max__: 150,
     },
-    speed: {
-        __default__: 1.00,
-        __step__: 0.05,
-    },
-    audio_pitch_correction: {
-        __default__: true,
-        __options__: [[false, "Off"], [true, "On"]],
-    },
     deinterlace_mode: {
         __default__: "auto",
         __options__: [["auto", "Auto"], [false, "Off"], [true, "On"]],
@@ -150,7 +142,7 @@ export const MediaProps = {
         __default__: false,
         __options__: [[true, "On"], [false, "Off"]],
         __info__: "Fixes presentation time-stamps for variable framerate streams. Only turn this on for files with severely broken frame timing.",
-    }
+    },
 };
 
 export const PlaylistItemPropsProps = {
@@ -342,6 +334,10 @@ export const InternalSessionProps = {
     ...SessionProps, 
     stream_settings: {
         ...SessionProps.stream_settings,
+        gui: {
+            __default__: false,
+            __options__: [[false, "Off"], [true, "On"]],
+        },
         fps: {
             __default__: 60,
             __options__: [
@@ -456,7 +452,19 @@ export const InternalSessionProps = {
         ["*"]: {
             ...PlaylistItemProps
         }
-    }
+    },
+    gui_props: {
+        __custom__: true,
+    },
+    playlist_history: {
+        __save__: false,
+    },
+    playlist_info: {
+        __save__: false,
+    },
+    media_info: {
+        __save__: false,
+    },
 }
 
 export default InternalSessionProps;

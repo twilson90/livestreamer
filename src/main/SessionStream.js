@@ -1,5 +1,6 @@
 import path from "node:path";
 import stream from "node:stream";
+import {getResolution} from "get-screen-resolution";
 import {globals, StreamTarget, InternalSessionPlayer, InternalSessionPlayer$, OUTPUT_FORMAT} from "./exports.js";
 import {utils, constants, FFMPEGWrapper, Logger, StopStartStateMachine, StopStartStateMachine$, ClientUpdater, StreamServer} from "../core/exports.js";
 /** @import { Session, InternalSession, ExternalSession, Session$ } from './exports.js' */
@@ -27,6 +28,7 @@ export class SessionStream$ extends StopStartStateMachine$ {
     buffer_duration = 5;
     use_hardware = false;
     test = false;
+    gui = false;
 }
 
 /**
@@ -93,8 +95,8 @@ export class SessionStream extends StopStartStateMachine {
             session.clients.forEach(c=>this.client_updater.subscribe(c));
             session.client_updater.on("subscribe", onsubscribe);
             session.client_updater.on("unsubscribe", onunsubscribe);
-
-            if (!this.$.publish_stream_path) {
+            
+            if (!this.$.gui && !this.$.publish_stream_path) {
                 // we only do this once, if we detach / attach to another session the urls remain the same.
                 let publish_stream_path = `/internal/${this.id}`;
                 this.$.publish_stream_path = publish_stream_path;
@@ -145,6 +147,11 @@ export class SessionStream extends StopStartStateMachine {
             }
             this.$.targets = [];
         }
+        if (this.$.gui) {
+            this.$.targets = [];
+            const {width,height} = await getResolution();
+            this.$.resolution = `${width}x${height}`;
+        }
 
         this.$.title = this.$.title || this.session.name; // this.session.$.default_stream_title || 
         this.$.metrics = {};
@@ -152,117 +159,122 @@ export class SessionStream extends StopStartStateMachine {
         this.$.bitrate = 0;
         this.$.speed = 0;
     
-        let ffmpeg_args = [
-            // "-flags", "low_delay",
-            // "-thread_queue_size", "4096",
-            // "-probesize", "32",
-            // "-analyzeduration", "0",
-            // "-avioflags", "direct",
-            // "-probesize", `${1024*1024}`,
-            // `-ignore_unknown`,
-            // `-copy_unknown`,
-            // "-avioflags", "direct",
-            `-err_detect`, `ignore_err`,
-            `-strict`, `experimental`,
-            // "-avoid_negative_ts", "1",
-            `-flags`, "+global_header", // +low_delay
-            "-fflags", "+genpts+igndts+discardcorrupt+autobsf+flush_packets", //  +nobuffer
-            "-flush_packets", "1",
-            // `-rw_timeout`, `15000000`,
-            // `-tag:v`, `7`, // needed for tee muxer
-            // `-tag:a`, `10`, // needed for tee muxer
-            // ...(this.is_realtime ? ["-readrate", "1"] : []), // "-readrate_catchup", "1" // doesnt exist on my build of ffmpeg yet
-        ];
-        
-        if (this.session.type === constants.SessionTypes.EXTERNAL) {
+        if (!this.$.gui) {
+            let ffmpeg_args = [
+                // "-flags", "low_delay",
+                // "-thread_queue_size", "4096",
+                // "-probesize", "32",
+                // "-analyzeduration", "0",
+                // "-avioflags", "direct",
+                // "-probesize", `${1024*1024}`,
+                // `-ignore_unknown`,
+                // `-copy_unknown`,
+                // "-avioflags", "direct",
+                `-err_detect`, `ignore_err`,
+                `-strict`, `experimental`,
+                // "-avoid_negative_ts", "1",
+                `-flags`, "+global_header", // +low_delay
+                "-fflags", "+genpts+igndts+discardcorrupt+autobsf+flush_packets", //  +nobuffer
+                "-flush_packets", "1",
+                // `-rw_timeout`, `15000000`,
+                // `-tag:v`, `7`, // needed for tee muxer
+                // `-tag:a`, `10`, // needed for tee muxer
+                // ...(this.is_realtime ? ["-readrate", "1"] : []), // "-readrate_catchup", "1" // doesnt exist on my build of ffmpeg yet
+            ];
+            
+            if (this.session.type === constants.SessionTypes.EXTERNAL) {
+                ffmpeg_args.push(
+                    // `-reconnect_on_network_error`, `1`,
+                    // `-reconnect_on_http_error`, `1`,
+                    // `-reconnect_delay_max`, `5`,
+                    // `-stream_loop`, `-1`,
+                    `-re`,
+                    `-f`, `live_flv`, // "important to survive timestamp discontinuities"
+                    "-i", `rtmp://media-server.${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}${this.external_session.nms_session.publishStreamPath}`,
+                );
+            } else {
+                ffmpeg_args.push(
+                    "-f", OUTPUT_FORMAT,
+                    "-i", "pipe:0",
+                );
+                // if (FFMPEG_OUTPUT_FORMAT === "mpegts") ffmpeg_args.push("-merge_pmt_versions", "1");
+            }
+            /* if (META_TRACK) {
+                ffmpeg_args.push(
+                    "-f", "webvtt",
+                    `-analyzeduration`, `0`,
+                    `-probesize`, `32`,
+                    "-i", "pipe:4",
+                );
+            } */
             ffmpeg_args.push(
-                // `-reconnect_on_network_error`, `1`,
-                // `-reconnect_on_http_error`, `1`,
-                // `-reconnect_delay_max`, `5`,
-                // `-stream_loop`, `-1`,
-                `-re`,
-                `-f`, `live_flv`, // "important to survive timestamp discontinuities"
-                "-i", `rtmp://media-server.${globals.app.hostname}:${globals.app.conf["media-server.rtmp_port"]}${this.external_session.nms_session.publishStreamPath}`,
+                "-muxdelay", "0",
+                "-muxpreload", "0",
+                `-fps_mode`, "passthrough",
+                // "-r", `${this.$.fps || constants.DEFAULT_FPS}`, // if we do this after +genpts + passthrough, it will mess up all the timestamps
+                // "-bsf:a", "aac_adtstoasc",
+                // "-bsf:v", "h264_mp4toannexb",
             );
-        } else {
+            
+            this.server = new StreamServer(`stream-${this.id}`);
+            this.$.socket = this.server.socket;
+
+            var c_args = [
+                "-map", "0:v:0",
+                "-c:v", "copy",
+                "-map", "0:a:0",
+                "-c:a", "copy",
+                // `-map_metadata`, `0`,
+            ];
+
             ffmpeg_args.push(
-                "-f", OUTPUT_FORMAT,
-                "-i", "pipe:0",
+                ...c_args,
+                "-f", "flv",
+                "-flvflags", "+no_duration_filesize", // +aac_seq_header_detect+no_sequence_end
+                `-y`,
+                this.$.rtmp_url
             );
-            // if (FFMPEG_OUTPUT_FORMAT === "mpegts") ffmpeg_args.push("-merge_pmt_versions", "1");
+
+            ffmpeg_args.push(
+                ...c_args,
+            );
+            /* if (META_TRACK) {
+                ffmpeg_args.push(
+                    "-map", "1:s:0",
+                    "-c:s", "copy",
+                );
+            } */
+            ffmpeg_args.push(
+                "-f", "mpegts",
+                "-mpegts_flags", "+resend_headers",
+                `-y`,
+                "pipe:1"
+            );
+
+            this.#ffmpeg = new FFMPEGWrapper({
+                log_filename: path.join(globals.app.logs_dir, `ffmpeg-stream-${this.id}-${utils.date_to_string()}.log`)
+            });
+
+            this.#ffmpeg.start(ffmpeg_args).catch(e=>{
+                this.logger.error(new Error(`SessionStream ffmpeg error: ${e.message}`));
+                this.stop("error");
+            });
+
+            // this.#ffmpeg.stdout.on("error", (e)=>{
+            //     console.error(`ffmpeg.stdout error: ${e.message}`)
+            // })
+            // this.#ffmpeg.stdout.pipe(this.server);
+
+            stream.promises.pipeline(this.#ffmpeg.stdout, this.server).catch((e)=>{
+                this.logger.error(`ffmpeg.stdout piping error: ${e.message}`)
+            })
         }
-        /* if (META_TRACK) {
-            ffmpeg_args.push(
-                "-f", "webvtt",
-                `-analyzeduration`, `0`,
-                `-probesize`, `32`,
-                "-i", "pipe:4",
-            );
-        } */
-        ffmpeg_args.push(
-            "-muxdelay", "0",
-            "-muxpreload", "0",
-            `-fps_mode`, "passthrough",
-            // "-r", `${this.$.fps || constants.DEFAULT_FPS}`, // if we do this after +genpts + passthrough, it will mess up all the timestamps
-            // "-bsf:a", "aac_adtstoasc",
-            // "-bsf:v", "h264_mp4toannexb",
-        );
-        
-        this.server = new StreamServer(`stream-${this.id}`);
-        this.$.socket = this.server.socket;
-
-        var c_args = [
-            "-map", "0:v:0",
-            "-c:v", "copy",
-            "-map", "0:a:0",
-            "-c:a", "copy",
-            // `-map_metadata`, `0`,
-        ];
-
-        ffmpeg_args.push(
-            ...c_args,
-            "-f", "flv",
-            "-flvflags", "+no_duration_filesize", // +aac_seq_header_detect+no_sequence_end
-            `-y`,
-            this.$.rtmp_url
-        );
-
-        ffmpeg_args.push(
-            ...c_args,
-        );
-        /* if (META_TRACK) {
-            ffmpeg_args.push(
-                "-map", "1:s:0",
-                "-c:s", "copy",
-            );
-        } */
-        ffmpeg_args.push(
-            "-f", "mpegts",
-            "-mpegts_flags", "+resend_headers",
-            `-y`,
-            "pipe:1"
-        );
-
-        this.#ffmpeg = new FFMPEGWrapper({
-            log_filename: path.join(globals.app.logs_dir, `ffmpeg-stream-${this.id}-${utils.date_to_string()}.log`)
-        });
-
-        this.#ffmpeg.start(ffmpeg_args).catch(e=>{
-            this.logger.error(new Error(`SessionStream ffmpeg error: ${e.message}`));
-            this.stop("error");
-        });
-
-        // this.#ffmpeg.stdout.on("error", (e)=>{
-        //     console.error(`ffmpeg.stdout error: ${e.message}`)
-        // })
-        // this.#ffmpeg.stdout.pipe(this.server);
-
-        stream.promises.pipeline(this.#ffmpeg.stdout, this.server).catch((e)=>{
-            this.logger.error(`ffmpeg.stdout piping error: ${e.message}`)
-        })
 
         if (this.session.type === constants.SessionTypes.INTERNAL) {
             this.player = new InternalSessionPlayer(this);
+        }
+
+        if (this.#ffmpeg && this.player) {
             stream.promises.pipeline(this.player.out, this.#ffmpeg.stdin).catch((e)=>{
                 if (this.player.destroyed) return;
                 this.logger.error('FFmpeg stdin error:', e);
@@ -305,14 +317,19 @@ export class SessionStream extends StopStartStateMachine {
         }
 
         if (!this.is_paused) {
-            // if (this.player) this.register_metric(`decoder:speed`, this.player.$.playback_speed);
-            this.$.speed = this.#ffmpeg.last_info ? this.#ffmpeg.last_info.speed_alt : 0;
-            this.$.bitrate = this.#ffmpeg.last_info ? this.#ffmpeg.last_info.bitrate : 0;
-            let key = (this.session.type === constants.SessionTypes.EXTERNAL) ? "upstream" : "trans";
-            this.register_metric(`${key}:speed`, this.$.speed);
-            this.register_metric(`${key}:bitrate`, this.$.bitrate);
+            if (this.#ffmpeg) {
+                // if (this.player) this.register_metric(`decoder:speed`, this.player.$.playback_speed);
+                this.$.speed = this.#ffmpeg.last_info ? this.#ffmpeg.last_info.speed_alt : 0;
+                this.$.bitrate = this.#ffmpeg.last_info ? this.#ffmpeg.last_info.bitrate : 0;
+                let key = (this.session.type === constants.SessionTypes.EXTERNAL) ? "upstream" : "trans";
+                this.register_metric(`${key}:speed`, this.$.speed);
+                this.register_metric(`${key}:bitrate`, this.$.bitrate);
+            }
             for (let st of Object.values(this.stream_targets)) {
-                st.tick();
+                if (st.ffmpeg) {
+                    this.register_metric(`${st.$.key}:speed`, st.ffmpeg_speed);
+                    this.register_metric(`${st.$.key}:bitrate`, st.ffmpeg_bitrate);
+                }
             }
         }
 
@@ -346,7 +363,8 @@ export class SessionStream extends StopStartStateMachine {
         // if (!this.$.metrics[key] && y == 0) return;
         if (!this.$.metrics[key]) this.$.metrics[key] =  {min:0,max:0,data:{}};
         var d = this.$.metrics[key];
-        d.data[d.max++] = y;
+        d.max = this.#ticks;
+        d.data[d.max] = y;
         if (d.max > MAX_METRICS_SAMPLES) {
             delete d.data[d.min++];
         }

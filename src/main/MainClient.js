@@ -169,6 +169,10 @@ export class MainClient extends Client {
         "delete_volume": (...args) => {
             return globals.app.ipc.request("file-manager", "delete_volume", args)
         },
+        "set_gui_property": (key, value) => {
+            this.internal_session.$.gui_props[key] = value;
+            return this.internal_session.player?.set_gui_property(key, value);
+        },
     }
 
     _init() {

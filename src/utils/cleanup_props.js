@@ -2,7 +2,7 @@ import { fix_options } from "./fix_options.js";
 import { noop } from "./noop.js";
 
 /** @param {function(string[], any, any):boolean} */
-export function cleanup_props($, props, recursive, warn) {
+export function cleanup_props($, props, recursive, warn, delete_unrecognized = true) {
 	if (!warn) warn = noop;
 	const cleanup_props = ($, props, path) => {
 		let path_str = path.join(".");
@@ -12,7 +12,12 @@ export function cleanup_props($, props, recursive, warn) {
 		let prop = props["*"] ?? props[name];
 
 		if (!prop) {
-			warn(`Unrecognized property '${path_str}', deleting...`);
+			warn(`Unrecognized property '${path_str}'` + (delete_unrecognized ? ", deleting..." : "")); // 
+			if (delete_unrecognized) delete $[name];
+			return;
+		}
+
+		if (prop.__save__ == false) {
 			delete $[name];
 			return;
 		}

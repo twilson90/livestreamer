@@ -262,6 +262,9 @@ export class MainApp extends CoreFork {
             },
             allow_unauthorised: false,
         });
+        this.web.ready.then(()=>{
+            this.ipc.emit("main.web.ready");
+        });
         exp.use(bodyParser.urlencoded({
             extended: true,
             limit: '50mb',
@@ -767,9 +770,6 @@ export class MainApp extends CoreFork {
 				"name": "GUI",
 				"description": "Opens a video window",
 				"limit": 0,
-                "opts": {
-                    "osc": false
-                },
 			}
         ];
         for (var t of targets) t.builtin = true;
@@ -1345,6 +1345,14 @@ export class MainApp extends CoreFork {
         await this.save_sessions();
         this.web.destroy();
         return super._destroy();
+    }
+
+    debug_log_dump() {
+        this.log_i = this.log_i || 0;
+        for (var i = 0; i < 10000; i++) {
+            this.logger.warn(`debug_log_dump ${this.log_i}`);
+            this.log_i++;
+        }
     }
 }
 

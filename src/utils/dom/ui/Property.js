@@ -25,6 +25,9 @@ import deep_equals from "../../deep_equals.js";
 *   "modifiers": PropertyModifer<ItemType,ValueType>[],
 *   "nullify_default": UISetting<ThisType,boolean>,
 *   "valid": (this:ThisType, value:ValueType)=>boolean|string,
+*   "min": UISetting<ThisType,Number>,
+*   "max": UISetting<ThisType,Number>,
+*   "precision": UISetting<ThisType,Number>,
 * }} PropertySettings
 */
 

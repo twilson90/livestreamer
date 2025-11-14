@@ -107,7 +107,7 @@ export class LocalFileSystem extends Driver {
 	}
 	async __copy(src, dst, name) {
 		dst = upath.join(dst, name);
-		await fs.promises.copy(this.abspath(src), this.abspath(dst));
+		await fs.promises.cp(this.abspath(src), this.abspath(dst));
 		return dst;
 	}
 	async __chmod(src, mode) {

@@ -348,13 +348,13 @@ export class EditModal extends Modal {
 export class PromptModal extends EditModal {
     constructor(message, defaultValue="") {
         super({
-            "modal.title": title,
+            "modal.title": message,
             "modal.return_value": ()=>input.value,
         });
-        this.props.append(`<div>${message}</div>`);
-        input = new InputProperty(`<input type="text"></input>`, {
+        var input = new InputProperty(`<input type="text"></input>`, {
             "reset": false,
             "default": defaultValue,
+            "placeholder": message,
         });
         this.props.append(input);
     }

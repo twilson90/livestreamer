@@ -1,0 +1,1 @@
+node_modules/.bin/electron.cmd dist/electron/index.cjs

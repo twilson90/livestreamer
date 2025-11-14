@@ -164,6 +164,7 @@ export * from './Diff.js';
 export * from './EventEmitter.js';
 export * from './LinkedList.js';
 export * from './PromiseSet.js';
+export * from './Queue.js';
 export * from './DeferredReady.js';
 export * from './IncrementalAverage.js';
 export * from './SlidingWindowAverage.js';

@@ -45,6 +45,13 @@ export class WebServer extends events.EventEmitter {
     #https_server;
     /** @type {https.Server[]} */
     #servers = [];
+    /** @type {Promise<void>} */
+    #ready;
+
+    get ready() {
+        return this.#ready;
+    }
+
     /** @param {http.RequestListener<typeof http.IncomingMessage, typeof http.ServerResponse>} handler @param {typeof default_opts} opts */
     constructor(handler, opts) {
 
@@ -168,6 +175,9 @@ export class WebServer extends events.EventEmitter {
                 });
             }
         }
+
+        this.#ready = Promise.all(this.#servers.map(s=>new Promise(resolve=>s.once("listening", resolve))));
+
         globals.app.logger.info(`URL: ${globals.app.get_urls().url}/`);
     }
 

@@ -100,6 +100,7 @@ export class MPVWrapper extends events.EventEmitter {
     #is_piped = false;
     #ended = false;
     #id = "";
+    /** @type {Logger} */
     #logger;
     /** @type {Promise<void>} */
     #done;
@@ -188,7 +189,7 @@ export class MPVWrapper extends events.EventEmitter {
             
             this.#process = child_process.spawn(this.#options.executable, args, {
                 cwd: this.cwd,
-                windowsHide: true,
+                windowsHide: this.#is_piped,
                 stdio: ['pipe', 'pipe', this.#is_piped ? 'pipe' : 'ignore'],
                 // maxBuffer: 1024 * 1024 * 16, // 16 MB buffer size
             });
@@ -266,19 +267,26 @@ export class MPVWrapper extends events.EventEmitter {
     async destroy() {
         if (this.#destroyed) return;
         this.#destroyed = true;
-        this.stop().catch(utils.noop)
-        setTimeout(()=>{
-            if (!this.#closed) {
-                this.#logger.warn("Sending MPV terminate signal...");
-                this.#process.kill("SIGTERM");
-            }
-        }, 3000);
-        setTimeout(()=>{
-            if (!this.#closed) {
-                this.#logger.warn("Killing MPV with force...");
-                this.#process.kill("SIGKILL");
-            }
-        }, 6000);
+        var stop = ()=>this.stop().catch(utils.noop);
+        var terminate = ()=>tree_kill(this.#process.pid, "SIGTERM").catch(utils.noop);
+        var kill = ()=>tree_kill(this.#process.pid, "SIGKILL").catch(utils.noop);
+        if (this.#is_piped) {
+            stop();
+            setTimeout(()=>{
+                if (!this.#closed) {
+                    this.#logger.warn("Sending MPV terminate signal...");
+                    terminate();
+                }
+            }, 3000);
+            setTimeout(()=>{
+                if (!this.#closed) {
+                    this.#logger.warn("Killing MPV with force...");
+                    kill();
+                }
+            }, 6000);
+        } else {
+            kill();
+        }
         return this.#done
             .catch(utils.noop)
             .finally(()=>this.logger.destroy())

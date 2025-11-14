@@ -36,7 +36,6 @@ export class InternalSession$ extends Session$ {
     playlist = {};
     player_default_override = {};
     files_dir = "";
-    rtmp_key = "";
     time_pos = 0;
     schedule_start_time = 0;
     background_mode
@@ -49,6 +48,7 @@ export class InternalSession$ extends Session$ {
     volume_speed = 2;
     fade_out_speed = 2;
     fade_in_speed = 2;
+    gui_props = {};
 };
 
 export class PlaylistItem$ {
@@ -89,7 +89,6 @@ export class InternalSession extends Session {
 
     get saves_dir() { return path.join(globals.app.curr_saves_dir, this.id); }
     get files_dir() { return this.$.files_dir ? this.$.files_dir : globals.app.files_dir; }
-    get rtmp_key_without_args() { return this.$.rtmp_key.split("?")[0]; }
     get player() { return this.stream?.player; }
     get is_running() { return !!this.stream?.is_started; }
     get first_item_id() {
@@ -928,10 +927,15 @@ export class InternalSession extends Session {
         this.$.playlist_id = item.id;
 
         let error = await this.player.play_file(item, opts);
+
         if (error) {
             this.#errors++;
         } else {
             this.errors = 0;
+        }
+
+        if (this.stream.$.gui && this.player.destroyed) {
+            return await this.stop_stream();
         }
         
         if (this.is_running && current_load_id == this.#loads) {

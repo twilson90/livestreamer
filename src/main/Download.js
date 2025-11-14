@@ -121,7 +121,7 @@ export class Download extends DataNodeID {
                     throw new Error("Download failed.");
                 }
 
-                await fs.promises.rename(tmp_download_path, dest_path);
+                await utils.safe_move(tmp_download_path, dest_path);
                 this.emit("info", `Download finished [${this.filename}]`);
             }
             return dest_path;

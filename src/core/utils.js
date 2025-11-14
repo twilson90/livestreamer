@@ -346,7 +346,12 @@ export class Downloader extends events.EventEmitter {
     #opts;
     /** @type {AbortController} */
     #controller;
-    #started;
+    /** @type {Promise<void>} */
+    #done;
+    get done() {
+        return this.#done;
+    }
+
     /** @param {string} url @param {typeof default_download_opts} opts */
     constructor(url, opts) {
         super();
@@ -355,11 +360,11 @@ export class Downloader extends events.EventEmitter {
             ...default_download_opts,
             ...opts
         }
-        this.#controller = opts.controller ?? new AbortController();
+        this.#controller = this.#opts.controller ?? new AbortController();
     }
 
     async download() {
-        return this.#started = this.#started ?? (async () => {
+        return this.#done = this.#done ?? (async () => {
             let downloaded_bytes = 0;
             let progress_bytes = 0;
             let last_progress_update = 0;
@@ -406,7 +411,7 @@ export class Downloader extends events.EventEmitter {
                     agent,
                     signal: this.#controller.signal
                 });
-                
+
                 if (res.status !== 206 && res.status !== 200) {
                     throw new Error(`Unexpected status: ${res.status}`);
                 }
@@ -618,6 +623,20 @@ export async function safe_write_file(filename, data, encoding = "utf-8") {
     }
 }
 
+export async function safe_move(src, dest) {
+
+    try {
+        await fs.promises.rename(src, dest);
+    } catch (err) {
+        if (err.code === "EXDEV") {
+            await fs.promises.copyFile(src, dest);
+            await fs.promises.unlink(src);
+        } else {
+            throw err;
+        }
+    }
+}
+
 export async function file_exists(path) {
     return fs.promises.access(path).then(() => true).catch(() => false);
 }
@@ -735,7 +754,7 @@ export function get_hls_segment_codec_string(codec = "h264", profile = "main", l
     return [videoCodec, audioCodec].join(",")
 }
 
-export function onceify({resolve, reject}) {
+export function onceify({ resolve, reject }) {
     let settled = false;
     return {
         resolve: (v) => {
@@ -751,6 +770,37 @@ export function onceify({resolve, reject}) {
             }
         },
     };
+}
+
+export function is_headless() {
+    const platform = process.platform;
+
+    if (process.env.CI === "true" || process.env.DOCKER === "true") return true;
+
+    if (platform === "linux") {
+        return !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+    }
+
+    if (platform === "win32") {
+        try {
+            const output = child_process.execSync("tasklist").toString();
+            return !output.toLowerCase().includes("explorer.exe");
+        } catch {
+            return false;
+        }
+    }
+
+    if (platform === "darwin") {
+        // macOS: check if running without GUI (no WindowServer)
+        try {
+            const output = child_process.execSync("ps -A").toString();
+            return !output.includes("WindowServer");
+        } catch {
+            return false;
+        }
+    }
+
+    return false;
 }
 
 // prevents bad SSL being rejected.

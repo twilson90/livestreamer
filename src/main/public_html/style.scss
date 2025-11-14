@@ -571,9 +571,6 @@ table.files {
 	--aspect-ratio: 16/9;
 	
 	.live-feed-container {
-		display: flex;
-		justify-content: center;
-		position: relative;
 		.live-feed {
 			aspect-ratio: var(--aspect-ratio)
 		}

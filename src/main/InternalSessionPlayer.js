@@ -175,6 +175,7 @@ export class InternalSessionPlayer extends DataNode {
     get stream() { return this.#stream; }
     /** @type {InternalSession} */
     get session() { return this.#stream.session; }
+    get gui() { return this.#stream.$.gui; }
     get duration() { return this.$.duration; }
     get time_pos() { return this.$.time_pos; }
     get paused() { return this.$.paused; }
@@ -193,6 +194,8 @@ export class InternalSessionPlayer extends DataNode {
         this.#stream.$.player = this.$;
         this.logger = new Logger("player");
         this.#out = new stream.PassThrough();
+        this.multiple_instances = MULTIPLE_MPV_INSTANCES && !this.gui;
+        this.output_raw = MPV_OUTPUT_RAW && !this.gui;
 
         // stream.promises.pipeline(this.#in, demuxer).catch(utils.pipe_error_handler(this.logger, "InternalSessionPlayer.in -> demuxer"))
         // stream.promises.pipeline(this.#in, this.#out).catch(utils.pipe_error_handler(this.logger, "InternalSessionPlayer.in -> InternalSessionPlayer.out"));
@@ -242,11 +245,16 @@ export class InternalSessionPlayer extends DataNode {
             return;
         }
 
-        if (!this.#mpv || MULTIPLE_MPV_INSTANCES || this.play_file_error) {
-            this.play_file_error = null;
+        if (!this.#mpv || this.multiple_instances || this.last_file_play_error) {
+            this.last_file_play_error = null;
             await this.#mpv?.destroy();
             if (curr_load_id != this.#loads) return;
             this.#mpv = new InternalSessionMPV(this);
+            this.#mpv.logger.on("log", (log) => {
+                if (log.level === Logger.ERROR) {
+                    this.logger.error(log.msg);
+                }
+            });
             this.#mpv.start();
         }
 
@@ -276,12 +284,13 @@ export class InternalSessionPlayer extends DataNode {
                 }
                 this.logger.warn(`loadfile failed: ${e.message}`);
             });
+        
         if (play_result) {
             return new Promise(resolve => {
                 this.$.loaded = true;
                 this.session.$.time_pos = start;
                 var resolve_wrapper = () => {
-                    resolve(this.play_file_error);
+                    resolve(this.last_file_play_error);
                     this.#mpv.off("idle", resolve_wrapper);
                     this.#mpv.off("eof-reached", resolve_wrapper);
                 };
@@ -291,7 +300,12 @@ export class InternalSessionPlayer extends DataNode {
                     .catch((e) => {
                         this.logger.error(`MPV done error: ${e}`);
                     })
-                    .then(resolve_wrapper);
+                    .then(async ()=>{
+                        if (this.gui) {
+                            await this.destroy();
+                        }
+                        resolve_wrapper();
+                    });
             });
         }
     }
@@ -449,8 +463,10 @@ export class InternalSessionPlayer extends DataNode {
         if (media_info.virtual_filename) {
             filename = media_info.virtual_filename;
         }
+        
+        // let can_display_images = is_root && this.gui;
 
-        if (is_image(media_info)) {
+        if (is_image(media_info)) { // !can_display_images && 
             // let title = `Image (${path.basename(filename)})`;
             // let {width, height} = media_info.streams.find(s=>s.type=="video");
             // ({width, height} = fit_into(width, height, this.width, this.height));
@@ -476,7 +492,7 @@ export class InternalSessionPlayer extends DataNode {
             filename = await this.youtube_url_to_edl(filename);
         }
 
-        let is_unknown_duration = !duration && !media_info.duration && !is_playlist;
+        let is_unknown_duration = !duration && (!media_info.duration || media_info.duration <= 0.04) && !is_playlist;
         duration = duration || media_duration;
 
         if (is_playlist && (props.playlist_mode || !is_root)) {
@@ -626,20 +642,24 @@ export class InternalSessionPlayer extends DataNode {
 
             /** @param {string} filename @param {MediaInfoStreamType} type @param {ClipOpts} clipping */
             const add_file = async (filename, type, clipping) => {
+                // if (can_display_images && !filename) return;
                 if (!clipping) clipping = {};
                 var original_filename = filename;
                 let name = original_filename ? path.basename(original_filename) : "None";
                 if (!type) throw new Error("type is required");
-                
                 let mi = filename ? await globals.app.get_media_info(filename) : null;
-                if (filename) {
-                    if (is_image(mi)) {
-                        filename = await generate_video_from_image(filename);
-                        clipping.start = 0;
-                        clipping.end = NULL_STREAM_DURATION;
-                    } else {
-                        clipping.end = clipping.end ?? mi?.duration ?? NULL_STREAM_DURATION;
-                    }
+                var _is_image = is_image(mi);
+                
+                // if (_is_image && can_display_images) {
+                //     // just add the image file.
+                // } else {
+                if (_is_image) {
+                    _is_image = false;
+                    filename = await generate_video_from_image(filename);
+                    clipping.start = 0;
+                    clipping.end = NULL_STREAM_DURATION;
+                } else if (filename) {
+                    clipping.end = clipping.end ?? mi?.duration ?? NULL_STREAM_DURATION;
                 } else {
                     filename = await generate_null(type);
                     clipping.end = NULL_STREAM_DURATION;
@@ -649,32 +669,25 @@ export class InternalSessionPlayer extends DataNode {
                 clipping.start = clipping.start ?? 0;
                 clipping.duration = duration;
                 edl.append(...MPVEDL.clip(filename, clipping));
+                filename = edl.toString();
+                // }
 
-                /* var streams;
-                if (mi) {
-                    var d = get_default_stream(mi.streams, type);
-                    streams = mi.streams.map(s=>{
-                        if (d != s) return {...s, ignore: true};
-                        return s;
-                    })
-                } else {
-                    streams = [{ type, title: name }]
-                } */
-               var streams = [{ type, title: name }];
+                var streams = [{ type, title: name, albumart: _is_image }];
 
                 await map.register_file({
-                    filename: edl.toString(),
+                    filename,
                     original_filename,
                     streams,
                     name,
-                    type
+                    type,
+                    is_image: _is_image,
                 });
             }
 
-            if (!map.video.streams.filter(s => !s.albumart).length) {
+            if (!map.video.streams.filter(s => !s.albumart).length) { // !can_display_images && 
                 await add_file(null, "video");
             }
-            if (!map.audio.streams.length) {
+            if (!map.audio.streams.length) { // !can_display_images && 
                 await add_file(null, "audio");
             }
 
@@ -774,6 +787,10 @@ export class InternalSessionPlayer extends DataNode {
         this.#mpv?.fade_out();
     }
 
+    set_gui_property(key, value) {
+        this.#mpv?.set_property(key, value);
+    }
+
     /** @param {string} url @returns {Promise<string>} */
     async youtube_url_to_edl(url) {
         if (!ytdl_cache.has(url)) ytdl_cache.set(url, globals.app.youtube_url_to_edl(url));
@@ -828,7 +845,7 @@ class InternalSessionMPV extends MPVWrapper {
         this.#last_session_stream_fps = this.session_stream.$.fps;
 
         var fatal_error = (text) => {
-            this.#player.play_file_error = text;
+            this.#player.last_file_play_error = text;
             this.destroy();
         }
 
@@ -876,6 +893,12 @@ class InternalSessionMPV extends MPVWrapper {
             }
             this.#props[name] = data;
             this.#props_hashed[name] = JSON.stringify(data);
+            if (this.#is_preloaded) {
+                // prevents flicker
+                if (name in this.session.$.gui_props) {
+                    this.session.$.gui_props[name] = data;
+                }
+            }
         });
     }
 
@@ -914,15 +937,13 @@ class InternalSessionMPV extends MPVWrapper {
     start() {
         if (this.#done) throw new Error("mpv cannot be started twice.")
         this.#done = new Promise((resolve, reject) => {
-            this.#props = utils.json_copy(observed_mpv_props);
+            this.#props = utils.json_copy({...observed_mpv_props});
 
             this.#mpv_log_file = path.join(globals.app.logs_dir, `mpv-${utils.date_to_string()}-${this.id}.log`);
 
             var mpv_args = [
                 "--no-config",
                 "--cache=no",
-                `--demuxer-thread=no`,
-                "--demuxer-readahead-secs=0.1",
                 // "--demuxer-hysteresis-secs=0.1",
                 // `--demuxer-max-bytes=1`,
                 // `--demuxer-max-back-bytes=0`,
@@ -938,129 +959,141 @@ class InternalSessionMPV extends MPVWrapper {
                 // `--sub-ass-video-aspect-override=${4/3}`,
                 // `--sub-ass-vsfilter-aspect-compat=no`, // fixes fucked up sub scaling on ass files for anamorphic vids (vids with embedded aspect ratio)
                 `--autoload-files=no`,
-                `--audio-display=no`, // IMPORTANT
-                `--idle=${MULTIPLE_MPV_INSTANCES ? "once" : "yes"}`,
-
-                // `--correct-pts=no`, // this fucks up too much, we can never use this.
-
-                "--audio-buffer=0",
-                // "--vd-lavc-threads=1",
-                // `--demuxer-lavf-o-add=err_detect=ignore_err`,
-                "--demuxer-lavf-o-add=fflags=+autobsf+flush_packets+genpts+igndts", // +nobuffer //+discardcorrupt
-                "--demuxer-lavf-o-add=flush_packets=1",
-                `--demuxer-lavf-o-add=avoid_negative_ts=make_non_negative`,
-                // `--demuxer-lavf-o-add=copyts=1`,
-                // `--demuxer-lavf-o-add=mpegts_copyts`,
-                // "--demuxer-lavf-probe-info=nostreams",
-                // "--demuxer-lavf-analyzeduration=0.1",
-                // "--demuxer-lavf-buffersize=1024",
-                // "--demuxer-readahead-secs=0.1",
-
-                // `--vd-lavc-skiploopfilter=all`,
-                // `--vd-lavc-skipidct=all`,
-                // `--vd-lavc-show-all=yes`,
-                // `--vd-lavc-fast=yes`,
 
                 "--video-sync=audio",
-                // `--hr-seek-framedrop=no`,
-                // "--stream-buffer-size=1k",
-                // "--stream-buffer-size=4096",
-                // "--demuxer-max-bytes=1024",
-
-                "--ytdl=no",
-                `--script=${globals.app.resources.get_path("mpv_lua/livestreamer.lua")}`,
-                "--quiet",
-                `--log-file=${this.#mpv_log_file}`,
                 `--audio-stream-silence=no`, // maybe fixes issue with silent segments in EDLs?
                 // "--sub-use-margins=no", // new
                 // "--image-subs-video-resolution=yes",
                 "--audio-format=float",
                 `--audio-samplerate=${AUDIO_SAMPLERATE}`,
                 `--audio-channels=stereo`,
-                "--ocopy-metadata=no",
-                `--oset-metadata=title="livestreamer",comment="livestreamer"`,
-                `--of=${MPV_FORMAT}`,
-                `--o=-`,
+                "--ytdl=no",
+                `--script=${globals.app.resources.get_path("mpv_lua/livestreamer.lua")}`,
+                "--quiet",
+                `--log-file=${this.#mpv_log_file}`,
+                `--idle=${this.#player.multiple_instances ? "once" : "yes"}`,
             ];
 
-            if (MPV_OUTPUT_RAW) {
-
+            if (this.#player.gui) {
                 mpv_args.push(
-                    `--ovc=rawvideo`,
-                    `--oac=pcm_s16le`
+                    `--force-window=immediate`,
                 );
-
             } else {
-
-                let fps = Math.min(60, this.#player.stream.fps); // clamp it incase media info suggests some CRAZY value like 90000 as it once did...
-
-                let x264_params = {
-                    "nal-hrd": `cbr`, // VERY IMPORTANT, maintains constant bitrate
-                    // "bframes": "0",
-                    // "b-pyramid":"none",
-                    // "sync-lookahead":"0",
-                    // "force-cfr": `1`, // not necessary?
-                    // "scenecut": `0`,
-                    "cabac": 1,
-                    "weightp": 1,
-                    "scenecut": 0,
-                    // "debug":"mb_type",
-                    // "verbose":"1",
-                };
-                if (fps) {
-                    x264_params["keyint"] = Math.ceil(fps * KEYFRAMES_PER_SECOND);
-                    x264_params["min-keyint"] = Math.ceil(fps * KEYFRAMES_PER_SECOND);
-                }
-
                 mpv_args.push(
-                    "--ovc=libx264",
-                    `--ovcopts-add=profile=${H264_PROFILE}`,
-                    `--ovcopts-add=preset=${this.session_stream.$.h264_preset}`,
-                    `--ovcopts-add=level=${H264_LEVEL}`,
-                    `--ovcopts-add=b=${this.session_stream.$.video_bitrate}k`,
-                    `--ovcopts-add=maxrate=${this.session_stream.$.video_bitrate}k`,
-                    `--ovcopts-add=minrate=${Math.floor(this.session_stream.$.video_bitrate)}k`,
-                    `--ovcopts-add=bufsize=${Math.floor(this.session_stream.$.video_bitrate)}k`, // *2
-                    // `--ovcopts-add=bf=0`,
-                    // `--ovcopts-add=tune=fastdecode`, // this reduces quality to big wet arses
-                    // `--ovcopts-add=tune=zerolatency`, // <-- new
-                    // `--ovcopts-add=strict=+experimental`,
-                    ...(Object.keys(x264_params).length ? [`--ovcopts-add=x264-params=${Object.entries(x264_params).map(([k, v]) => `${k}=${v}`).join(":")}`] : []),
-                    `--oac=aac`,
-                    `--oacopts-add=b=${this.session_stream.$.audio_bitrate}k`,
-                    // `--oacopts-add=aac_coder=twoloop`,
-                    `--oacopts-add=profile=aac_low`,
-                    `--oacopts-add=ar=${AUDIO_SAMPLERATE}`,
-                    // `--oacopts=export_side_data=prft`,
-                    // `--force-seekable=yes`, // important for generated media urls / piped input, don't support range requests
-                    // `--ofopts-add=muxrate=${(this.session_stream.$.video_bitrate+this.session_stream.$.audio_bitrate)*1000}`,
-                    // `--ofopts-add=preload=${100000}`, // 0.1 seconds
+                    `--demuxer-thread=no`,
+                    "--demuxer-readahead-secs=0.1",
+                    `--audio-display=no`, // IMPORTANT
 
-                    // none of this appears to do jack shit
-                    // `--ofopts-add=strict=+experimental`,
-                    // `--ofopts-add=fflags=+autobsf+flush_packets+genpts+igndts`, // +discardcorrupt
-                    // `--ofopts-add=avoid_negative_ts=make_non_negative`,
-                    // `--ofopts-add=flush_packets=1`,
+                    // `--correct-pts=no`, // this fucks up too much, we can never use this.
+                    "--audio-buffer=0",
+                    // "--vd-lavc-threads=1",
+                    // `--demuxer-lavf-o-add=err_detect=ignore_err`,
+                    "--demuxer-lavf-o-add=fflags=+autobsf+flush_packets+genpts+igndts", // +nobuffer //+discardcorrupt
+                    "--demuxer-lavf-o-add=flush_packets=1",
+                    `--demuxer-lavf-o-add=avoid_negative_ts=make_non_negative`,
+                    // `--demuxer-lavf-o-add=copyts=1`,
+                    // `--demuxer-lavf-o-add=mpegts_copyts`,
+                    // "--demuxer-lavf-probe-info=nostreams",
+                    // "--demuxer-lavf-analyzeduration=0.1",
+                    // "--demuxer-lavf-buffersize=1024",
+                    // "--demuxer-readahead-secs=0.1",
 
-                    // `--ofopts-add=err_detect=ignore_err`,
-                    // `--ofopts-add=mpegts_copyts`,
-                    // `--ofopts-add=mpegts_flags=+resend_headers+initial_discontinuity`,
-                    // `--ofopts-add=muxrate=${this.session_stream.$.video_bitrate+this.session_stream.$.audio_bitrate}k`, // causes tons of 'mpegts: dts < pcr, TS is invalid'
-                    // `--ofopts-add=pes_payload_size=0`,
-                    // `--ofopts-add=output_ts_offset=${pts}`,
-                    // `--ofopts-add=mpegts_flags=+initial_discontinuity+resend_headers`,
+                    // `--vd-lavc-skiploopfilter=all`,
+                    // `--vd-lavc-skipidct=all`,
+                    // `--vd-lavc-show-all=yes`,
+                    // `--vd-lavc-fast=yes`,
+
+                    // `--hr-seek-framedrop=no`,
+                    // "--stream-buffer-size=1k",
+                    // "--stream-buffer-size=4096",
+                    // "--demuxer-max-bytes=1024",
+                    "--ocopy-metadata=no",
+                    `--oset-metadata=title="livestreamer",comment="livestreamer"`,
+                    `--of=${MPV_FORMAT}`,
+                    `--o=-`,
                 );
             }
 
-            // if (MULTIPLE_MPV_INSTANCES) {
-            //     mpv_args.push(`--correct-pts=no`) // fixes 'NA_The Ascent of Man, Lower than the Angels.mp4'... but probably a REALLY bad idea.
-            // }
+            if (!this.#player.gui) {
+                if (this.#player.output_raw) {
 
-            if (this.session_stream.$.use_hardware && globals.app.conf["core.mpv_hwdec"]) {
-                mpv_args.push(`--hwdec=${globals.app.conf["core.mpv_hwdec"]}-copy`);
-                // mpv_args.push(`--correct-pts=no`); // files like billy joel get PTS errors and breaks encoder unless we disable correct-pts
-            } else {
-                mpv_args.push(`--hwdec=no`); // even though this is the default setting supposedly, without this it was leading to some weird format conversion error in MediaServerApp Live, presumably it was doing some hwdecoding stuff and as we copy the mpv output it was leading to some weirdness... ?
+                    mpv_args.push(
+                        `--ovc=rawvideo`,
+                        `--oac=pcm_s16le`
+                    );
+
+                } else {
+
+                    let fps = Math.min(60, this.#player.stream.fps); // clamp it incase media info suggests some CRAZY value like 90000 as it once did...
+
+                    let x264_params = {
+                        "nal-hrd": `cbr`, // VERY IMPORTANT, maintains constant bitrate
+                        // "bframes": "0",
+                        // "b-pyramid":"none",
+                        // "sync-lookahead":"0",
+                        // "force-cfr": `1`, // not necessary?
+                        // "scenecut": `0`,
+                        "cabac": 1,
+                        "weightp": 1,
+                        "scenecut": 0,
+                        // "debug":"mb_type",
+                        // "verbose":"1",
+                    };
+                    if (fps) {
+                        x264_params["keyint"] = Math.ceil(fps * KEYFRAMES_PER_SECOND);
+                        x264_params["min-keyint"] = Math.ceil(fps * KEYFRAMES_PER_SECOND);
+                    }
+
+                    mpv_args.push(
+                        "--ovc=libx264",
+                        `--ovcopts-add=profile=${H264_PROFILE}`,
+                        `--ovcopts-add=preset=${this.session_stream.$.h264_preset}`,
+                        `--ovcopts-add=level=${H264_LEVEL}`,
+                        `--ovcopts-add=b=${this.session_stream.$.video_bitrate}k`,
+                        `--ovcopts-add=maxrate=${this.session_stream.$.video_bitrate}k`,
+                        `--ovcopts-add=minrate=${Math.floor(this.session_stream.$.video_bitrate)}k`,
+                        `--ovcopts-add=bufsize=${Math.floor(this.session_stream.$.video_bitrate)}k`, // *2
+                        // `--ovcopts-add=bf=0`,
+                        // `--ovcopts-add=tune=fastdecode`, // this reduces quality to big wet arses
+                        // `--ovcopts-add=tune=zerolatency`, // <-- new
+                        // `--ovcopts-add=strict=+experimental`,
+                        ...(Object.keys(x264_params).length ? [`--ovcopts-add=x264-params=${Object.entries(x264_params).map(([k, v]) => `${k}=${v}`).join(":")}`] : []),
+                        `--oac=aac`,
+                        `--oacopts-add=b=${this.session_stream.$.audio_bitrate}k`,
+                        // `--oacopts-add=aac_coder=twoloop`,
+                        `--oacopts-add=profile=aac_low`,
+                        `--oacopts-add=ar=${AUDIO_SAMPLERATE}`,
+                        // `--oacopts=export_side_data=prft`,
+                        // `--force-seekable=yes`, // important for generated media urls / piped input, don't support range requests
+                        // `--ofopts-add=muxrate=${(this.session_stream.$.video_bitrate+this.session_stream.$.audio_bitrate)*1000}`,
+                        // `--ofopts-add=preload=${100000}`, // 0.1 seconds
+
+                        // none of this appears to do jack shit
+                        // `--ofopts-add=strict=+experimental`,
+                        // `--ofopts-add=fflags=+autobsf+flush_packets+genpts+igndts`, // +discardcorrupt
+                        // `--ofopts-add=avoid_negative_ts=make_non_negative`,
+                        // `--ofopts-add=flush_packets=1`,
+
+                        // `--ofopts-add=err_detect=ignore_err`,
+                        // `--ofopts-add=mpegts_copyts`,
+                        // `--ofopts-add=mpegts_flags=+resend_headers+initial_discontinuity`,
+                        // `--ofopts-add=muxrate=${this.session_stream.$.video_bitrate+this.session_stream.$.audio_bitrate}k`, // causes tons of 'mpegts: dts < pcr, TS is invalid'
+                        // `--ofopts-add=pes_payload_size=0`,
+                        // `--ofopts-add=output_ts_offset=${pts}`,
+                        // `--ofopts-add=mpegts_flags=+initial_discontinuity+resend_headers`,
+                    );
+                }
+
+                // if (this.#player.multiple_instances) {
+                //     mpv_args.push(`--correct-pts=no`) // fixes 'NA_The Ascent of Man, Lower than the Angels.mp4'... but probably a REALLY bad idea.
+                // }
+
+                if (this.session_stream.$.use_hardware && globals.app.conf["core.mpv_hwdec"]) {
+                    mpv_args.push(`--hwdec=${globals.app.conf["core.mpv_hwdec"]}-copy`);
+                    // mpv_args.push(`--correct-pts=no`); // files like billy joel get PTS errors and breaks encoder unless we disable correct-pts
+                } else {
+                    mpv_args.push(`--hwdec=no`); // even though this is the default setting supposedly, without this it was leading to some weird format conversion error in MediaServerApp Live, presumably it was doing some hwdecoding stuff and as we copy the mpv output it was leading to some weirdness... ?
+                }
             }
             this.#player.logger.add(this.logger, (log) => ({ ...log, prefix: log.prefix.slice(1) }));
 
@@ -1084,7 +1117,7 @@ class InternalSessionMPV extends MPVWrapper {
                 vf_graph = vf_graph.map(make_lavfi_filter);
 
                 this.#lua_message("init", [{
-                    keep_open: !MULTIPLE_MPV_INSTANCES,
+                    keep_open: !this.#player.multiple_instances,
                     default_vf: vf_graph,
                     fix_discontinuities: true, // this actually works brilliantly with the billy joel broken.mkv music video
                     width: this.#player.width,
@@ -1098,30 +1131,34 @@ class InternalSessionMPV extends MPVWrapper {
                 }
             });
 
-            var stream_fixer = new StreamFixerTransform(this.player);
-            var last_pts = this.player.pts;
-            var last_dts = this.player.dts;
+            if (this.#player.gui) {
+                super.done.then(resolve).catch(reject);
+            } else {
+                var stream_fixer = new StreamFixerTransform(this.player);
+                var last_pts = this.player.pts;
+                var last_dts = this.player.dts;
 
-            var demuxer = new MpegTsDemuxerTransform();
-            demuxer.on("pts", ({ pts, dts, fps }) => {
-                var delta_pts = pts - last_pts;
-                var delta_dts = dts - last_dts;
-                this.#player.pts += Math.max(0, delta_pts);
-                this.#player.dts += Math.max(0, delta_dts);
-                this.#player.fps = fps;
-                last_pts = pts;
-                last_dts = dts;
-            })
+                var demuxer = new MpegTsDemuxerTransform();
+                demuxer.on("pts", ({ pts, dts, fps }) => {
+                    var delta_pts = pts - last_pts;
+                    var delta_dts = dts - last_dts;
+                    this.#player.pts += Math.max(0, delta_pts);
+                    this.#player.dts += Math.max(0, delta_dts);
+                    this.#player.fps = fps;
+                    last_pts = pts;
+                    last_dts = dts;
+                })
 
-            var realtime = new RealTimeBufferTransform(this.player);
+                var realtime = new RealTimeBufferTransform(this.player);
 
-            try {
-                stream.promises.pipeline(this.stdout, realtime, stream_fixer, demuxer, this.#player.out, { end: false })
-                    // .catch(utils.pipe_error_handler(this.logger, "mpv.stdout -> player.in"))
-                    .catch(reject)
-                    .then(resolve);
-            } catch (e) {
-                reject(e);
+                try {
+                    stream.promises.pipeline(this.stdout, realtime, stream_fixer, demuxer, this.#player.out, { end: false })
+                        // .catch(utils.pipe_error_handler(this.logger, "mpv.stdout -> player.in"))
+                        .catch(reject)
+                        .then(resolve);
+                } catch (e) {
+                    reject(e);
+                }
             }
         });
         return this.#done;
@@ -1138,18 +1175,38 @@ class InternalSessionMPV extends MPVWrapper {
 
         var on_load_commands = [];
         for (var f of this.#parsed_item.map.video.files) {
-            on_load_commands.push(["video-add", f.filename, "select", f.name]);
+            on_load_commands.push({
+                name: "video-add",
+                url: f.filename,
+                flags: "select",
+                title: f.name,
+                albumart: !!f.is_image
+            });
         }
         for (var f of this.#parsed_item.map.subtitle.files) {
-            on_load_commands.push(["sub-add", f.filename, f.secondary ? "auto" : "select", f.name]);
+            on_load_commands.push({
+                name: "sub-add",
+                url: f.filename,
+                flags: f.secondary ? "auto" : "select",
+                title: f.name,
+            });
         }
         for (var f of this.#parsed_item.map.audio.files) {
-            on_load_commands.push(["audio-add", f.filename, "select", f.name]);
+            on_load_commands.push({
+                name: "audio-add",
+                url: f.filename,
+                flags: "select",
+                title: f.name,
+            });
         }
 
         this.#mpv_props_on_load = {};
         for (var k in this.#parsed_item.props) {
             this.set_property(k, this.#parsed_item.props[k]); // important to use force!
+        }
+        for (var k in this.session.$.gui_props) {
+            this.observe_property(k);
+            this.set_property(k, this.session.$.gui_props[k]);
         }
 
         this.#rebuild_filters();
@@ -1272,12 +1329,12 @@ class InternalSessionMPV extends MPVWrapper {
                 mpv_value = value ? FILE_LOOPS : false
                 if (this.fading) return;
                 break;
-            case "audio_pitch_correction":
-                mpv_key = "audio-pitch-correction";
-                break;
             case "correct_pts":
                 mpv_key = "correct-pts";
                 mpv_value = !mpv_value; // confusingly, to correct broken files we need to turn this off.
+                break;
+            case "osc":
+                this.set_property("osd-level", value ? 1 : 0);
                 break;
         }
 
@@ -1355,14 +1412,14 @@ class InternalSessionMPV extends MPVWrapper {
         if (vid == false) vid = vid_auto; // can never be false
         if (aid == false) aid = aid_auto; // can never be false
 
-        var video_streams = this.#parsed_item.map.video.streams.map(s=>!s.ignore);
-        var audio_streams = this.#parsed_item.map.audio.streams.map(s=>!s.ignore);
-        var subtitle_streams = this.#parsed_item.map.subtitle.streams.map(s=>!s.ignore);
+        var video_streams = this.#parsed_item.map.video.streams.filter(s=>!s.ignore);
+        var audio_streams = this.#parsed_item.map.audio.streams.filter(s=>!s.ignore);
+        var subtitle_streams = this.#parsed_item.map.subtitle.streams.filter(s=>!s.ignore);
 
         let v_stream = video_streams[vid - 1];
         let reason;
         if (!v_stream) reason = "no stream";
-        else if (v_stream.albumart) reason = "albumart";
+        else if (!this.#player.gui && v_stream.albumart) reason = "albumart";
 
         if (reason) {
             this.logger.error(`Bad video stream selected [${reason}]...`);
@@ -1422,6 +1479,10 @@ class InternalSessionMPV extends MPVWrapper {
 
         let pre_vf_graph = [];
         let pre_af_graph = [];
+
+        if (this.#props.rubberband) {
+            pre_af_graph.push(`rubberband`);
+        }
 
         // pre_vf_graph.push(`setpts=N/${fps}/TB`); // fixes bad PTS for MPEG-TS
         // pre_af_graph.push(`asetpts=N/SR/TB`);
@@ -1839,7 +1900,7 @@ export class StreamFixerTransform extends BridgeTransform {
         bsfv.push("h264_mp4toannexb");
         bsfa.push("aac_adtstoasc");
 
-        if (MPV_OUTPUT_RAW) {
+        if (player.output_raw) {
             var encoder = "libx264";
             var hwenc = globals.app.conf["core.ffmpeg_hwenc"];
             if (hwenc) {

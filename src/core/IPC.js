@@ -18,6 +18,7 @@ class IPC {
     #process;
     /** @type {Logger} */
     #logger;
+    #rid = 0;
 
     /** @protected */
     get emitter() { return this.#emitter; }
@@ -55,6 +56,26 @@ class IPC {
             throw new Error(`IPC: '${request}' response already setup`);
         }
         this.#responses[request] = listener;
+    }
+    
+    async emit_to(name, event, ...args) { throw new Error("IPC: emit_to not implemented")}
+
+    async request(pid, request, args=undefined, timeout=0) {
+        let rid = ++this.#rid;
+        let resolve;
+        return new Promise(async (_resolve,reject)=>{
+            resolve = _resolve;
+            await this.ready;
+            if (!args) args = [];
+            else if (!Array.isArray(args)) args = [args];
+            if (timeout) {
+                setTimeout(()=>reject(new errors.TimeoutError(`internal:request ${rid} ${request} timed out.`)), timeout);
+            }
+            this.emitter.on(`internal:response:${rid}`, resolve);
+            this.emit_to(pid, "internal:request", { rid, request, args, origin: this.name });
+        }).finally(()=>{
+            this.emitter.off(`internal:response:${rid}`, resolve);
+        });
     }
 
     /** @protected @param {net.Socket} sock */
@@ -191,6 +212,7 @@ export class IPCMaster extends IPC {
             });
         });
     }
+
     async _destroy() {
         this.#server.close((err)=>{
             if (err) this.logger.error(err);
@@ -213,7 +235,6 @@ export class IPCFork extends IPC {
     #listeners = [];
     /** @type {Record<PropertyKey,number>} */
     #listener_id_map = {};
-    #rid = 0;
 
     get ready() { return this.#ready; }
 
@@ -300,24 +321,6 @@ export class IPCFork extends IPC {
         } else {
             write(this.#master_sock, `internal:emit_to`, {name, event, args});
         }
-    }
-
-    async request(pid, request, args=undefined, timeout=0) {
-        let rid = ++this.#rid;
-        let resolve;
-        return new Promise(async (_resolve,reject)=>{
-            resolve = _resolve;
-            await this.#ready;
-            if (!args) args = [];
-            else if (!Array.isArray(args)) args = [args];
-            if (timeout) {
-                setTimeout(()=>reject(new errors.TimeoutError(`internal:request ${rid} ${request} timed out.`)), timeout);
-            }
-            this.emitter.on(`internal:response:${rid}`, resolve);
-            this.emit_to(pid, "internal:request", { rid, request, args, origin: this.name });
-        }).finally(()=>{
-            this.emitter.off(`internal:response:${rid}`, resolve);
-        });
     }
 
     _destroy() {
